@@ -7139,7 +7139,7 @@ class ExpiredCaptivePayTests(SimpleTestCase):
         ):
             with self.assertRaises(ConnectionError) as ctx:
                 _enable_cpe_renew_hotspot(sock, portal_url="/pppoe/121212/pay/")
-        self.assertIn("absolute pay URL", str(ctx.exception))
+        self.assertIn("absolute pay/pause URL", str(ctx.exception))
 
     def test_enable_cpe_renew_aborts_when_login_html_missing(self):
         from unittest.mock import MagicMock

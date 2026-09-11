@@ -296,6 +296,15 @@ class HotspotCaptiveProbeMiddleware:
 
         query = request.META.get("QUERY_STRING") or ""
 
+        # Probe bursts hit this path many times per second. Cache the final URL by
+        # client IP (generation-bumped on pause/resume/renew) so we do not re-walk
+        # NAS identity on every generate_204. Pool/pay/pause are encoded in the
+        # cached Location itself.
+        cache_key = captive_redirect_cache_key(remote, query)
+        cached_target = cache.get(cache_key)
+        if cached_target:
+            return redirect(cached_target)
+
         # Prefer the NAS/org that currently owns this client IP so multi-tenant
         # deployments do not send users to the wrong payment join_code.
         org = resolve_captive_organization(remote)
@@ -312,11 +321,49 @@ class HotspotCaptiveProbeMiddleware:
         # Paused → /pause/; expired / unpaid → /pay/.
         prefer_pppoe = bool(renew_or_pppoe_pool or pppoe_customer is not None)
         pppoe_page = "pay"
-        if prefer_pppoe and pppoe_customer is not None:
+        if prefer_pppoe:
             try:
                 from billing.services import customer_package_is_paused
 
-                if customer_package_is_paused(pppoe_customer):
+                customer_for_page = pppoe_customer
+                if customer_for_page is None:
+                    # Probe bursts sometimes outrun /ppp/active after kick/redial.
+                    # Fall back to the signed ?t= from DHCP option 114 / login.html
+                    # when the OS already followed that URL onto a probe host.
+                    from django.core import signing
+
+                    token = (request.GET.get("t") or "").strip()
+                    if token and org is not None:
+                        try:
+                            payload = signing.loads(
+                                token,
+                                salt="pppoe-payment",
+                                max_age=60 * 60 * 24 * 30,
+                            )
+                        except Exception:
+                            payload = None
+                        if (
+                            isinstance(payload, dict)
+                            and payload.get("org") == org.pk
+                            and payload.get("mode") == "pppoe"
+                            and payload.get("cid")
+                        ):
+                            from billing.models import Customer
+
+                            customer_for_page = (
+                                Customer.objects.filter(
+                                    pk=payload.get("cid"),
+                                    organization=org,
+                                    service_type=Customer.ServiceType.PPPOE,
+                                )
+                                .only("id", "package_paused_at", "account_number")
+                                .first()
+                            )
+                            if customer_for_page is not None:
+                                pppoe_customer = customer_for_page
+                if customer_for_page is not None and customer_package_is_paused(
+                    customer_for_page
+                ):
                     pppoe_page = "pause"
             except Exception:
                 pppoe_page = "pay"
@@ -339,24 +386,6 @@ class HotspotCaptiveProbeMiddleware:
                         hotspot_page = "pause"
             except Exception:
                 hotspot_page = "pay"
-
-        # Include pool + pay/pause in the key so a brief mis-route cannot stick
-        # the opposite UI for the redirect TTL.
-        mode_hint = (
-            f"pppoe-{pppoe_page}"
-            if prefer_pppoe
-            else (
-                f"hotspot-{hotspot_page}"
-                if hotspot_client
-                else f"probe-{hotspot_page}"
-            )
-        )
-        # Cache the final captive URL per client IP so probe bursts stay cheap.
-        # Generation bumps on successful renew so clients are not stuck on /pay.
-        cache_key = captive_redirect_cache_key(remote, f"{mode_hint}|{query}")
-        cached_target = cache.get(cache_key)
-        if cached_target:
-            return redirect(cached_target)
 
         if prefer_pppoe:
             pay_path = reverse(

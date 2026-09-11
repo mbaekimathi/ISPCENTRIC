@@ -110,7 +110,9 @@ def resolve_stk_daraja_credentials(stk: StkPushRequest) -> dict:
                 "consumer_key": key,
                 "consumer_secret": secret,
                 "passkey": passkey,
-                "callback_url": "",
+                "callback_url": PaymentGateway.default_callback_url(
+                    PaymentGateway.Environment.PRODUCTION
+                ),
                 "message": (
                     f"Using this ISP's gateway with shortcode {shortcode}."
                     if ready
@@ -579,27 +581,35 @@ def resolve_stk_callback_url(
     if not url and request is not None:
         url = request.build_absolute_uri(PaymentGateway.STK_CALLBACK_PATH)
 
-    # Production Daraja requires a public HTTPS callback (not localhost).
+    # Production Daraja requires a public HTTPS callback (not localhost/LAN).
     # Local confirmation still works via STK Query polling.
     if env == PaymentGateway.Environment.PRODUCTION and _is_local_http_callback(url):
-        try:
-            from core.hotspot_portal import public_base_url
-
-            public = (public_base_url() or "").strip().rstrip("/")
-        except Exception:
-            from django.conf import settings
-
-            public = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
-        if public.startswith("https://"):
-            return f"{public}{PaymentGateway.STK_CALLBACK_PATH}"
-        return f"https://ispcentric.local{PaymentGateway.STK_CALLBACK_PATH}"
+        public = PaymentGateway.production_public_https_base_url(request)
+        if public:
+            return PaymentGateway.normalize_callback_url(
+                f"{public}{PaymentGateway.STK_CALLBACK_PATH}"
+            )
+        return url or f"{PaymentGateway.sandbox_base_url(request)}{PaymentGateway.STK_CALLBACK_PATH}"
 
     return url or f"{PaymentGateway.sandbox_base_url(request)}{PaymentGateway.STK_CALLBACK_PATH}"
 
 
 def _is_local_http_callback(url: str) -> bool:
     raw = (url or "").strip().lower()
-    return raw.startswith("http://localhost") or raw.startswith("http://127.0.0.1")
+    if raw.startswith("http://localhost") or raw.startswith("http://127.0.0.1"):
+        return True
+    try:
+        from urllib.parse import urlparse
+
+        from core.hotspot_portal import _host_is_private_ip
+
+        parsed = urlparse(raw)
+        if (parsed.scheme or "").lower() != "http":
+            return False
+        host = (parsed.hostname or "").lower()
+        return bool(host and _host_is_private_ip(host))
+    except Exception:
+        return False
 
 
 def _is_invalid_access_token_error(result: dict) -> bool:

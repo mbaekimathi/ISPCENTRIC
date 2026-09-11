@@ -131,6 +131,35 @@ def preferred_lan_ipv4() -> str:
     return sorted(usable, key=sort_key)[0]
 
 
+def preferred_wireguard_ipv4() -> str:
+    """This machine's address on the WireGuard subnet, if any."""
+    wg = _wireguard_network()
+    if wg is None:
+        return ""
+    for ip in local_ipv4_addresses():
+        try:
+            addr = ipaddress.IPv4Address(ip)
+        except ValueError:
+            continue
+        if addr.is_loopback or addr.is_link_local:
+            continue
+        if addr in wg:
+            return str(addr)
+    return ""
+
+
+def preferred_captive_ipv4() -> str:
+    """
+    Best IPv4 for CPE / NAS captive redirects pushed to remote routers.
+
+    When WireGuard is up, remote MikroTiks and subscriber CPEs reach this
+    billing host over the tunnel — not the office LAN. Prefer the WG address
+    so login.html / dst-nat targets are reachable after expiry or pause.
+    Fall back to the LAN address for single-site lab setups.
+    """
+    return preferred_wireguard_ipv4() or preferred_lan_ipv4()
+
+
 def unreachable_base_url_reason(url: str) -> str:
     """
     Explain why captive clients cannot load this base URL, or "" when it is fine.
@@ -251,6 +280,15 @@ def _format_base(scheme: str, host: str, port: int | None = None) -> str:
 def auto_local_base_url(configured: str = "", request=None) -> str:
     """Build http://<lan-ip>:<port> from interfaces this machine owns."""
     ip = preferred_lan_ipv4()
+    if not ip:
+        return ""
+    port = _local_http_port(configured, request)
+    return _format_base("http", ip, port)
+
+
+def auto_captive_base_url(configured: str = "", request=None) -> str:
+    """Build http://<reachable-ip>:<port> for CPE/NAS captive pay / pause pages."""
+    ip = preferred_captive_ipv4()
     if not ip:
         return ""
     port = _local_http_port(configured, request)

@@ -10478,6 +10478,41 @@ def cpe_renew_clear_is_pending(customer) -> bool:
     return bool(_captive_cache_get(_cpe_renew_clear_pending_key(customer_id)))
 
 
+def _cpe_renew_enable_pending_key(customer_id) -> str:
+    return f"captive:cpe-renew-enable-pending:{customer_id}"
+
+
+def mark_cpe_renew_enable_pending(customer) -> None:
+    """Remember that Wi‑Fi still needs the renew/pause Hotspot after block."""
+    customer_id = getattr(customer, "pk", None)
+    if not customer_id:
+        return
+    _captive_cache_set(
+        _cpe_renew_enable_pending_key(customer_id),
+        1,
+        _CPE_RENEW_ENABLE_PENDING_TTL,
+    )
+
+
+def clear_cpe_renew_enable_pending(customer) -> None:
+    customer_id = getattr(customer, "pk", None)
+    if not customer_id:
+        return
+    try:
+        from django.core.cache import cache
+
+        cache.delete(_cpe_renew_enable_pending_key(customer_id))
+    except Exception:
+        pass
+
+
+def cpe_renew_enable_is_pending(customer) -> bool:
+    customer_id = getattr(customer, "pk", None)
+    if not customer_id:
+        return False
+    return bool(_captive_cache_get(_cpe_renew_enable_pending_key(customer_id)))
+
+
 def _hotspot_authorize_pending_key(customer_id) -> str:
     return f"captive:hotspot-authorize-pending:{customer_id}"
 
@@ -10590,11 +10625,16 @@ _CAPTIVE_API_TIMEOUT = 1.5
 # Paid restore must finish quickly — 8s CPE timeouts stacked with settle sleeps
 # made recharges feel like 10–20s before surfing returned.
 _CAPTIVE_RESTORE_TIMEOUT = 2.5
+# Enabling the renew Hotspot writes login.html over a NAS→CPE API proxy. On
+# WireGuard links that routinely takes 5–15s; the 1.5s identity timeout left
+# expired/paused homes with "no internet" and no pay/pause popup.
+_CAPTIVE_CPE_ENABLE_TIMEOUT = 12.0
 _CAPTIVE_REDIRECT_CACHE_TTL = 20
 # Brief negative cache so captive probe bursts do not re-walk every NAS when
 # the client IP is not yet in Hotspot/PPP tables.
 _CAPTIVE_IDENTITY_MISS_TTL = 5
 _HOTSPOT_STACK_READY_TTL = 1800
+_CPE_RENEW_ENABLE_PENDING_TTL = 60 * 60 * 12
 
 
 def _is_disabled(row: dict[str, str]) -> bool:
@@ -11245,7 +11285,7 @@ def _normalize_hotspot_portal_urls(
     }
 
 
-def _billing_portal_base_url(explicit: str = "") -> str:
+def _billing_portal_base_url(explicit: str = "", organization=None) -> str:
     """
     Absolute origin for pay redirects / NAT pushed to MikroTik and CPEs.
 
@@ -11254,6 +11294,9 @@ def _billing_portal_base_url(explicit: str = "") -> str:
     alone is unsafe: empty/``auto`` yields relative CPE redirects that stick
     phones on ``http://192.168.…/pppoe/…/pay/``, and stale LAN leftovers on a
     VPS are unreachable from subscriber sites.
+
+    When WireGuard is up, prefer this host's tunnel address so remote NAS/CPE
+    dst-nat and login.html targets remain reachable after pause/expiry.
     """
     candidate = (explicit or "").strip().rstrip("/")
     if candidate:
@@ -11283,9 +11326,30 @@ def _billing_portal_base_url(explicit: str = "") -> str:
         except Exception:
             pass
 
-    try:
-        from core.hotspot_portal import public_base_url
+    org_id = getattr(organization, "pk", None) if organization is not None else None
+    if org_id:
+        try:
+            from core.hotspot_portal import recall_org_portal_base
 
+            cached = (recall_org_portal_base(org_id) or "").strip().rstrip("/")
+            if cached:
+                return cached
+        except Exception:
+            pass
+
+    try:
+        from core.hotspot_portal import (
+            auto_captive_base_url,
+            public_base_url,
+            preferred_wireguard_ipv4,
+        )
+
+        # Remote routers dial in over WireGuard — LAN auto-detect is unreachable
+        # from subscriber CPEs, so prefer the tunnel address when present.
+        if preferred_wireguard_ipv4():
+            captive = (auto_captive_base_url() or "").strip().rstrip("/")
+            if captive:
+                return captive
         return (public_base_url() or "").strip().rstrip("/")
     except Exception:
         return (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
@@ -15066,15 +15130,20 @@ def _enable_cpe_renew_hotspot(
       7. DHCP option 114 + bounce Wi‑Fi so phones re-probe now
     """
     notes: list[str] = []
-    portal_url = _resolve_absolute_captive_url(portal_url) or _resolve_absolute_captive_url(
-        _billing_portal_base_url()
+    portal_url = _resolve_absolute_captive_url(portal_url) or ""
+    portal_path = (urlparse(portal_url).path or "").rstrip("/").lower()
+    has_captive_path = (
+        "/pppoe/" in portal_path
+        and (portal_path.endswith("/pay") or portal_path.endswith("/pause"))
+    ) or (
+        "/hotspot/" in portal_path
+        and (portal_path.endswith("/pay") or portal_path.endswith("/pause"))
     )
-
-    if not portal_url or not urlparse(portal_url).scheme:
+    if not portal_url or not urlparse(portal_url).scheme or not has_captive_path:
         raise ConnectionError(
-            "Cannot enable CPE renew Hotspot without an absolute pay URL. "
+            "Cannot enable CPE renew Hotspot without an absolute pay/pause URL. "
             "Set PUBLIC_BASE_URL to a reachable http://host so phones open "
-            "/pppoe/…/pay/ immediately on Wi‑Fi connect."
+            "/pppoe/…/pay/ or /pppoe/…/pause/ immediately on Wi‑Fi connect."
         )
 
     lan = _cpe_lan_bridge_name(sock)
@@ -15716,6 +15785,36 @@ def invalidate_captive_redirect_cache_for_customer(customer) -> None:
     ).strip()
     if session_ip:
         invalidate_captive_redirect_cache(session_ip)
+
+
+def _remember_blocked_pppoe_captive_identity(customer) -> None:
+    """
+    Cache the live PPP remote IP after block/kick so Wi‑Fi captive probes
+    resolve to /pppoe/…/pay/ or /pppoe/…/pause/ without waiting for login.html.
+    """
+    if customer is None or not getattr(customer, "pk", None):
+        return
+    username = (getattr(customer, "pppoe_username", None) or "").strip()
+    nas = getattr(customer, "router", None)
+    if not username or nas is None:
+        return
+    host = (getattr(nas, "host", None) or "").strip()
+    api_user = (getattr(nas, "username", None) or "").strip()
+    if not host or not api_user:
+        return
+    try:
+        with _api_session(
+            host,
+            api_user,
+            getattr(nas, "password", None) or "",
+            timeout=_CAPTIVE_API_TIMEOUT,
+        ) as sock:
+            addresses = _active_pppoe_session_addresses(sock, username)
+    except Exception:
+        return
+    for address in addresses:
+        remember_pppoe_customer_session_ip(customer, address)
+        invalidate_captive_redirect_cache(address)
 
 
 def _mac_compact(mac_address: str) -> str:
@@ -16379,7 +16478,7 @@ def _pppoe_pay_portal_url(
 
     join_code = (getattr(organization, "join_code", None) or "").strip()
     if not join_code:
-        return _billing_portal_base_url(portal_url)
+        return _billing_portal_base_url(portal_url, organization=organization)
     path = reverse(view_name, kwargs={"join_code": join_code})
     explicit = (portal_url or "").strip()
     parsed_explicit = urlparse(explicit)
@@ -16412,7 +16511,10 @@ def _pppoe_pay_portal_url(
                     )
                 )
     else:
-        base = _billing_portal_base_url(explicit if parsed_explicit.scheme else "")
+        base = _billing_portal_base_url(
+            explicit if parsed_explicit.scheme else "",
+            organization=organization,
+        )
         if not base:
             return ""
         url = f"{base.rstrip('/')}{path}"
@@ -16531,7 +16633,7 @@ def sync_customer_subscription_access(
         payload["total_ms"] = total_ms
         logger.info(
             "mikrotik sync customer=%s type=%s allowed=%s ok=%s quick=%s "
-            "total_ms=%s pending_cpe=%s msg=%s",
+            "total_ms=%s pending_clear=%s pending_enable=%s msg=%s",
             getattr(customer, "pk", None),
             getattr(customer, "service_type", ""),
             payload.get("allowed"),
@@ -16539,6 +16641,7 @@ def sync_customer_subscription_access(
             quick,
             total_ms,
             payload.get("cpe_renew_clear_pending"),
+            payload.get("cpe_renew_enable_pending"),
             (payload.get("message") or "")[:120],
         )
         # Never cache a "blocked" success when the CPE renew popup failed —
@@ -16660,10 +16763,10 @@ def sync_customer_subscription_access(
                 # Loop corrections: CPE API / file writes often flake once on busy
                 # routers; without retries phones stay on "no internet" with no popup.
                 portal_result = {"ok": False, "skipped": True}
+                # quick=True skips post-kick retries, but the enable attempt itself
+                # still needs a WireGuard-tolerant timeout or login.html never lands.
                 portal_attempts = 1 if quick else _CAPTIVE_REPAIR_ATTEMPTS
-                portal_timeout = (
-                    _CAPTIVE_API_TIMEOUT if quick else _CAPTIVE_RESTORE_TIMEOUT
-                )
+                portal_timeout = _CAPTIVE_CPE_ENABLE_TIMEOUT
                 for attempt in range(1, portal_attempts + 1):
                     try:
                         portal_result = apply_cpe_renew_portal(
@@ -16686,6 +16789,13 @@ def sync_customer_subscription_access(
                     ensure_stack=False,
                     force_disabled=False,
                 )
+                # Bind captive redirects to the (possibly new) PPP address after
+                # kick/redial so middleware can choose /pause/ vs /pay/.
+                _remember_blocked_pppoe_captive_identity(customer)
+                if portal_result.get("ok"):
+                    clear_cpe_renew_enable_pending(customer)
+                else:
+                    mark_cpe_renew_enable_pending(customer)
                 # If CPE was offline during the first attempts, retry after the
                 # blocked redial so the popup still appears for Wi‑Fi clients.
                 if (
@@ -16699,19 +16809,24 @@ def sync_customer_subscription_access(
                                 customer,
                                 enabled=True,
                                 portal_url=pay_url,
-                                timeout=_CAPTIVE_RESTORE_TIMEOUT,
+                                timeout=_CAPTIVE_CPE_ENABLE_TIMEOUT,
                             )
                             portal_result = retry
                             if retry.get("ok") or retry.get("skipped"):
                                 break
                         except Exception:
                             pass
+                    if portal_result.get("ok"):
+                        clear_cpe_renew_enable_pending(customer)
+                    else:
+                        mark_cpe_renew_enable_pending(customer)
             else:
                 provision_result = provision_customer_pppoe(
                     customer,
                     ensure_stack=False,
                     force_disabled=True,
                 )
+                clear_cpe_renew_enable_pending(customer)
     else:
         if provision:
             # Clear the CPE renew Hotspot / WAN-block FIRST while the PPP
@@ -16724,6 +16839,7 @@ def sync_customer_subscription_access(
             # restore immediately. Long settle loops blocked surfing for
             # 8–15s after cash recharge.
             portal_result = {"ok": False, "skipped": True}
+            clear_cpe_renew_enable_pending(customer)
             if quick:
                 # Pay / cash recharge: restore NAS immediately. An offline CPE
                 # must not add 2.5s+ before surfing starts; background follow-up
@@ -16838,16 +16954,25 @@ def sync_customer_subscription_access(
         else:
             message = "Internet allowed for subscription period."
     else:
+        page_label = (
+            "pause"
+            if _customer_package_is_paused(customer)
+            else "pay"
+        )
         message = (
             "Surfing blocked on the ISP MikroTik"
             + (" outside subscription period." if nas_blocked else ".")
             + (
-                " CPE renew pay popup is live."
+                f" CPE renew {page_label} popup is live."
                 if portal_ok
                 else (
-                    " CPE renew pay popup pending (CPE offline)."
+                    f" CPE renew {page_label} popup pending (CPE offline)."
                     if portal_result.get("skipped")
-                    else " CPE renew pay popup failed — Wi‑Fi clients may not see pay."
+                    or cpe_renew_enable_is_pending(customer)
+                    else (
+                        f" CPE renew {page_label} popup failed — "
+                        "Wi‑Fi clients may not see the captive page."
+                    )
                 )
             )
         )
@@ -16860,6 +16985,11 @@ def sync_customer_subscription_access(
             "message": message,
             "cpe_renew_clear_pending": bool(
                 allowed and cpe_renew_clear_is_pending(customer)
+            ),
+            "cpe_renew_enable_pending": bool(
+                (not allowed)
+                and status_active
+                and cpe_renew_enable_is_pending(customer)
             ),
         }
     )
@@ -19054,7 +19184,7 @@ def _write_hotspot_html_file(sock: socket.socket, dst_path: str, html: str) -> b
 
 
 def _captive_pay_redirect_html(pay_url: str) -> str:
-    """Hotspot login page that HTTP-redirects every OS to the payment page."""
+    """Hotspot login page that HTTP-redirects every OS to the payment/pause page."""
     pay_url = (pay_url or "").strip()
     if not pay_url:
         return ""
@@ -19067,6 +19197,13 @@ def _captive_pay_redirect_html(pay_url: str) -> str:
     else:
         base = pay_url.rstrip("/")
         sep = "?"
+    path_lower = (urlparse(pay_url).path or "").lower()
+    is_pause = path_lower.rstrip("/").endswith("/pause")
+    page_title = "Internet paused" if is_pause else "Pay to connect"
+    body_text = (
+        "Opening pause notice…" if is_pause else "Opening payment page…"
+    )
+    link_text = "Continue" if is_pause else "Continue to payment"
     # Pass MikroTik session vars so the payment page can identify the device.
     # Put mac first so it survives if other substituted fields contain '&'.
     # Prefer $(mac) (widely substituted); keep $(mac-esc) as a second param.
@@ -19096,7 +19233,7 @@ def _captive_pay_redirect_html(pay_url: str) -> str:
         '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">\n'
         '<meta http-equiv="Pragma" content="no-cache">\n'
         '<meta http-equiv="Expires" content="0">\n'
-        "<title>Pay to connect</title>\n"
+        f"<title>{page_title}</title>\n"
         "<script>\n"
         "(function(){\n"
         f"var u={target!r};\n"
@@ -19107,8 +19244,8 @@ def _captive_pay_redirect_html(pay_url: str) -> str:
         "</script>\n"
         "</head>\n"
         "<body>\n"
-        "<p>Opening payment page…</p>\n"
-        f'<p><a href="{target}">Continue to payment</a></p>\n'
+        f"<p>{body_text}</p>\n"
+        f'<p><a href="{target}">{link_text}</a></p>\n'
         f'<noscript><meta http-equiv="refresh" content="0;url={target}"></noscript>\n'
         "</body>\n"
         "</html>\n"

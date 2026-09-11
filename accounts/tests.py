@@ -2598,3 +2598,57 @@ class PaymentGatewaySandboxCallbackTests(SimpleTestCase):
         )
         self.assertTrue(local_form.is_valid(), local_form.errors)
         self.assertTrue(hosted_form.is_valid(), hosted_form.errors)
+
+
+class PaymentGatewayProductionCallbackTests(SimpleTestCase):
+    path = PaymentGateway.STK_CALLBACK_PATH
+
+    @override_settings(
+        HOSTED=False,
+        PUBLIC_BASE_URL="http://isp.example.com",
+        WIREGUARD_ENDPOINT="",
+    )
+    def test_production_default_prefers_public_https(self):
+        url = PaymentGateway.default_callback_url(PaymentGateway.Environment.PRODUCTION)
+        self.assertEqual(url, f"https://isp.example.com{self.path}")
+
+    @override_settings(
+        HOSTED=False,
+        PUBLIC_BASE_URL="auto",
+        DEBUG=True,
+        WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+        ALLOWED_HOSTS=["localhost", "127.0.0.1"],
+    )
+    def test_production_default_falls_back_to_wireguard_https(self):
+        url = PaymentGateway.default_callback_url(PaymentGateway.Environment.PRODUCTION)
+        self.assertEqual(url, f"https://isp.richcom.co.ke{self.path}")
+
+    @override_settings(
+        HOSTED=True,
+        PUBLIC_BASE_URL="https://isp.example.com",
+        WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+    )
+    def test_production_public_https_base_prefers_configured_host(self):
+        self.assertEqual(
+            PaymentGateway.production_public_https_base_url(),
+            "https://isp.example.com",
+        )
+
+    @override_settings(
+        HOSTED=False,
+        PUBLIC_BASE_URL="auto",
+        DEBUG=True,
+        WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+        ALLOWED_HOSTS=["localhost", "127.0.0.1"],
+    )
+    def test_resolve_stk_callback_upgrades_lan_to_wireguard_https(self):
+        from billing.stk import resolve_stk_callback_url
+
+        url = resolve_stk_callback_url(
+            {
+                "callback_url": "http://192.168.1.50:8000/api/mpesa/stk-callback/",
+                "environment": PaymentGateway.Environment.PRODUCTION,
+            },
+            environment=PaymentGateway.Environment.PRODUCTION,
+        )
+        self.assertEqual(url, f"https://isp.richcom.co.ke{self.path}")

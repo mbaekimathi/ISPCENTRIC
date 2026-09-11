@@ -166,6 +166,7 @@ def enqueue_customer_subscription_sync(
     from billing.models import Customer
     from core.mikrotik_connect import (
         cpe_renew_clear_is_pending,
+        cpe_renew_enable_is_pending,
         sync_customer_subscription_access,
     )
 
@@ -188,7 +189,7 @@ def enqueue_customer_subscription_sync(
             cust = Customer.objects.select_related(
                 "plan", "router", "organization"
             ).get(pk=customer_pk)
-            delays = (0.8, 1.5, 3.0)
+            delays = (0.8, 1.5, 3.0, 6.0, 12.0)
             for attempt, delay in enumerate(delays, start=1):
                 sync_result = sync_customer_subscription_access(
                     cust,
@@ -205,11 +206,12 @@ def enqueue_customer_subscription_sync(
                     if not cpe_renew_clear_is_pending(cust) and sync_result.get("ok"):
                         break
                 else:
-                    # Pause / expiry block: retry when NAS or CPE portal still failed.
+                    # Pause / expiry block: keep retrying until the CPE pay/pause
+                    # popup is installed (enable-pending clears on success).
                     portal = sync_result.get("portal") or {}
-                    if sync_result.get("ok") and (
-                        portal.get("ok") or portal.get("skipped")
-                    ):
+                    if portal.get("ok"):
+                        break
+                    if sync_result.get("ok") and not cpe_renew_enable_is_pending(cust):
                         break
                 if attempt < len(delays):
                     time.sleep(delay)
@@ -241,6 +243,18 @@ def enqueue_customer_subscription_sync(
                 ready = dict(result)
                 ready["ok"] = True
                 return ready
+            # Pause/expiry: NAS may be blocked while CPE popup is still pending.
+            pending_enable = bool(
+                result.get("cpe_renew_enable_pending")
+                or cpe_renew_enable_is_pending(cust)
+            )
+            if pending_enable or not (result or {}).get("ok"):
+                threading.Thread(
+                    target=_bg_sync,
+                    kwargs={"delay_first": 0.7},
+                    daemon=True,
+                ).start()
+                return result
         except Exception:
             result = result or {"ok": False, "allowed": False}
 

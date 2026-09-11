@@ -18882,6 +18882,10 @@ def settings_payments(request):
             ),
             form=form,
             stk_status_url=reverse("core:settings_payments_status"),
+            production_callback_url=PaymentGateway.default_callback_url(
+                PaymentGateway.Environment.PRODUCTION,
+                request,
+            ),
             **extra,
         ),
     )

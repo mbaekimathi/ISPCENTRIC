@@ -66,12 +66,22 @@ def resolve_daraja_api_environment(shortcode: str = "", environment: str = "") -
 
 
 def _is_local_http_url(url: str) -> bool:
+    """True for localhost or private-LAN HTTP URLs Safaricom cannot reach."""
     try:
         parsed = urlparse(url)
     except ValueError:
         return False
+    if (parsed.scheme or "").lower() != "http":
+        return False
     host = (parsed.hostname or "").lower()
-    return parsed.scheme == "http" and host in {"localhost", "127.0.0.1"}
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    try:
+        from core.hotspot_portal import _host_is_private_ip
+
+        return bool(host and _host_is_private_ip(host))
+    except Exception:
+        return False
 
 
 def _oauth_url(environment: str) -> str:
@@ -869,11 +879,11 @@ def check_stk_configuration(values: dict[str, Any], *, live: bool = True) -> dic
                 callback_ok = True
                 callback_message = "Production callback uses HTTPS."
             elif _is_local_http_url(callback_url):
-                # Local development: Daraja cannot reach localhost, but STK Query
+                # Local development: Daraja cannot reach localhost/LAN, but STK Query
                 # polling still confirms payments. Do not block the OAuth check.
                 callback_ok = True
                 callback_message = (
-                    "Localhost callback cannot receive Safaricom posts in production. "
+                    "Local/LAN callback cannot receive Safaricom posts in production. "
                     "STK Query polling will confirm payments on this PC."
                 )
             else:

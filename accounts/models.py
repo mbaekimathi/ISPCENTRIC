@@ -661,7 +661,9 @@ class Organization(models.Model):
                 "consumer_key": key,
                 "consumer_secret": secret,
                 "passkey": passkey,
-                "callback_url": "",
+                "callback_url": PaymentGateway.default_callback_url(
+                    PaymentGateway.Environment.PRODUCTION
+                ),
                 "message": (
                     f"Using this ISP's gateway with shortcode {shortcode}."
                     if ready
@@ -1184,10 +1186,57 @@ class PaymentGateway(models.Model):
         return cls.sandbox_local_base_url(request)
 
     @classmethod
+    def production_public_https_base_url(cls, request=None) -> str:
+        """
+        Public HTTPS origin Safaricom can reach for production STK callbacks.
+
+        Prefers hosted PUBLIC_BASE_URL (http upgraded to https), then the
+        WireGuard public host. Never returns localhost or private LAN URLs.
+        """
+        hosted = (cls.sandbox_hosted_base_url(request) or "").strip().rstrip("/")
+        if hosted.startswith("https://"):
+            return hosted
+        if hosted.startswith("http://"):
+            try:
+                from urllib.parse import urlparse
+
+                from core.hotspot_portal import _host_is_private_ip
+
+                host = (urlparse(hosted).hostname or "").strip().lower()
+                if host and host not in {"localhost", "127.0.0.1", "::1"} and not _host_is_private_ip(host):
+                    return f"https://{host}"
+            except Exception:
+                pass
+
+        try:
+            from django.conf import settings
+
+            from core.hotspot_portal import _host_is_private_ip
+
+            endpoint = (getattr(settings, "WIREGUARD_ENDPOINT", "") or "").strip()
+            if endpoint and ":" in endpoint:
+                host = endpoint.rsplit(":", 1)[0].strip().lower()
+                if host.startswith("[") and host.endswith("]"):
+                    host = host[1:-1]
+                if (
+                    host
+                    and host not in {"localhost", "127.0.0.1", "::1"}
+                    and not _host_is_private_ip(host)
+                ):
+                    return f"https://{host}"
+        except Exception:
+            pass
+        return ""
+
+    @classmethod
     def default_callback_url(cls, environment: str = "", request=None) -> str:
         env = (environment or "").strip().lower()
         if env == cls.Environment.SANDBOX or not env:
             return f"{cls.sandbox_base_url(request)}{cls.STK_CALLBACK_PATH}"
+        # Production Daraja requires a public HTTPS callback (not localhost/LAN).
+        public_https = cls.production_public_https_base_url(request)
+        if public_https:
+            return cls.normalize_callback_url(f"{public_https}{cls.STK_CALLBACK_PATH}")
         try:
             from core.hotspot_portal import public_base_url
 
@@ -1197,7 +1246,7 @@ class PaymentGateway(models.Model):
 
             base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
         if base:
-            return f"{base}{cls.STK_CALLBACK_PATH}"
+            return cls.normalize_callback_url(f"{base}{cls.STK_CALLBACK_PATH}")
         return ""
 
     def resolved_callback_url(self) -> str:
