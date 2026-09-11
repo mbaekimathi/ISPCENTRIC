@@ -73,13 +73,38 @@ CLIENT_COMMUNICATION_EVENTS = (
     },
     {
         "key": "payment_received",
-        "title": "Payment received",
-        "when": "Cash recharge or M-Pesa STK succeeds and the package is extended.",
+        "title": "Payment successful",
+        "when": "Cash recharge or M-Pesa STK succeeds.",
         "includes": "Receipt, amount, package, and new expiry.",
         "channels": ("sms", "whatsapp", "email"),
         "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
         "default_message": (
-            "Payment received. Your package has been extended. Details are in this message."
+            "Payment successful. Receipt and package details are in this message."
+        ),
+    },
+    {
+        "key": "subscription_extended",
+        "title": "Subscription extended",
+        "when": (
+            "Payment succeeds while the client still had remaining package time "
+            "(stacked / incomplete window extended)."
+        ),
+        "includes": "Amount, previous end, and new expiry.",
+        "channels": ("sms", "whatsapp", "email"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Your subscription was extended. The new expiry is in this message."
+        ),
+    },
+    {
+        "key": "internet_reconnected",
+        "title": "Internet reconnection after payment",
+        "when": "Access is restored on the MikroTik after a successful payment.",
+        "includes": "Confirmation that surfing is restored.",
+        "channels": ("sms", "whatsapp", "email"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Internet reconnection successful. Your service is restored after payment."
         ),
     },
     {
@@ -95,28 +120,24 @@ CLIENT_COMMUNICATION_EVENTS = (
     },
     {
         "key": "renewal_reminder",
-        "title": "Package expiring soon",
-        "when": "The client has used about three-quarters of the current package window.",
-        "includes": "Days or hours left and a renew link / Paybill instructions.",
+        "title": "Subscription expires in 3 days",
+        "when": "The client's package end is within the next 3 days and they still have access.",
+        "includes": "Expiry time and how to renew.",
         "channels": ("sms", "whatsapp", "email"),
         "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
-        "page_link": {
-            "label": "Renew package",
-            "url_name": "core:workspace",
-        },
         "default_message": (
-            "Your package is expiring soon. Renew now to avoid interruption."
+            "Your subscription will expire in 3 days. Renew now to avoid interruption."
         ),
     },
     {
         "key": "package_expired",
-        "title": "Package expired",
+        "title": "Subscription expired",
         "when": "The subscription sweep finds the package window has ended and access is blocked.",
         "includes": "Expiry time and how to recharge.",
         "channels": ("sms", "whatsapp", "email"),
         "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
         "default_message": (
-            "Your package has expired and access is blocked. Recharge to restore service."
+            "Your subscription has expired and access is blocked. Recharge to restore service."
         ),
     },
     {
@@ -132,13 +153,13 @@ CLIENT_COMMUNICATION_EVENTS = (
     },
     {
         "key": "account_status",
-        "title": "Account suspended or reactivated",
+        "title": "Internet suspended or reactivated",
         "when": "The client status changes to suspended, inactive, or active.",
         "includes": "New status and who to contact.",
         "channels": ("sms", "whatsapp", "email"),
         "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
         "default_message": (
-            "Your account status changed. Contact support if you need help."
+            "Your internet access status changed. Contact support if you need help."
         ),
     },
     {
@@ -169,17 +190,12 @@ ISP_COMMUNICATION_EVENTS = (
     {
         "key": "isp_password_reset",
         "title": "Password reset",
+        "category": "account",
         "when": "The ISP owner or staff requests a login reset.",
         "includes": "Reset link. Uses platform email, not this organization's SMS/WhatsApp gateway.",
         "channels": ("email",),
         "recipient": "Owner or staff login email",
         "recipient_options": ("organization_owner",),
-        "page_link": {
-            "label": "Password reset link",
-            "url_name": "",
-            "system_generated": True,
-            "note": "System generates a one-time reset link when the message is sent.",
-        },
         "default_message": (
             "You requested a password reset for your ISPCENTRIC login. "
             "Use the reset link in this message to choose a new password."
@@ -188,6 +204,7 @@ ISP_COMMUNICATION_EVENTS = (
     {
         "key": "isp_employee_joined",
         "title": "Employee joined with join code",
+        "category": "account",
         "when": "Someone registers using this company's 6-digit join code.",
         "includes": "Name, role, and join code used.",
         "channels": ("sms", "email", "whatsapp"),
@@ -201,6 +218,7 @@ ISP_COMMUNICATION_EVENTS = (
     {
         "key": "isp_lead_open",
         "title": "New open lead",
+        "category": "account",
         "when": "Sales captures a new unassigned lead visible to ISPs.",
         "includes": "Lead name, phone, location, and service type.",
         "channels": ("sms", "email"),
@@ -213,6 +231,7 @@ ISP_COMMUNICATION_EVENTS = (
     {
         "key": "isp_lead_allocated",
         "title": "Lead allocated to this ISP",
+        "category": "account",
         "when": "Lead-allocation STK Push succeeds and the client is assigned to this company.",
         "includes": "Lead details, amount paid, and assigned technician if any.",
         "channels": ("sms", "email", "whatsapp"),
@@ -225,6 +244,7 @@ ISP_COMMUNICATION_EVENTS = (
     {
         "key": "isp_technician_assigned",
         "title": "Installation assigned to a technician",
+        "category": "account",
         "when": "A lead or client is allocated to a technician on this account.",
         "includes": "Client name, location, and preferred installation date.",
         "channels": ("sms", "whatsapp"),
@@ -237,6 +257,7 @@ ISP_COMMUNICATION_EVENTS = (
     {
         "key": "isp_installation_result",
         "title": "Installation accepted or declined",
+        "category": "account",
         "when": "A technician accepts, declines, or completes an installation.",
         "includes": "Outcome and any decline reason.",
         "channels": ("sms", "email"),
@@ -249,15 +270,12 @@ ISP_COMMUNICATION_EVENTS = (
     {
         "key": "isp_mikrotik_onboarding",
         "title": "MikroTik onboarding fee",
+        "category": "mikrotik",
         "when": "Onboarding-fee STK Push succeeds or fails before a tunnel script is generated.",
         "includes": "Router name, amount, and whether the script can be generated.",
         "channels": ("sms", "email", "whatsapp"),
         "recipient": "Organization owner",
         "recipient_options": ("organization_owner",),
-        "page_link": {
-            "label": "MikroTik onboarding",
-            "url_name": "core:mikrotik",
-        },
         "default_message": (
             "Your MikroTik onboarding fee payment was processed. "
             "Check your workspace for the next onboarding step."
@@ -266,15 +284,12 @@ ISP_COMMUNICATION_EVENTS = (
     {
         "key": "isp_mikrotik_onboarded",
         "title": "MikroTik successfully onboarded",
+        "category": "mikrotik",
         "when": "This ISP finishes onboarding a MikroTik router into ISPCENTRIC.",
         "includes": "Router name and confirmation that the device is ready to manage.",
         "channels": ("sms", "email", "whatsapp"),
         "recipient": "Organization owner",
         "recipient_options": ("organization_owner",),
-        "page_link": {
-            "label": "MikroTik routers",
-            "url_name": "core:mikrotik",
-        },
         "default_message": (
             "Your MikroTik “{router_name}” was successfully onboarded for {company_name}. "
             "Open MikroTik to manage the router."
@@ -282,25 +297,63 @@ ISP_COMMUNICATION_EVENTS = (
     },
     {
         "key": "isp_mikrotik_health_low",
-        "title": "MikroTik offline or health below 70%",
-        "when": "A MikroTik goes offline or its health score drops below 70%.",
+        "title": "MikroTik health below 70%",
+        "category": "mikrotik",
+        "when": "A MikroTik stays reachable but its health score drops below 70%.",
         "includes": "Router name, health score, status, and a short reason.",
         "channels": ("sms", "email", "whatsapp"),
         "recipient": "Organization owner",
         "recipient_options": ("organization_owner",),
-        "page_link": {
-            "label": "MikroTik routers",
-            "url_name": "core:mikrotik",
-        },
         "default_message": (
-            "Alert: MikroTik “{router_name}” is {status_label} "
-            "(health {health_score}%). {status_reason} "
+            "Alert: MikroTik “{router_name}” health is {health_score}% "
+            "({status_label}). {status_reason} "
             "Open MikroTik in ISPCENTRIC to investigate."
         ),
     },
     {
+        "key": "isp_mikrotik_off",
+        "title": "MikroTik offline",
+        "category": "mikrotik",
+        "when": "A MikroTik goes offline or becomes unreachable.",
+        "includes": "Router name, status, and a short reason.",
+        "channels": ("sms", "email", "whatsapp"),
+        "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "Alert: MikroTik “{router_name}” is offline ({status_label}). "
+            "{status_reason} Open MikroTik in ISPCENTRIC to investigate."
+        ),
+    },
+    {
+        "key": "isp_mikrotik_accessed",
+        "title": "MikroTik opened in app",
+        "category": "mikrotik",
+        "when": "An ISP staff user opens that MikroTik’s detail page in ISPCENTRIC.",
+        "includes": "Router name and who opened it.",
+        "channels": ("sms", "email", "whatsapp"),
+        "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "{actor_name} opened MikroTik “{router_name}” in ISPCENTRIC."
+        ),
+    },
+    {
+        "key": "isp_mikrotik_config_changed",
+        "title": "MikroTik configuration changed",
+        "category": "mikrotik",
+        "when": "Name, host, Wi‑Fi, ports, uplink, or other router settings are saved.",
+        "includes": "Router name and a short summary of what changed.",
+        "channels": ("sms", "email", "whatsapp"),
+        "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "MikroTik “{router_name}” configuration was changed: {change_summary}."
+        ),
+    },
+    {
         "key": "isp_pppoe_connected_not_surfing",
-        "title": "PPPoE dialed but without internet",
+        "title": "Clients cannot surf but are subscribed",
+        "category": "clients",
         "when": (
             "PPPoE clients are dialed in with an active subscription but still "
             "without internet."
@@ -309,10 +362,6 @@ ISP_COMMUNICATION_EVENTS = (
         "channels": ("sms", "email", "whatsapp"),
         "recipient": "Organization owner",
         "recipient_options": ("organization_owner",),
-        "page_link": {
-            "label": "My clients",
-            "url_name": "core:my_clients",
-        },
         "default_message": (
             "{affected_count} PPPoE client(s) are dialed with an active package "
             "but without internet:\n{affected_clients}\n"
@@ -320,8 +369,27 @@ ISP_COMMUNICATION_EVENTS = (
         ),
     },
     {
+        "key": "isp_mikrotik_usage_high",
+        "title": "MikroTik usage over 3 TB",
+        "category": "clients",
+        "when": (
+            "Combined client usage on a MikroTik exceeds 3 TB since the usage "
+            "reset date set for that router."
+        ),
+        "includes": "Router name, total TB used, and client count on that MikroTik.",
+        "channels": ("sms", "email", "whatsapp"),
+        "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "Alert: MikroTik “{router_name}” has used {usage_tb} TB across "
+            "{client_count} client(s) since {usage_since}. "
+            "Open Clients usage to review."
+        ),
+    },
+    {
         "key": "isp_stk_collection",
         "title": "Client payment collected",
+        "category": "account",
         "when": "A subscriber STK Push succeeds into this ISP's Paybill or Till.",
         "includes": "Client name, account number, amount, and M-Pesa receipt.",
         "channels": ("sms", "email"),
@@ -334,6 +402,7 @@ ISP_COMMUNICATION_EVENTS = (
     {
         "key": "isp_stk_failed",
         "title": "STK Push failed to send",
+        "category": "account",
         "when": "Daraja credentials are missing or Safaricom rejects the STK request.",
         "includes": "Error from Daraja and which client/lead it was for.",
         "channels": ("email", "sms"),
@@ -346,6 +415,7 @@ ISP_COMMUNICATION_EVENTS = (
     {
         "key": "isp_referral_active",
         "title": "Referral became active",
+        "category": "account",
         "when": "An ISP you referred onboards their first MikroTik.",
         "includes": "Referred company name and referral status change.",
         "channels": ("sms", "email", "whatsapp"),
@@ -358,6 +428,7 @@ ISP_COMMUNICATION_EVENTS = (
     {
         "key": "isp_client_registered",
         "title": "New client registered by sales",
+        "category": "account",
         "when": "Sales or staff register a PPPoE/Hotspot/Static client under this ISP.",
         "includes": "Client name, phone, account number, and service type.",
         "channels": ("email", "sms"),
@@ -673,6 +744,7 @@ def org_event_catalog() -> list[dict]:
     for event in ISP_COMMUNICATION_EVENTS:
         row = dict(event)
         row["audience"] = "isp_account"
+        row["category"] = str(event.get("category") or "account").strip() or "account"
         row["channels"] = tuple(event.get("channels") or ())
         row["recipient_options"] = tuple(
             event.get("recipient_options") or ("organization_owner",)
@@ -683,6 +755,21 @@ def org_event_catalog() -> list[dict]:
         row["page_link"] = _normalize_page_link(event.get("page_link"))
         catalog.append(row)
     return catalog
+
+
+def isp_events_by_category(events: list[dict]) -> dict[str, list[dict]]:
+    """Group enriched ISP events for the communications UI."""
+    groups = {
+        "mikrotik": [],
+        "clients": [],
+        "account": [],
+    }
+    for event in events or []:
+        category = str(event.get("category") or "account").strip() or "account"
+        if category not in groups:
+            category = "account"
+        groups[category].append(event)
+    return groups
 
 
 def _org_event_by_key() -> dict[str, dict]:
@@ -786,6 +873,7 @@ def enrich_org_enabled_events(raw_events, *, enabled: dict, gateway_enabled: dic
             {
                 "key": key,
                 "title": event["title"],
+                "category": str(event.get("category") or "account").strip() or "account",
                 "when": event.get("when") or "",
                 "includes": event.get("includes") or "",
                 "message": (
@@ -1425,9 +1513,10 @@ def maybe_notify_mikrotik_health_low(
     error: str = "",
 ) -> dict:
     """
-    Notify once per outage episode when a MikroTik is offline or health < 70%.
+    Notify once per episode when a MikroTik is offline or health < 70%.
 
-    Clears the episode flag when health recovers to 70% or higher.
+    Offline → ``isp_mikrotik_off``. Reachable but score < 70 → ``isp_mikrotik_health_low``.
+    Clears episode flags when the router recovers.
     """
     from django.core.cache import cache
 
@@ -1439,12 +1528,20 @@ def maybe_notify_mikrotik_health_low(
     except (TypeError, ValueError):
         score_i = 0
     status_key = (status or "").strip().lower() or "disconnected"
-    alert_key = f"comms:mikrotik_health:{organization.pk}:{int(router_id)}"
+    health_key = f"comms:mikrotik_health:{organization.pk}:{int(router_id)}"
+    off_key = f"comms:mikrotik_off:{organization.pk}:{int(router_id)}"
 
-    is_low = status_key == "disconnected" or score_i < 70
-    if not is_low:
-        # Healthy again — allow a future drop to notify.
-        cache.delete(alert_key)
+    is_offline = status_key in {
+        "disconnected",
+        "auth_failed",
+        "wrong_host",
+        "unreachable",
+        "offline",
+    }
+    is_low = (not is_offline) and score_i < 70
+    if not is_offline and not is_low:
+        cache.delete(health_key)
+        cache.delete(off_key)
         return {"ok": False, "skipped": True, "reason": "healthy"}
 
     # Combining links briefly flaps API while WireGuard stays warm — don't alert yet.
@@ -1456,7 +1553,10 @@ def maybe_notify_mikrotik_health_low(
     except Exception:
         pass
 
-    # One notification per degradation episode.
+    alert_key = off_key if is_offline else health_key
+    other_key = health_key if is_offline else off_key
+    # Switching between offline and degraded starts a fresh episode.
+    cache.delete(other_key)
     if not cache.add(alert_key, score_i, timeout=60 * 60 * 12):
         return {"ok": False, "skipped": True, "reason": "already_alerted"}
 
@@ -1472,7 +1572,9 @@ def maybe_notify_mikrotik_health_low(
         except Exception:
             reason = ""
     if not reason:
-        reason = (error or "").strip() or "Router health dropped."
+        reason = (error or "").strip() or (
+            "Router went offline." if is_offline else "Router health dropped."
+        )
 
     status_label = {
         "disconnected": "offline",
@@ -1481,10 +1583,13 @@ def maybe_notify_mikrotik_health_low(
         "wrong_host": "wrong host",
         "reachable": "degraded",
         "connected": "online",
+        "unreachable": "unreachable",
+        "offline": "offline",
     }.get(status_key, status_key.replace("_", " ") or "degraded")
 
+    event_key = "isp_mikrotik_off" if is_offline else "isp_mikrotik_health_low"
     return notify_org_event(
-        "isp_mikrotik_health_low",
+        event_key,
         organization=organization,
         context={
             "router_name": (router_name or "").strip() or f"Router #{router_id}",
@@ -1494,7 +1599,128 @@ def maybe_notify_mikrotik_health_low(
             "status_reason": reason,
             "error": (error or "").strip(),
         },
-        subject=f"MikroTik health alert — {router_name or router_id}",
+        subject=(
+            f"MikroTik offline — {router_name or router_id}"
+            if is_offline
+            else f"MikroTik health alert — {router_name or router_id}"
+        ),
+    )
+
+
+def maybe_notify_mikrotik_accessed(
+    *,
+    organization,
+    router,
+    actor=None,
+) -> dict:
+    """Notify when staff open a MikroTik detail page (deduped per user+router)."""
+    from django.core.cache import cache
+
+    if organization is None or router is None:
+        return {"ok": False, "skipped": True, "reason": "missing"}
+    router_id = int(getattr(router, "pk", 0) or 0)
+    if not router_id:
+        return {"ok": False, "skipped": True, "reason": "missing"}
+    actor_id = int(getattr(actor, "pk", 0) or 0)
+    cache_key = f"comms:mikrotik_access:{organization.pk}:{router_id}:{actor_id}"
+    if not cache.add(cache_key, 1, timeout=60 * 20):
+        return {"ok": False, "skipped": True, "reason": "already_alerted"}
+    actor_name = (
+        (getattr(actor, "get_full_name", lambda: "")() or "").strip()
+        or (getattr(actor, "username", "") or "").strip()
+        or "A staff user"
+    )
+    return notify_org_event(
+        "isp_mikrotik_accessed",
+        organization=organization,
+        context={
+            "router_name": (getattr(router, "name", "") or "").strip()
+            or f"Router #{router_id}",
+            "actor_name": actor_name,
+        },
+        subject=f"MikroTik opened — {getattr(router, 'name', router_id)}",
+    )
+
+
+def maybe_notify_mikrotik_config_changed(
+    *,
+    organization,
+    router,
+    change_summary: str = "",
+    actor=None,
+) -> dict:
+    """Notify immediately after MikroTik configuration fields are saved."""
+    if organization is None or router is None:
+        return {"ok": False, "skipped": True, "reason": "missing"}
+    summary = (change_summary or "").strip() or "settings updated"
+    actor_name = ""
+    if actor is not None:
+        actor_name = (
+            (getattr(actor, "get_full_name", lambda: "")() or "").strip()
+            or (getattr(actor, "username", "") or "").strip()
+        )
+    return notify_org_event(
+        "isp_mikrotik_config_changed",
+        organization=organization,
+        context={
+            "router_name": (getattr(router, "name", "") or "").strip()
+            or f"Router #{getattr(router, 'pk', '')}",
+            "change_summary": summary,
+            "actor_name": actor_name or "staff",
+        },
+        subject=f"MikroTik config changed — {getattr(router, 'name', '')}",
+    )
+
+
+MIKROTIK_USAGE_HIGH_BYTES = 3 * (1024**4)  # 3 TB
+
+
+def maybe_notify_mikrotik_usage_high(
+    *,
+    organization,
+    router,
+    total_bytes: int = 0,
+    client_count: int = 0,
+    usage_since=None,
+) -> dict:
+    """Notify once per episode when aggregate client usage on a router exceeds 3 TB."""
+    from django.core.cache import cache
+    from django.utils import timezone
+
+    if organization is None or router is None:
+        return {"ok": False, "skipped": True, "reason": "missing"}
+    router_id = int(getattr(router, "pk", 0) or 0)
+    if not router_id:
+        return {"ok": False, "skipped": True, "reason": "missing"}
+    try:
+        total = int(total_bytes or 0)
+    except (TypeError, ValueError):
+        total = 0
+    alert_key = f"comms:mikrotik_usage:{organization.pk}:{router_id}"
+    if total < MIKROTIK_USAGE_HIGH_BYTES:
+        cache.delete(alert_key)
+        return {"ok": False, "skipped": True, "reason": "below_threshold"}
+    if not cache.add(alert_key, total, timeout=60 * 60 * 24 * 14):
+        return {"ok": False, "skipped": True, "reason": "already_alerted"}
+
+    since_label = ""
+    if usage_since is not None:
+        try:
+            since_label = timezone.localtime(usage_since).strftime("%b %d, %Y · %H:%M")
+        except Exception:
+            since_label = str(usage_since)
+    usage_tb = f"{total / float(1024**4):.2f}"
+    return notify_org_event(
+        "isp_mikrotik_usage_high",
+        organization=organization,
+        context={
+            "router_name": (getattr(router, "name", "") or "").strip()
+            or f"Router #{router_id}",
+            "usage_tb": usage_tb,
+            "client_count": str(int(client_count or 0)),
+            "usage_since": since_label or "the usage reset",
+        },
+        subject=f"MikroTik usage over 3 TB — {getattr(router, 'name', router_id)}",
     )
 
 

@@ -1705,19 +1705,22 @@ def fulfill_successful_stk(
     )
 
     from accounts.communications import notify_org_event
+    from billing.services import notify_client_payment_success
 
+    # Payment recorded here; package apply happens on voucher redeem.
+    # subscription_extended / reconnect fire when the package is applied.
     pay_ctx = {
         "amount": str(stk.amount),
         "mpesa_receipt": stk.mpesa_receipt or "",
         "invoice_number": invoice.invoice_number if invoice else "",
         "package_name": getattr(paid_plan, "name", "") or "",
     }
-    notify_org_event(
-        "payment_received",
+    notify_client_payment_success(
         organization=stk.organization,
-        client=customer,
+        customer=customer,
         context=pay_ctx,
-        subject="Payment received",
+        stacked=False,
+        subject="Payment successful",
     )
     notify_org_event(
         "invoice_receipt",
@@ -1733,6 +1736,7 @@ def fulfill_successful_stk(
         context=pay_ctx,
         subject="Client payment collected",
     )
+
 
     return {
         "ok": True,

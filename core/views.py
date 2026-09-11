@@ -36,6 +36,7 @@ from accounts.communications import (
     dispatch_platform_event,
     enrich_org_enabled_events,
     fetch_provider_options,
+    isp_events_by_category,
     normalize_org_enabled_messages,
     org_event_catalog,
 )
@@ -225,11 +226,35 @@ CLIENT_SIDEBARS = {
             {"key": "mikrotik", "label": "MikroTik", "url_name": "core:mikrotik"},
             {"key": "clients", "label": "My clients", "url_name": "core:my_clients"},
             {"key": "billing", "label": "Billings", "url_name": "billing:dashboard"},
+            {"key": "audits", "label": "Audits", "url_name": "core:audits"},
             {"key": "account", "label": "My account", "url_name": "core:my_account"},
             {"key": "leads", "label": "Leads", "url_name": "core:leads"},
             {"key": "technicians", "label": "Technicians", "url_name": "core:technicians"},
             {"key": "shop", "label": "Shop", "url_name": "core:shop"},
             {"key": "referral", "label": "Referrals", "url_name": "core:referrals"},
+        ],
+    },
+    "audits": {
+        "label": "Audits",
+        "items": [
+            {
+                "key": "audits_payments",
+                "label": "Payments & recharge",
+                "url_name": "core:audits",
+                "query": "tab=payments",
+            },
+            {
+                "key": "audits_periods",
+                "label": "Subscription period",
+                "url_name": "core:audits",
+                "query": "tab=periods",
+            },
+            {
+                "key": "audits_registration",
+                "label": "Client registration",
+                "url_name": "core:audits",
+                "query": "tab=registration",
+            },
         ],
     },
     "mikrotik": {
@@ -5310,9 +5335,42 @@ def workspace(request):
             analytics_json=json.dumps(snapshot),
             analytics_url=reverse("core:workspace_analytics"),
             mikrotik_status_url=reverse("core:mikrotik_status"),
+            audits_url=reverse("core:audits"),
             referral_count=referral_count,
             referral_active_count=referral_active_count,
             referral_pending_count=referral_pending_count,
+        ),
+    )
+
+
+@client_workspace_required
+def audits(request):
+    """Payments, subscription period, and PPPoE registration audits."""
+    from billing.audits import build_audits_summary
+
+    org = resolve_organization(request.user, request)
+    tab = (request.GET.get("tab") or "payments").strip().lower()
+    if tab not in {"payments", "periods", "registration"}:
+        tab = "payments"
+    summary = build_audits_summary(org)
+    return render(
+        request,
+        "core/audits.html",
+        client_page_context(
+            request,
+            active_nav="audits",
+            sidebar_active={
+                "payments": "audits_payments",
+                "periods": "audits_periods",
+                "registration": "audits_registration",
+            }.get(tab, "audits_payments"),
+            page_title="Audits",
+            page_kicker="Operations",
+            page_subtitle=(
+                "Payment/recharge edits, subscription period fit, and PPPoE registration staff."
+            ),
+            audit_tab=tab,
+            audit_summary=summary,
         ),
     )
 
@@ -6528,6 +6586,17 @@ def mikrotik_edit(request, router_id: int):
 
         edit_form.save()
         cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
+        try:
+            from accounts.communications import maybe_notify_mikrotik_config_changed
+
+            maybe_notify_mikrotik_config_changed(
+                organization=org,
+                router=router,
+                change_summary="name, model, location, or login credentials",
+                actor=request.user,
+            )
+        except Exception:
+            pass
         messages.success(request, f"Updated “{router.name}”.")
         return redirect("core:mikrotik")
 
@@ -6655,6 +6724,17 @@ def mikrotik_detail(request, router_id: int):
 
     router = get_object_or_404(MikroTikRouter, pk=router_id, organization=org)
     is_suspended = router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
+
+    try:
+        from accounts.communications import maybe_notify_mikrotik_accessed
+
+        maybe_notify_mikrotik_accessed(
+            organization=org,
+            router=router,
+            actor=request.user,
+        )
+    except Exception:
+        pass
 
     job_type = (request.GET.get("job") or "").strip()
     if request.method == "GET" and job_type == NAS_REFRESH_JOB and not is_suspended:
@@ -7483,6 +7563,18 @@ def mikrotik_ports(request, router_id: int):
 
             router.save(update_fields=update_fields)
 
+            try:
+                from accounts.communications import maybe_notify_mikrotik_config_changed
+
+                maybe_notify_mikrotik_config_changed(
+                    organization=org,
+                    router=router,
+                    change_summary="uplink mode or port mapping",
+                    actor=request.user,
+                )
+            except Exception:
+                pass
+
             # Leaving multi-link → single: bring up single WAN first, then clear
             # tagged multi policy so customers stay online through the switch.
             if (
@@ -7986,6 +8078,17 @@ def mikrotik_ports(request, router_id: int):
                     f"mikrotik_ports_live:{org.pk}:{router.pk}",
                 ]
             )
+            try:
+                from accounts.communications import maybe_notify_mikrotik_config_changed
+
+                maybe_notify_mikrotik_config_changed(
+                    organization=org,
+                    router=router,
+                    change_summary=f"port role for {port_name}",
+                    actor=request.user,
+                )
+            except Exception:
+                pass
             if role != MikroTikRouter.PortRole.WAN or uplink_mode != MikroTikRouter.UplinkMode.SINGLE:
                 label = dict(MikroTikRouter.PortRole.choices).get(role, role)
                 if role != MikroTikRouter.PortRole.WAN:
@@ -14240,7 +14343,12 @@ def _clients_usage_tracking_queryset(request, org, *, service: str = ""):
 @client_workspace_required
 @require_POST
 def clients_usage_reset(request):
-    """Reset data-used tracking for one client or all on a MikroTik filter."""
+    """Reset data-used tracking for one client or all on a MikroTik filter.
+
+    Router-scope reset sets ``MikroTikRouter.usage_tracking_since`` only so
+    personal client baselines (package renewal) stay intact. Samples are never
+    deleted.
+    """
     org = resolve_organization(request.user, request)
     if not org:
         return JsonResponse({"ok": False, "error": "No organization."}, status=400)
@@ -14260,14 +14368,45 @@ def clients_usage_reset(request):
         )
 
     stamp = _parse_usage_tracking_datetime(request.POST.get("at") or "") or timezone.localtime()
-    customers = list(qs)
-    if not customers:
-        return JsonResponse({"ok": False, "error": "No matching clients found."}, status=404)
-
     from billing.usage_samples import (
         _invalidate_client_usage_trend_cache,
         invalidate_org_usage_caches,
     )
+    from django.core.cache import cache as dj_cache
+
+    if scope == "router":
+        from core.models import MikroTikRouter
+
+        try:
+            router = MikroTikRouter.objects.get(pk=int(router_raw), organization=org)
+        except (MikroTikRouter.DoesNotExist, TypeError, ValueError):
+            return JsonResponse({"ok": False, "error": "MikroTik not found."}, status=404)
+        router.usage_tracking_since = stamp
+        router.save(update_fields=["usage_tracking_since", "updated_at"])
+        # Clear usage-high episode so a new window can alert again.
+        dj_cache.delete(f"comms:mikrotik_usage:{org.pk}:{router.pk}")
+        invalidate_org_usage_caches(org)
+        label = timezone.localtime(stamp).strftime("%b %d, %Y · %H:%M")
+        return JsonResponse(
+            {
+                "ok": True,
+                "updated": 0,
+                "router_id": router.pk,
+                "usage_tracking_since": timezone.localtime(stamp).isoformat(),
+                "usage_tracking_label": label,
+                "toast_title": "Usage reset",
+                "message": (
+                    f"MikroTik “{router.name}” usage reset from {label}. "
+                    "Client personal usage still starts from each package renewal."
+                ),
+                "tab": tab,
+                "router": router_raw,
+            }
+        )
+
+    customers = list(qs)
+    if not customers:
+        return JsonResponse({"ok": False, "error": "No matching clients found."}, status=404)
 
     for customer in customers:
         reset_customer_usage_tracking(customer, at=stamp)
@@ -14281,6 +14420,7 @@ def clients_usage_reset(request):
             "updated": len(customers),
             "usage_tracking_since": timezone.localtime(stamp).isoformat(),
             "usage_tracking_label": label,
+            "toast_title": "Usage reset",
             "message": (
                 f"Data used reset for {len(customers)} client"
                 f"{'' if len(customers) == 1 else 's'} from {label}."
@@ -14344,11 +14484,14 @@ def clients_usage_set_renewed(request):
 
     updated = 0
     errors = []
+    first_updated = None
     for customer in customers:
         try:
             set_customer_package_renewed(customer, renewed_at=renewed_at)
             _invalidate_client_usage_trend_cache(customer.pk)
             updated += 1
+            if first_updated is None:
+                first_updated = customer
         except ValueError as exc:
             errors.append(f"{customer.full_name}: {exc}")
     invalidate_org_usage_caches(org)
@@ -14363,11 +14506,15 @@ def clients_usage_set_renewed(request):
             status=400,
         )
 
-    label = timezone.localtime(renewed_at).strftime("%b %d, %Y · %H:%M")
-    message = (
-        f"Package renewed on {label} for {updated} client"
-        f"{'' if updated == 1 else 's'}. Data used now tracks from that date."
-    )
+    label = timezone.localtime(renewed_at).strftime("%b %d, %Y")
+    stamp_label = timezone.localtime(renewed_at).strftime("%b %d, %Y · %H:%M")
+    if updated == 1 and first_updated is not None:
+        who = (
+            first_updated.full_name or first_updated.account_number or "client"
+        ).strip()
+        message = f"Package renewed on {label} for {who}."
+    else:
+        message = f"Package renewed on {label} for {updated} clients."
     if errors:
         message += f" Skipped {len(errors)} without a usable plan."
     return JsonResponse(
@@ -14377,10 +14524,11 @@ def clients_usage_set_renewed(request):
             "skipped": len(errors),
             "errors": errors[:8],
             "package_start": timezone.localtime(renewed_at).isoformat(),
-            "package_start_label": timezone.localtime(renewed_at).strftime("%b %d, %Y"),
+            "package_start_label": label,
             "usage_tracking_since": timezone.localtime(renewed_at).isoformat(),
-            "usage_tracking_label": label,
+            "usage_tracking_label": stamp_label,
             "message": message,
+            "toast_title": "Package renewed",
             "tab": tab,
             "router": router_raw,
         }
@@ -18953,12 +19101,11 @@ def _isp_communications_page(request, *, variant):
                     "Choose at least one enabled channel (SMS, Email, or WhatsApp).",
                 )
                 return redirect("core:my_account_communications")
-            include_link = bool(event.get("page_link") and request.POST.get("include_link"))
             prefs[event_key] = {
                 "message": message_body,
                 "recipients": selected_recipients,
                 "channels": selected_channels,
-                "include_link": include_link,
+                "include_link": False,
             }
         comms.enabled_messages = normalize_org_enabled_messages(prefs)
         comms.save(update_fields=["enabled_messages", "updated_at"])
@@ -19028,10 +19175,12 @@ def _isp_communications_page(request, *, variant):
                 enabled=enabled,
                 gateway_enabled=gateway_enabled,
             ),
-            isp_events=enrich_org_enabled_events(
-                ISP_COMMUNICATION_EVENTS,
-                enabled=enabled,
-                gateway_enabled=gateway_enabled,
+            isp_event_groups=isp_events_by_category(
+                enrich_org_enabled_events(
+                    ISP_COMMUNICATION_EVENTS,
+                    enabled=enabled,
+                    gateway_enabled=gateway_enabled,
+                )
             ),
             **context,
         ),

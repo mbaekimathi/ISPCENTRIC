@@ -14,6 +14,7 @@ urlpatterns = [
         views.workspace_analytics,
         name="workspace_analytics",
     ),
+    path("app/audits/", views.audits, name="audits"),
     path("app/mikrotik/", views.mikrotik, name="mikrotik"),
     path(
         "app/mikrotik/<int:router_id>/edit/",

@@ -13639,6 +13639,33 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
             ),
         }
 
+    # Alert ISP when paid clients are dialed but without internet (background path).
+    try:
+        org = getattr(router, "organization", None)
+        if org is not None and need_repair:
+            from accounts.communications import maybe_notify_pppoe_connected_not_surfing
+
+            rows = []
+            for customer in need_repair:
+                rows.append(
+                    {
+                        "id": customer.pk,
+                        "full_name": getattr(customer, "full_name", "") or "",
+                        "account_number": getattr(customer, "account_number", "") or "",
+                        "phone": getattr(customer, "phone", "") or "",
+                        "internet_allowed": True,
+                        "connected": True,
+                        "surfing": False,
+                    }
+                )
+            maybe_notify_pppoe_connected_not_surfing(
+                organization=org,
+                clients=rows,
+                newly_affected_ids={str(c.pk) for c in need_repair},
+            )
+    except Exception:
+        pass
+
     repair_targets = list({id(c): c for c in [*need_repair, *pending_clear]}.values())
     result = sync_pppoe_subscription_batch_on_router(router, repair_targets)
     cleared = _follow_up_pending_cpe_renew_clears(repair_targets)

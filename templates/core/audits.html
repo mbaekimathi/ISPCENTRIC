@@ -1,0 +1,369 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Audits — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<div class="audits-page" data-audits-page data-audit-tab="{{ audit_tab }}">
+  <section class="audits-shell">
+    <header class="audits-hero">
+      <div class="audits-hero-main">
+        <div class="audits-brand">
+          <span class="audits-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/>
+              <path d="M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2"/>
+              <path d="m9 14 2 2 4-4"/>
+            </svg>
+          </span>
+          <div>
+            <p class="audits-kicker">Operations</p>
+            <h1>Audits</h1>
+          </div>
+        </div>
+        <p class="audits-lead">Track payment edits, subscription period fit, and who registered each PPPoE client — built for quick ops review on any screen.</p>
+        <p class="audits-summary">
+          <span><strong>{{ audit_summary.payment_count }}</strong> payments</span>
+          <span class="audits-pill tone-warn">{{ audit_summary.payment_edited_count }} edited recharges</span>
+          <span class="audits-pill tone-good">{{ audit_summary.period_standard_count }} on package</span>
+          <span class="audits-pill">{{ audit_summary.registration_count }} PPPoE</span>
+        </p>
+      </div>
+
+      <div class="audits-hero-stats" aria-label="Jump to audit type">
+        <a class="audits-stat tone-pay{% if audit_tab == 'payments' %} is-active{% endif %}" href="{% url 'core:audits' %}?tab=payments" style="--i:0">
+          <span class="audits-stat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 9h16M4 15h16M8 5v14M16 5v14"/></svg>
+          </span>
+          <span class="audits-stat-body">
+            <span class="audits-stat-label">Payments</span>
+            <span class="audits-stat-value">{{ audit_summary.payment_count }}</span>
+            <span class="audits-stat-meta">{{ audit_summary.payment_edited_count }} edited</span>
+          </span>
+        </a>
+        <a class="audits-stat tone-period{% if audit_tab == 'periods' %} is-active{% endif %}" href="{% url 'core:audits' %}?tab=periods" style="--i:1">
+          <span class="audits-stat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M8 2v3M16 2v3M4 8h16M6 4h12a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>
+          </span>
+          <span class="audits-stat-body">
+            <span class="audits-stat-label">Periods</span>
+            <span class="audits-stat-value">{{ audit_summary.period_count }}</span>
+            <span class="audits-stat-meta">{{ audit_summary.period_edited_count }} outside</span>
+          </span>
+        </a>
+        <a class="audits-stat tone-reg{% if audit_tab == 'registration' %} is-active{% endif %}" href="{% url 'core:audits' %}?tab=registration" style="--i:2">
+          <span class="audits-stat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm13 10v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          </span>
+          <span class="audits-stat-body">
+            <span class="audits-stat-label">PPPoE</span>
+            <span class="audits-stat-value">{{ audit_summary.registration_count }}</span>
+            <span class="audits-stat-meta">Registered</span>
+          </span>
+        </a>
+      </div>
+    </header>
+
+    <div class="audits-toolbar" data-audits-toolbar>
+      <nav class="audits-seg" aria-label="Audit types" role="tablist">
+        <a
+          class="audits-seg-item{% if audit_tab == 'payments' %} is-active{% endif %}"
+          href="{% url 'core:audits' %}?tab=payments"
+          role="tab"
+          aria-selected="{% if audit_tab == 'payments' %}true{% else %}false{% endif %}"
+        >
+          <span class="audits-seg-label">Payments &amp; recharge</span>
+          <span class="audits-seg-count">{{ audit_summary.payment_count }}</span>
+        </a>
+        <a
+          class="audits-seg-item{% if audit_tab == 'periods' %} is-active{% endif %}"
+          href="{% url 'core:audits' %}?tab=periods"
+          role="tab"
+          aria-selected="{% if audit_tab == 'periods' %}true{% else %}false{% endif %}"
+        >
+          <span class="audits-seg-label">Subscription period</span>
+          <span class="audits-seg-count">{{ audit_summary.period_count }}</span>
+        </a>
+        <a
+          class="audits-seg-item{% if audit_tab == 'registration' %} is-active{% endif %}"
+          href="{% url 'core:audits' %}?tab=registration"
+          role="tab"
+          aria-selected="{% if audit_tab == 'registration' %}true{% else %}false{% endif %}"
+        >
+          <span class="audits-seg-label">Client registration</span>
+          <span class="audits-seg-count">{{ audit_summary.registration_count }}</span>
+        </a>
+      </nav>
+
+      <div class="audits-filters">
+        <label class="audits-search">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <input type="search" placeholder="Search client, user, staff…" data-audits-search autocomplete="off" enterkeyhint="search">
+        </label>
+        {% if audit_tab == 'payments' or audit_tab == 'periods' %}
+        <div class="audits-filter-pills" role="group" aria-label="Filter rows">
+          <button type="button" class="audits-filter-pill is-active" data-audits-filter="all">All</button>
+          <button type="button" class="audits-filter-pill" data-audits-filter="edited">Edited only</button>
+          <button type="button" class="audits-filter-pill" data-audits-filter="ok">Per package</button>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if audit_tab == 'payments' %}
+    <section class="audits-panel" aria-labelledby="audits-payments-heading">
+      <div class="audits-panel-head">
+        <div>
+          <p class="audits-kicker">Payments</p>
+          <h2 id="audits-payments-heading">Payments &amp; recharge</h2>
+          <p class="audits-panel-sub">How each client paid, who recharged the account, and whether amount or duration was edited off the package.</p>
+        </div>
+        <p class="audits-live-count" data-audits-count>{{ audit_summary.payments|length }} shown</p>
+      </div>
+
+      {% if audit_summary.payments %}
+      <div class="audits-list-shell" data-audits-feed>
+        <table class="audits-list">
+          <thead>
+            <tr>
+              <th>Client</th>
+              <th>Paid</th>
+              <th>Method</th>
+              <th>Recharged by</th>
+              <th>Package fit</th>
+              <th>Edit delta</th>
+              <th>When</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in audit_summary.payments %}
+            <tr
+              class="{% if row.is_edited %}is-edited{% endif %}"
+              data-audits-row
+              data-edited="{% if row.is_edited %}1{% else %}0{% endif %}"
+              data-search="{{ row.customer_name }} {{ row.account_number }} {{ row.pppoe_username }} {{ row.plan_name }} {{ row.method }} {{ row.recharged_by }} {{ row.reference }}"
+            >
+              <td data-label="Client">
+                {% if row.customer_id %}
+                <a class="audits-client-link" href="{% url 'core:client_detail' row.customer_id %}">{{ row.customer_name }}</a>
+                {% else %}
+                <strong class="audits-client-link">{{ row.customer_name }}</strong>
+                {% endif %}
+                <span class="audits-field-note">{{ row.account_number }}{% if row.pppoe_username %} · {{ row.pppoe_username }}{% endif %} · {{ row.plan_name }}</span>
+              </td>
+              <td data-label="Paid">
+                <strong>KES {{ row.amount }}</strong>
+                {% if row.reference %}<span class="audits-field-note">{{ row.reference }}</span>{% endif %}
+              </td>
+              <td data-label="Method">{{ row.method }}</td>
+              <td data-label="Recharged by">{{ row.recharged_by }}</td>
+              <td data-label="Package fit">
+                <span class="audits-badge {% if row.is_edited %}is-warn{% else %}is-good{% endif %}">{{ row.package_fit }}</span>
+              </td>
+              <td data-label="Edit delta">
+                {% if row.is_edited %}
+                <strong class="audits-delta">{% if row.amount_delta_label != "—" %}KES {{ row.amount_delta_label }}{% else %}—{% endif %}</strong>
+                <span class="audits-field-note">Duration {{ row.duration_delta_label }} · {{ row.purchased_duration }} / {{ row.package_duration }}</span>
+                {% else %}
+                <span class="audits-field-note">Matches package (KES {{ row.plan_price }})</span>
+                {% endif %}
+              </td>
+              <td data-label="When">
+                <time datetime="{{ row.received_at|date:'c' }}">{{ row.received_at|date:"d M Y · H:i" }}</time>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="audits-empty-filter" data-audits-empty-filter hidden>No rows match this search or filter.</p>
+      {% else %}
+      <div class="audits-empty">
+        <span class="audits-empty-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" d="M4 9h16M4 15h16M8 5v14M16 5v14"/></svg>
+        </span>
+        <p class="audits-empty-title">No payments yet</p>
+        <p class="audits-empty-copy">Cash recharges and M-Pesa payments will appear here with package-fit details.</p>
+      </div>
+      {% endif %}
+    </section>
+
+    {% elif audit_tab == 'periods' %}
+    <section class="audits-panel" aria-labelledby="audits-periods-heading">
+      <div class="audits-panel-head">
+        <div>
+          <p class="audits-kicker">Subscription</p>
+          <h2 id="audits-periods-heading">Subscription period</h2>
+          <p class="audits-panel-sub">Clients on a single package period versus edited or stacked windows, and by how long they sit outside.</p>
+        </div>
+        <div class="audits-panel-side">
+          <span class="audits-chip">{{ audit_summary.period_standard_count }} per package</span>
+          <span class="audits-chip is-warn">{{ audit_summary.period_edited_count }} edited</span>
+          <p class="audits-live-count" data-audits-count>{{ audit_summary.periods|length }} shown</p>
+        </div>
+      </div>
+
+      {% if audit_summary.periods %}
+      <div class="audits-list-shell" data-audits-feed>
+        <table class="audits-list">
+          <thead>
+            <tr>
+              <th>Client</th>
+              <th>Package</th>
+              <th>Current window</th>
+              <th>Fit</th>
+              <th>Outside by</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in audit_summary.periods %}
+            <tr
+              class="{% if row.is_edited %}is-edited{% endif %}"
+              data-audits-row
+              data-edited="{% if row.is_edited %}1{% else %}0{% endif %}"
+              data-search="{{ row.customer_name }} {{ row.account_number }} {{ row.pppoe_username }} {{ row.plan_name }} {{ row.service_type }}"
+            >
+              <td data-label="Client">
+                <a class="audits-client-link" href="{% url 'core:client_detail' row.customer_id %}">{{ row.customer_name }}</a>
+                <span class="audits-field-note">{{ row.account_number }}{% if row.pppoe_username %} · {{ row.pppoe_username }}{% endif %} · {{ row.service_type }}</span>
+              </td>
+              <td data-label="Package">
+                <strong>{{ row.plan_name }}</strong>
+                <span class="audits-field-note">{{ row.plan_duration }}</span>
+              </td>
+              <td data-label="Current window">
+                <strong class="audits-window">{{ row.package_start|date:"d M Y H:i" }} → {{ row.package_end|date:"d M Y H:i" }}</strong>
+                <span class="audits-field-note">Actual {{ row.actual_duration }} · expected {{ row.expected_duration }}</span>
+              </td>
+              <td data-label="Fit">
+                <span class="audits-badge {% if row.is_edited %}is-warn{% else %}is-good{% endif %}">{{ row.package_fit }}</span>
+              </td>
+              <td data-label="Outside by">
+                <strong class="audits-delta {% if row.is_edited %}is-hot{% endif %}">{{ row.outside_by }}</strong>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="audits-empty-filter" data-audits-empty-filter hidden>No rows match this search or filter.</p>
+      {% else %}
+      <div class="audits-empty">
+        <span class="audits-empty-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M8 2v3M16 2v3M4 8h16M6 4h12a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>
+        </span>
+        <p class="audits-empty-title">No active package windows</p>
+        <p class="audits-empty-copy">Clients with a package start and end will be listed here.</p>
+      </div>
+      {% endif %}
+    </section>
+
+    {% else %}
+    <section class="audits-panel" aria-labelledby="audits-registration-heading">
+      <div class="audits-panel-head">
+        <div>
+          <p class="audits-kicker">Registration</p>
+          <h2 id="audits-registration-heading">Client registration</h2>
+          <p class="audits-panel-sub">Registered PPPoE accounts and the employees who took part in onboarding.</p>
+        </div>
+        <p class="audits-live-count" data-audits-count>{{ audit_summary.registrations|length }} shown</p>
+      </div>
+
+      {% if audit_summary.registrations %}
+      <div class="audits-list-shell" data-audits-feed>
+        <table class="audits-list">
+          <thead>
+            <tr>
+              <th>PPPoE client</th>
+              <th>Username</th>
+              <th>Package</th>
+              <th>Registered by</th>
+              <th>Technician</th>
+              <th>Registered</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in audit_summary.registrations %}
+            <tr
+              data-audits-row
+              data-edited="0"
+              data-search="{{ row.customer_name }} {{ row.account_number }} {{ row.pppoe_username }} {{ row.plan_name }} {{ row.registered_by }} {{ row.technician }} {{ row.phone }}"
+            >
+              <td data-label="PPPoE client">
+                <a class="audits-client-link" href="{% url 'core:client_detail' row.customer_id %}">{{ row.customer_name }}</a>
+                <span class="audits-field-note">{{ row.account_number }} · {{ row.status }} · {{ row.phone }}</span>
+              </td>
+              <td data-label="Username"><code class="audits-username">{{ row.pppoe_username }}</code></td>
+              <td data-label="Package">{{ row.plan_name }}</td>
+              <td data-label="Registered by">{{ row.registered_by }}</td>
+              <td data-label="Technician">{{ row.technician }}</td>
+              <td data-label="Registered">
+                <time datetime="{{ row.created_at|date:'c' }}">{{ row.created_at|date:"d M Y · H:i" }}</time>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="audits-empty-filter" data-audits-empty-filter hidden>No rows match this search.</p>
+      {% else %}
+      <div class="audits-empty">
+        <span class="audits-empty-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/></svg>
+        </span>
+        <p class="audits-empty-title">No PPPoE registrations</p>
+        <p class="audits-empty-copy">Registered PPPoE clients and the staff involved will show up here.</p>
+      </div>
+      {% endif %}
+    </section>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
+
+{% block client_extra_js %}
+<script>
+(function () {
+  var root = document.querySelector("[data-audits-page]");
+  if (!root) return;
+  var search = root.querySelector("[data-audits-search]");
+  var countEl = root.querySelector("[data-audits-count]");
+  var emptyFilter = root.querySelector("[data-audits-empty-filter]");
+  var rows = Array.prototype.slice.call(root.querySelectorAll("[data-audits-row]"));
+  var filter = "all";
+  var pills = Array.prototype.slice.call(root.querySelectorAll("[data-audits-filter]"));
+
+  function apply() {
+    var q = ((search && search.value) || "").trim().toLowerCase();
+    var visible = 0;
+    rows.forEach(function (row) {
+      var edited = row.getAttribute("data-edited") === "1";
+      var hay = (row.getAttribute("data-search") || "").toLowerCase();
+      var okFilter =
+        filter === "all" ||
+        (filter === "edited" && edited) ||
+        (filter === "ok" && !edited);
+      var okSearch = !q || hay.indexOf(q) >= 0;
+      var show = okFilter && okSearch;
+      row.hidden = !show;
+      if (show) visible += 1;
+    });
+    if (countEl) countEl.textContent = visible + " shown";
+    if (emptyFilter) emptyFilter.hidden = visible > 0 || !rows.length;
+  }
+
+  if (search) {
+    search.addEventListener("input", apply);
+    search.addEventListener("search", apply);
+  }
+  pills.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      filter = btn.getAttribute("data-audits-filter") || "all";
+      pills.forEach(function (p) {
+        p.classList.toggle("is-active", p === btn);
+      });
+      apply();
+    });
+  });
+})();
+</script>
+{% endblock %}

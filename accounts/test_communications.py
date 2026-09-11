@@ -213,10 +213,18 @@ class CommunicationSettingsViewTests(TestCase):
         self.assertContains(response, "Welcome / account created")
         self.assertContains(response, "Lead allocated to this ISP")
         self.assertContains(response, "MikroTik successfully onboarded")
-        self.assertContains(response, "MikroTik offline or health below 70%")
-        self.assertContains(response, "PPPoE dialed but without internet")
+        self.assertContains(response, "MikroTik health below 70%")
+        self.assertContains(response, "MikroTik offline")
+        self.assertContains(response, "Clients cannot surf but are subscribed")
+        self.assertContains(response, "MikroTik usage over 3 TB")
+        self.assertContains(response, "Subscription expires in 3 days")
+        self.assertContains(response, "Internet reconnection after payment")
         self.assertContains(response, "When messages are sent")
         self.assertContains(response, "comms-event-table")
+        self.assertContains(response, "MikroTik")
+        self.assertContains(response, "Clients")
+        self.assertNotContains(response, ">Link<")
+        self.assertNotContains(response, '<select name="include_link"')
         self.assertContains(response, "data-comms-message-open")
         self.assertContains(response, "comms-message-modal")
         self.assertContains(response, 'name="form_action"')
@@ -968,8 +976,9 @@ class OrgEventDispatchTests(TestCase):
             mock_notify.return_value = {"ok": True}
             pause_customer_package(customer, now=now)
         mock_notify.assert_called()
-        self.assertEqual(mock_notify.call_args.args[0], "package_pause_resume")
-        self.assertEqual(mock_notify.call_args.kwargs.get("client"), customer)
+        keys = [call.args[0] for call in mock_notify.call_args_list]
+        self.assertIn("package_pause_resume", keys)
+        self.assertIn("account_status", keys)
 
 
 class MikroTikHealthAndPppoeNotSurfingNotifyTests(TestCase):
@@ -1000,11 +1009,28 @@ class MikroTikHealthAndPppoeNotSurfingNotifyTests(TestCase):
         self.comms.enabled_messages = {
             "isp_mikrotik_health_low": {
                 "message": (
-                    "Alert: MikroTik “{router_name}” is {status_label} "
-                    "(health {health_score}%)."
+                    "Alert: MikroTik “{router_name}” health is {health_score}% "
+                    "({status_label})."
                 ),
                 "recipients": ["organization_owner"],
                 "channels": ["email", "sms"],
+                "include_link": False,
+            },
+            "isp_mikrotik_off": {
+                "message": (
+                    "Alert: MikroTik “{router_name}” is offline ({status_label})."
+                ),
+                "recipients": ["organization_owner"],
+                "channels": ["email", "sms"],
+                "include_link": False,
+            },
+            "isp_mikrotik_usage_high": {
+                "message": (
+                    "Alert: MikroTik “{router_name}” has used {usage_tb} TB across "
+                    "{client_count} client(s) since {usage_since}."
+                ),
+                "recipients": ["organization_owner"],
+                "channels": ["email"],
                 "include_link": False,
             },
             "isp_pppoe_connected_not_surfing": {
@@ -1018,6 +1044,32 @@ class MikroTikHealthAndPppoeNotSurfingNotifyTests(TestCase):
             },
         }
         self.comms.save()
+
+    def test_mikrotik_offline_uses_off_event(self):
+        from django.core.cache import cache
+
+        from accounts.communications import maybe_notify_mikrotik_health_low
+
+        cache.clear()
+        with patch("accounts.communications.notify_org_event") as mock_notify:
+            mock_notify.return_value = {"ok": True, "sent": 1}
+            first = maybe_notify_mikrotik_health_low(
+                organization=self.org,
+                router_id=9,
+                router_name="Edge-01",
+                status="disconnected",
+                score=0,
+            )
+            second = maybe_notify_mikrotik_health_low(
+                organization=self.org,
+                router_id=9,
+                router_name="Edge-01",
+                status="disconnected",
+                score=0,
+            )
+        self.assertTrue(first.get("ok"))
+        self.assertTrue(second.get("skipped"))
+        self.assertEqual(mock_notify.call_args.args[0], "isp_mikrotik_off")
 
     def test_mikrotik_health_low_notifies_once_per_outage(self):
         from django.core.cache import cache
@@ -1049,6 +1101,24 @@ class MikroTikHealthAndPppoeNotSurfingNotifyTests(TestCase):
         self.assertEqual(mock_email.call_count, 1)
         self.assertEqual(mock_sms.call_count, 1)
         self.assertIn("Edge-01", first.get("message") or "")
+
+    def test_mikrotik_degraded_uses_health_event(self):
+        from django.core.cache import cache
+
+        from accounts.communications import maybe_notify_mikrotik_health_low
+
+        cache.clear()
+        with patch("accounts.communications.notify_org_event") as mock_notify:
+            mock_notify.return_value = {"ok": True, "sent": 1}
+            result = maybe_notify_mikrotik_health_low(
+                organization=self.org,
+                router_id=4,
+                router_name="Core",
+                status="limited",
+                score=55,
+            )
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(mock_notify.call_args.args[0], "isp_mikrotik_health_low")
 
     def test_mikrotik_health_recovers_then_can_alert_again(self):
         from django.core.cache import cache
@@ -1134,3 +1204,172 @@ class MikroTikHealthAndPppoeNotSurfingNotifyTests(TestCase):
         self.assertIn("Cara Dialed", body)
         self.assertNotIn("Bob Ok", body)
         mock_email.assert_called_once()
+
+    def test_mikrotik_usage_high_notifies_once(self):
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        from accounts.communications import (
+            MIKROTIK_USAGE_HIGH_BYTES,
+            maybe_notify_mikrotik_usage_high,
+        )
+        from core.models import MikroTikRouter
+
+        cache.clear()
+        router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Busy-NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.0.0.1",
+            username="admin",
+            password="x",
+            usage_tracking_since=timezone.localtime(),
+        )
+        with patch("accounts.communications.notify_org_event") as mock_notify:
+            mock_notify.return_value = {"ok": True, "sent": 1}
+            first = maybe_notify_mikrotik_usage_high(
+                organization=self.org,
+                router=router,
+                total_bytes=MIKROTIK_USAGE_HIGH_BYTES + 1,
+                client_count=4,
+                usage_since=router.usage_tracking_since,
+            )
+            second = maybe_notify_mikrotik_usage_high(
+                organization=self.org,
+                router=router,
+                total_bytes=MIKROTIK_USAGE_HIGH_BYTES + 100,
+                client_count=4,
+                usage_since=router.usage_tracking_since,
+            )
+            below = maybe_notify_mikrotik_usage_high(
+                organization=self.org,
+                router=router,
+                total_bytes=100,
+                client_count=4,
+                usage_since=router.usage_tracking_since,
+            )
+        self.assertTrue(first.get("ok"))
+        self.assertTrue(second.get("skipped"))
+        self.assertTrue(below.get("skipped"))
+        self.assertEqual(mock_notify.call_args.args[0], "isp_mikrotik_usage_high")
+
+
+class PackageLifecycleNotifyTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("life-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Life ISP",
+            owner=self.owner,
+            join_code="778899",
+        )
+
+    def test_renewal_reminder_uses_three_day_window(self):
+        from datetime import timedelta
+
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        from billing.management.commands.sync_subscription_access import Command
+        from billing.models import BillingPlan, Customer
+
+        cache.clear()
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Month",
+            price="1000.00",
+            duration=BillingPlan.Duration.MONTHLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        now = timezone.localtime()
+        soon = Customer.objects.create(
+            organization=self.org,
+            full_name="Soon Expire",
+            phone="0711222333",
+            account_number="PPP-SOON",
+            status=Customer.Status.ACTIVE,
+            plan=plan,
+            package_start=now - timedelta(days=27),
+            package_end=now + timedelta(days=2),
+        )
+        later = Customer.objects.create(
+            organization=self.org,
+            full_name="Later Expire",
+            phone="0711222444",
+            account_number="PPP-LATER",
+            status=Customer.Status.ACTIVE,
+            plan=plan,
+            package_start=now - timedelta(days=20),
+            package_end=now + timedelta(days=4),
+        )
+        cmd = Command()
+        with patch(
+            "billing.services.customer_receives_internet", return_value=True
+        ), patch("accounts.communications.notify_org_event") as mock_notify:
+            mock_notify.return_value = {"ok": True}
+            cmd._notify_package_lifecycle([soon, later])
+        keys = [call.args[0] for call in mock_notify.call_args_list]
+        clients = [call.kwargs.get("client") for call in mock_notify.call_args_list]
+        self.assertEqual(keys.count("renewal_reminder"), 1)
+        self.assertIn(soon, clients)
+        self.assertNotIn(later, clients)
+
+
+class RouterUsageResetTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("usage-reset-owner", password="pass123")
+        self.org = Organization.objects.create(
+            name="Usage Reset ISP",
+            owner=self.owner,
+            join_code="990011",
+        )
+        self.client.force_login(self.owner)
+
+    def test_router_scope_reset_keeps_personal_baselines(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from billing.models import Customer
+        from core.models import MikroTikRouter
+
+        router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Reset-NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.1.1.1",
+            username="admin",
+            password="x",
+        )
+        now = timezone.localtime()
+        personal = now - timedelta(days=5)
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Keep Personal",
+            phone="0711555666",
+            account_number="PPP-KEEP",
+            status=Customer.Status.ACTIVE,
+            router=router,
+            usage_tracking_since=personal,
+        )
+        stamp = now - timedelta(hours=1)
+        response = self.client.post(
+            reverse("core:clients_usage_reset"),
+            {
+                "scope": "router",
+                "router": str(router.pk),
+                "at": stamp.strftime("%Y-%m-%dT%H:%M"),
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.get("ok"))
+        router.refresh_from_db()
+        customer.refresh_from_db()
+        self.assertIsNotNone(router.usage_tracking_since)
+        self.assertEqual(
+            timezone.localtime(customer.usage_tracking_since).replace(
+                second=0, microsecond=0
+            ),
+            timezone.localtime(personal).replace(second=0, microsecond=0),
+        )

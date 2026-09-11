@@ -385,6 +385,10 @@ def redeem_access_voucher(
         stk is not None and bool(stk.subscription_applied)
     )
     if not already_applied:
+        from accounts.communications import notify_org_event
+        from billing.services import customer_subscription_window_active
+
+        stacked = customer_subscription_window_active(target)
         try:
             apply_paid_subscription_with_offer(target, plan=paid_plan)
         except ValueError as exc:
@@ -398,6 +402,22 @@ def redeem_access_voucher(
         elif stk is not None:
             AccessVoucher.objects.filter(stk_request=stk).update(
                 subscription_applied=True
+            )
+        target.refresh_from_db()
+        org = getattr(target, "organization", None)
+        extend_ctx = {
+            "package_name": getattr(paid_plan, "name", "") or "",
+            "package_end": (
+                target.package_end.isoformat() if target.package_end else ""
+            ),
+        }
+        if stacked and org is not None:
+            notify_org_event(
+                "subscription_extended",
+                organization=org,
+                client=target,
+                context=extend_ctx,
+                subject="Subscription extended",
             )
 
     if stk is not None and not stk.subscription_applied:
@@ -433,6 +453,19 @@ def redeem_access_voucher(
     authorized = nas_access_ready(nas) if provision else False
     if (not provision or authorized) and voucher.status == AccessVoucher.Status.VALID:
         _mark_voucher_used(voucher, mac=mac)
+
+    if authorized:
+        from billing.services import notify_client_internet_reconnected
+
+        notify_client_internet_reconnected(
+            organization=getattr(target, "organization", None),
+            customer=target,
+            context={
+                "package_end": (
+                    target.package_end.isoformat() if target.package_end else ""
+                ),
+            },
+        )
 
     voucher.refresh_from_db()
     siblings = vouchers_for_batch(voucher)
@@ -532,6 +565,10 @@ def activate_paid_subscription_stk(
         if paid_plan is not None and customer.plan_id != paid_plan.pk:
             customer.plan = paid_plan
             customer.save(update_fields=["plan"])
+        from accounts.communications import notify_org_event
+        from billing.services import customer_subscription_window_active
+
+        stacked = customer_subscription_window_active(customer)
         try:
             apply_paid_subscription_with_offer(customer, plan=paid_plan)
         except ValueError as exc:
@@ -546,6 +583,20 @@ def activate_paid_subscription_stk(
                 customer, normalize_device_mac(device_mac), enforce_cap=True
             )
         customer.refresh_from_db()
+        if stacked:
+            notify_org_event(
+                "subscription_extended",
+                organization=stk.organization,
+                client=customer,
+                context={
+                    "package_name": getattr(paid_plan, "name", "") or "",
+                    "package_end": (
+                        customer.package_end.isoformat() if customer.package_end else ""
+                    ),
+                    "mpesa_receipt": stk.mpesa_receipt or "",
+                },
+                subject="Subscription extended",
+            )
 
     nas = {"ok": False, "allowed": False}
     try:
@@ -573,6 +624,19 @@ def activate_paid_subscription_stk(
     if authorized and voucher is not None and voucher.status == AccessVoucher.Status.VALID:
         # Consume only this device’s voucher; sibling device codes stay valid.
         _mark_voucher_used(voucher, mac=device_mac)
+    if authorized:
+        from billing.services import notify_client_internet_reconnected
+
+        notify_client_internet_reconnected(
+            organization=stk.organization,
+            customer=customer,
+            context={
+                "mpesa_receipt": stk.mpesa_receipt or "",
+                "package_end": (
+                    customer.package_end.isoformat() if customer.package_end else ""
+                ),
+            },
+        )
     siblings = list(AccessVoucher.objects.filter(stk_request=stk).order_by("id"))
     voucher.refresh_from_db()
     return {

@@ -86,7 +86,7 @@
         </section>
       {% endif %}
 
-      {% if show_events and client_events or show_events and isp_events %}
+      {% if show_events and client_events or show_events and isp_event_groups %}
         <section class="panel account-card comms-events-card" data-enabled-messages>
           <header class="comms-panel-head">
             <div>
@@ -113,7 +113,6 @@
                     <span>Trigger</span>
                     <span>To whom</span>
                     <span>Channel</span>
-                    <span>Link</span>
                     <span>Actions</span>
                   </div>
                   <ol class="comms-event-list">
@@ -125,26 +124,69 @@
               </section>
             {% endif %}
 
-            {% if isp_events %}
+            {% if isp_event_groups.mikrotik or isp_event_groups.clients or isp_event_groups.account %}
               <section class="comms-events-section">
                 <div class="comms-events-section-bar">
                   <h3>This ISP account</h3>
                   <p>Organization owner and staff — owner email/phone, or the assigned technician.</p>
                 </div>
-                <div class="comms-event-table">
-                  <div class="comms-event-table-head" aria-hidden="true">
-                    <span>Trigger</span>
-                    <span>To whom</span>
-                    <span>Channel</span>
-                    <span>Link</span>
-                    <span>Actions</span>
+
+                {% if isp_event_groups.mikrotik %}
+                  <div class="comms-events-subsection">
+                    <h4 class="comms-events-subsection-title">MikroTik</h4>
+                    <div class="comms-event-table">
+                      <div class="comms-event-table-head" aria-hidden="true">
+                        <span>Trigger</span>
+                        <span>To whom</span>
+                        <span>Channel</span>
+                        <span>Actions</span>
+                      </div>
+                      <ol class="comms-event-list">
+                        {% for event in isp_event_groups.mikrotik %}
+                          {% include "accounts/includes/comms_event_select_card.html" with event=event %}
+                        {% endfor %}
+                      </ol>
+                    </div>
                   </div>
-                  <ol class="comms-event-list">
-                    {% for event in isp_events %}
-                      {% include "accounts/includes/comms_event_select_card.html" with event=event %}
-                    {% endfor %}
-                  </ol>
-                </div>
+                {% endif %}
+
+                {% if isp_event_groups.clients %}
+                  <div class="comms-events-subsection">
+                    <h4 class="comms-events-subsection-title">Clients</h4>
+                    <div class="comms-event-table">
+                      <div class="comms-event-table-head" aria-hidden="true">
+                        <span>Trigger</span>
+                        <span>To whom</span>
+                        <span>Channel</span>
+                        <span>Actions</span>
+                      </div>
+                      <ol class="comms-event-list">
+                        {% for event in isp_event_groups.clients %}
+                          {% include "accounts/includes/comms_event_select_card.html" with event=event %}
+                        {% endfor %}
+                      </ol>
+                    </div>
+                  </div>
+                {% endif %}
+
+                {% if isp_event_groups.account %}
+                  <div class="comms-events-subsection">
+                    <h4 class="comms-events-subsection-title">Account</h4>
+                    <div class="comms-event-table">
+                      <div class="comms-event-table-head" aria-hidden="true">
+                        <span>Trigger</span>
+                        <span>To whom</span>
+                        <span>Channel</span>
+                        <span>Actions</span>
+                      </div>
+                      <ol class="comms-event-list">
+                        {% for event in isp_event_groups.account %}
+                          {% include "accounts/includes/comms_event_select_card.html" with event=event %}
+                        {% endfor %}
+                      </ol>
+                    </div>
+                  </div>
+                {% endif %}
               </section>
             {% endif %}
           </div>

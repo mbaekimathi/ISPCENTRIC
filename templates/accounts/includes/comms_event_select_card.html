@@ -61,27 +61,15 @@
       </select>
     </label>
 
-    <div class="comms-event-field">
-      <span class="comms-event-label">Link</span>
-      {% if event.page_link %}
-        <select name="include_link" class="comms-control" title="{% if event.page_link_path %}{{ event.page_link_path }}{% elif event.page_link.note %}{{ event.page_link.note }}{% endif %}">
-          <option value="" {% if not event.include_link %}selected{% endif %}>No</option>
-          <option value="1" {% if event.include_link %}selected{% endif %}>Yes</option>
-        </select>
-      {% else %}
-        <span class="comms-control comms-control--static">—</span>
-      {% endif %}
-    </div>
-
     <div class="comms-event-actions">
       <button type="button"
               class="comms-icon-btn"
               data-comms-message-open
               data-title="{{ event.title }}"
               data-channels="{% for channel in event.channel_choices %}{{ channel.id }}{% if not forloop.last %},{% endif %}{% endfor %}"
-              data-link-label="{% if event.page_link %}{{ event.page_link.label }}{% endif %}"
-              data-link-path="{{ event.page_link_path }}"
-              data-link-note="{% if event.page_link %}{{ event.page_link.note }}{% endif %}"
+              data-link-label=""
+              data-link-path=""
+              data-link-note=""
               title="View message"
               aria-label="View message">
         <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">

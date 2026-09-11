@@ -1224,12 +1224,46 @@
     });
   }
 
-  function setTrackStatus(message, isError) {
+  function showUsageToast(message, isError, title) {
+    if (!message) return;
+    if (typeof window.showToast === "function") {
+      window.showToast({
+        type: isError ? "error" : "success",
+        title: title || (isError ? "Update failed" : "Usage updated"),
+        text: message,
+        ms: isError ? 7000 : 5600
+      });
+      return;
+    }
+    // Fallback when toast script is unavailable.
     if (!trackStatus) return;
+    trackStatus.hidden = false;
+    trackStatus.textContent = message;
+    trackStatus.classList.toggle("is-error", !!isError);
+  }
+
+  function setTrackStatus(message, isError, opts) {
+    opts = opts || {};
     if (!message) {
-      trackStatus.hidden = true;
-      trackStatus.textContent = "";
-      trackStatus.classList.remove("is-error");
+      if (trackStatus) {
+        trackStatus.hidden = true;
+        trackStatus.textContent = "";
+        trackStatus.classList.remove("is-error");
+      }
+      return;
+    }
+    // Loading / progress stays inline; final results go top-right.
+    if (opts.toast || opts.final) {
+      showUsageToast(message, isError, opts.title);
+      if (trackStatus) {
+        trackStatus.hidden = true;
+        trackStatus.textContent = "";
+        trackStatus.classList.remove("is-error");
+      }
+      return;
+    }
+    if (!trackStatus) {
+      showUsageToast(message, isError, opts.title);
       return;
     }
     trackStatus.hidden = false;
@@ -1286,8 +1320,8 @@
     }
     if (renewCopy) {
       renewCopy.textContent = target && target.customerId
-        ? ("Package start and data-used tracking for " + name + " will restart from this date.")
-        : ("Applies to every listed client on the selected MikroTik. Package windows and data-used totals restart from this date.");
+        ? ("Package start and personal data-used tracking for " + name + " will restart from this date. History is kept.")
+        : ("Applies to every listed client on the selected MikroTik. Package windows and personal data-used totals restart from this date. History is kept.");
     }
     renewInput.value = toLocalInputValue(target && target.packageStart);
     if (typeof renewDialog.showModal === "function") renewDialog.showModal();
@@ -1302,14 +1336,22 @@
   }
 
   function afterTrackingChange(data) {
-    setTrackStatus((data && data.message) || "Updated.", false);
+    var title = (data && data.toast_title) || "Usage updated";
+    setTrackStatus((data && data.message) || "Updated.", false, {
+      toast: true,
+      final: true,
+      title: title
+    });
     loadTrends(true, { stampText: "Updating usage…" });
   }
 
   function resetUsage(opts) {
     opts = opts || {};
     var label = opts.customerName || (routerFilter ? "everyone on this MikroTik" : "these clients");
-    if (!window.confirm("Reset data used for " + label + "? Totals will restart from now. History is kept.")) {
+    var confirmText = opts.scope === "router"
+      ? ("Reset combined MikroTik usage for " + label + "? Totals restart from now. Client personal usage (from package renewal) and history are kept.")
+      : ("Reset data used for " + label + "? Totals will restart from now. History is kept.");
+    if (!window.confirm(confirmText)) {
       return;
     }
     setTrackStatus("Resetting data used…", false);
@@ -1319,7 +1361,11 @@
     })
       .then(afterTrackingChange)
       .catch(function (err) {
-        setTrackStatus((err && err.message) || "Could not reset usage.", true);
+        setTrackStatus((err && err.message) || "Could not reset usage.", true, {
+          toast: true,
+          final: true,
+          title: "Reset failed"
+        });
       });
   }
 
@@ -1369,7 +1415,11 @@
           afterTrackingChange(data);
         })
         .catch(function (err) {
-          setTrackStatus((err && err.message) || "Could not save renewal date.", true);
+          setTrackStatus((err && err.message) || "Could not save renewal date.", true, {
+            toast: true,
+            final: true,
+            title: "Renewal failed"
+          });
         });
     });
   }

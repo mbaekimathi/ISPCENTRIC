@@ -92,7 +92,6 @@ class Command(BaseCommand):
             org = getattr(customer, "organization", None)
             if org is None:
                 continue
-            start = _local(getattr(customer, "package_start", None))
             end = _local(getattr(customer, "package_end", None))
             if end is None:
                 continue
@@ -108,18 +107,21 @@ class Command(BaseCommand):
                         context={"package_end": end_key},
                         subject="Package expired",
                     )
-            elif receives and start is not None and end > now:
-                total = (end - start).total_seconds()
-                remaining = (end - now).total_seconds()
-                if total > 0 and remaining > 0 and remaining / total <= 0.25:
+            elif receives and end > now:
+                remaining = end - now
+                if remaining <= timezone.timedelta(days=3):
                     cache_key = f"comms:renewal:{customer.pk}:{end_key}"
                     if cache.add(cache_key, 1, timeout=60 * 60 * 24 * 45):
+                        days_left = max(1, int((remaining.total_seconds() + 86399) // 86400))
                         notify_org_event(
                             "renewal_reminder",
                             organization=org,
                             client=customer,
-                            context={"package_end": end_key},
-                            subject="Package expiring soon",
+                            context={
+                                "package_end": end_key,
+                                "days_left": str(days_left),
+                            },
+                            subject="Subscription expires in 3 days",
                         )
 
     def handle(self, *args, **options):

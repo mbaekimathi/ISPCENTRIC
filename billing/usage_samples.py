@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from calendar import monthrange
@@ -15,6 +16,8 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from billing.models import Customer, CustomerUsageSample, Payment
+
+logger = logging.getLogger(__name__)
 
 _UPTIME_PART = re.compile(r"(\d+)\s*([wdhms])", re.I)
 _SAMPLE_MIN_INTERVAL = 25  # seconds between persisted samples per client
@@ -1084,6 +1087,14 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
 
     # Invalidate payload caches so the next read includes fresh samples.
     invalidate_org_usage_caches(organization)
+
+    try:
+        check_mikrotik_usage_high_alerts(organization, routers=routers)
+    except Exception:
+        logger.exception(
+            "MikroTik usage-high check failed for org %s",
+            getattr(organization, "pk", None),
+        )
 
     return {
         "ok": True,
@@ -2317,6 +2328,115 @@ def _customer_usage_tracking_since(customer) -> datetime | None:
     return _aware_local(getattr(customer, "usage_tracking_since", None))
 
 
+def _router_usage_tracking_since(router) -> datetime | None:
+    """MikroTik-wide combined usage baseline (does not change personal renewals)."""
+    return _aware_local(getattr(router, "usage_tracking_since", None))
+
+
+def compute_router_usage_bytes_since_reset(router) -> dict[str, Any]:
+    """
+    Sum sample byte deltas for all clients on ``router`` since its usage reset.
+
+    Historical samples are kept; traffic before ``usage_tracking_since`` is ignored.
+    When the reset date is unset, baseline defaults to now (no alert until reset).
+    """
+    if router is None or not getattr(router, "pk", None):
+        return {
+            "ok": False,
+            "total_bytes": 0,
+            "client_count": 0,
+            "usage_since": None,
+        }
+
+    since = _router_usage_tracking_since(router)
+    if since is None:
+        return {
+            "ok": True,
+            "total_bytes": 0,
+            "client_count": 0,
+            "usage_since": None,
+            "skipped": True,
+            "reason": "no_reset",
+        }
+
+    customer_ids = list(
+        Customer.objects.filter(router_id=router.pk)
+        .exclude(service_type=Customer.ServiceType.STATIC)
+        .values_list("pk", flat=True)
+    )
+    if not customer_ids:
+        return {
+            "ok": True,
+            "total_bytes": 0,
+            "client_count": 0,
+            "usage_since": since,
+        }
+
+    samples = list(
+        CustomerUsageSample.objects.filter(
+            customer_id__in=customer_ids,
+            sampled_at__gte=since,
+        )
+        .order_by("customer_id", "sampled_at")
+        .values("customer_id", "sampled_at", "bytes_in", "bytes_out", "session_active")
+    )
+    previous_total: dict[int, int] = {}
+    total_bytes = 0
+    seen_clients: set[int] = set()
+    for row in samples:
+        cid = int(row["customer_id"])
+        seen_clients.add(cid)
+        bi = int(row["bytes_in"] or 0)
+        bo = int(row["bytes_out"] or 0)
+        total = bi + bo
+        active = bool(row["session_active"])
+        if not active and total == 0:
+            continue
+        delta = _bytes_delta(previous_total.get(cid), total)
+        previous_total[cid] = total
+        if delta:
+            total_bytes += delta
+
+    return {
+        "ok": True,
+        "total_bytes": total_bytes,
+        "client_count": len(seen_clients) or len(customer_ids),
+        "usage_since": since,
+    }
+
+
+def check_mikrotik_usage_high_alerts(organization, *, routers=None) -> list[dict]:
+    """Notify ISP when any MikroTik's combined usage since reset exceeds 3 TB."""
+    if organization is None:
+        return []
+    from accounts.communications import maybe_notify_mikrotik_usage_high
+    from core.models import MikroTikRouter
+
+    if routers is None:
+        routers = list(
+            MikroTikRouter.objects.filter(organization=organization).only(
+                "id", "name", "usage_tracking_since", "organization_id"
+            )
+        )
+    results = []
+    for router in routers:
+        # Ensure organization is attached for notify helpers.
+        if getattr(router, "organization_id", None) != getattr(organization, "pk", None):
+            continue
+        stats = compute_router_usage_bytes_since_reset(router)
+        if stats.get("skipped"):
+            continue
+        notify = maybe_notify_mikrotik_usage_high(
+            organization=organization,
+            router=router,
+            total_bytes=int(stats.get("total_bytes") or 0),
+            client_count=int(stats.get("client_count") or 0),
+            usage_since=stats.get("usage_since"),
+        )
+        results.append({"router_id": router.pk, "stats": stats, "notify": notify})
+    return results
+
+
 def invalidate_org_usage_caches(organization) -> None:
     """Drop org usage chart caches after tracking resets or renewals."""
     if organization is None or not getattr(organization, "pk", None):
@@ -2476,6 +2596,21 @@ def _build_org_usage_payload(
     tracking_since_by_cid = {
         cid: _customer_usage_tracking_since(cust) for cid, cust in customers.items()
     }
+    router_usage_since = None
+    if router_id:
+        try:
+            from core.models import MikroTikRouter
+
+            router_usage_since = _router_usage_tracking_since(
+                MikroTikRouter.objects.filter(
+                    pk=router_id, organization=organization
+                )
+                .only("usage_tracking_since")
+                .first()
+            )
+        except Exception:
+            router_usage_since = None
+    router_total_bytes_delta = 0
     total_bytes_delta = 0
     online_samples = 0
     meaningful_samples = 0
@@ -2573,6 +2708,8 @@ def _build_org_usage_payload(
             stats["data_used_bytes"] += delta
             total_bytes_delta += delta
             data_sum[bucket] = data_sum.get(bucket, 0.0) + delta
+            if router_usage_since is None or stamp >= router_usage_since:
+                router_total_bytes_delta += delta
 
         if active:
             online_samples += 1
@@ -2874,7 +3011,19 @@ def _build_org_usage_payload(
             ),
             "peak_download_bps": peak_down,
             "peak_upload_bps": peak_up,
-            "data_used_bytes": total_bytes_delta,
+            "data_used_bytes": (
+                router_total_bytes_delta if router_id else total_bytes_delta
+            ),
+            "usage_tracking_since": (
+                timezone.localtime(router_usage_since).isoformat()
+                if router_usage_since is not None
+                else ""
+            ),
+            "usage_tracking_label": (
+                timezone.localtime(router_usage_since).strftime("%b %d, %Y · %H:%M")
+                if router_usage_since is not None
+                else ""
+            ),
             "top_user_name": top_users[0]["full_name"] if top_users else "",
             "top_user_bytes": (
                 top_users[0]["data_used_bytes"]

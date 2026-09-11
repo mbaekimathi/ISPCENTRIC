@@ -220,6 +220,16 @@ class MikroTikRouter(models.Model):
     vpn_public_key = models.CharField(max_length=64, blank=True)
     vpn_private_key = EncryptedCharField(max_length=512, blank=True)
 
+    usage_tracking_since = models.DateTimeField(
+        "Usage tracking since",
+        null=True,
+        blank=True,
+        help_text=(
+            "Baseline for combined client usage on this MikroTik. "
+            "Historical samples are kept; totals ignore traffic before this stamp."
+        ),
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

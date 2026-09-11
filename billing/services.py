@@ -154,6 +154,66 @@ def subscription_access_deadline(customer) -> datetime | None:
     return timezone.make_aware(next_midnight, timezone.get_current_timezone())
 
 
+def customer_subscription_window_active(customer, *, now: datetime | None = None) -> bool:
+    """True when the client still has remaining prepaid time (stackable renewal)."""
+    stamp = now or timezone.localtime()
+    if timezone.is_naive(stamp):
+        stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+    else:
+        stamp = timezone.localtime(stamp)
+    active_until = subscription_access_deadline(customer) or _as_local_datetime(
+        getattr(customer, "package_end", None)
+    )
+    return active_until is not None and active_until > stamp
+
+
+def notify_client_payment_success(
+    *,
+    organization,
+    customer,
+    context: dict | None = None,
+    stacked: bool = False,
+    subject: str = "Payment successful",
+) -> None:
+    """Send payment_received and optional subscription_extended immediately."""
+    from accounts.communications import notify_org_event
+
+    pay_ctx = dict(context or {})
+    notify_org_event(
+        "payment_received",
+        organization=organization,
+        client=customer,
+        context=pay_ctx,
+        subject=subject,
+    )
+    if stacked:
+        notify_org_event(
+            "subscription_extended",
+            organization=organization,
+            client=customer,
+            context=pay_ctx,
+            subject="Subscription extended",
+        )
+
+
+def notify_client_internet_reconnected(
+    *,
+    organization,
+    customer,
+    context: dict | None = None,
+) -> None:
+    """Send internet_reconnected after access is restored post-payment."""
+    from accounts.communications import notify_org_event
+
+    notify_org_event(
+        "internet_reconnected",
+        organization=organization,
+        client=customer,
+        context=dict(context or {}),
+        subject="Internet reconnection successful",
+    )
+
+
 def customers_near_access_deadline(
     *,
     past_seconds: float = 90,
@@ -425,6 +485,13 @@ def pause_customer_package(customer, *, now: datetime | None = None):
         context={"status": "paused"},
         subject="Package paused",
     )
+    notify_org_event(
+        "account_status",
+        organization=getattr(customer, "organization", None),
+        client=customer,
+        context={"status": "suspended", "status_label": "Internet suspended"},
+        subject="Internet suspended",
+    )
     return customer
 
 
@@ -467,6 +534,13 @@ def resume_customer_package(customer, *, now: datetime | None = None):
         client=customer,
         context={"status": "resumed"},
         subject="Package resumed",
+    )
+    notify_org_event(
+        "account_status",
+        organization=getattr(customer, "organization", None),
+        client=customer,
+        context={"status": "active", "status_label": "Internet reactivated"},
+        subject="Internet reactivated",
     )
     return customer
 
@@ -1323,6 +1397,7 @@ def recharge_customer_cash(
         raise ValueError("Partial recharge requires both from and to dates.")
 
     vouchers = []
+    stacked = customer_subscription_window_active(customer)
     with transaction.atomic():
         update_fields: list[str] = []
         if customer.plan_id != plan.pk:
@@ -1374,21 +1449,23 @@ def recharge_customer_cash(
             )
 
     voucher_codes = [format_voucher_code(row.code) for row in vouchers]
-    from accounts.communications import notify_org_event
-
     pay_ctx = {
         "amount": str(amount),
         "invoice_number": invoice.invoice_number if invoice else "",
         "package_name": getattr(plan, "name", "") or "",
         "reference": (reference or "")[:100],
+        "package_end": (
+            customer.package_end.isoformat() if customer.package_end else ""
+        ),
     }
-    notify_org_event(
-        "payment_received",
+    notify_client_payment_success(
         organization=organization,
-        client=customer,
+        customer=customer,
         context=pay_ctx,
-        subject="Payment received",
+        stacked=stacked,
     )
+    from accounts.communications import notify_org_event
+
     notify_org_event(
         "invoice_receipt",
         organization=organization,
@@ -1396,6 +1473,13 @@ def recharge_customer_cash(
         context=pay_ctx,
         subject="Invoice / receipt",
     )
+    # PPPoE cash recharge restores access immediately (no voucher gate).
+    if not vouchers:
+        notify_client_internet_reconnected(
+            organization=organization,
+            customer=customer,
+            context=pay_ctx,
+        )
     return {
         "customer": customer,
         "invoice": invoice,
@@ -1404,6 +1488,7 @@ def recharge_customer_cash(
         "vouchers": vouchers,
         "voucher_codes": voucher_codes,
         "kick_sessions": bool(vouchers),
+        "stacked": stacked,
     }
 
 
