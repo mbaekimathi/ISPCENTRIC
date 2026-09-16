@@ -19,13 +19,7 @@ from .models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
 from .services import customers_needing_renewal_attention, heal_payment_mpesa_phone, heal_payment_mpesa_reference
 from .stk import refresh_stk_status, start_subscription_stk_payment
 
-_REVENUE_RANGE_CHOICES = ("time", "day", "period", "month", "year")
-_REVENUE_TIME_PRESETS = {
-    "1": (1, "Last 1 hour"),
-    "6": (6, "Last quarter day"),
-    "12": (12, "Last half day"),
-    "18": (18, "Last ¾ day"),
-}
+_REVENUE_RANGE_CHOICES = ("day", "period", "month")
 _ATTENTION_SERVICE_CHOICES = ("pppoe", "hotspot", "all")
 _PAYMENT_SERVICE_CHOICES = ("all", "pppoe", "hotspot")
 logger = logging.getLogger(__name__)
@@ -119,22 +113,16 @@ def _payment_service_q(service: str) -> Q | None:
 
 
 def _parse_revenue_filter(request) -> dict:
-    """Build revenue date-range filter from GET calendar params (shared UI modes)."""
+    """Build revenue date-range filter: Day / Period / Month (default: today)."""
     today = dj_tz.localdate()
-    now = dj_tz.now()
     range_mode = (request.GET.get("range") or "").strip().lower()
     if range_mode not in _REVENUE_RANGE_CHOICES:
-        range_mode = ""
-
-    time_raw = (request.GET.get("time") or "").strip()
-    if time_raw not in _REVENUE_TIME_PRESETS:
-        time_raw = "6"
+        range_mode = "day"
 
     day_value = _parse_iso_date(request.GET.get("day")) or today
     start_value = _parse_iso_date(request.GET.get("start")) or today.replace(day=1)
     end_value = _parse_iso_date(request.GET.get("end")) or today
     month_raw = (request.GET.get("month") or "").strip()
-    year_raw = (request.GET.get("year") or "").strip()
 
     month_date = today.replace(day=1)
     if month_raw:
@@ -144,25 +132,10 @@ def _parse_revenue_filter(request) -> dict:
             pass
     month_value = month_date.strftime("%Y-%m")
 
-    year_int = today.year
-    if year_raw.isdigit():
-        parsed_year = int(year_raw)
-        if 2000 <= parsed_year <= 2100:
-            year_int = parsed_year
-    year_value = str(year_int)
-
-    start_dt = None
-    end_dt = None
-    label = "All time"
-
-    if range_mode == "time":
-        hours, label = _REVENUE_TIME_PRESETS[time_raw]
-        start_dt = now - timedelta(hours=hours)
-        end_dt = now
-    elif range_mode == "day":
+    if range_mode == "day":
         start_dt = _aware_day_start(day_value)
         end_dt = start_dt + timedelta(days=1)
-        label = day_value.strftime("%d %b %Y")
+        label = "Today" if day_value == today else day_value.strftime("%d %b %Y")
     elif range_mode == "period":
         if start_value > end_value:
             start_value, end_value = end_value, start_value
@@ -172,29 +145,27 @@ def _parse_revenue_filter(request) -> dict:
             label = start_value.strftime("%d %b %Y")
         else:
             label = f"{start_value.strftime('%d %b %Y')} → {end_value.strftime('%d %b %Y')}"
-    elif range_mode == "month":
+    else:  # month
         last_day = monthrange(month_date.year, month_date.month)[1]
         start_dt = _aware_day_start(month_date)
         end_dt = _aware_day_start(month_date.replace(day=last_day)) + timedelta(days=1)
         label = month_date.strftime("%B %Y")
-    elif range_mode == "year":
-        start_dt = _aware_day_start(date(year_int, 1, 1))
-        end_dt = _aware_day_start(date(year_int + 1, 1, 1))
-        label = str(year_int)
+
+    is_default = range_mode == "day" and day_value == today
 
     return {
         "range": range_mode,
-        "time": time_raw,
         "day": day_value.isoformat(),
         "start": start_value.isoformat(),
         "end": end_value.isoformat(),
         "month": month_value,
-        "year": year_value,
         "start_dt": start_dt,
         "end_dt": end_dt,
         "label": label,
-        "active": bool(range_mode and start_dt and end_dt),
-        "ui_range": range_mode or "month",
+        "active": True,
+        "is_default": is_default,
+        "ui_range": range_mode,
+        "modes": _REVENUE_RANGE_CHOICES,
     }
 
 

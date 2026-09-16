@@ -1,4 +1,5 @@
 {# Shared usage window filter: Time / Day / Period / Month / Year #}
+{# Optional usage_filter.modes (e.g. day/period/month) limits visible modes. #}
 <form
   class="usage-range-filter"
   method="get"
@@ -12,29 +13,40 @@
   {% endif %}
 
   <div class="urf-modes" role="group" aria-label="Usage period">
+    {% if not usage_filter.modes or "time" in usage_filter.modes %}
     <label class="urf-mode{% if usage_filter.ui_range == 'time' %} is-active{% endif %}">
       <input type="radio" name="range" value="time"{% if usage_filter.ui_range == 'time' %} checked{% endif %}>
       <span>Time</span>
     </label>
+    {% endif %}
+    {% if not usage_filter.modes or "day" in usage_filter.modes %}
     <label class="urf-mode{% if usage_filter.ui_range == 'day' %} is-active{% endif %}">
       <input type="radio" name="range" value="day"{% if usage_filter.ui_range == 'day' %} checked{% endif %}>
       <span>Day</span>
     </label>
+    {% endif %}
+    {% if not usage_filter.modes or "period" in usage_filter.modes %}
     <label class="urf-mode{% if usage_filter.ui_range == 'period' %} is-active{% endif %}">
       <input type="radio" name="range" value="period"{% if usage_filter.ui_range == 'period' %} checked{% endif %}>
       <span>Period</span>
     </label>
+    {% endif %}
+    {% if not usage_filter.modes or "month" in usage_filter.modes %}
     <label class="urf-mode{% if usage_filter.ui_range == 'month' %} is-active{% endif %}">
       <input type="radio" name="range" value="month"{% if usage_filter.ui_range == 'month' %} checked{% endif %}>
       <span>Month</span>
     </label>
+    {% endif %}
+    {% if not usage_filter.modes or "year" in usage_filter.modes %}
     <label class="urf-mode{% if usage_filter.ui_range == 'year' %} is-active{% endif %}">
       <input type="radio" name="range" value="year"{% if usage_filter.ui_range == 'year' %} checked{% endif %}>
       <span>Year</span>
     </label>
+    {% endif %}
   </div>
 
   <div class="urf-controls">
+    {% if not usage_filter.modes or "time" in usage_filter.modes %}
     <div
       class="urf-panel"
       data-range-panel="time"
@@ -50,7 +62,9 @@
         </select>
       </label>
     </div>
+    {% endif %}
 
+    {% if not usage_filter.modes or "day" in usage_filter.modes %}
     <div
       class="urf-panel"
       data-range-panel="day"
@@ -66,7 +80,9 @@
         >
       </label>
     </div>
+    {% endif %}
 
+    {% if not usage_filter.modes or "period" in usage_filter.modes %}
     <div
       class="urf-panel urf-panel-period"
       data-range-panel="period"
@@ -92,7 +108,9 @@
         >
       </label>
     </div>
+    {% endif %}
 
+    {% if not usage_filter.modes or "month" in usage_filter.modes %}
     <div
       class="urf-panel"
       data-range-panel="month"
@@ -108,7 +126,9 @@
         >
       </label>
     </div>
+    {% endif %}
 
+    {% if not usage_filter.modes or "year" in usage_filter.modes %}
     <div
       class="urf-panel"
       data-range-panel="year"
@@ -128,6 +148,7 @@
         >
       </label>
     </div>
+    {% endif %}
 
     <button type="submit" class="urf-apply btn btn-primary btn-sm">Apply</button>
   </div>
@@ -142,7 +163,9 @@
 
   function selectedRange() {
     var checked = form.querySelector('input[name="range"]:checked');
-    return checked ? checked.value : "time";
+    if (checked) return checked.value;
+    var first = form.querySelector('input[name="range"]');
+    return first ? first.value : "day";
   }
 
   function syncPanels() {

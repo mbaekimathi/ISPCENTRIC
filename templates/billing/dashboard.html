@@ -86,19 +86,15 @@
         <div>
           <h2>Revenue</h2>
           <p class="billing-section-sub">
-            {% if revenue_filter.active %}
-              Collections for {{ revenue_filter.label }}.
-            {% else %}
-              All-time collections. Filter by time, day, period, month, or year.
-            {% endif %}
+            Collections for {{ revenue_filter.label }}.
           </p>
         </div>
-        {% if revenue_filter.active %}
+        {% if not revenue_filter.is_default %}
           <div class="billing-section-actions">
             <a
               class="btn btn-ghost btn-sm"
               href="{% url 'billing:dashboard' %}{% if attention_filter.value != 'pppoe' or payments_filter.value != 'all' %}?{% if attention_filter.value != 'pppoe' %}attention={{ attention_filter.value }}{% endif %}{% if attention_filter.value != 'pppoe' and payments_filter.value != 'all' %}&{% endif %}{% if payments_filter.value != 'all' %}payments={{ payments_filter.value }}{% endif %}{% endif %}"
-            >Clear filter</a>
+            >Today</a>
           </div>
         {% endif %}
       </div>
@@ -145,20 +141,14 @@
             action="{% url 'billing:dashboard' %}"
             id="billing-attention-filter"
           >
-            {% if revenue_filter.active %}
-              <input type="hidden" name="range" value="{{ revenue_filter.range }}">
-              {% if revenue_filter.range == "time" %}
-                <input type="hidden" name="time" value="{{ revenue_filter.time }}">
-              {% elif revenue_filter.range == "day" %}
-                <input type="hidden" name="day" value="{{ revenue_filter.day }}">
-              {% elif revenue_filter.range == "period" %}
-                <input type="hidden" name="start" value="{{ revenue_filter.start }}">
-                <input type="hidden" name="end" value="{{ revenue_filter.end }}">
-              {% elif revenue_filter.range == "month" %}
-                <input type="hidden" name="month" value="{{ revenue_filter.month }}">
-              {% elif revenue_filter.range == "year" %}
-                <input type="hidden" name="year" value="{{ revenue_filter.year }}">
-              {% endif %}
+            <input type="hidden" name="range" value="{{ revenue_filter.range }}">
+            {% if revenue_filter.range == "day" %}
+              <input type="hidden" name="day" value="{{ revenue_filter.day }}">
+            {% elif revenue_filter.range == "period" %}
+              <input type="hidden" name="start" value="{{ revenue_filter.start }}">
+              <input type="hidden" name="end" value="{{ revenue_filter.end }}">
+            {% elif revenue_filter.range == "month" %}
+              <input type="hidden" name="month" value="{{ revenue_filter.month }}">
             {% endif %}
             {% if payments_filter.value != "all" %}
               <input type="hidden" name="payments" value="{{ payments_filter.value }}">
@@ -311,11 +301,7 @@
         <div>
           <h2>Payments</h2>
           <p class="billing-section-sub">
-            {% if revenue_filter.active %}
-              Successful collections for {{ revenue_filter.label }}
-            {% else %}
-              Successful collections for this organization
-            {% endif %}
+            Successful collections for {{ revenue_filter.label }}
             {% if payments_filter.value != "all" %}
               · showing {{ payments_filter.label }}
             {% endif %}.
@@ -328,20 +314,14 @@
             action="{% url 'billing:dashboard' %}"
             id="billing-payments-filter"
           >
-            {% if revenue_filter.active %}
-              <input type="hidden" name="range" value="{{ revenue_filter.range }}">
-              {% if revenue_filter.range == "time" %}
-                <input type="hidden" name="time" value="{{ revenue_filter.time }}">
-              {% elif revenue_filter.range == "day" %}
-                <input type="hidden" name="day" value="{{ revenue_filter.day }}">
-              {% elif revenue_filter.range == "period" %}
-                <input type="hidden" name="start" value="{{ revenue_filter.start }}">
-                <input type="hidden" name="end" value="{{ revenue_filter.end }}">
-              {% elif revenue_filter.range == "month" %}
-                <input type="hidden" name="month" value="{{ revenue_filter.month }}">
-              {% elif revenue_filter.range == "year" %}
-                <input type="hidden" name="year" value="{{ revenue_filter.year }}">
-              {% endif %}
+            <input type="hidden" name="range" value="{{ revenue_filter.range }}">
+            {% if revenue_filter.range == "day" %}
+              <input type="hidden" name="day" value="{{ revenue_filter.day }}">
+            {% elif revenue_filter.range == "period" %}
+              <input type="hidden" name="start" value="{{ revenue_filter.start }}">
+              <input type="hidden" name="end" value="{{ revenue_filter.end }}">
+            {% elif revenue_filter.range == "month" %}
+              <input type="hidden" name="month" value="{{ revenue_filter.month }}">
             {% endif %}
             {% if attention_filter.value != "pppoe" %}
               <input type="hidden" name="attention" value="{{ attention_filter.value }}">
@@ -478,16 +458,13 @@
         <div class="billing-dash-empty">
           <p class="billing-dash-empty-title">No payments yet</p>
           <p class="billing-dash-empty-copy">
-            {% if revenue_filter.active and payments_filter.value == "all" %}
-              No collections in this calendar range.
-            {% elif payments_filter.value != "all" %}
-              No {{ payments_filter.label }} collections
-              {% if revenue_filter.active %} in this calendar range{% endif %}.
+            {% if payments_filter.value == "all" %}
+              No collections for {{ revenue_filter.label }}.
+            {% else %}
+              No {{ payments_filter.label }} collections for {{ revenue_filter.label }}.
               {% if payments_filter.total_count %}
                 Switch the service filter to see {{ payments_filter.total_count }} other payment{{ payments_filter.total_count|pluralize }}.
               {% endif %}
-            {% else %}
-              Successful M-Pesa and other collections will appear here.
             {% endif %}
           </p>
         </div>

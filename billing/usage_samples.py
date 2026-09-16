@@ -842,16 +842,65 @@ def apply_live_usage_overlay(
         )
 
     summary = payload.setdefault("summary", {})
+    clients_total = int((summary or {}).get("clients_total") or len(top_users) or 0)
     if isinstance(summary, dict) and has_live:
         summary["clients_online"] = surfing_now
         summary["clients_surfing_session"] = surfing_now
+        summary["clients_offline"] = max(0, clients_total - surfing_now)
         summary["gadgets_online"] = gadgets_now
         summary["live_at"] = live.get("at") or ""
+    elif isinstance(summary, dict) and summary.get("clients_offline") is None:
+        online = int(summary.get("clients_online") or 0)
+        summary["clients_offline"] = max(0, clients_total - online)
+
+    # Keep ranked chart device counts and offline set aligned with live chips.
+    top_chart = payload.get("top_chart")
+    if isinstance(top_chart, dict) and top_users:
+        ranked = top_users[:40]
+        top_chart["devices_connected"] = [
+            int(u.get("devices_connected") or u.get("gadgets_connected") or 0)
+            for u in ranked
+            if isinstance(u, dict)
+        ]
+    offline_users = [
+        u
+        for u in top_users
+        if isinstance(u, dict)
+        and not u.get("latest_active")
+        and not u.get("live_active")
+    ]
+    offline_users.sort(
+        key=lambda u: (
+            float(u.get("online_ratio") or 0),
+            -int(u.get("downtime_count") or 0),
+            (u.get("full_name") or "").casefold(),
+        )
+    )
+    offline_users = offline_users[:40]
+    if not offline_users and top_users:
+        offline_users = sorted(
+            [u for u in top_users if isinstance(u, dict)],
+            key=lambda u: (
+                float(u.get("online_ratio") or 0),
+                -int(u.get("downtime_count") or 0),
+                (u.get("full_name") or "").casefold(),
+            ),
+        )[:40]
+    payload["offline_chart"] = {
+        "labels": [u.get("full_name") or "Client" for u in offline_users],
+        "online_ratio": [float(u.get("online_ratio") or 0) for u in offline_users],
+        "downtime_count": [int(u.get("downtime_count") or 0) for u in offline_users],
+    }
     payload["live"] = {
         "ok": has_live,
         "at": live.get("at") or "",
         "clients_online": surfing_now if has_live else int(
             (summary or {}).get("clients_online") or 0
+        ),
+        "clients_offline": (
+            max(0, clients_total - surfing_now)
+            if has_live
+            else int((summary or {}).get("clients_offline") or 0)
         ),
         "gadgets_online": gadgets_now if has_live else int(
             (summary or {}).get("gadgets_online") or 0
@@ -2746,6 +2795,12 @@ def _empty_org_payload(hours: int, *, error: str = "", service: str = "") -> dic
             "online_ratio": [],
             "downtime_count": [],
             "live_download_bps": [],
+            "devices_connected": [],
+        },
+        "offline_chart": {
+            "labels": [],
+            "online_ratio": [],
+            "downtime_count": [],
         },
         "level_chart": {"labels": ["High", "Medium", "Low", "Idle"], "counts": [0, 0, 0, 0]},
         "error": error,
@@ -3203,6 +3258,30 @@ def _build_org_usage_payload(
         if (per_customer.get(cid) or {}).get("latest_active")
     )
     gadgets_online = sum(int(u.get("gadgets_connected") or 0) for u in top_users)
+    clients_offline = max(0, clients_total - online_now)
+    # Offline / low-uptime set for the Offline clients chart (worst first).
+    offline_ranked = sorted(
+        [
+            u
+            for u in top_users
+            if not u.get("latest_active") and not u.get("live_active")
+        ],
+        key=lambda u: (
+            float(u.get("online_ratio") or 0),
+            -int(u.get("downtime_count") or 0),
+            (u.get("full_name") or "").casefold(),
+        ),
+    )[:40]
+    if not offline_ranked:
+        # Fall back to lowest online-ratio clients when everyone is currently online.
+        offline_ranked = sorted(
+            top_users,
+            key=lambda u: (
+                float(u.get("online_ratio") or 0),
+                -int(u.get("downtime_count") or 0),
+                (u.get("full_name") or "").casefold(),
+            ),
+        )[: min(40, len(top_users))]
     router_filter = _usage_router_cache_key(
         router_id=router_id, unassigned_only=unassigned_only
     )
@@ -3257,6 +3336,19 @@ def _build_org_usage_payload(
             "live_download_bps": [
                 int(u.get("live_download_bps") or 0) for u in top_users[:40]
             ],
+            "devices_connected": [
+                int(u.get("devices_connected") or u.get("gadgets_connected") or 0)
+                for u in top_users[:40]
+            ],
+        },
+        "offline_chart": {
+            "labels": [u["full_name"] for u in offline_ranked],
+            "online_ratio": [
+                float(u.get("online_ratio") or 0) for u in offline_ranked
+            ],
+            "downtime_count": [
+                int(u.get("downtime_count") or 0) for u in offline_ranked
+            ],
         },
         "level_chart": {
             "labels": ["High", "Medium", "Low", "Idle"],
@@ -3271,6 +3363,7 @@ def _build_org_usage_payload(
             "clients_tracked": clients_with_samples,
             "clients_total": clients_total,
             "clients_online": online_now,
+            "clients_offline": clients_offline,
             "clients_surfing_session": online_now,
             "gadgets_online": gadgets_online,
             "online_ratio": (

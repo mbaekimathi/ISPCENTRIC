@@ -19,22 +19,6 @@
     <div class="noc-bar-left">
       <span class="noc-live-pill" data-live-pill>{% if board.summary.has_live_cache %}Live{% else %}Standby{% endif %}</span>
       <span class="noc-clock" data-noc-clock>—</span>
-      {% if not noc_focus %}
-      <span class="noc-bar-stat"><strong data-stat="health">{{ board.summary.health_score|default:"—" }}{% if board.summary.health_score is not None %}%{% endif %}</strong> fleet</span>
-      <span class="noc-bar-stat"><strong data-stat="at-risk">{{ board.summary.customers_at_risk }}</strong> at risk</span>
-      {% elif noc_focus == "down" %}
-      <span class="noc-bar-stat sev-critical"><strong data-down-stat="down">{{ board.summary.routers_down }}</strong> down</span>
-      <span class="noc-bar-stat sev-major"><strong data-down-stat="degraded">{{ board.summary.routers_degraded }}</strong> degraded</span>
-      {% elif noc_focus == "impact" %}
-      <span class="noc-bar-stat"><strong data-impact-stat="not-surfing">—</strong> stuck</span>
-      <span class="noc-bar-stat"><strong data-impact-stat="under">{{ board.summary.clients_underperforming }}</strong> under plan</span>
-      {% elif noc_focus == "faults" %}
-      <span class="noc-bar-stat"><strong data-fault-stat="total">{{ board.summary.faults_open }}</strong> open</span>
-      <span class="noc-bar-stat sev-critical"><strong data-fault-stat="unassigned">{{ board.summary.faults_unassigned }}</strong> unassigned</span>
-      {% elif noc_focus == "performance" %}
-      <span class="noc-bar-stat"><strong data-perf-stat="score">{% if board.summary.performance_score is not None %}{{ board.summary.performance_score }}%{% else %}—{% endif %}</strong> fleet</span>
-      <span class="noc-bar-stat"><strong data-perf-stat="under">{{ board.summary.clients_underperforming }}</strong> under plan</span>
-      {% endif %}
     </div>
     <div class="noc-bar-actions">
       <button type="button" class="btn btn-primary btn-sm" data-noc-refresh {% if not board.summary.routers_total %}disabled{% endif %} title="Refresh fleet status">
@@ -46,201 +30,195 @@
 
   {# -------- OPS BOARD -------- #}
   <div class="noc-view" data-noc-view="ops" {% if noc_focus %}hidden{% endif %}>
-    <div class="noc-metrics" aria-label="Alarm severity">
-      <button type="button" class="noc-metric is-critical" data-filter-sev="critical"><span>Critical</span><strong data-stat="critical">{{ board.summary.alarms_critical }}</strong></button>
-      <button type="button" class="noc-metric is-major" data-filter-sev="major"><span>Major</span><strong data-stat="major">{{ board.summary.alarms_major }}</strong></button>
-      <button type="button" class="noc-metric is-minor" data-filter-sev="minor"><span>Minor</span><strong data-stat="minor">{{ board.summary.alarms_minor }}</strong></button>
-      <button type="button" class="noc-metric is-all is-active" data-filter-sev=""><span>All open</span><strong data-stat="alarms">{{ board.summary.alarms_open }}</strong></button>
+    <div class="noc-kpi-strip" aria-label="Alarm severity">
+      <button type="button" class="noc-kpi-chip is-critical" data-filter-sev="critical"><span>Critical</span><strong data-stat="critical">{{ board.summary.alarms_critical }}</strong></button>
+      <button type="button" class="noc-kpi-chip is-major" data-filter-sev="major"><span>Major</span><strong data-stat="major">{{ board.summary.alarms_major }}</strong></button>
+      <button type="button" class="noc-kpi-chip is-minor" data-filter-sev="minor"><span>Minor</span><strong data-stat="minor">{{ board.summary.alarms_minor }}</strong></button>
+      <button type="button" class="noc-kpi-chip is-all is-active" data-filter-sev=""><span>Open</span><strong data-stat="alarms">{{ board.summary.alarms_open }}</strong></button>
+      <span class="noc-kpi-chip is-readonly"><span>Fleet</span><strong data-stat="health">{{ board.summary.health_score|default:"—" }}{% if board.summary.health_score is not None %}%{% endif %}</strong></span>
+      <span class="noc-kpi-chip is-readonly"><span>At risk</span><strong data-stat="at-risk">{{ board.summary.customers_at_risk }}</strong></span>
     </div>
     <div class="noc-toolbar">
-      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="ops" placeholder="Search…" autocomplete="off"></label>
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="ops" placeholder="Search alarms, routers…" autocomplete="off"></label>
       <select data-noc-site data-scope="ops"><option value="">All sites</option></select>
       <label class="noc-check"><input type="checkbox" data-noc-hide-acked> Hide acked</label>
-      <div class="noc-display-toggle" role="tablist" aria-label="View mode">
-        <button type="button" class="is-active" data-noc-display="visual" role="tab" aria-selected="true">Visuals</button>
-        <button type="button" data-noc-display="data" role="tab" aria-selected="false">Data</button>
-      </div>
     </div>
-    <div class="noc-visual-panel" data-noc-panel="visual">
-      <div class="noc-viz">
-        <article class="noc-chart-card noc-chart-card-trend">
-          <header class="noc-chart-head"><h3>Fleet health trend</h3><span class="noc-chart-tag">24h</span></header>
-          <p class="noc-chart-hint">Average router score over recent samples</p>
+    <div class="noc-stage">
+      <section class="noc-trend" data-noc-panel="visual">
+        <header class="noc-section-head">
+          <div>
+            <h2>Fleet health</h2>
+            <p>24h average router score</p>
+          </div>
+          <span class="noc-chart-tag">Trend</span>
+        </header>
+        <div class="noc-trend-grid">
           <div class="noc-chart-wrap noc-chart-wrap-trend"><canvas data-noc-chart="ops-trend" aria-label="Fleet health trend"></canvas></div>
-        </article>
-        <div class="noc-viz-side">
-          <article class="noc-chart-card noc-chart-card-sm">
-            <header class="noc-chart-head"><h3>Alarms</h3></header>
-            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="ops-severity" aria-label="Alarms by severity"></canvas></div>
-          </article>
-          <article class="noc-chart-card noc-chart-card-sm">
-            <header class="noc-chart-head"><h3>Fleet status</h3></header>
-            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="ops-fleet" aria-label="Fleet status"></canvas></div>
-          </article>
+          <div class="noc-mix">
+            <div class="noc-chart-wrap noc-chart-wrap-mix"><canvas data-noc-chart="ops-severity" aria-label="Alarms by severity"></canvas></div>
+            <div class="noc-chart-wrap noc-chart-wrap-mix" hidden><canvas data-noc-chart="ops-fleet" aria-label="Fleet status"></canvas></div>
+            <div class="noc-chart-wrap noc-chart-wrap-mix" hidden><canvas data-noc-chart="ops-sites" aria-label="Clients at risk by site"></canvas></div>
+          </div>
         </div>
-        <article class="noc-chart-card">
-          <header class="noc-chart-head"><h3>Clients at risk by site</h3></header>
-          <div class="noc-chart-wrap noc-chart-wrap-bar-sm"><canvas data-noc-chart="ops-sites" aria-label="Clients at risk by site"></canvas></div>
-        </article>
-        <article class="noc-chart-card">
-          <header class="noc-chart-head"><h3>Clients needing attention</h3><span class="noc-chart-tag" data-viz-count="ops-clients">0</span></header>
-          <div class="noc-client-list" data-viz-clients="ops"></div>
-        </article>
+      </section>
+      <div class="noc-raw" data-noc-panel="data">
+        <section class="noc-list-block">
+          <header class="noc-section-head">
+            <h2>Alarms</h2>
+            <span class="noc-pane-count" data-alarm-count>0</span>
+          </header>
+          <div class="noc-raw-list" data-alarm-list></div>
+        </section>
+        <section class="noc-list-block">
+          <header class="noc-section-head">
+            <h2>Fleet</h2>
+            <span class="noc-pane-count" data-fleet-count>0</span>
+          </header>
+          <div class="noc-raw-list" data-matrix-body></div>
+          <div class="noc-client-list" data-viz-clients="ops" hidden></div>
+          <span hidden data-viz-count="ops-clients">0</span>
+        </section>
+        <section class="noc-list-block noc-list-block-wide">
+          <header class="noc-section-head">
+            <h2>Recent events</h2>
+            <span class="noc-pane-count" data-timeline-count>0</span>
+          </header>
+          <div class="noc-raw-list noc-timeline-list" data-timeline-list></div>
+        </section>
+        <aside class="noc-detail-drawer" data-inspector-panel hidden>
+          <header class="noc-section-head"><h2 data-inspector-title>Details</h2></header>
+          <div class="noc-inspector-body" data-inspector-body></div>
+        </aside>
       </div>
-    </div>
-    <div class="noc-data-panel" data-noc-panel="data" hidden>
-    <div class="noc-layout">
-      <section class="noc-pane">
-        <header class="noc-pane-head"><h2>Alarms</h2><span class="noc-pane-count" data-alarm-count>0</span></header>
-        <div class="noc-alarm-list" data-alarm-list></div>
-      </section>
-      <section class="noc-pane">
-        <header class="noc-pane-head"><h2>Fleet</h2></header>
-        <div class="noc-matrix-body" data-matrix-body></div>
-      </section>
-    </div>
-    <section class="noc-detail-panel" data-inspector-panel hidden>
-      <header class="noc-detail-head"><h2 data-inspector-title>Details</h2></header>
-      <div class="noc-inspector-body" data-inspector-body></div>
-    </section>
-    <section class="noc-pane noc-events-pane">
-      <header class="noc-pane-head"><h2>Recent events</h2><span class="noc-pane-count" data-timeline-count>0</span></header>
-      <div class="noc-timeline-list noc-timeline-compact" data-timeline-list></div>
-    </section>
     </div>
   </div>
 
   {# -------- PERFORMANCE -------- #}
   <div class="noc-view" data-noc-view="performance" {% if noc_focus != "performance" %}hidden{% endif %}>
-    <div class="noc-metrics" aria-label="Performance snapshot">
-      <div class="noc-metric is-readonly"><span>Fleet score</span><strong data-perf-stat="score">{% if board.summary.performance_score is not None %}{{ board.summary.performance_score }}%{% else %}—{% endif %}</strong></div>
-      <div class="noc-metric is-readonly tone-ok"><span>Sessions</span><strong data-perf-stat="sessions">{{ board.summary.sessions_active }}</strong></div>
-      <div class="noc-metric is-readonly sev-major"><span>Under plan</span><strong data-perf-stat="under">{{ board.summary.clients_underperforming }}</strong></div>
-      <div class="noc-metric is-readonly"><span>Throughput</span><strong data-perf-stat="throughput">{{ board.summary.fleet_throughput_mbps }}</strong></div>
+    <div class="noc-kpi-strip" aria-label="Performance snapshot">
+      <span class="noc-kpi-chip is-readonly"><span>Fleet score</span><strong data-perf-stat="score">{% if board.summary.performance_score is not None %}{{ board.summary.performance_score }}%{% else %}—{% endif %}</strong></span>
+      <span class="noc-kpi-chip is-readonly tone-ok"><span>Sessions</span><strong data-perf-stat="sessions">{{ board.summary.sessions_active }}</strong></span>
+      <span class="noc-kpi-chip is-readonly sev-major"><span>Under plan</span><strong data-perf-stat="under">{{ board.summary.clients_underperforming }}</strong></span>
+      <span class="noc-kpi-chip is-readonly"><span>Throughput</span><strong data-perf-stat="throughput">{{ board.summary.fleet_throughput_mbps }}</strong><em>Mbps</em></span>
     </div>
     <div class="noc-toolbar">
-      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="performance" placeholder="Search…" autocomplete="off"></label>
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="performance" placeholder="Search routers or clients…" autocomplete="off"></label>
       <select data-noc-site data-scope="performance"><option value="">All sites</option></select>
       <select data-perf-tone>
-        <option value="">All</option>
+        <option value="">All scores</option>
         <option value="bad">Needs attention</option>
         <option value="warn">Fair</option>
         <option value="ok">Good</option>
       </select>
-      <div class="noc-display-toggle" role="tablist" aria-label="View mode">
-        <button type="button" class="is-active" data-noc-display="visual" role="tab" aria-selected="true">Visuals</button>
-        <button type="button" data-noc-display="data" role="tab" aria-selected="false">Data</button>
-      </div>
     </div>
-    <div class="noc-visual-panel" data-noc-panel="visual">
-      <div class="noc-viz">
-        <article class="noc-chart-card noc-chart-card-trend">
-          <header class="noc-chart-head"><h3>Client speed vs plan</h3><span class="noc-chart-tag">Top clients</span></header>
-          <p class="noc-chart-hint">Peak download as % of package — lower is worse</p>
+    <div class="noc-stage">
+      <section class="noc-trend" data-noc-panel="visual">
+        <header class="noc-section-head">
+          <div>
+            <h2>Speed vs plan</h2>
+            <p>Peak download as % of package</p>
+          </div>
+          <span class="noc-chart-tag">Trend</span>
+        </header>
+        <div class="noc-trend-grid">
           <div class="noc-chart-wrap noc-chart-wrap-trend"><canvas data-noc-chart="perf-client-bars" aria-label="Client speed versus plan"></canvas></div>
-        </article>
-        <div class="noc-viz-side">
-          <article class="noc-chart-card noc-chart-card-sm">
-            <header class="noc-chart-head"><h3>Sessions</h3></header>
-            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="perf-clients" aria-label="Session quality"></canvas></div>
-          </article>
-          <article class="noc-chart-card noc-chart-card-sm">
-            <header class="noc-chart-head"><h3>Routers</h3></header>
-            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="perf-tones" aria-label="Router performance"></canvas></div>
-          </article>
+          <div class="noc-mix">
+            <div class="noc-chart-wrap noc-chart-wrap-mix"><canvas data-noc-chart="perf-tones" aria-label="Router performance"></canvas></div>
+            <div class="noc-chart-wrap noc-chart-wrap-mix" hidden><canvas data-noc-chart="perf-clients" aria-label="Session quality"></canvas></div>
+            <div class="noc-chart-wrap noc-chart-wrap-mix" hidden><canvas data-noc-chart="perf-trend" aria-label="Router health trend"></canvas></div>
+          </div>
         </div>
-        <article class="noc-chart-card">
-          <header class="noc-chart-head"><h3>Router score trend</h3><span class="noc-chart-tag">24h</span></header>
-          <div class="noc-chart-wrap noc-chart-wrap-bar-sm"><canvas data-noc-chart="perf-trend" aria-label="Router health trend"></canvas></div>
-        </article>
-        <article class="noc-chart-card">
-          <header class="noc-chart-head"><h3>Clients below plan</h3><span class="noc-chart-tag" data-viz-count="perf-clients">0</span></header>
-          <div class="noc-client-list" data-viz-clients="perf"></div>
-        </article>
+      </section>
+      <div class="noc-raw" data-noc-panel="data">
+        <section class="noc-list-block noc-list-block-wide">
+          <header class="noc-section-head">
+            <h2>Routers</h2>
+            <span class="noc-pane-count" data-perf-router-count>0</span>
+          </header>
+          <div class="noc-table-wrap" data-perf-router-table></div>
+        </section>
+        <section class="noc-list-block">
+          <header class="noc-section-head">
+            <h2>Clients below plan</h2>
+            <span class="noc-pane-count" data-perf-client-count>0</span>
+          </header>
+          <div class="noc-table-wrap" data-perf-client-table></div>
+          <div class="noc-client-list" data-viz-clients="perf" hidden></div>
+          <span hidden data-viz-count="perf-clients">0</span>
+        </section>
+        <section class="noc-list-block">
+          <header class="noc-section-head">
+            <h2>Suggested actions</h2>
+            <span class="noc-pane-count" data-perf-improve-count>0</span>
+          </header>
+          <div class="noc-improve-list noc-raw-list" data-perf-improve-list></div>
+        </section>
       </div>
-    </div>
-    <div class="noc-data-panel" data-noc-panel="data" hidden>
-    <section class="noc-pane">
-      <header class="noc-pane-head"><h2>MikroTik performance</h2><span class="noc-pane-count" data-perf-router-count>0</span></header>
-      <div class="noc-table-wrap" data-perf-router-table></div>
-    </section>
-    <section class="noc-pane">
-      <header class="noc-pane-head"><h2>Suggested actions</h2><span class="noc-pane-count" data-perf-improve-count>0</span></header>
-      <div class="noc-improve-list" data-perf-improve-list></div>
-    </section>
-    <section class="noc-pane">
-      <header class="noc-pane-head"><h2>Clients below plan</h2><span class="noc-pane-count" data-perf-client-count>0</span></header>
-      <div class="noc-table-wrap" data-perf-client-table></div>
-    </section>
     </div>
   </div>
 
   {# -------- DOWN ROUTERS -------- #}
   <div class="noc-view" data-noc-view="down" {% if noc_focus != "down" %}hidden{% endif %}>
-    <div class="noc-metrics" aria-label="Outage snapshot">
-      <div class="noc-metric is-readonly sev-critical"><span>Down</span><strong data-down-stat="down">{{ board.summary.routers_down }}</strong></div>
-      <div class="noc-metric is-readonly sev-major"><span>Degraded</span><strong data-down-stat="degraded">{{ board.summary.routers_degraded }}</strong></div>
-      <div class="noc-metric is-readonly"><span>Clients affected</span><strong data-down-stat="on-down">{{ board.summary.customers_on_down }}</strong></div>
+    <div class="noc-kpi-strip" aria-label="Outage snapshot">
+      <span class="noc-kpi-chip is-readonly sev-critical"><span>Down</span><strong data-down-stat="down">{{ board.summary.routers_down }}</strong></span>
+      <span class="noc-kpi-chip is-readonly sev-major"><span>Degraded</span><strong data-down-stat="degraded">{{ board.summary.routers_degraded }}</strong></span>
+      <span class="noc-kpi-chip is-readonly"><span>Clients affected</span><strong data-down-stat="on-down">{{ board.summary.customers_on_down }}</strong></span>
     </div>
     <div class="noc-toolbar">
-      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="down" placeholder="Search…" autocomplete="off"></label>
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="down" placeholder="Search routers…" autocomplete="off"></label>
       <select data-noc-site data-scope="down"><option value="">All sites</option></select>
       <select data-down-tone>
         <option value="">All problems</option>
         <option value="down">Down only</option>
         <option value="degraded">Degraded only</option>
       </select>
-      <div class="noc-display-toggle" role="tablist" aria-label="View mode">
-        <button type="button" class="is-active" data-noc-display="visual" role="tab" aria-selected="true">Visuals</button>
-        <button type="button" data-noc-display="data" role="tab" aria-selected="false">Data</button>
-      </div>
     </div>
-    <div class="noc-visual-panel" data-noc-panel="visual">
-      <div class="noc-viz">
-        <article class="noc-chart-card noc-chart-card-trend">
-          <header class="noc-chart-head"><h3>Outage impact trend</h3><span class="noc-chart-tag">24h</span></header>
-          <p class="noc-chart-hint">Health score on problem routers over time</p>
+    <div class="noc-stage">
+      <section class="noc-trend" data-noc-panel="visual">
+        <header class="noc-section-head">
+          <div>
+            <h2>Outage impact</h2>
+            <p>Problem router health over 24h</p>
+          </div>
+          <span class="noc-chart-tag">Trend</span>
+        </header>
+        <div class="noc-trend-grid">
           <div class="noc-chart-wrap noc-chart-wrap-trend"><canvas data-noc-chart="down-trend" aria-label="Outage impact trend"></canvas></div>
-        </article>
-        <div class="noc-viz-side">
-          <article class="noc-chart-card noc-chart-card-sm">
-            <header class="noc-chart-head"><h3>Routers</h3></header>
-            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="down-status" aria-label="Problem routers"></canvas></div>
-          </article>
-          <article class="noc-chart-card noc-chart-card-sm">
-            <header class="noc-chart-head"><h3>Clients hit</h3></header>
-            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="down-clients" aria-label="Clients affected"></canvas></div>
-          </article>
+          <div class="noc-mix">
+            <div class="noc-chart-wrap noc-chart-wrap-mix"><canvas data-noc-chart="down-status" aria-label="Problem routers"></canvas></div>
+            <div class="noc-chart-wrap noc-chart-wrap-mix" hidden><canvas data-noc-chart="down-clients" aria-label="Clients affected"></canvas></div>
+            <div class="noc-chart-wrap noc-chart-wrap-mix" hidden><canvas data-noc-chart="down-impact" aria-label="Clients per problem router"></canvas></div>
+          </div>
         </div>
-        <article class="noc-chart-card noc-chart-card-span">
-          <header class="noc-chart-head"><h3>Clients exposed by router</h3><span class="noc-chart-tag" data-viz-count="down-clients">0</span></header>
-          <div class="noc-chart-wrap noc-chart-wrap-bar-sm"><canvas data-noc-chart="down-impact" aria-label="Clients per problem router"></canvas></div>
-          <div class="noc-client-list noc-client-list-inline" data-viz-clients="down"></div>
-        </article>
+      </section>
+      <div class="noc-raw" data-noc-panel="data">
+        <section class="noc-list-block noc-list-block-wide">
+          <header class="noc-section-head">
+            <h2>Problem routers</h2>
+            <span class="noc-pane-count" data-down-count>0</span>
+          </header>
+          <div class="noc-table-wrap" data-down-table></div>
+          <div class="noc-client-list" data-viz-clients="down" hidden></div>
+          <span hidden data-viz-count="down-clients">0</span>
+        </section>
+        <aside class="noc-detail-drawer" data-down-detail-panel hidden>
+          <header class="noc-section-head"><h2 data-down-detail-title>Router details</h2></header>
+          <div class="noc-inspector-body" data-down-detail></div>
+        </aside>
       </div>
-    </div>
-    <div class="noc-data-panel" data-noc-panel="data" hidden>
-    <section class="noc-pane">
-      <header class="noc-pane-head"><h2>Problem routers</h2><span class="noc-pane-count" data-down-count>0</span></header>
-      <div class="noc-table-wrap" data-down-table></div>
-    </section>
-    <section class="noc-detail-panel" data-down-detail-panel hidden>
-      <header class="noc-detail-head"><h2 data-down-detail-title>Router details</h2></header>
-      <div class="noc-inspector-body" data-down-detail></div>
-    </section>
     </div>
   </div>
 
   {# -------- CLIENT QUALITY (impact) -------- #}
   <div class="noc-view" data-noc-view="impact" {% if noc_focus != "impact" %}hidden{% endif %}>
-    <div class="noc-metrics" aria-label="Quality snapshot">
-      <div class="noc-metric is-readonly tone-ok"><span>Surfing</span><strong data-impact-stat="surfing">—</strong></div>
-      <div class="noc-metric is-readonly sev-major"><span>Stuck</span><strong data-impact-stat="not-surfing">—</strong></div>
-      <div class="noc-metric is-readonly sev-major"><span>Under plan</span><strong data-impact-stat="under">{{ board.summary.clients_underperforming }}</strong></div>
-      <div class="noc-metric is-readonly"><span>Idle</span><strong data-impact-stat="idle">{{ board.summary.clients_idle }}</strong></div>
+    <div class="noc-kpi-strip" aria-label="Quality snapshot">
+      <span class="noc-kpi-chip is-readonly tone-ok"><span>Surfing</span><strong data-impact-stat="surfing">—</strong></span>
+      <span class="noc-kpi-chip is-readonly sev-major"><span>Stuck</span><strong data-impact-stat="not-surfing">—</strong></span>
+      <span class="noc-kpi-chip is-readonly sev-major"><span>Under plan</span><strong data-impact-stat="under">{{ board.summary.clients_underperforming }}</strong></span>
+      <span class="noc-kpi-chip is-readonly"><span>Idle</span><strong data-impact-stat="idle">{{ board.summary.clients_idle }}</strong></span>
     </div>
     <div class="noc-toolbar">
-      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="impact" placeholder="Search…" autocomplete="off"></label>
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="impact" placeholder="Search clients…" autocomplete="off"></label>
       <select data-impact-nas><option value="">All NAS</option></select>
       <select data-impact-kind>
         <option value="">All issues</option>
@@ -248,55 +226,48 @@
         <option value="underperforming">Under plan</option>
         <option value="idle">Idle</option>
       </select>
-      <div class="noc-display-toggle" role="tablist" aria-label="View mode">
-        <button type="button" class="is-active" data-noc-display="visual" role="tab" aria-selected="true">Visuals</button>
-        <button type="button" data-noc-display="data" role="tab" aria-selected="false">Data</button>
-      </div>
     </div>
-    <div class="noc-visual-panel" data-noc-panel="visual">
-      <div class="noc-viz">
-        <article class="noc-chart-card noc-chart-card-trend">
-          <header class="noc-chart-head"><h3>Client attainment</h3><span class="noc-chart-tag">Live</span></header>
-          <p class="noc-chart-hint">How close each client is to package speed</p>
+    <div class="noc-stage">
+      <section class="noc-trend" data-noc-panel="visual">
+        <header class="noc-section-head">
+          <div>
+            <h2>Plan attainment</h2>
+            <p>How close clients are to package speed</p>
+          </div>
+          <span class="noc-chart-tag">Live</span>
+        </header>
+        <div class="noc-trend-grid">
           <div class="noc-chart-wrap noc-chart-wrap-trend"><canvas data-noc-chart="impact-attain" aria-label="Client plan attainment"></canvas></div>
-        </article>
-        <div class="noc-viz-side">
-          <article class="noc-chart-card noc-chart-card-sm">
-            <header class="noc-chart-head"><h3>Issue mix</h3></header>
-            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="impact-kinds" aria-label="Issue types"></canvas></div>
-          </article>
-          <article class="noc-chart-card noc-chart-card-sm">
-            <header class="noc-chart-head"><h3>Access</h3></header>
-            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="impact-surfing" aria-label="Surfing versus stuck"></canvas></div>
-          </article>
+          <div class="noc-mix">
+            <div class="noc-chart-wrap noc-chart-wrap-mix"><canvas data-noc-chart="impact-kinds" aria-label="Issue types"></canvas></div>
+            <div class="noc-chart-wrap noc-chart-wrap-mix" hidden><canvas data-noc-chart="impact-surfing" aria-label="Surfing versus stuck"></canvas></div>
+            <div class="noc-chart-wrap noc-chart-wrap-mix" hidden><canvas data-noc-chart="impact-nas" aria-label="Issues by NAS"></canvas></div>
+          </div>
         </div>
-        <article class="noc-chart-card">
-          <header class="noc-chart-head"><h3>Issues by NAS</h3></header>
-          <div class="noc-chart-wrap noc-chart-wrap-bar-sm"><canvas data-noc-chart="impact-nas" aria-label="Issues by NAS"></canvas></div>
-        </article>
-        <article class="noc-chart-card">
-          <header class="noc-chart-head"><h3>Affected clients</h3><span class="noc-chart-tag" data-viz-count="impact-clients">0</span></header>
-          <div class="noc-client-list" data-viz-clients="impact"></div>
-        </article>
+      </section>
+      <div class="noc-raw" data-noc-panel="data">
+        <section class="noc-list-block noc-list-block-wide">
+          <header class="noc-section-head">
+            <h2>Quality issues</h2>
+            <span class="noc-pane-count" data-impact-count>0</span>
+          </header>
+          <div class="noc-table-wrap" data-impact-table></div>
+          <div class="noc-client-list" data-viz-clients="impact" hidden></div>
+          <span hidden data-viz-count="impact-clients">0</span>
+        </section>
       </div>
-    </div>
-    <div class="noc-data-panel" data-noc-panel="data" hidden>
-    <section class="noc-pane">
-      <header class="noc-pane-head"><h2>Quality issues</h2><span class="noc-pane-count" data-impact-count>0</span></header>
-      <div class="noc-table-wrap" data-impact-table></div>
-    </section>
     </div>
   </div>
 
   {# -------- OPEN FAULTS -------- #}
   <div class="noc-view" data-noc-view="faults" {% if noc_focus != "faults" %}hidden{% endif %}>
-    <div class="noc-metrics" aria-label="Fault snapshot">
-      <div class="noc-metric is-readonly"><span>Open</span><strong data-fault-stat="total">{{ board.summary.faults_open }}</strong></div>
-      <div class="noc-metric is-readonly sev-critical"><span>Unassigned</span><strong data-fault-stat="unassigned">{{ board.summary.faults_unassigned }}</strong></div>
-      <div class="noc-metric is-readonly"><span>In progress</span><strong data-fault-stat="progress">{{ board.summary.faults_in_progress }}</strong></div>
+    <div class="noc-kpi-strip" aria-label="Fault snapshot">
+      <span class="noc-kpi-chip is-readonly"><span>Open</span><strong data-fault-stat="total">{{ board.summary.faults_open }}</strong></span>
+      <span class="noc-kpi-chip is-readonly sev-critical"><span>Unassigned</span><strong data-fault-stat="unassigned">{{ board.summary.faults_unassigned }}</strong></span>
+      <span class="noc-kpi-chip is-readonly"><span>In progress</span><strong data-fault-stat="progress">{{ board.summary.faults_in_progress }}</strong></span>
     </div>
     <div class="noc-toolbar">
-      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="faults" placeholder="Search…" autocomplete="off"></label>
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="faults" placeholder="Search tickets…" autocomplete="off"></label>
       <select data-fault-status>
         <option value="">All statuses</option>
         <option value="open">Open</option>
@@ -304,47 +275,40 @@
         <option value="in_progress">In progress</option>
       </select>
       <label class="noc-check"><input type="checkbox" data-fault-unassigned> Unassigned only</label>
-      <div class="noc-display-toggle" role="tablist" aria-label="View mode">
-        <button type="button" class="is-active" data-noc-display="visual" role="tab" aria-selected="true">Visuals</button>
-        <button type="button" data-noc-display="data" role="tab" aria-selected="false">Data</button>
-      </div>
     </div>
-    <div class="noc-visual-panel" data-noc-panel="visual">
-      <div class="noc-viz">
-        <article class="noc-chart-card noc-chart-card-trend">
-          <header class="noc-chart-head"><h3>Tickets raised</h3><span class="noc-chart-tag">Timeline</span></header>
-          <p class="noc-chart-hint">Open faults by when they were raised</p>
+    <div class="noc-stage">
+      <section class="noc-trend" data-noc-panel="visual">
+        <header class="noc-section-head">
+          <div>
+            <h2>Tickets raised</h2>
+            <p>Open faults by when they were created</p>
+          </div>
+          <span class="noc-chart-tag">Timeline</span>
+        </header>
+        <div class="noc-trend-grid">
           <div class="noc-chart-wrap noc-chart-wrap-trend"><canvas data-noc-chart="fault-trend" aria-label="Faults raised over time"></canvas></div>
-        </article>
-        <div class="noc-viz-side">
-          <article class="noc-chart-card noc-chart-card-sm">
-            <header class="noc-chart-head"><h3>Status</h3></header>
-            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="fault-status" aria-label="Ticket status"></canvas></div>
-          </article>
-          <article class="noc-chart-card noc-chart-card-sm">
-            <header class="noc-chart-head"><h3>Assignment</h3></header>
-            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="fault-assign" aria-label="Assignment"></canvas></div>
-          </article>
+          <div class="noc-mix">
+            <div class="noc-chart-wrap noc-chart-wrap-mix"><canvas data-noc-chart="fault-status" aria-label="Ticket status"></canvas></div>
+            <div class="noc-chart-wrap noc-chart-wrap-mix" hidden><canvas data-noc-chart="fault-assign" aria-label="Assignment"></canvas></div>
+            <div class="noc-chart-wrap noc-chart-wrap-mix" hidden><canvas data-noc-chart="fault-issues" aria-label="Issue types"></canvas></div>
+          </div>
         </div>
-        <article class="noc-chart-card">
-          <header class="noc-chart-head"><h3>Issue types</h3></header>
-          <div class="noc-chart-wrap noc-chart-wrap-bar-sm"><canvas data-noc-chart="fault-issues" aria-label="Issue types"></canvas></div>
-        </article>
-        <article class="noc-chart-card">
-          <header class="noc-chart-head"><h3>Clients with open faults</h3><span class="noc-chart-tag" data-viz-count="fault-clients">0</span></header>
-          <div class="noc-client-list" data-viz-clients="faults"></div>
-        </article>
+      </section>
+      <div class="noc-raw" data-noc-panel="data">
+        <section class="noc-list-block noc-list-block-wide">
+          <header class="noc-section-head">
+            <h2>Open faults</h2>
+            <span class="noc-pane-count" data-fault-count>0</span>
+          </header>
+          <div class="noc-table-wrap" data-fault-table></div>
+          <div class="noc-client-list" data-viz-clients="faults" hidden></div>
+          <span hidden data-viz-count="fault-clients">0</span>
+        </section>
+        <aside class="noc-detail-drawer" data-fault-detail-panel hidden>
+          <header class="noc-section-head"><h2 data-fault-detail-title>Ticket details</h2></header>
+          <div class="noc-inspector-body" data-fault-detail></div>
+        </aside>
       </div>
-    </div>
-    <div class="noc-data-panel" data-noc-panel="data" hidden>
-    <section class="noc-pane">
-      <header class="noc-pane-head"><h2>Open faults</h2><span class="noc-pane-count" data-fault-count>0</span></header>
-      <div class="noc-table-wrap" data-fault-table></div>
-    </section>
-    <section class="noc-detail-panel" data-fault-detail-panel hidden>
-      <header class="noc-detail-head"><h2 data-fault-detail-title>Ticket details</h2></header>
-      <div class="noc-inspector-body" data-fault-detail></div>
-    </section>
     </div>
   </div>
 </div>
@@ -378,7 +342,7 @@
     impactKind: "",
     faultStatus: "",
     faultUnassigned: false,
-    displayMode: "visual",
+    displayMode: "both",
     selectedAlarmId: "",
     selectedRouterId: null,
     selectedFaultId: null,
@@ -698,15 +662,9 @@
     var view = root.querySelector('[data-noc-view="' + mode + '"]');
     if (!view) return;
     view.querySelectorAll("[data-noc-panel]").forEach(function (panel) {
-      var kind = panel.getAttribute("data-noc-panel") || "";
-      panel.hidden = kind !== state.displayMode;
+      panel.hidden = false;
     });
-    view.querySelectorAll("[data-noc-display]").forEach(function (btn) {
-      var active = btn.getAttribute("data-noc-display") === state.displayMode;
-      btn.classList.toggle("is-active", active);
-      btn.setAttribute("aria-selected", active ? "true" : "false");
-    });
-    if (state.displayMode === "visual") renderVisuals();
+    renderVisuals();
   }
   function renderVisualOps() {
     var summary = (state.board && state.board.summary) || {};
@@ -1072,7 +1030,7 @@
     }));
   }
   function renderVisuals() {
-    if (state.displayMode !== "visual" || !hasChartLib()) return;
+    if (!hasChartLib()) return;
     if (mode === "ops") renderVisualOps();
     else if (mode === "performance") renderVisualPerformance();
     else if (mode === "down") renderVisualDown();
@@ -1156,25 +1114,38 @@
       if (alarm.customers) meta.push(escapeHtml(alarm.customers) + " clients");
       if (alarm.router_name) meta.push(escapeHtml(alarm.router_name));
       return (
-        '<article class="noc-alarm sev-' + escapeHtml(alarm.severity) + selected + (acked ? " is-acked" : "") + '" data-alarm-id="' + escapeHtml(alarm.id) + '">' +
-        '<div class="noc-alarm-top"><span class="noc-sev-tag">' + escapeHtml(alarm.severity) + '</span><span>' + escapeHtml(alarm.at || "now") + '</span></div>' +
-        '<h3>' + escapeHtml(alarm.title) + '</h3>' +
-        (meta.length ? '<div class="noc-alarm-meta"><span>' + meta.join(" · ") + '</span></div>' : '') +
-        '<div class="noc-alarm-actions"><button type="button" class="btn btn-ghost btn-sm" data-ack-alarm="' + escapeHtml(alarm.id) + '">' + (acked ? "Unack" : "Ack") + '</button></div></article>'
+        '<div class="noc-row-item sev-' + escapeHtml(alarm.severity) + selected + (acked ? " is-acked" : "") + '" data-alarm-id="' + escapeHtml(alarm.id) + '" role="button" tabindex="0">' +
+        '<span class="noc-row-sev">' + escapeHtml(alarm.severity) + '</span>' +
+        '<span class="noc-row-main"><strong>' + escapeHtml(alarm.title) + '</strong>' +
+        (meta.length ? '<span class="noc-row-meta">' + meta.join(" · ") + '</span>' : '') +
+        '</span>' +
+        '<span class="noc-row-time">' + escapeHtml(alarm.at || "now") + '</span>' +
+        '<button type="button" class="noc-row-action" data-ack-alarm="' + escapeHtml(alarm.id) + '">' + (acked ? "Unack" : "Ack") + '</button>' +
+        '</div>'
       );
     }).join("");
   }
   function renderOpsMatrix() {
     var body = root.querySelector("[data-matrix-body]");
+    var count = root.querySelector("[data-fleet-count]");
     if (!body) return;
     var list = filteredRoutersOps();
+    if (count) count.textContent = String(list.length);
     if (!list.length) {
       body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">All clear</p><p class="noc-empty-copy">No routers match the current filters.</p></div>';
       return;
     }
-    body.innerHTML = '<div class="noc-fleet-grid">' + list.map(function (row) {
-      return '<button type="button" class="noc-fleet-card sev-' + escapeHtml(row.severity) + (String(state.selectedRouterId) === String(row.id) ? " is-selected" : "") + '" data-select-router="' + escapeHtml(row.id) + '"><div class="noc-fleet-top"><strong>' + escapeHtml(row.name) + '</strong><span class="noc-sev-tag">' + escapeHtml(row.severity) + '</span></div><div class="noc-fleet-host">' + escapeHtml(titleCase(row.status)) + ' · ' + escapeHtml(row.customer_count) + ' clients</div></button>';
-    }).join("") + '</div>';
+    body.innerHTML = list.map(function (row) {
+      return (
+        '<button type="button" class="noc-row-item sev-' + escapeHtml(row.severity) + (String(state.selectedRouterId) === String(row.id) ? " is-selected" : "") + '" data-select-router="' + escapeHtml(row.id) + '">' +
+        '<span class="noc-row-sev">' + escapeHtml(row.severity) + '</span>' +
+        '<span class="noc-row-main"><strong>' + escapeHtml(row.name) + '</strong>' +
+        '<span class="noc-row-meta">' + escapeHtml(titleCase(row.status)) + ' · ' + escapeHtml(row.customer_count) + ' clients' +
+        (row.site_label ? ' · ' + escapeHtml(row.site_label) : '') + '</span></span>' +
+        (row.score != null ? '<span class="noc-row-score">' + escapeHtml(row.score) + '%</span>' : '<span class="noc-row-score">—</span>') +
+        '</button>'
+      );
+    }).join("");
   }
   function renderOpsInspector() {
     var body = root.querySelector("[data-inspector-body]");
@@ -1220,8 +1191,16 @@
       body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Quiet timeline</p><p class="noc-empty-copy">No recent events.</p></div>';
       return;
     }
-    body.innerHTML = list.slice(0, 12).map(function (event) {
-      return '<article class="noc-tl-item sev-' + escapeHtml(event.severity) + '" data-tl-router="' + escapeHtml(event.router_id || "") + '"><div class="noc-tl-rail"></div><div class="noc-tl-body"><div class="noc-tl-top"><span class="noc-sev-tag">' + escapeHtml(String(event.kind || "").replace("_", " ")) + '</span><span>' + escapeHtml(event.at || "") + '</span></div><strong>' + escapeHtml(event.title) + '</strong></div></article>';
+    body.innerHTML = list.slice(0, 16).map(function (event) {
+      return (
+        '<div class="noc-row-item sev-' + escapeHtml(event.severity) + '" data-tl-router="' + escapeHtml(event.router_id || "") + '">' +
+        '<span class="noc-row-sev">' + escapeHtml(String(event.kind || "").replace(/_/g, " ")) + '</span>' +
+        '<span class="noc-row-main"><strong>' + escapeHtml(event.title) + '</strong>' +
+        (event.detail ? '<span class="noc-row-meta">' + escapeHtml(event.detail) + '</span>' : '') +
+        '</span>' +
+        '<span class="noc-row-time">' + escapeHtml(event.at || "") + '</span>' +
+        '</div>'
+      );
     }).join("");
   }
 
@@ -1566,11 +1545,15 @@
         improveList.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Nothing urgent</p><p class="noc-empty-copy">No ranked improvements from current samples.</p></div>';
       } else {
         improveList.innerHTML = improvements.map(function (item) {
-          return '<article class="noc-improve sev-' + escapeHtml(item.severity || "info") + '">' +
-            '<div class="noc-improve-top"><span class="noc-sev-tag">' + escapeHtml(item.severity || "info") + '</span><span>' + escapeHtml(item.customers || 0) + ' clients</span></div>' +
-            '<h3>' + escapeHtml(item.title || "") + '</h3>' +
-            (item.href ? '<a class="btn btn-ghost btn-sm" href="' + escapeHtml(item.href) + '">Open</a>' : '') +
-            '</article>';
+          return (
+            '<div class="noc-row-item sev-' + escapeHtml(item.severity || "info") + '">' +
+            '<span class="noc-row-sev">' + escapeHtml(item.severity || "info") + '</span>' +
+            '<span class="noc-row-main"><strong>' + escapeHtml(item.title || "") + '</strong>' +
+            '<span class="noc-row-meta">' + escapeHtml(item.customers || 0) + ' clients' +
+            (item.router_name ? ' · ' + escapeHtml(item.router_name) : '') + '</span></span>' +
+            (item.href ? '<a class="noc-row-action" href="' + escapeHtml(item.href) + '">Open</a>' : '') +
+            '</div>'
+          );
         }).join("");
       }
     }
@@ -1768,8 +1751,6 @@
     }
     var displayBtn = event.target.closest("[data-noc-display]");
     if (displayBtn && root.contains(displayBtn)) {
-      state.displayMode = displayBtn.getAttribute("data-noc-display") || "visual";
-      applyDisplayMode();
       return;
     }
   });
@@ -1816,7 +1797,7 @@
     if (pollTimer) window.clearInterval(pollTimer);
   });
   document.getElementById("theme-toggle") && document.getElementById("theme-toggle").addEventListener("click", function () {
-    window.setTimeout(function () { if (state.displayMode === "visual") renderVisuals(); }, 80);
+    window.setTimeout(function () { renderVisuals(); }, 80);
   });
 })();
 </script>

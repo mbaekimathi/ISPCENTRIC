@@ -158,6 +158,11 @@
         <small><span data-sum="online-now">—</span> dialed in</small>
       </div>
       <div class="clients-usage-summary-item">
+        <span class="clients-usage-summary-label">Offline</span>
+        <strong data-sum="offline-now">—</strong>
+        <small>Not connected now</small>
+      </div>
+      <div class="clients-usage-summary-item">
         <span class="clients-usage-summary-label">Window uptime</span>
         <strong data-sum="online">—</strong>
         <small>samples online</small>
@@ -177,13 +182,81 @@
         <strong data-sum="top-user">—</strong>
         <small data-sum="top-user-data">Most data</small>
       </div>
-      {% if active_tab == 'hotspot' %}
       <div class="clients-usage-summary-item">
-        <span class="clients-usage-summary-label">Gadgets</span>
+        <span class="clients-usage-summary-label">{% if active_tab == 'hotspot' %}Gadgets{% else %}Devices{% endif %}</span>
         <strong data-sum="gadgets">—</strong>
         <small>Active now</small>
       </div>
-      {% endif %}
+    </section>
+
+    <section class="clients-usage-insights-panel" data-usage-panel="insights">
+      <header class="clients-usage-section-head clients-usage-section-head-inline">
+        <div>
+          <h2>Client insights</h2>
+          <p class="clients-usage-section-meta">
+            Highest data users, online ratio, offline clients, usage mix, and devices for
+            {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %}.
+          </p>
+        </div>
+      </header>
+
+      <div class="client-usage-chart-grid clients-usage-chart-grid clients-usage-insights-grid">
+        <article class="client-usage-chart-card">
+          <header>
+            <h3>Usage mix</h3>
+            <p>Clients by usage level in this window.</p>
+          </header>
+          <div class="client-usage-chart-wrap">
+            <canvas id="chart-levels" height="240"></canvas>
+          </div>
+        </article>
+
+        <article class="client-usage-chart-card">
+          <header>
+            <h3>{% if active_tab == 'hotspot' %}Gadgets{% else %}Devices{% endif %} by client</h3>
+            <p>
+              {% if active_tab == 'hotspot' %}
+                Connected Hotspot gadgets per account (live when available).
+              {% else %}
+                Dialed CPE per PPPoE client (0 or 1).
+              {% endif %}
+            </p>
+          </header>
+          <div class="client-usage-chart-wrap">
+            <canvas id="chart-devices" height="240"></canvas>
+          </div>
+        </article>
+
+        <article class="client-usage-chart-card clients-usage-chart-card-rank is-wide">
+          <header>
+            <h3>Highest data users</h3>
+            <p>Up to 40 clients by period data used — for capacity and plan decisions.</p>
+          </header>
+          <div class="client-usage-chart-wrap is-tall">
+            <canvas id="chart-top" height="420"></canvas>
+          </div>
+        </article>
+
+        <article class="client-usage-chart-card clients-usage-chart-card-rank is-wide">
+          <header>
+            <h3>Online ratio by client</h3>
+            <p>Same ranked set — who stayed online through the window.</p>
+          </header>
+          <div class="client-usage-chart-wrap is-tall">
+            <canvas id="chart-uptime" height="420"></canvas>
+          </div>
+        </article>
+
+        <article class="client-usage-chart-card clients-usage-chart-card-rank is-wide">
+          <header>
+            <h3>Offline clients</h3>
+            <p>Clients offline now (or lowest window uptime) — downtimes and online %.</p>
+          </header>
+          <div class="client-usage-chart-wrap is-tall">
+            <canvas id="chart-offline" height="420"></canvas>
+          </div>
+        </article>
+      </div>
     </section>
 
     <section class="clients-usage-visual-panel" data-usage-panel="visual"{% if view_mode == 'raw' %} hidden{% endif %}>
@@ -191,7 +264,7 @@
         <div>
           <h2>Visual analytics</h2>
           <p class="clients-usage-section-meta">
-            Full-window presence, throughput, traffic, usage mix, and ranked clients for
+            Full-window presence, throughput, and traffic for
             {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %}.
           </p>
         </div>
@@ -218,43 +291,13 @@
           </div>
         </article>
 
-        <article class="client-usage-chart-card">
+        <article class="client-usage-chart-card is-wide">
           <header>
             <h3>Data transferred</h3>
             <p>Counter growth between samples after each usage baseline (MB).</p>
           </header>
           <div class="client-usage-chart-wrap">
             <canvas id="chart-data" height="240"></canvas>
-          </div>
-        </article>
-
-        <article class="client-usage-chart-card">
-          <header>
-            <h3>Usage mix</h3>
-            <p>Clients by usage level in this window.</p>
-          </header>
-          <div class="client-usage-chart-wrap">
-            <canvas id="chart-levels" height="240"></canvas>
-          </div>
-        </article>
-
-        <article class="client-usage-chart-card clients-usage-chart-card-rank is-wide">
-          <header>
-            <h3>Highest data users</h3>
-            <p>Up to 40 clients by period data used — for capacity and plan decisions.</p>
-          </header>
-          <div class="client-usage-chart-wrap is-tall">
-            <canvas id="chart-top" height="420"></canvas>
-          </div>
-        </article>
-
-        <article class="client-usage-chart-card clients-usage-chart-card-rank is-wide">
-          <header>
-            <h3>Online ratio by client</h3>
-            <p>Same ranked set — who stayed online through the window.</p>
-          </header>
-          <div class="client-usage-chart-wrap is-tall">
-            <canvas id="chart-uptime" height="420"></canvas>
           </div>
         </article>
       </div>
@@ -277,13 +320,15 @@
             <option value="name-asc">Client A–Z</option>
             <option value="name-desc">Client Z–A</option>
             <option value="online-desc">Surfing first</option>
+            <option value="offline-desc">Offline first</option>
+            <option value="devices-desc">Most devices</option>
             <option value="downtime-desc">Most downtimes</option>
           </select>
         </div>
       </header>
 
       <div class="clients-usage-table-wrap">
-        <table class="clients-usage-data-table" data-users-table data-show-gadgets="{% if active_tab == 'hotspot' %}1{% else %}0{% endif %}">
+        <table class="clients-usage-data-table" data-users-table data-show-gadgets="1">
           <thead>
             <tr>
               <th class="is-rank">#</th>
@@ -293,7 +338,7 @@
               <th>Live</th>
               <th>Online</th>
               <th>Down</th>
-              {% if active_tab == 'hotspot' %}<th>Gadgets</th>{% endif %}
+              <th>{% if active_tab == 'hotspot' %}Gadgets{% else %}Devices{% endif %}</th>
               <th>Tracking</th>
               <th class="is-actions"></th>
             </tr>
@@ -340,11 +385,9 @@
                 <td data-label="Down">
                   <span class="clients-usage-downtime{% if user.downtime_count %} is-warn{% endif %}">{{ user.downtime_count|default:0 }}</span>
                 </td>
-                {% if active_tab == 'hotspot' %}
-                <td data-label="Gadgets">
+                <td data-label="{% if active_tab == 'hotspot' %}Gadgets{% else %}Devices{% endif %}">
                   <span class="clients-usage-gadgets{% if user.gadgets_connected %} is-active{% endif %}" data-gadgets>{{ user.gadgets_connected|default:0 }}</span>
                 </td>
-                {% endif %}
                 <td data-label="Tracking">
                   <div class="clients-usage-rate-stack" data-usage-track-cell>
                     <strong data-track-renewed>{% if user.package_start_label %}{{ user.package_start_label }}{% else %}—{% endif %}</strong>
@@ -359,7 +402,7 @@
               </tr>
             {% empty %}
               <tr class="clients-usage-empty-row" data-empty-row>
-                <td colspan="{% if active_tab == 'hotspot' %}10{% else %}9{% endif %}">
+                <td colspan="10">
                   No {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} clients yet. Add clients, assign a MikroTik, then Refresh.
                 </td>
               </tr>
@@ -384,8 +427,9 @@
   var tab = root.getAttribute("data-tab") || "pppoe";
   var viewMode = root.getAttribute("data-view") || "visual";
   var surfingUrl = "{{ surfing_url|default:'/app/clients/surfing/'|escapejs }}";
-  var showGadgets = tab === "hotspot";
-  var colSpan = showGadgets ? 10 : 9;
+  var showGadgets = true;
+  var devicesLabel = tab === "hotspot" ? "Gadgets" : "Devices";
+  var colSpan = 10;
   var stamp = document.querySelector("[data-usage-stamp]");
   var refreshBtn = document.querySelector("[data-usage-refresh]");
   var countEl = document.querySelector("[data-users-count]");
@@ -411,6 +455,8 @@
     "name-asc": "Clients A–Z",
     "name-desc": "Clients Z–A",
     "online-desc": "Surfing clients first",
+    "offline-desc": "Offline clients first",
+    "devices-desc": "Most devices first",
     "downtime-desc": "Most downtimes first"
   };
 
@@ -436,6 +482,8 @@
       var bd = Number((b && b.downtime_count) || 0);
       var ao = accessRank(a);
       var bo = accessRank(b);
+      var ag = Number((a && (a.gadgets_connected != null ? a.gadgets_connected : a.devices_connected)) || 0);
+      var bg = Number((b && (b.gadgets_connected != null ? b.gadgets_connected : b.devices_connected)) || 0);
       if (mode === "data-asc") {
         if (ab !== bb) return ab - bb;
         return an.localeCompare(bn);
@@ -444,6 +492,17 @@
       if (mode === "name-desc") return bn.localeCompare(an) || (bb - ab);
       if (mode === "online-desc") {
         if (ao !== bo) return bo - ao;
+        if (ab !== bb) return bb - ab;
+        return an.localeCompare(bn);
+      }
+      if (mode === "offline-desc") {
+        if (ao !== bo) return ao - bo;
+        if (ad !== bd) return bd - ad;
+        if (ab !== bb) return bb - ab;
+        return an.localeCompare(bn);
+      }
+      if (mode === "devices-desc") {
+        if (ag !== bg) return bg - ag;
         if (ab !== bb) return bb - ab;
         return an.localeCompare(bn);
       }
@@ -592,9 +651,7 @@
         "</td>" +
         '<td data-label="Online">' + esc(user.online_ratio != null ? user.online_ratio : 0) + "%</td>" +
         '<td data-label="Down"><span class="clients-usage-downtime' + (user.downtime_count ? " is-warn" : "") + '">' + esc(user.downtime_count || 0) + "</span></td>" +
-        (showGadgets
-          ? ('<td data-label="Gadgets"><span class="clients-usage-gadgets' + (user.gadgets_connected ? " is-active" : "") + '" data-gadgets>' + esc(user.gadgets_connected || 0) + "</span></td>")
-          : "") +
+        '<td data-label="' + esc(devicesLabel) + '"><span class="clients-usage-gadgets' + (user.gadgets_connected ? " is-active" : "") + '" data-gadgets>' + esc(user.gadgets_connected || 0) + "</span></td>" +
         '<td data-label="Tracking">' +
           '<div class="clients-usage-rate-stack" data-usage-track-cell>' +
             "<strong data-track-renewed>" + esc(user.package_start_label || "—") + "</strong>" +
@@ -630,7 +687,7 @@
     if (!users.length) {
       body.innerHTML =
         '<tr class="clients-usage-empty-row" data-empty-row>' +
-        '<td colspan="' + colSpan + '">No ' + (showGadgets ? "Hotspot" : "PPPoE") +
+        '<td colspan="' + colSpan + '">No ' + (tab === "hotspot" ? "Hotspot" : "PPPoE") +
         " clients yet. Add clients, assign a MikroTik, then Refresh.</td></tr>";
       setUsersCount(0);
       return;
@@ -717,12 +774,10 @@
         var devices = Number(row.devices != null ? row.devices : row.gadgets) || 0;
         user.devices_connected = devices;
         user.gadgets_connected = devices;
-      } else if (showGadgets) {
-        // keep sample-based counts
-      } else if (row.session_online) {
+      } else if (row.session_online || row.surfing) {
         user.devices_connected = Math.max(Number(user.devices_connected) || 0, 1);
         user.gadgets_connected = user.devices_connected;
-      } else {
+      } else if (row.state === "disconnected" || row.state === "expired" || !row.session_online) {
         user.devices_connected = 0;
         user.gadgets_connected = 0;
       }
@@ -745,7 +800,12 @@
   }
 
   function buildTopChart(users) {
-    var list = applySort(users || []).slice(0, 40);
+    var list = (users || []).slice().sort(function (a, b) {
+      var ab = userBytes(a);
+      var bb = userBytes(b);
+      if (ab !== bb) return bb - ab;
+      return String((a && a.full_name) || "").localeCompare(String((b && b.full_name) || ""));
+    }).slice(0, 40);
     return {
       labels: list.map(function (u) { return u.full_name || "Client"; }),
       data_used_mb: list.map(function (u) {
@@ -753,7 +813,38 @@
       }),
       online_ratio: list.map(function (u) { return Number(u.online_ratio || 0) || 0; }),
       downtime_count: list.map(function (u) { return Number(u.downtime_count || 0) || 0; }),
-      live_download_bps: list.map(function (u) { return Number(u.live_download_bps || 0) || 0; })
+      live_download_bps: list.map(function (u) { return Number(u.live_download_bps || 0) || 0; }),
+      devices_connected: list.map(function (u) {
+        return Number(u.devices_connected != null ? u.devices_connected : u.gadgets_connected) || 0;
+      })
+    };
+  }
+
+  function buildOfflineChart(users) {
+    var list = (users || []).filter(function (u) {
+      return !(u && (u.access_state === "surfing" || u.live_active || u.latest_active));
+    });
+    list.sort(function (a, b) {
+      var ar = Number(a && a.online_ratio) || 0;
+      var br = Number(b && b.online_ratio) || 0;
+      if (ar !== br) return ar - br;
+      var ad = Number(a && a.downtime_count) || 0;
+      var bd = Number(b && b.downtime_count) || 0;
+      if (ad !== bd) return bd - ad;
+      return String((a && a.full_name) || "").localeCompare(String((b && b.full_name) || ""));
+    });
+    if (!list.length) {
+      list = (users || []).slice().sort(function (a, b) {
+        var ar = Number(a && a.online_ratio) || 0;
+        var br = Number(b && b.online_ratio) || 0;
+        return ar - br;
+      });
+    }
+    list = list.slice(0, 40);
+    return {
+      labels: list.map(function (u) { return u.full_name || "Client"; }),
+      online_ratio: list.map(function (u) { return Number(u.online_ratio || 0) || 0; }),
+      downtime_count: list.map(function (u) { return Number(u.downtime_count || 0) || 0; })
     };
   }
 
@@ -765,14 +856,17 @@
     setSum("clients-tracked", summary.clients_tracked != null ? summary.clients_tracked : "0");
     var dialed = live.clients_online != null ? live.clients_online : (summary.clients_online != null ? summary.clients_online : 0);
     var surfingNow = summary.clients_surfing != null ? summary.clients_surfing : dialed;
+    var totalClients = Number(summary.clients_total != null ? summary.clients_total : dialed) || 0;
+    var offlineNow = live.clients_offline != null
+      ? live.clients_offline
+      : (summary.clients_offline != null ? summary.clients_offline : Math.max(0, totalClients - Number(dialed || 0)));
     setSum("surfing-now", surfingNow);
     setSum("online-now", dialed);
+    setSum("offline-now", offlineNow);
     setSum("online", (summary.online_ratio != null ? summary.online_ratio : 0) + "%");
     setSum("peak-down", fmtBps(summary.peak_download_bps));
     setSum("data", fmtBytes(summary.data_used_bytes));
-    if (showGadgets) {
-      setSum("gadgets", live.gadgets_online != null ? live.gadgets_online : (summary.gadgets_online != null ? summary.gadgets_online : "0"));
-    }
+    setSum("gadgets", live.gadgets_online != null ? live.gadgets_online : (summary.gadgets_online != null ? summary.gadgets_online : "0"));
     setSum("top-user", summary.top_user_name || "—");
     setSum("top-user-data", summary.top_user_name
       ? fmtBytes(summary.top_user_bytes)
@@ -816,155 +910,224 @@
   }
 
   function ensureCharts() {
-    if (!window.Chart || charts.online) return;
-    if (!document.getElementById("chart-online")) return;
+    if (!window.Chart || charts.levels) return;
     var empty = { labels: [], datasets: [] };
     var defaults = chartDefaults();
-    charts.online = new Chart(document.getElementById("chart-online"), {
-      type: "line",
-      data: empty,
-      options: Object.assign({}, defaults, {
-        plugins: Object.assign({}, defaults.plugins, { legend: { display: false } })
-      })
-    });
-    charts.throughput = new Chart(document.getElementById("chart-throughput"), {
-      type: "line",
-      data: empty,
-      options: defaults
-    });
-    charts.data = new Chart(document.getElementById("chart-data"), {
-      type: "bar",
-      data: empty,
-      options: Object.assign({}, defaults, {
-        plugins: Object.assign({}, defaults.plugins, { legend: { display: false } })
-      })
-    });
-    charts.levels = new Chart(document.getElementById("chart-levels"), {
-      type: "doughnut",
-      data: empty,
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: false,
-        plugins: {
-          legend: {
-            position: "bottom",
-            labels: { color: defaults.plugins.legend.labels.color, boxWidth: 12, font: { weight: "600" } }
-          },
-          tooltip: defaults.plugins.tooltip
-        }
-      }
-    });
-    charts.top = new Chart(document.getElementById("chart-top"), {
-      type: "bar",
-      data: empty,
-      options: Object.assign({}, defaults, {
-        indexAxis: "y",
-        plugins: Object.assign({}, defaults.plugins, { legend: { display: false } })
-      })
-    });
-    charts.uptime = new Chart(document.getElementById("chart-uptime"), {
-      type: "bar",
-      data: empty,
-      options: Object.assign({}, defaults, {
-        indexAxis: "y",
-        plugins: Object.assign({}, defaults.plugins, { legend: { display: false } }),
-        scales: Object.assign({}, defaults.scales, {
+
+    function makeLine(id, withLegend) {
+      var el = document.getElementById(id);
+      if (!el) return null;
+      return new Chart(el, {
+        type: "line",
+        data: empty,
+        options: withLegend
+          ? defaults
+          : Object.assign({}, defaults, {
+              plugins: Object.assign({}, defaults.plugins, { legend: { display: false } })
+            })
+      });
+    }
+
+    function makeBar(id) {
+      var el = document.getElementById(id);
+      if (!el) return null;
+      return new Chart(el, {
+        type: "bar",
+        data: empty,
+        options: Object.assign({}, defaults, {
+          plugins: Object.assign({}, defaults.plugins, { legend: { display: false } })
+        })
+      });
+    }
+
+    function makeHBar(id, xMax) {
+      var el = document.getElementById(id);
+      if (!el) return null;
+      var scales = defaults.scales;
+      if (xMax != null) {
+        scales = Object.assign({}, defaults.scales, {
           x: Object.assign({}, defaults.scales.x, {
-            max: 100,
+            max: xMax,
             ticks: Object.assign({}, defaults.scales.x.ticks, {
               callback: function (v) { return v + "%"; }
             })
           })
+        });
+      }
+      return new Chart(el, {
+        type: "bar",
+        data: empty,
+        options: Object.assign({}, defaults, {
+          indexAxis: "y",
+          plugins: Object.assign({}, defaults.plugins, { legend: { display: false } }),
+          scales: scales
         })
-      })
-    });
+      });
+    }
+
+    charts.online = makeLine("chart-online", false);
+    charts.throughput = makeLine("chart-throughput", true);
+    charts.data = makeBar("chart-data");
+
+    var levelsEl = document.getElementById("chart-levels");
+    if (levelsEl) {
+      charts.levels = new Chart(levelsEl, {
+        type: "doughnut",
+        data: empty,
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          plugins: {
+            legend: {
+              position: "bottom",
+              labels: { color: defaults.plugins.legend.labels.color, boxWidth: 12, font: { weight: "600" } }
+            },
+            tooltip: defaults.plugins.tooltip
+          }
+        }
+      });
+    }
+
+    charts.top = makeHBar("chart-top");
+    charts.uptime = makeHBar("chart-uptime", 100);
+    charts.offline = makeHBar("chart-offline", 100);
+    charts.devices = makeHBar("chart-devices");
   }
 
   function paintCharts(data, users) {
     ensureCharts();
-    if (!charts.online) return;
+    if (!charts.levels && !charts.top) return;
     var labels = (data && data.labels) || [];
     var series = (data && data.series) || {};
     var topChart = (data && data.top_chart) || buildTopChart(users);
     var levelChart = (data && data.level_chart) || buildLevelChart(users);
+    var offlineChart = (data && data.offline_chart) || buildOfflineChart(users);
     if (users && users.length) {
       topChart = buildTopChart(users);
       levelChart = buildLevelChart(users);
+      offlineChart = buildOfflineChart(users);
     }
     var dense = labels.length > 40;
-    charts.online.data = {
-      labels: labels,
-      datasets: [{
-        label: "Online clients",
-        data: series.online_clients || [],
-        borderColor: "#2ecc71",
-        backgroundColor: "rgba(46,204,113,0.18)",
-        fill: true,
-        tension: 0.3,
-        pointRadius: dense ? 0 : 2
-      }]
-    };
-    charts.throughput.data = {
-      labels: labels,
-      datasets: [
-        {
-          label: "Download (kbps)",
-          data: series.download_kbps || [],
-          borderColor: "#4f8cff",
-          backgroundColor: "rgba(79,140,255,0.12)",
+    if (charts.online) {
+      charts.online.data = {
+        labels: labels,
+        datasets: [{
+          label: "Online clients",
+          data: series.online_clients || [],
+          borderColor: "#2ecc71",
+          backgroundColor: "rgba(46,204,113,0.18)",
           fill: true,
           tension: 0.3,
           pointRadius: dense ? 0 : 2
-        },
-        {
-          label: "Upload (kbps)",
-          data: series.upload_kbps || [],
-          borderColor: "#e8a317",
-          backgroundColor: "rgba(232,163,23,0.12)",
-          fill: true,
-          tension: 0.3,
-          pointRadius: dense ? 0 : 2
-        }
-      ]
-    };
-    charts.data.data = {
-      labels: labels,
-      datasets: [{
-        label: "Data used (MB)",
-        data: series.data_used_mb || [],
-        backgroundColor: "rgba(232,163,23,0.55)",
-        borderRadius: 4
-      }]
-    };
-    charts.levels.data = {
-      labels: levelChart.labels || [],
-      datasets: [{
-        data: levelChart.counts || [],
-        backgroundColor: ["#dc2626", "#d97706", "#059669", "#94a3b8"],
-        borderWidth: 0
-      }]
-    };
-    charts.top.data = {
-      labels: topChart.labels || [],
-      datasets: [{
-        label: "Data used (MB)",
-        data: topChart.data_used_mb || [],
-        backgroundColor: "rgba(79,140,255,0.65)",
-        borderRadius: 4
-      }]
-    };
-    charts.uptime.data = {
-      labels: topChart.labels || [],
-      datasets: [{
-        label: "Online ratio (%)",
-        data: topChart.online_ratio || [],
-        backgroundColor: "rgba(46,204,113,0.65)",
-        borderRadius: 4
-      }]
-    };
+        }]
+      };
+    }
+    if (charts.throughput) {
+      charts.throughput.data = {
+        labels: labels,
+        datasets: [
+          {
+            label: "Download (kbps)",
+            data: series.download_kbps || [],
+            borderColor: "#4f8cff",
+            backgroundColor: "rgba(79,140,255,0.12)",
+            fill: true,
+            tension: 0.3,
+            pointRadius: dense ? 0 : 2
+          },
+          {
+            label: "Upload (kbps)",
+            data: series.upload_kbps || [],
+            borderColor: "#e8a317",
+            backgroundColor: "rgba(232,163,23,0.12)",
+            fill: true,
+            tension: 0.3,
+            pointRadius: dense ? 0 : 2
+          }
+        ]
+      };
+    }
+    if (charts.data) {
+      charts.data.data = {
+        labels: labels,
+        datasets: [{
+          label: "Data used (MB)",
+          data: series.data_used_mb || [],
+          backgroundColor: "rgba(232,163,23,0.55)",
+          borderRadius: 4
+        }]
+      };
+    }
+    if (charts.levels) {
+      charts.levels.data = {
+        labels: levelChart.labels || [],
+        datasets: [{
+          data: levelChart.counts || [],
+          backgroundColor: ["#dc2626", "#d97706", "#059669", "#94a3b8"],
+          borderWidth: 0
+        }]
+      };
+    }
+    if (charts.top) {
+      charts.top.data = {
+        labels: topChart.labels || [],
+        datasets: [{
+          label: "Data used (MB)",
+          data: topChart.data_used_mb || [],
+          backgroundColor: "rgba(79,140,255,0.65)",
+          borderRadius: 4
+        }]
+      };
+    }
+    if (charts.uptime) {
+      charts.uptime.data = {
+        labels: topChart.labels || [],
+        datasets: [{
+          label: "Online ratio (%)",
+          data: topChart.online_ratio || [],
+          backgroundColor: "rgba(46,204,113,0.65)",
+          borderRadius: 4
+        }]
+      };
+    }
+    if (charts.offline) {
+      charts.offline.data = {
+        labels: offlineChart.labels || [],
+        datasets: [{
+          label: "Online ratio (%)",
+          data: offlineChart.online_ratio || [],
+          backgroundColor: "rgba(220,38,38,0.55)",
+          borderRadius: 4
+        }]
+      };
+    }
+    if (charts.devices) {
+      var deviceUsers = (users || []).slice().sort(function (a, b) {
+        var ag = Number(a && (a.devices_connected != null ? a.devices_connected : a.gadgets_connected)) || 0;
+        var bg = Number(b && (b.devices_connected != null ? b.devices_connected : b.gadgets_connected)) || 0;
+        if (ag !== bg) return bg - ag;
+        return userBytes(b) - userBytes(a);
+      }).filter(function (u) {
+        return Number(u.devices_connected != null ? u.devices_connected : u.gadgets_connected) > 0;
+      }).slice(0, 15);
+      if (!deviceUsers.length) {
+        deviceUsers = (users || []).slice(0, 8);
+      }
+      charts.devices.data = {
+        labels: deviceUsers.map(function (u) { return u.full_name || "Client"; }),
+        datasets: [{
+          label: devicesLabel,
+          data: deviceUsers.map(function (u) {
+            return Number(u.devices_connected != null ? u.devices_connected : u.gadgets_connected) || 0;
+          }),
+          backgroundColor: "rgba(14,165,233,0.55)",
+          borderRadius: 4
+        }]
+      };
+    }
     Object.keys(charts).forEach(function (key) {
-      charts[key].update("none");
+      if (charts[key]) charts[key].update("none");
     });
   }
 
@@ -973,10 +1136,17 @@
     lastPayload = data || lastPayload;
     var users = applySurfOverlay(((data && data.top_users) || []).slice());
     var surfingCount = 0;
+    var gadgetsTotal = 0;
     users.forEach(function (u) {
       if (u.access_state === "surfing" || (!u.access_state && u.latest_active)) surfingCount += 1;
+      gadgetsTotal += Number(u.gadgets_connected || u.devices_connected || 0) || 0;
     });
-    if (data && data.summary) data.summary.clients_surfing = surfingCount;
+    if (data && data.summary) {
+      data.summary.clients_surfing = surfingCount;
+      var total = Number(data.summary.clients_total != null ? data.summary.clients_total : users.length) || 0;
+      data.summary.clients_offline = Math.max(0, total - surfingCount);
+      if (data.summary.gadgets_online == null) data.summary.gadgets_online = gadgetsTotal;
+    }
     applySummary(data, opts);
     paintCharts(data, users);
     var totalHint = (data && (data.users_total_count || (data.summary && data.summary.clients_total))) || users.length;
@@ -1014,10 +1184,19 @@
         if (usersCache.length) {
           usersCache = applySurfOverlay(usersCache);
           var surfingCount = 0;
+          var gadgetsTotal = 0;
           usersCache.forEach(function (u) {
             if (u.access_state === "surfing") surfingCount += 1;
+            gadgetsTotal += Number(u.gadgets_connected || u.devices_connected || 0) || 0;
           });
           setSum("surfing-now", surfingCount);
+          var totalClients = Number(
+            (lastPayload.summary && lastPayload.summary.clients_total) != null
+              ? lastPayload.summary.clients_total
+              : usersCache.length
+          ) || 0;
+          setSum("offline-now", Math.max(0, totalClients - surfingCount));
+          setSum("gadgets", gadgetsTotal);
           paintCharts(lastPayload, usersCache);
           if (viewMode === "raw") {
             renderUsers(usersCache, {

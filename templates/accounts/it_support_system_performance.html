@@ -15,7 +15,7 @@
   data-sys-perf
   data-summary-url="{{ summary_url }}"
 >
-  <div class="sp-toolbar">
+  <header class="sp-toolbar">
     <div class="sp-toolbar-left">
       <span class="sp-live" data-live-pill>{% if board.summary.has_live_cache %}Live{% else %}Standby{% endif %}</span>
       <span class="sp-clock" data-sys-clock>—</span>
@@ -23,240 +23,178 @@
       <span class="sp-source-chip" data-source-chip>{{ board.data_sources.mikrotik|default:"database" }}</span>
     </div>
     <div class="sp-toolbar-right">
-      <label class="sp-search"><span class="visually-hidden">Search</span><input type="search" data-sys-search placeholder="Search…" autocomplete="off"></label>
+      <label class="sp-search"><span class="visually-hidden">Search</span><input type="search" data-sys-search placeholder="Search routers, ISPs…" autocomplete="off"></label>
       <select class="sp-select" data-sys-org-filter>
         <option value="">All ISPs</option>
       </select>
-      <div class="sp-tabs" role="tablist" aria-label="View mode">
-        <button type="button" class="is-active" data-sys-display="visual" role="tab" aria-selected="true">Visual</button>
-        <button type="button" data-sys-display="raw" role="tab" aria-selected="false">Raw data</button>
-      </div>
       <button type="button" class="sp-refresh" data-sys-refresh title="Refresh">
         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M4 12a8 8 0 0 1 14.1-5.1M20 12a8 8 0 0 1-14.1 5.1M16 4v4h4M8 20v-4H4"/></svg>
       </button>
     </div>
+  </header>
+
+  <div class="sp-kpi-strip" aria-label="Platform snapshot">
+    <span class="sp-kpi-chip">
+      <span>Fleet score</span>
+      <strong data-metric="fleet">{% if board.summary.fleet_score is not None %}{{ board.summary.fleet_score }}%{% else %}—{% endif %}</strong>
+      <em data-metric="fleet-meta">{{ board.summary.routers_online }}/{{ board.summary.routers_total }} online</em>
+    </span>
+    <span class="sp-kpi-chip is-ok">
+      <span>MikroTiks</span>
+      <strong data-metric="routers-online">{{ board.summary.routers_online }}</strong>
+      <em><span data-metric="routers-degraded">{{ board.summary.routers_degraded }}</span> deg · <span data-metric="routers-down">{{ board.summary.routers_down }}</span> down</em>
+    </span>
+    <span class="sp-kpi-chip">
+      <span>Active clients</span>
+      <strong data-metric="clients-active">{{ board.summary.customers_active }}</strong>
+      <em><span data-metric="sessions">{{ board.summary.active_sessions }}</span> sessions</em>
+    </span>
+    <span class="sp-kpi-chip">
+      <span>Collected today</span>
+      <strong data-metric="collected">{{ board.summary.collected_today|floatformat:0 }}</strong>
+      <em><span data-metric="stk-success">{{ board.summary.stk_success_today }}</span> STK ok · <span data-metric="stk-failed">{{ board.summary.stk_failed_today }}</span> fail</em>
+    </span>
+    <span class="sp-kpi-chip">
+      <span>ISP accounts</span>
+      <strong data-metric="orgs">{{ board.summary.organizations_total }}</strong>
+      <em><span data-metric="orgs-active">{{ board.summary.organizations_active }}</span> active</em>
+    </span>
   </div>
 
-  <div class="sp-kpis" aria-label="Platform snapshot">
-    <article class="sp-kpi">
-      <span class="sp-kpi-label">Fleet score</span>
-      <strong class="sp-kpi-value" data-metric="fleet">{% if board.summary.fleet_score is not None %}{{ board.summary.fleet_score }}%{% else %}—{% endif %}</strong>
-      <span class="sp-kpi-meta" data-metric="fleet-meta">{{ board.summary.routers_online }}/{{ board.summary.routers_total }} online</span>
-    </article>
-    <article class="sp-kpi is-ok">
-      <span class="sp-kpi-label">MikroTiks</span>
-      <strong class="sp-kpi-value" data-metric="routers-online">{{ board.summary.routers_online }}</strong>
-      <span class="sp-kpi-meta"><span data-metric="routers-degraded">{{ board.summary.routers_degraded }}</span> degraded · <span data-metric="routers-down">{{ board.summary.routers_down }}</span> down</span>
-    </article>
-    <article class="sp-kpi">
-      <span class="sp-kpi-label">Active clients</span>
-      <strong class="sp-kpi-value" data-metric="clients-active">{{ board.summary.customers_active }}</strong>
-      <span class="sp-kpi-meta"><span data-metric="sessions">{{ board.summary.active_sessions }}</span> live sessions</span>
-    </article>
-    <article class="sp-kpi">
-      <span class="sp-kpi-label">Collected today</span>
-      <strong class="sp-kpi-value" data-metric="collected">{{ board.summary.collected_today|floatformat:0 }}</strong>
-      <span class="sp-kpi-meta"><span data-metric="stk-success">{{ board.summary.stk_success_today }}</span> STK ok · <span data-metric="stk-failed">{{ board.summary.stk_failed_today }}</span> fail</span>
-    </article>
-    <article class="sp-kpi">
-      <span class="sp-kpi-label">ISP accounts</span>
-      <strong class="sp-kpi-value" data-metric="orgs">{{ board.summary.organizations_total }}</strong>
-      <span class="sp-kpi-meta"><span data-metric="orgs-active">{{ board.summary.organizations_active }}</span> active</span>
-    </article>
-  </div>
-
-  <div class="sp-visual" data-sys-panel="visual">
-    <div class="sp-layout">
-
-      <section class="sp-section" aria-labelledby="sp-sec-server">
-        <header class="sp-section-head">
+  {# -------- INFRASTRUCTURE -------- #}
+  <section class="sp-stage" aria-labelledby="sp-sec-server">
+    <div class="sp-trend">
+      <header class="sp-section-head">
+        <div>
           <p class="sp-section-kicker">Infrastructure</p>
           <h2 class="sp-section-title" id="sp-sec-server">Server &amp; host</h2>
-        </header>
-        <div class="sp-section-body sp-section-server">
-          <div class="sp-host" aria-label="Server resources" data-host-section>
-            <header class="sp-host-head">
-              <p data-host-meta>{{ board.host.hostname|default:"Host" }} · {{ board.host.uptime_label|default:"—" }} uptime</p>
-              <span class="sp-host-pill" data-host-ok>{% if board.host.ok %}Healthy probe{% else %}Unavailable{% endif %}</span>
-            </header>
-            <div class="sp-host-gauges">
-              <article class="sp-gauge" data-host-tone="cpu">
-                <div class="sp-gauge-ring" style="--pct: {{ board.host.cpu_percent|default:0 }}">
-                  <strong data-host="cpu">{{ board.host.cpu_percent|default:"—" }}{% if board.host.cpu_percent != None %}%{% endif %}</strong>
-                  <span>CPU</span>
-                </div>
-                <p class="sp-gauge-meta" data-host="cpu-meta">{{ board.host.cpu_count|default:"—" }} cores</p>
-              </article>
-              <article class="sp-gauge" data-host-tone="ram">
-                <div class="sp-gauge-ring" style="--pct: {{ board.host.ram_percent|default:0 }}">
-                  <strong data-host="ram">{{ board.host.ram_percent|default:"—" }}{% if board.host.ram_percent != None %}%{% endif %}</strong>
-                  <span>RAM</span>
-                </div>
-                <p class="sp-gauge-meta" data-host="ram-meta">{{ board.host.ram_used_label|default:"—" }} / {{ board.host.ram_total_label|default:"—" }}</p>
-              </article>
-              <article class="sp-gauge" data-host-tone="disk">
-                <div class="sp-gauge-ring" style="--pct: {{ board.host.disk_percent|default:0 }}">
-                  <strong data-host="disk">{{ board.host.disk_percent|default:"—" }}{% if board.host.disk_percent != None %}%{% endif %}</strong>
-                  <span>Disk</span>
-                </div>
-                <p class="sp-gauge-meta" data-host="disk-meta">{{ board.host.disk_free_label|default:"—" }} free of {{ board.host.disk_total_label|default:"—" }}</p>
-              </article>
-            </div>
-            <div class="sp-host-facts" data-host-facts>
-              <div><span>Hostname</span><strong data-host="hostname">{{ board.host.hostname|default:"—" }}</strong></div>
-              <div><span>Uptime</span><strong data-host="uptime">{{ board.host.uptime_label|default:"—" }}</strong></div>
-              <div><span>Processes</span><strong data-host="procs">{{ board.host.process_count|default:"—" }}</strong></div>
-              <div><span>Python</span><strong data-host="python">{{ board.host.python|default:"—" }}</strong></div>
-            </div>
+          <p class="sp-section-hint" data-host-meta>{{ board.host.hostname|default:"Host" }} · {{ board.host.uptime_label|default:"—" }} uptime</p>
+        </div>
+        <span class="sp-host-pill" data-host-ok>{% if board.host.ok %}Healthy{% else %}Unavailable{% endif %}</span>
+      </header>
+      <div class="sp-host-gauges" data-host-section>
+        <article class="sp-gauge" data-host-tone="cpu">
+          <div class="sp-gauge-ring" style="--pct: {{ board.host.cpu_percent|default:0 }}">
+            <strong data-host="cpu">{{ board.host.cpu_percent|default:"—" }}{% if board.host.cpu_percent != None %}%{% endif %}</strong>
+            <span>CPU</span>
           </div>
-          <div class="sp-row sp-row-split">
-            <article class="sp-card sp-card-main">
-              <header class="sp-card-head">
-                <h3>Host resource trend</h3>
-                <p>CPU, RAM, and disk · recent samples</p>
-              </header>
-              <div class="sp-chart sp-chart-lg"><canvas data-sys-chart="host-trend" aria-label="Host resource trend"></canvas></div>
-            </article>
-            <article class="sp-card sp-card-side">
-              <header class="sp-card-head">
-                <h3>Resource mix</h3>
-                <p>Current usage snapshot</p>
-              </header>
-              <div class="sp-chart sp-chart-donut"><canvas data-sys-chart="host-mix" aria-label="Host resource mix"></canvas></div>
-            </article>
+          <p class="sp-gauge-meta" data-host="cpu-meta">{{ board.host.cpu_count|default:"—" }} cores</p>
+        </article>
+        <article class="sp-gauge" data-host-tone="ram">
+          <div class="sp-gauge-ring" style="--pct: {{ board.host.ram_percent|default:0 }}">
+            <strong data-host="ram">{{ board.host.ram_percent|default:"—" }}{% if board.host.ram_percent != None %}%{% endif %}</strong>
+            <span>RAM</span>
           </div>
+          <p class="sp-gauge-meta" data-host="ram-meta">{{ board.host.ram_used_label|default:"—" }} / {{ board.host.ram_total_label|default:"—" }}</p>
+        </article>
+        <article class="sp-gauge" data-host-tone="disk">
+          <div class="sp-gauge-ring" style="--pct: {{ board.host.disk_percent|default:0 }}">
+            <strong data-host="disk">{{ board.host.disk_percent|default:"—" }}{% if board.host.disk_percent != None %}%{% endif %}</strong>
+            <span>Disk</span>
+          </div>
+          <p class="sp-gauge-meta" data-host="disk-meta">{{ board.host.disk_free_label|default:"—" }} free of {{ board.host.disk_total_label|default:"—" }}</p>
+        </article>
+      </div>
+      <div class="sp-trend-grid">
+        <div class="sp-chart sp-chart-lg"><canvas data-sys-chart="host-trend" aria-label="Host resource trend"></canvas></div>
+        <div class="sp-chart sp-chart-mix"><canvas data-sys-chart="host-mix" aria-label="Host resource mix"></canvas></div>
+      </div>
+    </div>
+    <div class="sp-raw-grid">
+      <section class="sp-list-block">
+        <header class="sp-list-head"><h3>Host details</h3></header>
+        <div class="sp-dl" data-raw-host></div>
+        <div class="sp-host-facts" data-host-facts>
+          <div><span>Hostname</span><strong data-host="hostname">{{ board.host.hostname|default:"—" }}</strong></div>
+          <div><span>Uptime</span><strong data-host="uptime">{{ board.host.uptime_label|default:"—" }}</strong></div>
+          <div><span>Processes</span><strong data-host="procs">{{ board.host.process_count|default:"—" }}</strong></div>
+          <div><span>Python</span><strong data-host="python">{{ board.host.python|default:"—" }}</strong></div>
         </div>
       </section>
+    </div>
+  </section>
 
-      <section class="sp-section" aria-labelledby="sp-sec-network">
-        <header class="sp-section-head">
+  {# -------- NETWORK -------- #}
+  <section class="sp-stage" aria-labelledby="sp-sec-network">
+    <div class="sp-trend">
+      <header class="sp-section-head">
+        <div>
           <p class="sp-section-kicker">Network</p>
           <h2 class="sp-section-title" id="sp-sec-network">MikroTik fleet</h2>
-        </header>
-        <div class="sp-section-body">
-          <article class="sp-card sp-card-full">
-            <header class="sp-card-head">
-              <h3>Fleet health trend</h3>
-              <p>Average MikroTik score · last 24 hours</p>
-            </header>
-            <div class="sp-chart sp-chart-lg"><canvas data-sys-chart="fleet-trend" aria-label="Fleet health trend"></canvas></div>
-          </article>
-          <div class="sp-row sp-row-thirds">
-            <article class="sp-card">
-              <header class="sp-card-head">
-                <h3>Router status</h3>
-                <p>Online, degraded, down</p>
-              </header>
-              <div class="sp-chart sp-chart-donut"><canvas data-sys-chart="fleet" aria-label="Router status"></canvas></div>
-            </article>
-            <article class="sp-card">
-              <header class="sp-card-head">
-                <h3>Live sessions</h3>
-                <p>Active PPPoE · 24h</p>
-              </header>
-              <div class="sp-chart"><canvas data-sys-chart="session-trend" aria-label="Sessions trend"></canvas></div>
-            </article>
-            <article class="sp-card">
-              <header class="sp-card-head">
-                <h3>Client services</h3>
-                <p>PPPoE, Hotspot, Static</p>
-              </header>
-              <div class="sp-chart sp-chart-donut"><canvas data-sys-chart="services" aria-label="Client services"></canvas></div>
-            </article>
-          </div>
-          <article class="sp-card sp-card-full">
-            <header class="sp-card-head">
-              <h3>ISP router health</h3>
-              <p>Online vs problem routers per account</p>
-            </header>
-            <div class="sp-chart sp-chart-bar"><canvas data-sys-chart="orgs" aria-label="ISP router health"></canvas></div>
-          </article>
+          <p class="sp-section-hint">Average score and online share · 24h</p>
         </div>
+        <span class="sp-tag">Trend</span>
+      </header>
+      <div class="sp-trend-grid">
+        <div class="sp-chart sp-chart-lg"><canvas data-sys-chart="fleet-trend" aria-label="Fleet health trend"></canvas></div>
+        <div class="sp-chart sp-chart-mix"><canvas data-sys-chart="fleet" aria-label="Router status"></canvas></div>
+      </div>
+      <div class="sp-trend-grid sp-trend-grid-secondary">
+        <div class="sp-chart"><canvas data-sys-chart="session-trend" aria-label="Sessions trend"></canvas></div>
+        <div class="sp-chart sp-chart-mix"><canvas data-sys-chart="services" aria-label="Client services"></canvas></div>
+      </div>
+      <div class="sp-chart sp-chart-bar" hidden><canvas data-sys-chart="orgs" aria-label="ISP router health"></canvas></div>
+    </div>
+    <div class="sp-raw-grid">
+      <section class="sp-list-block sp-list-wide">
+        <header class="sp-list-head">
+          <h3>MikroTik routers</h3>
+          <span class="sp-count" data-raw-router-count>0</span>
+        </header>
+        <div class="sp-table-wrap" data-raw-router-table></div>
       </section>
+      <section class="sp-list-block">
+        <header class="sp-list-head">
+          <h3>ISP accounts</h3>
+          <span class="sp-count" data-raw-org-count>0</span>
+        </header>
+        <div class="sp-table-wrap" data-raw-org-table></div>
+      </section>
+      <section class="sp-list-block">
+        <header class="sp-list-head"><h3>Communications</h3></header>
+        <div class="sp-dl" data-raw-comms></div>
+      </section>
+    </div>
+  </section>
 
-      <section class="sp-section" aria-labelledby="sp-sec-payments">
-        <header class="sp-section-head">
+  {# -------- REVENUE -------- #}
+  <section class="sp-stage" aria-labelledby="sp-sec-payments">
+    <div class="sp-trend">
+      <header class="sp-section-head">
+        <div>
           <p class="sp-section-kicker">Revenue</p>
           <h2 class="sp-section-title" id="sp-sec-payments">Payments &amp; STK</h2>
-        </header>
-        <div class="sp-section-body">
-          <div class="sp-row sp-row-half">
-            <article class="sp-card">
-              <header class="sp-card-head">
-                <h3>Payments (7 days)</h3>
-                <p>Collected amount by day</p>
-              </header>
-              <div class="sp-chart"><canvas data-sys-chart="pay-trend" aria-label="Payments trend"></canvas></div>
-            </article>
-            <article class="sp-card">
-              <header class="sp-card-head">
-                <h3>STK outcomes (7 days)</h3>
-                <p>Success vs failed pushes</p>
-              </header>
-              <div class="sp-chart"><canvas data-sys-chart="stk-trend" aria-label="STK trend"></canvas></div>
-            </article>
-          </div>
+          <p class="sp-section-hint">Collected amount and STK outcomes · 7 days</p>
         </div>
-      </section>
-
+        <span class="sp-tag">Trend</span>
+      </header>
+      <div class="sp-trend-grid sp-trend-grid-half">
+        <div class="sp-chart"><canvas data-sys-chart="pay-trend" aria-label="Payments trend"></canvas></div>
+        <div class="sp-chart"><canvas data-sys-chart="stk-trend" aria-label="STK trend"></canvas></div>
+      </div>
     </div>
-  </div>
-
-  <div class="sp-raw" data-sys-panel="raw" hidden>
-    <div class="sp-layout">
-      <section class="sp-section">
-        <header class="sp-section-head">
-          <p class="sp-section-kicker">Infrastructure</p>
-          <h2 class="sp-section-title">Server &amp; host</h2>
+    <div class="sp-raw-grid">
+      <section class="sp-list-block">
+        <header class="sp-list-head">
+          <h3>Payments today</h3>
+          <span class="sp-count" data-raw-pay-count>0</span>
         </header>
-        <div class="sp-raw-grid sp-raw-grid-1">
-          <section class="sp-panel">
-            <div class="sp-dl" data-raw-host></div>
-          </section>
-        </div>
+        <div class="sp-table-wrap" data-raw-pay-table></div>
       </section>
-      <section class="sp-section">
-        <header class="sp-section-head">
-          <p class="sp-section-kicker">Network</p>
-          <h2 class="sp-section-title">MikroTik &amp; ISPs</h2>
+      <section class="sp-list-block">
+        <header class="sp-list-head">
+          <h3>STK attempts today</h3>
+          <span class="sp-count" data-raw-stk-count>0</span>
         </header>
-        <div class="sp-raw-grid">
-          <section class="sp-panel">
-            <header class="sp-panel-head"><h2>MikroTik routers</h2><span class="sp-count" data-raw-router-count>0</span></header>
-            <div class="sp-table-wrap" data-raw-router-table></div>
-          </section>
-          <section class="sp-panel">
-            <header class="sp-panel-head"><h2>ISP accounts</h2><span class="sp-count" data-raw-org-count>0</span></header>
-            <div class="sp-table-wrap" data-raw-org-table></div>
-          </section>
-          <section class="sp-panel">
-            <header class="sp-panel-head"><h2>Communications</h2></header>
-            <div class="sp-dl" data-raw-comms></div>
-          </section>
-        </div>
-      </section>
-      <section class="sp-section">
-        <header class="sp-section-head">
-          <p class="sp-section-kicker">Revenue</p>
-          <h2 class="sp-section-title">Payments &amp; STK</h2>
-        </header>
-        <div class="sp-raw-grid">
-          <section class="sp-panel">
-            <header class="sp-panel-head"><h2>Payments today</h2><span class="sp-count" data-raw-pay-count>0</span></header>
-            <div class="sp-table-wrap" data-raw-pay-table></div>
-          </section>
-          <section class="sp-panel">
-            <header class="sp-panel-head"><h2>STK attempts today</h2><span class="sp-count" data-raw-stk-count>0</span></header>
-            <div class="sp-table-wrap" data-raw-stk-table></div>
-          </section>
-        </div>
-        <section class="sp-panel sp-panel-wide">
-          <header class="sp-panel-head"><h2>JSON payload</h2></header>
-          <pre class="sp-json" data-raw-json></pre>
-        </section>
+        <div class="sp-table-wrap" data-raw-stk-table></div>
       </section>
     </div>
-  </div>
+  </section>
+
+  <details class="sp-json-block">
+    <summary>Raw JSON payload</summary>
+    <pre class="sp-json" data-raw-json></pre>
+  </details>
 </div>
 
 <script src="{% static 'vendor/chart.umd.min.js' %}"></script>
@@ -269,7 +207,6 @@
   var boardEl = document.getElementById("sys-perf-board-data");
   var state = {
     board: boardEl ? JSON.parse(boardEl.textContent || "{}") : {},
-    displayMode: "visual",
     search: "",
     orgFilter: "",
   };
@@ -327,13 +264,16 @@
   function gridColor() { return isDark() ? "rgba(148,163,184,.12)" : "rgba(148,163,184,.18)"; }
 
   function setText(sel, value) {
-    var el = root.querySelector(sel);
-    if (el) el.textContent = value;
+    root.querySelectorAll(sel).forEach(function (el) { el.textContent = value; });
   }
 
   function setClock() {
     var el = root.querySelector("[data-sys-clock]");
     if (el) el.textContent = new Date().toLocaleString();
+  }
+
+  function canvas(key) {
+    return root.querySelector('[data-sys-chart="' + key + '"]');
   }
 
   function updateSummary() {
@@ -373,7 +313,7 @@
     setText("[data-host-meta]", (host.hostname || "Host") + " · " + (host.uptime_label || "—") + " uptime");
     var hostOk = root.querySelector("[data-host-ok]");
     if (hostOk) {
-      hostOk.textContent = host.ok ? "Healthy probe" : "Unavailable";
+      hostOk.textContent = host.ok ? "Healthy" : "Unavailable";
       hostOk.classList.toggle("is-bad", !host.ok);
     }
     root.querySelectorAll(".sp-gauge").forEach(function (el) {
@@ -448,7 +388,7 @@
   }
 
   function renderCharts() {
-    if (!window.Chart || state.displayMode !== "visual") return;
+    if (!window.Chart) return;
     destroyCharts();
     var trends = state.board.trends || {};
     var mk = state.board.mikrotik || {};
@@ -457,223 +397,204 @@
     var breakdown = mk.status_breakdown || {};
     var legend = { labels: { color: textColor(), boxWidth: 12, font: { size: 12 } } };
 
-    var hostTrend = trends.host || { labels: [], cpu: [], ram: [], disk: [] };
-    charts.hostTrend = new Chart(root.querySelector('[data-sys-chart="host-trend"]'), {
-      type: "line",
-      data: {
-        labels: hostTrend.labels || [],
-        datasets: [
-          Object.assign({}, lineDefaults(), {
-            label: "CPU %",
-            data: hostTrend.cpu || [],
-            borderColor: C.sea,
-            backgroundColor: C.seaSoft,
-          }),
-          Object.assign({}, lineDefaults(), {
-            label: "RAM %",
-            data: hostTrend.ram || [],
-            borderColor: C.clients,
-            backgroundColor: C.clientsFill,
-            fill: false,
-          }),
-          Object.assign({}, lineDefaults(), {
-            label: "Disk %",
-            data: hostTrend.disk || [],
-            borderColor: C.degraded,
-            backgroundColor: "rgba(180,83,9,0.10)",
-            fill: false,
-            borderDash: [4, 3],
-          }),
-        ],
-      },
-      options: {
-        plugins: { legend: legend },
-        scales: Object.assign({}, scaleOpts(), {
-          y: Object.assign({}, scaleOpts().y, { max: 100 }),
-        }),
-        maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-      },
-    });
-
-    charts.hostMix = new Chart(root.querySelector('[data-sys-chart="host-mix"]'), {
-      type: "bar",
-      data: {
-        labels: ["CPU", "RAM", "Disk"],
-        datasets: [{
-          data: [
-            host.cpu_percent != null ? host.cpu_percent : 0,
-            host.ram_percent != null ? host.ram_percent : 0,
-            host.disk_percent != null ? host.disk_percent : 0,
+    var hostTrendEl = canvas("host-trend");
+    if (hostTrendEl) {
+      var hostTrend = trends.host || { labels: [], cpu: [], ram: [], disk: [] };
+      charts.hostTrend = new Chart(hostTrendEl, {
+        type: "line",
+        data: {
+          labels: hostTrend.labels || [],
+          datasets: [
+            Object.assign({}, lineDefaults(), { label: "CPU %", data: hostTrend.cpu || [], borderColor: C.sea, backgroundColor: C.seaSoft }),
+            Object.assign({}, lineDefaults(), { label: "RAM %", data: hostTrend.ram || [], borderColor: C.clients, backgroundColor: C.clientsFill, fill: false }),
+            Object.assign({}, lineDefaults(), { label: "Disk %", data: hostTrend.disk || [], borderColor: C.degraded, backgroundColor: "rgba(180,83,9,0.10)", fill: false, borderDash: [4, 3] }),
           ],
-          backgroundColor: [C.sea, C.clients, C.degraded],
-          borderRadius: 6,
-          barPercentage: 0.55,
-        }],
-      },
-      options: {
-        plugins: { legend: { display: false } },
-        scales: Object.assign({}, scaleOpts(), {
-          y: Object.assign({}, scaleOpts().y, { max: 100 }),
-        }),
-        maintainAspectRatio: false,
-      },
-    });
-
-    var fleet = trends.fleet_24h || { labels: [], score: [], online_pct: [] };
-    charts.fleetTrend = new Chart(root.querySelector('[data-sys-chart="fleet-trend"]'), {
-      type: "line",
-      data: {
-        labels: fleet.labels || [],
-        datasets: [
-          Object.assign({}, lineDefaults(), {
-            label: "Avg score",
-            data: fleet.score || [],
-            borderColor: C.sea,
-            backgroundColor: C.seaSoft,
-          }),
-          Object.assign({}, lineDefaults(), {
-            label: "Online %",
-            data: fleet.online_pct || [],
-            borderColor: C.online,
-            backgroundColor: C.onlineFill,
-            fill: false,
-            borderDash: [4, 3],
-          }),
-        ],
-      },
-      options: {
-        plugins: { legend: legend },
-        scales: Object.assign({}, scaleOpts(), {
-          y: Object.assign({}, scaleOpts().y, { max: 100 }),
-        }),
-        maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-      },
-    });
-
-    var pay7 = trends.payments_7d || { labels: [], collected: [], count: [] };
-    charts.payTrend = new Chart(root.querySelector('[data-sys-chart="pay-trend"]'), {
-      type: "line",
-      data: {
-        labels: pay7.labels || [],
-        datasets: [
-          Object.assign({}, lineDefaults(), {
-            label: "Collected",
-            data: pay7.collected || [],
-            borderColor: C.clients,
-            backgroundColor: C.clientsFill,
-          }),
-        ],
-      },
-      options: {
-        plugins: { legend: { display: false } },
-        scales: scaleOpts(),
-        maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-      },
-    });
-
-    var stk7 = trends.stk_7d || { labels: [], success: [], failed: [] };
-    charts.stkTrend = new Chart(root.querySelector('[data-sys-chart="stk-trend"]'), {
-      type: "bar",
-      data: {
-        labels: stk7.labels || [],
-        datasets: [
-          { label: "Success", data: stk7.success || [], backgroundColor: C.success, borderRadius: 4, barPercentage: 0.7 },
-          { label: "Failed", data: stk7.failed || [], backgroundColor: C.failed, borderRadius: 4, barPercentage: 0.7 },
-        ],
-      },
-      options: {
-        plugins: { legend: legend },
-        scales: Object.assign({}, scaleOpts(), {
-          x: Object.assign({}, scaleOpts().x, { stacked: false }),
-          y: Object.assign({}, scaleOpts().y, { stacked: false }),
-        }),
-        maintainAspectRatio: false,
-      },
-    });
-
-    var sess = trends.sessions_24h || { labels: [], active: [] };
-    charts.sessionTrend = new Chart(root.querySelector('[data-sys-chart="session-trend"]'), {
-      type: "line",
-      data: {
-        labels: sess.labels || [],
-        datasets: [
-          Object.assign({}, lineDefaults(), {
-            label: "Sessions",
-            data: sess.active || [],
-            borderColor: C.sea,
-            backgroundColor: C.seaSoft,
-          }),
-        ],
-      },
-      options: {
-        plugins: { legend: { display: false } },
-        scales: scaleOpts(),
-        maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-      },
-    });
-
-    charts.fleet = new Chart(root.querySelector('[data-sys-chart="fleet"]'), {
-      type: "doughnut",
-      data: {
-        labels: ["Online", "Degraded", "Down", "Unknown"],
-        datasets: [{
-          data: [breakdown.online || 0, breakdown.degraded || 0, breakdown.down || 0, breakdown.unknown || 0],
-          backgroundColor: [C.online, C.degraded, C.down, C.unknown],
-          borderWidth: 0,
-          hoverOffset: 4,
-        }],
-      },
-      options: {
-        cutout: "62%",
-        plugins: { legend: Object.assign({}, legend, { position: "bottom" }) },
-        maintainAspectRatio: false,
-      },
-    });
-
-    var svc = comms.customers_by_service || {};
-    charts.services = new Chart(root.querySelector('[data-sys-chart="services"]'), {
-      type: "doughnut",
-      data: {
-        labels: ["PPPoE", "Hotspot", "Static"],
-        datasets: [{
-          data: [svc.pppoe || 0, svc.hotspot || 0, svc.static || 0],
-          backgroundColor: [C.clients, C.sea, C.unknown],
-          borderWidth: 0,
-          hoverOffset: 4,
-        }],
-      },
-      options: {
-        cutout: "62%",
-        plugins: { legend: Object.assign({}, legend, { position: "bottom" }) },
-        maintainAspectRatio: false,
-      },
-    });
-
-    var orgRows = filteredOrgs().slice(0, 10);
-    charts.orgs = new Chart(root.querySelector('[data-sys-chart="orgs"]'), {
-      type: "bar",
-      data: {
-        labels: orgRows.map(function (o) { return o.name; }),
-        datasets: [
-          { label: "Online", data: orgRows.map(function (o) { return o.routers_online || 0; }), backgroundColor: C.online, borderRadius: 3 },
-          { label: "Degraded", data: orgRows.map(function (o) { return o.routers_degraded || 0; }), backgroundColor: C.degraded, borderRadius: 3 },
-          { label: "Down", data: orgRows.map(function (o) { return o.routers_down || 0; }), backgroundColor: C.down, borderRadius: 3 },
-        ],
-      },
-      options: {
-        indexAxis: "y",
-        plugins: { legend: legend },
-        scales: {
-          x: { stacked: true, ticks: { color: textColor(), font: { size: 10 } }, grid: { color: gridColor() }, border: { display: false } },
-          y: { stacked: true, ticks: { color: textColor(), font: { size: 10 } }, grid: { display: false }, border: { display: false } },
         },
-        maintainAspectRatio: false,
-      },
-    });
+        options: {
+          plugins: { legend: legend },
+          scales: Object.assign({}, scaleOpts(), { y: Object.assign({}, scaleOpts().y, { max: 100 }) }),
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+        },
+      });
+    }
+
+    var hostMixEl = canvas("host-mix");
+    if (hostMixEl) {
+      charts.hostMix = new Chart(hostMixEl, {
+        type: "bar",
+        data: {
+          labels: ["CPU", "RAM", "Disk"],
+          datasets: [{
+            data: [
+              host.cpu_percent != null ? host.cpu_percent : 0,
+              host.ram_percent != null ? host.ram_percent : 0,
+              host.disk_percent != null ? host.disk_percent : 0,
+            ],
+            backgroundColor: [C.sea, C.clients, C.degraded],
+            borderRadius: 6,
+            barPercentage: 0.55,
+          }],
+        },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: Object.assign({}, scaleOpts(), { y: Object.assign({}, scaleOpts().y, { max: 100 }) }),
+          maintainAspectRatio: false,
+        },
+      });
+    }
+
+    var fleetTrendEl = canvas("fleet-trend");
+    if (fleetTrendEl) {
+      var fleet = trends.fleet_24h || { labels: [], score: [], online_pct: [] };
+      charts.fleetTrend = new Chart(fleetTrendEl, {
+        type: "line",
+        data: {
+          labels: fleet.labels || [],
+          datasets: [
+            Object.assign({}, lineDefaults(), { label: "Avg score", data: fleet.score || [], borderColor: C.sea, backgroundColor: C.seaSoft }),
+            Object.assign({}, lineDefaults(), { label: "Online %", data: fleet.online_pct || [], borderColor: C.online, backgroundColor: C.onlineFill, fill: false, borderDash: [4, 3] }),
+          ],
+        },
+        options: {
+          plugins: { legend: legend },
+          scales: Object.assign({}, scaleOpts(), { y: Object.assign({}, scaleOpts().y, { max: 100 }) }),
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+        },
+      });
+    }
+
+    var payEl = canvas("pay-trend");
+    if (payEl) {
+      var pay7 = trends.payments_7d || { labels: [], collected: [], count: [] };
+      charts.payTrend = new Chart(payEl, {
+        type: "line",
+        data: {
+          labels: pay7.labels || [],
+          datasets: [
+            Object.assign({}, lineDefaults(), { label: "Collected", data: pay7.collected || [], borderColor: C.clients, backgroundColor: C.clientsFill }),
+          ],
+        },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: scaleOpts(),
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+        },
+      });
+    }
+
+    var stkEl = canvas("stk-trend");
+    if (stkEl) {
+      var stk7 = trends.stk_7d || { labels: [], success: [], failed: [] };
+      charts.stkTrend = new Chart(stkEl, {
+        type: "bar",
+        data: {
+          labels: stk7.labels || [],
+          datasets: [
+            { label: "Success", data: stk7.success || [], backgroundColor: C.success, borderRadius: 4, barPercentage: 0.7 },
+            { label: "Failed", data: stk7.failed || [], backgroundColor: C.failed, borderRadius: 4, barPercentage: 0.7 },
+          ],
+        },
+        options: {
+          plugins: { legend: legend },
+          scales: Object.assign({}, scaleOpts(), {
+            x: Object.assign({}, scaleOpts().x, { stacked: false }),
+            y: Object.assign({}, scaleOpts().y, { stacked: false }),
+          }),
+          maintainAspectRatio: false,
+        },
+      });
+    }
+
+    var sessEl = canvas("session-trend");
+    if (sessEl) {
+      var sess = trends.sessions_24h || { labels: [], active: [] };
+      charts.sessionTrend = new Chart(sessEl, {
+        type: "line",
+        data: {
+          labels: sess.labels || [],
+          datasets: [
+            Object.assign({}, lineDefaults(), { label: "Sessions", data: sess.active || [], borderColor: C.sea, backgroundColor: C.seaSoft }),
+          ],
+        },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: scaleOpts(),
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+        },
+      });
+    }
+
+    var fleetEl = canvas("fleet");
+    if (fleetEl) {
+      charts.fleet = new Chart(fleetEl, {
+        type: "doughnut",
+        data: {
+          labels: ["Online", "Degraded", "Down", "Unknown"],
+          datasets: [{
+            data: [breakdown.online || 0, breakdown.degraded || 0, breakdown.down || 0, breakdown.unknown || 0],
+            backgroundColor: [C.online, C.degraded, C.down, C.unknown],
+            borderWidth: 0,
+            hoverOffset: 4,
+          }],
+        },
+        options: {
+          cutout: "62%",
+          plugins: { legend: Object.assign({}, legend, { position: "bottom" }) },
+          maintainAspectRatio: false,
+        },
+      });
+    }
+
+    var svcEl = canvas("services");
+    if (svcEl) {
+      var svc = comms.customers_by_service || {};
+      charts.services = new Chart(svcEl, {
+        type: "doughnut",
+        data: {
+          labels: ["PPPoE", "Hotspot", "Static"],
+          datasets: [{
+            data: [svc.pppoe || 0, svc.hotspot || 0, svc.static || 0],
+            backgroundColor: [C.clients, C.sea, C.unknown],
+            borderWidth: 0,
+            hoverOffset: 4,
+          }],
+        },
+        options: {
+          cutout: "62%",
+          plugins: { legend: Object.assign({}, legend, { position: "bottom" }) },
+          maintainAspectRatio: false,
+        },
+      });
+    }
+
+    var orgsEl = canvas("orgs");
+    if (orgsEl && !orgsEl.closest("[hidden]")) {
+      var orgRows = filteredOrgs().slice(0, 10);
+      charts.orgs = new Chart(orgsEl, {
+        type: "bar",
+        data: {
+          labels: orgRows.map(function (o) { return o.name; }),
+          datasets: [
+            { label: "Online", data: orgRows.map(function (o) { return o.routers_online || 0; }), backgroundColor: C.online, borderRadius: 3 },
+            { label: "Degraded", data: orgRows.map(function (o) { return o.routers_degraded || 0; }), backgroundColor: C.degraded, borderRadius: 3 },
+            { label: "Down", data: orgRows.map(function (o) { return o.routers_down || 0; }), backgroundColor: C.down, borderRadius: 3 },
+          ],
+        },
+        options: {
+          indexAxis: "y",
+          plugins: { legend: legend },
+          scales: {
+            x: { stacked: true, ticks: { color: textColor(), font: { size: 10 } }, grid: { color: gridColor() }, border: { display: false } },
+            y: { stacked: true, ticks: { color: textColor(), font: { size: 10 } }, grid: { display: false }, border: { display: false } },
+          },
+          maintainAspectRatio: false,
+        },
+      });
+    }
   }
 
   function renderRaw() {
@@ -713,70 +634,73 @@
         "</dl>";
     }
 
-    root.querySelector("[data-raw-router-table]").innerHTML =
-      '<table class="sp-table"><thead><tr><th>ISP</th><th>Router</th><th>Host</th><th>Status</th><th>Score</th><th>Clients</th><th>Active</th><th>Reason</th></tr></thead><tbody>' +
-      routers.map(function (r) {
-        return "<tr><td>" + esc(r.organization_name) + "</td><td>" + esc(r.name) +
-          "</td><td class=\"mono\">" + esc(r.host) + '</td><td><span class="sp-tag ' + toneClass(r.tone) + '">' +
-          esc(r.status) + "</span></td><td>" + esc(r.score != null ? r.score : "—") +
-          "</td><td>" + esc(r.customer_count || 0) + "</td><td>" + esc(r.active_customers || 0) +
-          "</td><td>" + esc(r.reason) + "</td></tr>";
-      }).join("") + (routers.length ? "" : '<tr><td colspan="8" class="sp-empty">No routers match</td></tr>') + "</tbody></table>";
+    var routerTable = root.querySelector("[data-raw-router-table]");
+    if (routerTable) {
+      routerTable.innerHTML =
+        '<table class="sp-table"><thead><tr><th>ISP</th><th>Router</th><th>Host</th><th>Status</th><th>Score</th><th>Clients</th><th>Active</th><th>Reason</th></tr></thead><tbody>' +
+        routers.map(function (r) {
+          return "<tr><td>" + esc(r.organization_name) + "</td><td>" + esc(r.name) +
+            "</td><td class=\"mono\">" + esc(r.host) + '</td><td><span class="sp-tag ' + toneClass(r.tone) + '">' +
+            esc(r.status) + "</span></td><td>" + esc(r.score != null ? r.score : "—") +
+            "</td><td>" + esc(r.customer_count || 0) + "</td><td>" + esc(r.active_customers || 0) +
+            "</td><td>" + esc(r.reason) + "</td></tr>";
+        }).join("") + (routers.length ? "" : '<tr><td colspan="8" class="sp-empty">No routers match</td></tr>') + "</tbody></table>";
+    }
 
-    root.querySelector("[data-raw-org-table]").innerHTML =
-      '<table class="sp-table"><thead><tr><th>ISP</th><th>Status</th><th>Routers</th><th>Online</th><th>Down</th><th>Clients</th></tr></thead><tbody>' +
-      orgs.map(function (o) {
-        return "<tr><td>" + esc(o.name) + "</td><td>" + esc(o.status) + "</td><td>" +
-          esc(o.router_count || 0) + "</td><td>" + esc(o.routers_online || 0) + "</td><td>" +
-          esc(o.routers_down || 0) + "</td><td>" + esc(o.active_customer_count || 0) + "/" + esc(o.customer_count || 0) + "</td></tr>";
-      }).join("") + (orgs.length ? "" : '<tr><td colspan="6" class="sp-empty">No ISPs match</td></tr>') + "</tbody></table>";
+    var orgTable = root.querySelector("[data-raw-org-table]");
+    if (orgTable) {
+      orgTable.innerHTML =
+        '<table class="sp-table"><thead><tr><th>ISP</th><th>Status</th><th>Routers</th><th>Online</th><th>Down</th><th>Clients</th></tr></thead><tbody>' +
+        orgs.map(function (o) {
+          return "<tr><td>" + esc(o.name) + "</td><td>" + esc(o.status) + "</td><td>" +
+            esc(o.router_count || 0) + "</td><td>" + esc(o.routers_online || 0) + "</td><td>" +
+            esc(o.routers_down || 0) + "</td><td>" + esc(o.active_customer_count || 0) + "/" + esc(o.customer_count || 0) + "</td></tr>";
+        }).join("") + (orgs.length ? "" : '<tr><td colspan="6" class="sp-empty">No ISPs match</td></tr>') + "</tbody></table>";
+    }
 
-    root.querySelector("[data-raw-comms]").innerHTML =
-      '<dl>' +
-      "<div><dt>Active subscribers</dt><dd>" + esc(comms.customers_active || 0) + "</dd></div>" +
-      "<div><dt>Live sessions (30m)</dt><dd>" + esc(comms.active_sessions || 0) + "</dd></div>" +
-      "<div><dt>PPPoE</dt><dd>" + esc((comms.customers_by_service || {}).pppoe || 0) + "</dd></div>" +
-      "<div><dt>Hotspot</dt><dd>" + esc((comms.customers_by_service || {}).hotspot || 0) + "</dd></div>" +
-      "<div><dt>Static</dt><dd>" + esc((comms.customers_by_service || {}).static || 0) + "</dd></div>" +
-      "<div><dt>Collected today</dt><dd>" + esc(fmtMoney(pay.collected_today)) + "</dd></div>" +
-      "</dl>";
+    var commsEl = root.querySelector("[data-raw-comms]");
+    if (commsEl) {
+      commsEl.innerHTML =
+        '<dl>' +
+        "<div><dt>Active subscribers</dt><dd>" + esc(comms.customers_active || 0) + "</dd></div>" +
+        "<div><dt>Live sessions (30m)</dt><dd>" + esc(comms.active_sessions || 0) + "</dd></div>" +
+        "<div><dt>PPPoE</dt><dd>" + esc((comms.customers_by_service || {}).pppoe || 0) + "</dd></div>" +
+        "<div><dt>Hotspot</dt><dd>" + esc((comms.customers_by_service || {}).hotspot || 0) + "</dd></div>" +
+        "<div><dt>Static</dt><dd>" + esc((comms.customers_by_service || {}).static || 0) + "</dd></div>" +
+        "<div><dt>Collected today</dt><dd>" + esc(fmtMoney(pay.collected_today)) + "</dd></div>" +
+        "</dl>";
+    }
 
-    root.querySelector("[data-raw-pay-table]").innerHTML =
-      '<table class="sp-table"><thead><tr><th>Time</th><th>ISP</th><th>Amount</th><th>Ref</th></tr></thead><tbody>' +
-      payments.map(function (p) {
-        return "<tr><td>" + esc(fmtTime(p.received_at)) + "</td><td>" + esc(p.organization) +
-          "</td><td>" + esc(fmtMoney(p.amount)) + "</td><td class=\"mono\">" + esc(p.reference || "—") + "</td></tr>";
-      }).join("") + (payments.length ? "" : '<tr><td colspan="4" class="sp-empty">No payments today</td></tr>') + "</tbody></table>";
+    var payTable = root.querySelector("[data-raw-pay-table]");
+    if (payTable) {
+      payTable.innerHTML =
+        '<table class="sp-table"><thead><tr><th>Time</th><th>ISP</th><th>Amount</th><th>Ref</th></tr></thead><tbody>' +
+        payments.map(function (p) {
+          return "<tr><td>" + esc(fmtTime(p.received_at)) + "</td><td>" + esc(p.organization) +
+            "</td><td>" + esc(fmtMoney(p.amount)) + "</td><td class=\"mono\">" + esc(p.reference || "—") + "</td></tr>";
+        }).join("") + (payments.length ? "" : '<tr><td colspan="4" class="sp-empty">No payments today</td></tr>') + "</tbody></table>";
+    }
 
-    root.querySelector("[data-raw-stk-table]").innerHTML =
-      '<table class="sp-table"><thead><tr><th>Time</th><th>ISP</th><th>Purpose</th><th>Amount</th><th>Status</th><th>Result</th></tr></thead><tbody>' +
-      stk.map(function (s) {
-        return "<tr><td>" + esc(fmtTime(s.created_at)) + "</td><td>" + esc(s.organization) +
-          "</td><td>" + esc(purposeLabel(s.purpose)) + "</td><td>" + esc(fmtMoney(s.amount)) +
-          '</td><td><span class="sp-tag">' + esc(s.status) + "</span></td><td>" + esc(s.result_desc || "—") + "</td></tr>";
-      }).join("") + (stk.length ? "" : '<tr><td colspan="6" class="sp-empty">No STK attempts today</td></tr>') + "</tbody></table>";
+    var stkTable = root.querySelector("[data-raw-stk-table]");
+    if (stkTable) {
+      stkTable.innerHTML =
+        '<table class="sp-table"><thead><tr><th>Time</th><th>ISP</th><th>Purpose</th><th>Amount</th><th>Status</th><th>Result</th></tr></thead><tbody>' +
+        stk.map(function (s) {
+          return "<tr><td>" + esc(fmtTime(s.created_at)) + "</td><td>" + esc(s.organization) +
+            "</td><td>" + esc(purposeLabel(s.purpose)) + "</td><td>" + esc(fmtMoney(s.amount)) +
+            '</td><td><span class="sp-tag">' + esc(s.status) + "</span></td><td>" + esc(s.result_desc || "—") + "</td></tr>";
+        }).join("") + (stk.length ? "" : '<tr><td colspan="6" class="sp-empty">No STK attempts today</td></tr>') + "</tbody></table>";
+    }
 
-    root.querySelector("[data-raw-json]").textContent = JSON.stringify(state.board, null, 2);
-  }
-
-  function setDisplayMode(mode) {
-    state.displayMode = mode;
-    root.querySelectorAll("[data-sys-display]").forEach(function (btn) {
-      var active = btn.getAttribute("data-sys-display") === mode;
-      btn.classList.toggle("is-active", active);
-      btn.setAttribute("aria-selected", active ? "true" : "false");
-    });
-    root.querySelector('[data-sys-panel="visual"]').hidden = mode !== "visual";
-    root.querySelector('[data-sys-panel="raw"]').hidden = mode !== "raw";
-    if (mode === "visual") renderCharts();
-    else renderRaw();
+    var jsonEl = root.querySelector("[data-raw-json]");
+    if (jsonEl) jsonEl.textContent = JSON.stringify(state.board, null, 2);
   }
 
   function renderAll() {
     updateSummary();
     orgOptions();
-    if (state.displayMode === "visual") renderCharts();
-    else renderRaw();
+    renderCharts();
+    renderRaw();
   }
 
   function refreshBoard(force) {
@@ -796,12 +720,6 @@
         root.classList.remove("is-refreshing");
       });
   }
-
-  root.querySelectorAll("[data-sys-display]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      setDisplayMode(btn.getAttribute("data-sys-display") || "visual");
-    });
-  });
 
   var searchInput = root.querySelector("[data-sys-search]");
   if (searchInput) {
@@ -834,9 +752,7 @@
   });
 
   document.getElementById("theme-toggle") && document.getElementById("theme-toggle").addEventListener("click", function () {
-    window.setTimeout(function () {
-      if (state.displayMode === "visual") renderCharts();
-    }, 80);
+    window.setTimeout(function () { renderCharts(); }, 80);
   });
 })();
 </script>

@@ -263,13 +263,6 @@ CLIENT_SIDEBARS = {
                 "url_name": "core:noc",
                 "query": "focus=faults",
             },
-            {"key": "mikrotik", "label": "MikroTik fleet", "url_name": "core:mikrotik"},
-            {
-                "key": "clients_pppoe",
-                "label": "PPPoE clients",
-                "url_name": "core:my_clients",
-                "tab": "pppoe",
-            },
         ],
     },
     "audits": {
