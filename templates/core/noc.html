@@ -1,4 +1,5 @@
 {% extends "core/client_base.html" %}
+{% load static %}
 
 {% block title %}{% if noc_focus == "down" %}Down routers{% elif noc_focus == "impact" %}Client quality{% elif noc_focus == "faults" %}Open faults{% elif noc_focus == "performance" %}MikroTik performance{% else %}NOC{% endif %} — ISPCENTRIC{% endblock %}
 
@@ -14,215 +15,239 @@
   data-clients-url="{{ clients_url }}"
   data-mikrotik-url="{{ mikrotik_url }}"
 >
-  <header class="noc-top">
-    <div class="noc-top-copy">
-      <p class="noc-kicker">Network Operations Center</p>
-      <h1>
-        {% if noc_focus == "down" %}Down routers
-        {% elif noc_focus == "impact" %}Client quality
-        {% elif noc_focus == "faults" %}Open faults
-        {% elif noc_focus == "performance" %}MikroTik performance
-        {% else %}Ops console{% endif %}
-      </h1>
-      <p class="noc-top-sub">
-        {% if noc_focus == "down" %}
-          Only outage and degraded NAS gear — health history, clients exposed, reconnect actions.
-        {% elif noc_focus == "impact" %}
-          Stuck dialed sessions plus clients running far below their package Mbps.
-        {% elif noc_focus == "faults" %}
-          Only open field fault tickets — status, technician, client, and linked router.
-        {% elif noc_focus == "performance" %}
-          Per-MikroTik health and client throughput vs plan, ranked improvements, and non-optimal sessions.
-        {% else %}
-          Cross-fleet alarm triage: severity queue, sites, inspector, and chronology.
-        {% endif %}
-      </p>
-    </div>
-    <div class="noc-top-actions">
+  <header class="noc-bar">
+    <div class="noc-bar-left">
       <span class="noc-live-pill" data-live-pill>{% if board.summary.has_live_cache %}Live{% else %}Standby{% endif %}</span>
       <span class="noc-clock" data-noc-clock>—</span>
-      <button type="button" class="btn btn-primary btn-sm" data-noc-refresh {% if not board.summary.routers_total %}disabled{% endif %}>
+      {% if not noc_focus %}
+      <span class="noc-bar-stat"><strong data-stat="health">{{ board.summary.health_score|default:"—" }}{% if board.summary.health_score is not None %}%{% endif %}</strong> fleet</span>
+      <span class="noc-bar-stat"><strong data-stat="at-risk">{{ board.summary.customers_at_risk }}</strong> at risk</span>
+      {% elif noc_focus == "down" %}
+      <span class="noc-bar-stat sev-critical"><strong data-down-stat="down">{{ board.summary.routers_down }}</strong> down</span>
+      <span class="noc-bar-stat sev-major"><strong data-down-stat="degraded">{{ board.summary.routers_degraded }}</strong> degraded</span>
+      {% elif noc_focus == "impact" %}
+      <span class="noc-bar-stat"><strong data-impact-stat="not-surfing">—</strong> stuck</span>
+      <span class="noc-bar-stat"><strong data-impact-stat="under">{{ board.summary.clients_underperforming }}</strong> under plan</span>
+      {% elif noc_focus == "faults" %}
+      <span class="noc-bar-stat"><strong data-fault-stat="total">{{ board.summary.faults_open }}</strong> open</span>
+      <span class="noc-bar-stat sev-critical"><strong data-fault-stat="unassigned">{{ board.summary.faults_unassigned }}</strong> unassigned</span>
+      {% elif noc_focus == "performance" %}
+      <span class="noc-bar-stat"><strong data-perf-stat="score">{% if board.summary.performance_score is not None %}{{ board.summary.performance_score }}%{% else %}—{% endif %}</strong> fleet</span>
+      <span class="noc-bar-stat"><strong data-perf-stat="under">{{ board.summary.clients_underperforming }}</strong> under plan</span>
+      {% endif %}
+    </div>
+    <div class="noc-bar-actions">
+      <button type="button" class="btn btn-primary btn-sm" data-noc-refresh {% if not board.summary.routers_total %}disabled{% endif %} title="Refresh fleet status">
         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M4 12a8 8 0 0 1 14.1-5.1M20 12a8 8 0 0 1-14.1 5.1M16 4v4h4M8 20v-4H4"/></svg>
-        Probe now
+        Refresh
       </button>
-      <a class="btn btn-ghost btn-sm" href="{{ mikrotik_url }}">MikroTik</a>
-      <a class="btn btn-ghost btn-sm" href="{{ clients_url }}">Clients</a>
     </div>
   </header>
 
-  <nav class="noc-mode-tabs" aria-label="NOC views">
-    <a class="noc-mode-tab{% if not noc_focus %} is-active{% endif %}" href="{% url 'core:noc' %}">Ops board</a>
-    <a class="noc-mode-tab{% if noc_focus == 'performance' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=performance">Performance</a>
-    <a class="noc-mode-tab{% if noc_focus == 'down' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=down">Down routers</a>
-    <a class="noc-mode-tab{% if noc_focus == 'impact' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=impact">Client quality</a>
-    <a class="noc-mode-tab{% if noc_focus == 'faults' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=faults">Open faults</a>
-  </nav>
-
   {# -------- OPS BOARD -------- #}
   <div class="noc-view" data-noc-view="ops" {% if noc_focus %}hidden{% endif %}>
-    <div class="noc-sev-strip" aria-label="Alarm severity">
-      <button type="button" class="noc-sev is-critical" data-filter-sev="critical"><span class="noc-sev-label">Critical</span><strong data-stat="critical">{{ board.summary.alarms_critical }}</strong></button>
-      <button type="button" class="noc-sev is-major" data-filter-sev="major"><span class="noc-sev-label">Major</span><strong data-stat="major">{{ board.summary.alarms_major }}</strong></button>
-      <button type="button" class="noc-sev is-minor" data-filter-sev="minor"><span class="noc-sev-label">Minor</span><strong data-stat="minor">{{ board.summary.alarms_minor }}</strong></button>
-      <button type="button" class="noc-sev is-all is-active" data-filter-sev=""><span class="noc-sev-label">Open alarms</span><strong data-stat="alarms">{{ board.summary.alarms_open }}</strong></button>
-      <div class="noc-sev-meta">
-        <span><strong data-stat="at-risk">{{ board.summary.customers_at_risk }}</strong> clients at risk</span>
-        <span><strong data-stat="non-optimal">{{ board.summary.clients_non_optimal }}</strong> non-optimal</span>
-        <span><strong data-stat="sites">{{ board.summary.sites_total }}</strong> sites</span>
-        <span><strong data-stat="health">{{ board.summary.health_score|default:"—" }}{% if board.summary.health_score is not None %}%{% endif %}</strong> fleet</span>
-      </div>
+    <div class="noc-metrics" aria-label="Alarm severity">
+      <button type="button" class="noc-metric is-critical" data-filter-sev="critical"><span>Critical</span><strong data-stat="critical">{{ board.summary.alarms_critical }}</strong></button>
+      <button type="button" class="noc-metric is-major" data-filter-sev="major"><span>Major</span><strong data-stat="major">{{ board.summary.alarms_major }}</strong></button>
+      <button type="button" class="noc-metric is-minor" data-filter-sev="minor"><span>Minor</span><strong data-stat="minor">{{ board.summary.alarms_minor }}</strong></button>
+      <button type="button" class="noc-metric is-all is-active" data-filter-sev=""><span>All open</span><strong data-stat="alarms">{{ board.summary.alarms_open }}</strong></button>
     </div>
-    <div class="noc-filters">
-      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="ops" placeholder="Search alarms, routers, sites…" autocomplete="off"></label>
+    <div class="noc-toolbar">
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="ops" placeholder="Search…" autocomplete="off"></label>
       <select data-noc-site data-scope="ops"><option value="">All sites</option></select>
-      <label class="noc-check"><input type="checkbox" data-noc-hide-acked> Hide acknowledged</label>
-      <div class="noc-filter-actions">
-        <button type="button" class="btn btn-ghost btn-sm" data-noc-ack-all>Ack visible</button>
-        <button type="button" class="btn btn-ghost btn-sm" data-noc-clear-ack>Clear acks</button>
-        <a class="btn btn-ghost btn-sm" href="?focus=performance">Open performance</a>
+      <label class="noc-check"><input type="checkbox" data-noc-hide-acked> Hide acked</label>
+      <div class="noc-display-toggle" role="tablist" aria-label="View mode">
+        <button type="button" class="is-active" data-noc-display="visual" role="tab" aria-selected="true">Visuals</button>
+        <button type="button" data-noc-display="data" role="tab" aria-selected="false">Data</button>
       </div>
     </div>
-    <div class="noc-grid">
-      <section class="noc-pane"><header class="noc-pane-head"><div><p class="noc-pane-kicker">Queue</p><h2>Alarms</h2></div><span class="noc-pane-count" data-alarm-count>0</span></header><div class="noc-alarm-list" data-alarm-list></div></section>
-      <section class="noc-pane"><header class="noc-pane-head"><div><p class="noc-pane-kicker">Topology</p><h2>Sites &amp; fleet</h2></div><div class="noc-view-toggle"><button type="button" class="is-active" data-view="sites">Sites</button><button type="button" data-view="fleet">Fleet</button></div></header><div class="noc-matrix-body" data-matrix-body></div></section>
-      <section class="noc-pane"><header class="noc-pane-head"><div><p class="noc-pane-kicker">Inspector</p><h2 data-inspector-title>Select an alarm or router</h2></div></header><div class="noc-inspector-body" data-inspector-body><div class="noc-empty"><p class="noc-empty-title">Nothing selected</p><p class="noc-empty-copy">Pick an alarm or router tile.</p></div></div></section>
+    <div class="noc-visual-panel" data-noc-panel="visual">
+      <div class="noc-chart-grid">
+        <article class="noc-chart-card"><h3>Alarms by severity</h3><p class="noc-chart-hint">Open alarms grouped by urgency</p><div class="noc-chart-wrap"><canvas data-noc-chart="ops-severity" aria-label="Alarms by severity"></canvas></div></article>
+        <article class="noc-chart-card"><h3>Fleet health</h3><p class="noc-chart-hint">Routers online, degraded, or down</p><div class="noc-chart-wrap"><canvas data-noc-chart="ops-fleet" aria-label="Fleet health"></canvas></div></article>
+        <article class="noc-chart-card noc-chart-card-wide"><h3>Sites with most clients at risk</h3><p class="noc-chart-hint">Locations needing attention first</p><div class="noc-chart-wrap noc-chart-wrap-bar"><canvas data-noc-chart="ops-sites" aria-label="Sites by clients at risk"></canvas></div></article>
+      </div>
     </div>
-    <section class="noc-pane noc-timeline"><header class="noc-pane-head"><div><p class="noc-pane-kicker">Chronology</p><h2>Event timeline</h2></div><span class="noc-pane-count" data-timeline-count>0</span></header><div class="noc-timeline-list" data-timeline-list></div></section>
+    <div class="noc-data-panel" data-noc-panel="data" hidden>
+    <div class="noc-layout">
+      <section class="noc-pane">
+        <header class="noc-pane-head"><h2>Alarms</h2><span class="noc-pane-count" data-alarm-count>0</span></header>
+        <div class="noc-alarm-list" data-alarm-list></div>
+      </section>
+      <section class="noc-pane">
+        <header class="noc-pane-head"><h2>Fleet</h2></header>
+        <div class="noc-matrix-body" data-matrix-body></div>
+      </section>
+    </div>
+    <section class="noc-detail-panel" data-inspector-panel hidden>
+      <header class="noc-detail-head"><h2 data-inspector-title>Details</h2></header>
+      <div class="noc-inspector-body" data-inspector-body></div>
+    </section>
+    <section class="noc-pane noc-events-pane">
+      <header class="noc-pane-head"><h2>Recent events</h2><span class="noc-pane-count" data-timeline-count>0</span></header>
+      <div class="noc-timeline-list noc-timeline-compact" data-timeline-list></div>
+    </section>
+    </div>
   </div>
 
   {# -------- PERFORMANCE -------- #}
   <div class="noc-view" data-noc-view="performance" {% if noc_focus != "performance" %}hidden{% endif %}>
-    <div class="noc-kpi-row" aria-label="Performance snapshot">
-      <article class="noc-kpi"><p class="noc-kpi-label">Fleet score</p><p class="noc-kpi-value" data-perf-stat="score">{% if board.summary.performance_score is not None %}{{ board.summary.performance_score }}%{% else %}—{% endif %}</p><p class="noc-kpi-meta" data-perf-stat="label">{{ board.summary.performance_label|default:"No data" }}</p></article>
-      <article class="noc-kpi tone-ok"><p class="noc-kpi-label">Sessions active</p><p class="noc-kpi-value" data-perf-stat="sessions">{{ board.summary.sessions_active }}</p><p class="noc-kpi-meta">Dialed PPPoE now</p></article>
-      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Under plan</p><p class="noc-kpi-value" data-perf-stat="under">{{ board.summary.clients_underperforming }}</p><p class="noc-kpi-meta">Peak ≪ package Mbps</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">Idle dialed</p><p class="noc-kpi-value" data-perf-stat="idle">{{ board.summary.clients_idle }}</p><p class="noc-kpi-meta">Connected, almost no traffic</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">Live throughput</p><p class="noc-kpi-value" data-perf-stat="throughput">{{ board.summary.fleet_throughput_mbps }}</p><p class="noc-kpi-meta">Mbps down+up across fleet</p></article>
+    <div class="noc-metrics" aria-label="Performance snapshot">
+      <div class="noc-metric is-readonly"><span>Fleet score</span><strong data-perf-stat="score">{% if board.summary.performance_score is not None %}{{ board.summary.performance_score }}%{% else %}—{% endif %}</strong></div>
+      <div class="noc-metric is-readonly tone-ok"><span>Sessions</span><strong data-perf-stat="sessions">{{ board.summary.sessions_active }}</strong></div>
+      <div class="noc-metric is-readonly sev-major"><span>Under plan</span><strong data-perf-stat="under">{{ board.summary.clients_underperforming }}</strong></div>
+      <div class="noc-metric is-readonly"><span>Throughput</span><strong data-perf-stat="throughput">{{ board.summary.fleet_throughput_mbps }}</strong></div>
     </div>
-    <div class="noc-filters">
-      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="performance" placeholder="Search routers, sites, clients…" autocomplete="off"></label>
+    <div class="noc-toolbar">
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="performance" placeholder="Search…" autocomplete="off"></label>
       <select data-noc-site data-scope="performance"><option value="">All sites</option></select>
       <select data-perf-tone>
-        <option value="">All performance</option>
+        <option value="">All</option>
         <option value="bad">Needs attention</option>
         <option value="warn">Fair</option>
-        <option value="ok">Strong / good</option>
+        <option value="ok">Good</option>
       </select>
+      <div class="noc-display-toggle" role="tablist" aria-label="View mode">
+        <button type="button" class="is-active" data-noc-display="visual" role="tab" aria-selected="true">Visuals</button>
+        <button type="button" data-noc-display="data" role="tab" aria-selected="false">Data</button>
+      </div>
     </div>
-    <div class="noc-split noc-split-perf">
-      <section class="noc-pane">
-        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Fleet</p><h2>MikroTik performance</h2></div><span class="noc-pane-count" data-perf-router-count>0</span></header>
-        <div class="noc-table-wrap" data-perf-router-table></div>
-      </section>
-      <section class="noc-pane">
-        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Actions</p><h2>Areas to improve</h2></div><span class="noc-pane-count" data-perf-improve-count>0</span></header>
-        <div class="noc-improve-list" data-perf-improve-list></div>
-      </section>
+    <div class="noc-visual-panel" data-noc-panel="visual">
+      <div class="noc-chart-grid">
+        <article class="noc-chart-card"><h3>Client session quality</h3><p class="noc-chart-hint">Under plan, idle, or healthy sessions</p><div class="noc-chart-wrap"><canvas data-noc-chart="perf-clients" aria-label="Client session quality"></canvas></div></article>
+        <article class="noc-chart-card"><h3>Router performance</h3><p class="noc-chart-hint">Score distribution across MikroTiks</p><div class="noc-chart-wrap"><canvas data-noc-chart="perf-tones" aria-label="Router performance distribution"></canvas></div></article>
+        <article class="noc-chart-card noc-chart-card-wide"><h3>Lowest scoring routers</h3><p class="noc-chart-hint">Focus improvement here first</p><div class="noc-chart-wrap noc-chart-wrap-bar"><canvas data-noc-chart="perf-routers" aria-label="Lowest scoring routers"></canvas></div></article>
+      </div>
     </div>
+    <div class="noc-data-panel" data-noc-panel="data" hidden>
     <section class="noc-pane">
-      <header class="noc-pane-head"><div><p class="noc-pane-kicker">Clients</p><h2>Not optimally running</h2></div><span class="noc-pane-count" data-perf-client-count>0</span></header>
+      <header class="noc-pane-head"><h2>MikroTik performance</h2><span class="noc-pane-count" data-perf-router-count>0</span></header>
+      <div class="noc-table-wrap" data-perf-router-table></div>
+    </section>
+    <section class="noc-pane">
+      <header class="noc-pane-head"><h2>Suggested actions</h2><span class="noc-pane-count" data-perf-improve-count>0</span></header>
+      <div class="noc-improve-list" data-perf-improve-list></div>
+    </section>
+    <section class="noc-pane">
+      <header class="noc-pane-head"><h2>Clients below plan</h2><span class="noc-pane-count" data-perf-client-count>0</span></header>
       <div class="noc-table-wrap" data-perf-client-table></div>
     </section>
+    </div>
   </div>
 
   {# -------- DOWN ROUTERS -------- #}
   <div class="noc-view" data-noc-view="down" {% if noc_focus != "down" %}hidden{% endif %}>
-    <div class="noc-kpi-row" aria-label="Outage snapshot">
-      <article class="noc-kpi sev-critical"><p class="noc-kpi-label">Down</p><p class="noc-kpi-value" data-down-stat="down">{{ board.summary.routers_down }}</p><p class="noc-kpi-meta">NAS offline</p></article>
-      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Degraded</p><p class="noc-kpi-value" data-down-stat="degraded">{{ board.summary.routers_degraded }}</p><p class="noc-kpi-meta">Reachable / auth / limited</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">Clients on down NAS</p><p class="noc-kpi-value" data-down-stat="on-down">{{ board.summary.customers_on_down }}</p><p class="noc-kpi-meta">Assigned subscribers</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">Clients on degraded</p><p class="noc-kpi-value" data-down-stat="on-degraded">{{ board.summary.customers_on_degraded }}</p><p class="noc-kpi-meta">May be affected</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">Problem health</p><p class="noc-kpi-value" data-down-stat="problem-health">{% if board.summary.problem_health_score is not None %}{{ board.summary.problem_health_score }}%{% else %}—{% endif %}</p><p class="noc-kpi-meta">Avg score of problem routers</p></article>
+    <div class="noc-metrics" aria-label="Outage snapshot">
+      <div class="noc-metric is-readonly sev-critical"><span>Down</span><strong data-down-stat="down">{{ board.summary.routers_down }}</strong></div>
+      <div class="noc-metric is-readonly sev-major"><span>Degraded</span><strong data-down-stat="degraded">{{ board.summary.routers_degraded }}</strong></div>
+      <div class="noc-metric is-readonly"><span>Clients affected</span><strong data-down-stat="on-down">{{ board.summary.customers_on_down }}</strong></div>
     </div>
-    <div class="noc-filters">
-      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="down" placeholder="Search problem routers…" autocomplete="off"></label>
+    <div class="noc-toolbar">
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="down" placeholder="Search…" autocomplete="off"></label>
       <select data-noc-site data-scope="down"><option value="">All sites</option></select>
       <select data-down-tone>
-        <option value="">Down + degraded</option>
+        <option value="">All problems</option>
         <option value="down">Down only</option>
         <option value="degraded">Degraded only</option>
       </select>
+      <div class="noc-display-toggle" role="tablist" aria-label="View mode">
+        <button type="button" class="is-active" data-noc-display="visual" role="tab" aria-selected="true">Visuals</button>
+        <button type="button" data-noc-display="data" role="tab" aria-selected="false">Data</button>
+      </div>
     </div>
-    <div class="noc-split">
-      <section class="noc-pane">
-        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Outages</p><h2>Problem routers</h2></div><span class="noc-pane-count" data-down-count>0</span></header>
-        <div class="noc-table-wrap" data-down-table></div>
-      </section>
-      <section class="noc-pane">
-        <header class="noc-pane-head"><div><p class="noc-pane-kicker">History</p><h2 data-down-detail-title>Select a router</h2></div></header>
-        <div class="noc-inspector-body" data-down-detail>
-          <div class="noc-empty"><p class="noc-empty-title">Pick a problem router</p><p class="noc-empty-copy">See health sparkline, last change, drop events, and reconnect.</p></div>
-        </div>
-      </section>
+    <div class="noc-visual-panel" data-noc-panel="visual">
+      <div class="noc-chart-grid">
+        <article class="noc-chart-card"><h3>Problem breakdown</h3><p class="noc-chart-hint">Down vs degraded routers</p><div class="noc-chart-wrap"><canvas data-noc-chart="down-status" aria-label="Problem router breakdown"></canvas></div></article>
+        <article class="noc-chart-card"><h3>Clients affected</h3><p class="noc-chart-hint">Subscribers on down or degraded NAS</p><div class="noc-chart-wrap"><canvas data-noc-chart="down-clients" aria-label="Clients affected by outages"></canvas></div></article>
+        <article class="noc-chart-card noc-chart-card-wide"><h3>Clients per problem router</h3><p class="noc-chart-hint">Impact size by router</p><div class="noc-chart-wrap noc-chart-wrap-bar"><canvas data-noc-chart="down-impact" aria-label="Clients per problem router"></canvas></div></article>
+      </div>
+    </div>
+    <div class="noc-data-panel" data-noc-panel="data" hidden>
+    <section class="noc-pane">
+      <header class="noc-pane-head"><h2>Problem routers</h2><span class="noc-pane-count" data-down-count>0</span></header>
+      <div class="noc-table-wrap" data-down-table></div>
+    </section>
+    <section class="noc-detail-panel" data-down-detail-panel hidden>
+      <header class="noc-detail-head"><h2 data-down-detail-title>Router details</h2></header>
+      <div class="noc-inspector-body" data-down-detail></div>
+    </section>
     </div>
   </div>
 
   {# -------- CLIENT QUALITY (impact) -------- #}
   <div class="noc-view" data-noc-view="impact" {% if noc_focus != "impact" %}hidden{% endif %}>
-    <div class="noc-kpi-row" aria-label="Quality snapshot">
-      <article class="noc-kpi tone-ok"><p class="noc-kpi-label">Surfing</p><p class="noc-kpi-value" data-impact-stat="surfing">—</p><p class="noc-kpi-meta">Online now</p></article>
-      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Stuck (not surfing)</p><p class="noc-kpi-value" data-impact-stat="not-surfing">—</p><p class="noc-kpi-meta">Dialed, in-package, no internet</p></article>
-      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Under plan</p><p class="noc-kpi-value" data-impact-stat="under">{{ board.summary.clients_underperforming }}</p><p class="noc-kpi-meta">Peak ≪ package Mbps</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">Idle dialed</p><p class="noc-kpi-value" data-impact-stat="idle">{{ board.summary.clients_idle }}</p><p class="noc-kpi-meta">Connected, almost no traffic</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">NAS with issues</p><p class="noc-kpi-value" data-impact-stat="nas">—</p><p class="noc-kpi-meta">Routers hosting quality problems</p></article>
+    <div class="noc-metrics" aria-label="Quality snapshot">
+      <div class="noc-metric is-readonly tone-ok"><span>Surfing</span><strong data-impact-stat="surfing">—</strong></div>
+      <div class="noc-metric is-readonly sev-major"><span>Stuck</span><strong data-impact-stat="not-surfing">—</strong></div>
+      <div class="noc-metric is-readonly sev-major"><span>Under plan</span><strong data-impact-stat="under">{{ board.summary.clients_underperforming }}</strong></div>
+      <div class="noc-metric is-readonly"><span>Idle</span><strong data-impact-stat="idle">{{ board.summary.clients_idle }}</strong></div>
     </div>
-    <div class="noc-filters">
-      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="impact" placeholder="Search client, plan, NAS, reason…" autocomplete="off"></label>
+    <div class="noc-toolbar">
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="impact" placeholder="Search…" autocomplete="off"></label>
       <select data-impact-nas><option value="">All NAS</option></select>
       <select data-impact-kind>
-        <option value="">All quality issues</option>
-        <option value="stuck">Stuck (not surfing)</option>
-        <option value="underperforming">Under plan speed</option>
-        <option value="idle">Idle dialed</option>
+        <option value="">All issues</option>
+        <option value="stuck">Stuck</option>
+        <option value="underperforming">Under plan</option>
+        <option value="idle">Idle</option>
       </select>
-      <select data-impact-reason><option value="">All reasons</option></select>
-      <a class="btn btn-ghost btn-sm" href="{{ clients_url }}">Open PPPoE list</a>
+      <div class="noc-display-toggle" role="tablist" aria-label="View mode">
+        <button type="button" class="is-active" data-noc-display="visual" role="tab" aria-selected="true">Visuals</button>
+        <button type="button" data-noc-display="data" role="tab" aria-selected="false">Data</button>
+      </div>
     </div>
-    <div class="noc-split noc-split-impact">
-      <section class="noc-pane">
-        <header class="noc-pane-head"><div><p class="noc-pane-kicker">By NAS</p><h2>Quality groups</h2></div><span class="noc-pane-count" data-impact-groups>0</span></header>
-        <div class="noc-impact-board-body" data-impact-groups-body></div>
-      </section>
-      <section class="noc-pane">
-        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Clients</p><h2>Non-optimal sessions</h2></div><span class="noc-pane-count" data-impact-count>0</span></header>
-        <div class="noc-table-wrap" data-impact-table></div>
-      </section>
+    <div class="noc-visual-panel" data-noc-panel="visual">
+      <div class="noc-chart-grid">
+        <article class="noc-chart-card"><h3>Issue types</h3><p class="noc-chart-hint">Stuck, under plan, or idle sessions</p><div class="noc-chart-wrap"><canvas data-noc-chart="impact-kinds" aria-label="Client quality issue types"></canvas></div></article>
+        <article class="noc-chart-card"><h3>Surfing vs stuck</h3><p class="noc-chart-hint">Clients online now vs not surfing</p><div class="noc-chart-wrap"><canvas data-noc-chart="impact-surfing" aria-label="Surfing versus stuck clients"></canvas></div></article>
+        <article class="noc-chart-card noc-chart-card-wide"><h3>Issues by NAS</h3><p class="noc-chart-hint">Which routers host the most problems</p><div class="noc-chart-wrap noc-chart-wrap-bar"><canvas data-noc-chart="impact-nas" aria-label="Quality issues by NAS"></canvas></div></article>
+      </div>
+    </div>
+    <div class="noc-data-panel" data-noc-panel="data" hidden>
+    <section class="noc-pane">
+      <header class="noc-pane-head"><h2>Quality issues</h2><span class="noc-pane-count" data-impact-count>0</span></header>
+      <div class="noc-table-wrap" data-impact-table></div>
+    </section>
     </div>
   </div>
 
   {# -------- OPEN FAULTS -------- #}
   <div class="noc-view" data-noc-view="faults" {% if noc_focus != "faults" %}hidden{% endif %}>
-    <div class="noc-kpi-row" aria-label="Fault snapshot">
-      <article class="noc-kpi"><p class="noc-kpi-label">Active tickets</p><p class="noc-kpi-value" data-fault-stat="total">{{ board.summary.faults_open }}</p><p class="noc-kpi-meta">Not resolved/closed</p></article>
-      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Open</p><p class="noc-kpi-value" data-fault-stat="open">{{ board.summary.faults_status_open }}</p><p class="noc-kpi-meta">Awaiting assignment</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">Assigned</p><p class="noc-kpi-value" data-fault-stat="assigned">{{ board.summary.faults_assigned }}</p><p class="noc-kpi-meta">With a technician</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">In progress</p><p class="noc-kpi-value" data-fault-stat="progress">{{ board.summary.faults_in_progress }}</p><p class="noc-kpi-meta">Being worked</p></article>
-      <article class="noc-kpi sev-critical"><p class="noc-kpi-label">Unassigned</p><p class="noc-kpi-value" data-fault-stat="unassigned">{{ board.summary.faults_unassigned }}</p><p class="noc-kpi-meta">Need a tech</p></article>
+    <div class="noc-metrics" aria-label="Fault snapshot">
+      <div class="noc-metric is-readonly"><span>Open</span><strong data-fault-stat="total">{{ board.summary.faults_open }}</strong></div>
+      <div class="noc-metric is-readonly sev-critical"><span>Unassigned</span><strong data-fault-stat="unassigned">{{ board.summary.faults_unassigned }}</strong></div>
+      <div class="noc-metric is-readonly"><span>In progress</span><strong data-fault-stat="progress">{{ board.summary.faults_in_progress }}</strong></div>
     </div>
-    <div class="noc-filters">
-      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="faults" placeholder="Search ticket, client, tech, issue…" autocomplete="off"></label>
+    <div class="noc-toolbar">
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="faults" placeholder="Search…" autocomplete="off"></label>
       <select data-fault-status>
         <option value="">All statuses</option>
         <option value="open">Open</option>
         <option value="assigned">Assigned</option>
         <option value="in_progress">In progress</option>
       </select>
-      <select data-fault-issue>
-        <option value="">All issues</option>
-      </select>
       <label class="noc-check"><input type="checkbox" data-fault-unassigned> Unassigned only</label>
+      <div class="noc-display-toggle" role="tablist" aria-label="View mode">
+        <button type="button" class="is-active" data-noc-display="visual" role="tab" aria-selected="true">Visuals</button>
+        <button type="button" data-noc-display="data" role="tab" aria-selected="false">Data</button>
+      </div>
     </div>
-    <div class="noc-split">
-      <section class="noc-pane">
-        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Tickets</p><h2>Open faults</h2></div><span class="noc-pane-count" data-fault-count>0</span></header>
-        <div class="noc-table-wrap" data-fault-table></div>
-      </section>
-      <section class="noc-pane">
-        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Detail</p><h2 data-fault-detail-title>Select a ticket</h2></div></header>
-        <div class="noc-inspector-body" data-fault-detail>
-          <div class="noc-empty"><p class="noc-empty-title">Pick a fault ticket</p><p class="noc-empty-copy">See notes, client, technician, and linked NAS.</p></div>
-        </div>
-      </section>
+    <div class="noc-visual-panel" data-noc-panel="visual">
+      <div class="noc-chart-grid">
+        <article class="noc-chart-card"><h3>Ticket status</h3><p class="noc-chart-hint">Open, assigned, or in progress</p><div class="noc-chart-wrap"><canvas data-noc-chart="fault-status" aria-label="Fault ticket status"></canvas></div></article>
+        <article class="noc-chart-card"><h3>Assignment</h3><p class="noc-chart-hint">Tickets with or without a technician</p><div class="noc-chart-wrap"><canvas data-noc-chart="fault-assign" aria-label="Fault ticket assignment"></canvas></div></article>
+        <article class="noc-chart-card noc-chart-card-wide"><h3>Issues reported</h3><p class="noc-chart-hint">Most common fault categories</p><div class="noc-chart-wrap noc-chart-wrap-bar"><canvas data-noc-chart="fault-issues" aria-label="Fault issues reported"></canvas></div></article>
+      </div>
+    </div>
+    <div class="noc-data-panel" data-noc-panel="data" hidden>
+    <section class="noc-pane">
+      <header class="noc-pane-head"><h2>Open faults</h2><span class="noc-pane-count" data-fault-count>0</span></header>
+      <div class="noc-table-wrap" data-fault-table></div>
+    </section>
+    <section class="noc-detail-panel" data-fault-detail-panel hidden>
+      <header class="noc-detail-head"><h2 data-fault-detail-title>Ticket details</h2></header>
+      <div class="noc-inspector-body" data-fault-detail></div>
+    </section>
     </div>
   </div>
 </div>
@@ -230,6 +255,7 @@
 
 {% block client_extra_js %}
 {{ block.super }}
+<script src="{% static 'vendor/chart.umd.min.js' %}"></script>
 <script>
 (function () {
   var root = document.querySelector("[data-noc-console]");
@@ -245,7 +271,6 @@
   var state = {
     board: boardEl ? JSON.parse(boardEl.textContent || "{}") : {},
     surfing: null,
-    view: "sites",
     filterSev: "",
     filterSite: "",
     search: "",
@@ -253,11 +278,10 @@
     downTone: "",
     perfTone: "",
     impactNas: "",
-    impactReason: "",
     impactKind: "",
     faultStatus: "",
-    faultIssue: "",
     faultUnassigned: false,
+    displayMode: "visual",
     selectedAlarmId: "",
     selectedRouterId: null,
     selectedFaultId: null,
@@ -265,6 +289,25 @@
   };
   var busy = false;
   var pollTimer = null;
+  var charts = {};
+  var NOC_PALETTE = {
+    critical: "#c0392b",
+    major: "#b45309",
+    minor: "#07545c",
+    ok: "#145c3c",
+    online: "#145c3c",
+    down: "#c0392b",
+    degraded: "#b45309",
+    stuck: "#c0392b",
+    under: "#b45309",
+    idle: "#64748b",
+    healthy: "#0c7a84",
+    open: "#b45309",
+    assigned: "#0c7a84",
+    progress: "#145c3c",
+    unassigned: "#c0392b",
+    surfing: "#145c3c",
+  };
 
   function loadAcked() {
     try { return JSON.parse(localStorage.getItem("ispcentric.noc.acked") || "{}") || {}; }
@@ -286,6 +329,328 @@
   }
   function setText(sel, value) {
     root.querySelectorAll(sel).forEach(function (el) { el.textContent = value; });
+  }
+  function setPanelVisible(panelSel, show) {
+    var panel = root.querySelector(panelSel);
+    if (panel) panel.hidden = !show;
+  }
+  function chartTheme() {
+    var dark = document.documentElement.getAttribute("data-theme") === "dark";
+    return {
+      text: dark ? "#cbd5e1" : "#3d5a66",
+      grid: dark ? "rgba(148,163,184,0.18)" : "rgba(7,24,32,0.08)",
+    };
+  }
+  function destroyChart(key) {
+    if (charts[key]) {
+      try { charts[key].destroy(); } catch (e) {}
+      delete charts[key];
+    }
+  }
+  function chartCanvas(name) {
+    return root.querySelector('[data-noc-chart="' + name + '"]');
+  }
+  function hasChartLib() {
+    return typeof Chart !== "undefined";
+  }
+  function doughnutChart(key, labels, values, colors) {
+    var canvas = chartCanvas(key);
+    if (!canvas || !hasChartLib()) return;
+    showChartCanvas(key);
+    destroyChart(key);
+    var theme = chartTheme();
+    charts[key] = new Chart(canvas, {
+      type: "doughnut",
+      data: {
+        labels: labels,
+        datasets: [{ data: values, backgroundColor: colors, borderWidth: 0, hoverOffset: 4 }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: "62%",
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { color: theme.text, boxWidth: 12, padding: 12, font: { size: 11, weight: "600" } },
+          },
+        },
+      },
+    });
+  }
+  function horizontalBarChart(key, labels, values, colors) {
+    var canvas = chartCanvas(key);
+    if (!canvas || !hasChartLib()) return;
+    showChartCanvas(key);
+    destroyChart(key);
+    var theme = chartTheme();
+    charts[key] = new Chart(canvas, {
+      type: "bar",
+      data: {
+        labels: labels,
+        datasets: [{ data: values, backgroundColor: colors, borderRadius: 6, maxBarThickness: 22 }],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: {
+            beginAtZero: true,
+            ticks: { color: theme.text, precision: 0 },
+            grid: { color: theme.grid },
+          },
+          y: {
+            ticks: { color: theme.text, font: { size: 11, weight: "600" } },
+            grid: { display: false },
+          },
+        },
+      },
+    });
+  }
+  function emptyChartMessage(key, message) {
+    var canvas = chartCanvas(key);
+    if (!canvas) return;
+    destroyChart(key);
+    var wrap = canvas.closest(".noc-chart-wrap");
+    if (!wrap) return;
+    var existing = wrap.querySelector(".noc-chart-empty");
+    if (existing) existing.textContent = message;
+    else {
+      var note = document.createElement("p");
+      note.className = "noc-chart-empty";
+      note.textContent = message;
+      wrap.appendChild(note);
+    }
+    canvas.hidden = true;
+  }
+  function showChartCanvas(key) {
+    var canvas = chartCanvas(key);
+    if (!canvas) return;
+    canvas.hidden = false;
+    var wrap = canvas.closest(".noc-chart-wrap");
+    if (wrap) {
+      var note = wrap.querySelector(".noc-chart-empty");
+      if (note) note.remove();
+    }
+  }
+  function applyDisplayMode() {
+    var view = root.querySelector('[data-noc-view="' + mode + '"]');
+    if (!view) return;
+    view.querySelectorAll("[data-noc-panel]").forEach(function (panel) {
+      var kind = panel.getAttribute("data-noc-panel") || "";
+      panel.hidden = kind !== state.displayMode;
+    });
+    view.querySelectorAll("[data-noc-display]").forEach(function (btn) {
+      var active = btn.getAttribute("data-noc-display") === state.displayMode;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    if (state.displayMode === "visual") renderVisuals();
+  }
+  function renderVisualOps() {
+    var summary = (state.board && state.board.summary) || {};
+    doughnutChart(
+      "ops-severity",
+      ["Critical", "Major", "Minor"],
+      [summary.alarms_critical || 0, summary.alarms_major || 0, summary.alarms_minor || 0],
+      [NOC_PALETTE.critical, NOC_PALETTE.major, NOC_PALETTE.minor]
+    );
+    var online = summary.routers_online || 0;
+    var degraded = summary.routers_degraded || 0;
+    var down = summary.routers_down || 0;
+    doughnutChart(
+      "ops-fleet",
+      ["Online", "Degraded", "Down"],
+      [online, degraded, down],
+      [NOC_PALETTE.online, NOC_PALETTE.degraded, NOC_PALETTE.down]
+    );
+    var sites = ((state.board && state.board.sites) || [])
+      .slice()
+      .sort(function (a, b) { return (b.customers_at_risk || 0) - (a.customers_at_risk || 0); })
+      .filter(function (site) { return (site.customers_at_risk || 0) > 0; })
+      .slice(0, 8);
+    if (!sites.length) {
+      emptyChartMessage("ops-sites", "No sites with clients at risk right now.");
+      return;
+    }
+    showChartCanvas("ops-sites");
+    horizontalBarChart(
+      "ops-sites",
+      sites.map(function (site) { return site.label; }),
+      sites.map(function (site) { return site.customers_at_risk || 0; }),
+      sites.map(function (site) {
+        var sev = site.worst_severity || "ok";
+        return NOC_PALETTE[sev] || NOC_PALETTE.healthy;
+      })
+    );
+  }
+  function renderVisualPerformance() {
+    var summary = (state.board && state.board.summary) || {};
+    var sessions = summary.sessions_active || 0;
+    var under = summary.clients_underperforming || 0;
+    var idle = summary.clients_idle || 0;
+    var healthy = Math.max(0, sessions - under - idle);
+    doughnutChart(
+      "perf-clients",
+      ["Healthy", "Under plan", "Idle"],
+      [healthy, under, idle],
+      [NOC_PALETTE.ok, NOC_PALETTE.under, NOC_PALETTE.idle]
+    );
+    var routers = filteredPerfRouters();
+    var tones = { good: 0, fair: 0, bad: 0 };
+    routers.forEach(function (row) {
+      var tone = (row.performance && row.performance.tone) || "unknown";
+      if (tone === "ok") tones.good += 1;
+      else if (tone === "warn") tones.fair += 1;
+      else if (tone === "bad") tones.bad += 1;
+    });
+    doughnutChart(
+      "perf-tones",
+      ["Good", "Fair", "Needs attention"],
+      [tones.good, tones.fair, tones.bad],
+      [NOC_PALETTE.ok, NOC_PALETTE.major, NOC_PALETTE.critical]
+    );
+    var worst = routers.slice().sort(function (a, b) {
+      var pa = (a.performance && a.performance.score != null) ? a.performance.score : 999;
+      var pb = (b.performance && b.performance.score != null) ? b.performance.score : 999;
+      return pa - pb;
+    }).slice(0, 8);
+    if (!worst.length) {
+      emptyChartMessage("perf-routers", "No router performance samples yet.");
+      return;
+    }
+    showChartCanvas("perf-routers");
+    horizontalBarChart(
+      "perf-routers",
+      worst.map(function (row) { return row.name; }),
+      worst.map(function (row) {
+        var perf = row.performance || {};
+        return perf.score != null ? perf.score : 0;
+      }),
+      worst.map(function (row) {
+        var tone = (row.performance && row.performance.tone) || "unknown";
+        if (tone === "ok") return NOC_PALETTE.ok;
+        if (tone === "warn") return NOC_PALETTE.major;
+        return NOC_PALETTE.critical;
+      })
+    );
+  }
+  function renderVisualDown() {
+    var summary = (state.board && state.board.summary) || {};
+    doughnutChart(
+      "down-status",
+      ["Down", "Degraded"],
+      [summary.routers_down || 0, summary.routers_degraded || 0],
+      [NOC_PALETTE.down, NOC_PALETTE.degraded]
+    );
+    doughnutChart(
+      "down-clients",
+      ["On down NAS", "On degraded NAS"],
+      [summary.customers_on_down || 0, summary.customers_on_degraded || 0],
+      [NOC_PALETTE.critical, NOC_PALETTE.major]
+    );
+    var list = problemRouters().slice().sort(function (a, b) {
+      return (b.customer_count || 0) - (a.customer_count || 0);
+    }).slice(0, 8);
+    if (!list.length) {
+      emptyChartMessage("down-impact", "No problem routers for the current filters.");
+      return;
+    }
+    showChartCanvas("down-impact");
+    horizontalBarChart(
+      "down-impact",
+      list.map(function (row) { return row.name; }),
+      list.map(function (row) { return row.customer_count || 0; }),
+      list.map(function (row) { return row.tone === "down" ? NOC_PALETTE.down : NOC_PALETTE.degraded; })
+    );
+  }
+  function renderVisualImpact() {
+    var allQuality = qualityClientsAll();
+    var kinds = { stuck: 0, underperforming: 0, idle: 0 };
+    allQuality.forEach(function (row) {
+      var kind = row.kind || "idle";
+      if (kinds[kind] != null) kinds[kind] += 1;
+    });
+    doughnutChart(
+      "impact-kinds",
+      ["Stuck", "Under plan", "Idle"],
+      [kinds.stuck, kinds.underperforming, kinds.idle],
+      [NOC_PALETTE.stuck, NOC_PALETTE.under, NOC_PALETTE.idle]
+    );
+    var surfing = (state.surfing && state.surfing.surfing_count) || 0;
+    var stuck = stuckClientsRaw().length;
+    doughnutChart(
+      "impact-surfing",
+      ["Surfing", "Stuck"],
+      [surfing, stuck],
+      [NOC_PALETTE.surfing, NOC_PALETTE.stuck]
+    );
+    var byNas = {};
+    impactClients().forEach(function (row) {
+      var rid = row.router_id != null ? String(row.router_id) : "none";
+      byNas[rid] = (byNas[rid] || 0) + 1;
+    });
+    var nasRows = Object.keys(byNas).map(function (rid) {
+      var router = rid !== "none" ? routerById(rid) : null;
+      return { label: router ? router.name : "Unassigned", count: byNas[rid] };
+    }).sort(function (a, b) { return b.count - a.count; }).slice(0, 8);
+    if (!nasRows.length) {
+      emptyChartMessage("impact-nas", "No quality issues match the current filters.");
+      return;
+    }
+    showChartCanvas("impact-nas");
+    horizontalBarChart(
+      "impact-nas",
+      nasRows.map(function (row) { return row.label; }),
+      nasRows.map(function (row) { return row.count; }),
+      nasRows.map(function () { return NOC_PALETTE.healthy; })
+    );
+  }
+  function renderVisualFaults() {
+    var summary = (state.board && state.board.summary) || {};
+    doughnutChart(
+      "fault-status",
+      ["Open", "Assigned", "In progress"],
+      [summary.faults_status_open || 0, summary.faults_assigned || 0, summary.faults_in_progress || 0],
+      [NOC_PALETTE.open, NOC_PALETTE.assigned, NOC_PALETTE.progress]
+    );
+    var unassigned = summary.faults_unassigned || 0;
+    var assigned = Math.max(0, (summary.faults_open || 0) - unassigned);
+    doughnutChart(
+      "fault-assign",
+      ["Unassigned", "With technician"],
+      [unassigned, assigned],
+      [NOC_PALETTE.unassigned, NOC_PALETTE.assigned]
+    );
+    var issues = {};
+    filteredFaults().forEach(function (fault) {
+      var label = fault.issue_label || fault.issue || "Other";
+      issues[label] = (issues[label] || 0) + 1;
+    });
+    var issueRows = Object.keys(issues).map(function (label) {
+      return { label: label, count: issues[label] };
+    }).sort(function (a, b) { return b.count - a.count; }).slice(0, 8);
+    if (!issueRows.length) {
+      emptyChartMessage("fault-issues", "No open faults match the current filters.");
+      return;
+    }
+    showChartCanvas("fault-issues");
+    horizontalBarChart(
+      "fault-issues",
+      issueRows.map(function (row) { return row.label; }),
+      issueRows.map(function (row) { return row.count; }),
+      issueRows.map(function () { return NOC_PALETTE.major; })
+    );
+  }
+  function renderVisuals() {
+    if (state.displayMode !== "visual" || !hasChartLib()) return;
+    if (mode === "ops") renderVisualOps();
+    else if (mode === "performance") renderVisualPerformance();
+    else if (mode === "down") renderVisualDown();
+    else if (mode === "impact") renderVisualImpact();
+    else if (mode === "faults") renderVisualFaults();
   }
   function routerById(id) {
     return ((state.board && state.board.routers) || []).find(function (row) { return String(row.id) === String(id); }) || null;
@@ -360,14 +725,14 @@
     body.innerHTML = list.map(function (alarm) {
       var acked = !!state.acked[alarm.id];
       var selected = state.selectedAlarmId === alarm.id ? " is-selected" : "";
+      var meta = [];
+      if (alarm.customers) meta.push(escapeHtml(alarm.customers) + " clients");
+      if (alarm.router_name) meta.push(escapeHtml(alarm.router_name));
       return (
         '<article class="noc-alarm sev-' + escapeHtml(alarm.severity) + selected + (acked ? " is-acked" : "") + '" data-alarm-id="' + escapeHtml(alarm.id) + '">' +
         '<div class="noc-alarm-top"><span class="noc-sev-tag">' + escapeHtml(alarm.severity) + '</span><span>' + escapeHtml(alarm.at || "now") + '</span></div>' +
-        '<h3>' + escapeHtml(alarm.title) + '</h3><p>' + escapeHtml(alarm.detail || "") + '</p>' +
-        '<div class="noc-alarm-meta">' +
-        (alarm.customers ? '<span>' + escapeHtml(alarm.customers) + ' clients</span>' : '') +
-        (alarm.kind ? '<span>' + escapeHtml(alarm.kind) + '</span>' : '') +
-        '</div>' +
+        '<h3>' + escapeHtml(alarm.title) + '</h3>' +
+        (meta.length ? '<div class="noc-alarm-meta"><span>' + meta.join(" · ") + '</span></div>' : '') +
         '<div class="noc-alarm-actions"><button type="button" class="btn btn-ghost btn-sm" data-ack-alarm="' + escapeHtml(alarm.id) + '">' + (acked ? "Unack" : "Ack") + '</button></div></article>'
       );
     }).join("");
@@ -375,30 +740,13 @@
   function renderOpsMatrix() {
     var body = root.querySelector("[data-matrix-body]");
     if (!body) return;
-    if (state.view === "sites") {
-      var routers = filteredRoutersOps();
-      var ids = {};
-      routers.forEach(function (r) { ids[r.id] = true; });
-      var sites = ((state.board && state.board.sites) || []).filter(function (site) {
-        if (state.filterSite && site.key !== state.filterSite) return false;
-        return (site.router_ids || []).some(function (id) { return ids[id]; });
-      });
-      if (!sites.length) {
-        body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No sites</p><p class="noc-empty-copy">Clear filters or onboard routers.</p></div>';
-        return;
-      }
-      body.innerHTML = '<div class="noc-site-grid">' + sites.map(function (site) {
-        return '<button type="button" class="noc-site-card sev-' + escapeHtml(site.worst_severity) + '" data-select-site="' + escapeHtml(site.key) + '"><div class="noc-site-top"><strong>' + escapeHtml(site.label) + '</strong><span class="noc-sev-tag">' + escapeHtml(site.worst_severity) + '</span></div><div class="noc-site-stats"><span>' + site.routers_online + '/' + site.routers_total + ' up</span><span>' + site.customers_at_risk + ' at risk</span></div></button>';
-      }).join("") + '</div>';
-      return;
-    }
     var list = filteredRoutersOps();
     if (!list.length) {
-      body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No routers</p><p class="noc-empty-copy">No fleet rows match.</p></div>';
+      body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">All clear</p><p class="noc-empty-copy">No routers match the current filters.</p></div>';
       return;
     }
     body.innerHTML = '<div class="noc-fleet-grid">' + list.map(function (row) {
-      return '<button type="button" class="noc-fleet-card sev-' + escapeHtml(row.severity) + (String(state.selectedRouterId) === String(row.id) ? " is-selected" : "") + '" data-select-router="' + escapeHtml(row.id) + '"><div class="noc-fleet-top"><strong>' + escapeHtml(row.name) + '</strong><span class="noc-sev-tag">' + escapeHtml(row.severity) + '</span></div><div class="noc-fleet-host">' + escapeHtml(row.host || "—") + ' · ' + escapeHtml(titleCase(row.status)) + '</div>' + sparkSvg(row.sparkline) + '<div class="noc-fleet-meta"><span>' + escapeHtml(row.customer_count) + ' clients</span><span>' + escapeHtml(row.site_label) + '</span></div></button>';
+      return '<button type="button" class="noc-fleet-card sev-' + escapeHtml(row.severity) + (String(state.selectedRouterId) === String(row.id) ? " is-selected" : "") + '" data-select-router="' + escapeHtml(row.id) + '"><div class="noc-fleet-top"><strong>' + escapeHtml(row.name) + '</strong><span class="noc-sev-tag">' + escapeHtml(row.severity) + '</span></div><div class="noc-fleet-host">' + escapeHtml(titleCase(row.status)) + ' · ' + escapeHtml(row.customer_count) + ' clients</div></button>';
     }).join("") + '</div>';
   }
   function renderOpsInspector() {
@@ -408,24 +756,26 @@
     var alarm = state.selectedAlarmId ? alarmById(state.selectedAlarmId) : null;
     var router = state.selectedRouterId != null ? routerById(state.selectedRouterId) : (alarm && alarm.router_id != null ? routerById(alarm.router_id) : null);
     if (alarm && alarm.kind === "fault" && !router) {
+      setPanelVisible("[data-inspector-panel]", true);
       if (title) title.textContent = alarm.title;
-      body.innerHTML = '<div class="noc-inspect-block"><p class="noc-inspect-label">Fault</p><p>' + escapeHtml(alarm.detail || "") + '</p><p class="noc-muted">Open the Faults view for full ticket workflow.</p><a class="btn btn-ghost btn-sm" href="?focus=faults">Open faults</a></div>';
+      body.innerHTML = '<p class="noc-muted">' + escapeHtml(alarm.detail || "") + '</p><a class="btn btn-ghost btn-sm" href="?focus=faults">View faults</a>';
       return;
     }
     if (!router) {
-      if (title) title.textContent = "Select an alarm or router";
-      body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Nothing selected</p><p class="noc-empty-copy">Pick an alarm or router tile.</p></div>';
+      if (title) title.textContent = "Details";
+      body.innerHTML = "";
+      setPanelVisible("[data-inspector-panel]", false);
       return;
     }
+    setPanelVisible("[data-inspector-panel]", true);
     if (title) title.textContent = router.name;
     var perf = router.performance || {};
     body.innerHTML =
-      '<div class="noc-inspect-hero sev-' + escapeHtml(router.severity) + '"><div><span class="noc-sev-tag">' + escapeHtml(router.severity) + '</span><strong>' + escapeHtml(titleCase(router.status)) + '</strong>' + (router.score != null ? '<span class="noc-score">' + escapeHtml(router.score) + '%</span>' : '') + '</div><p>' + escapeHtml(router.reason || "") + '</p></div>' +
-      '<div class="noc-inspect-block"><p class="noc-inspect-label">24h health</p>' + sparkSvg(router.sparkline) + '</div>' +
-      '<dl class="noc-dl"><div><dt>Host</dt><dd><span class="org-code">' + escapeHtml(router.host || "—") + '</span></dd></div><div><dt>Site</dt><dd>' + escapeHtml(router.site_label || "—") + '</dd></div><div><dt>Clients</dt><dd>' + escapeHtml(router.customer_count) + '</dd></div><div><dt>Perf</dt><dd>' + (perf.score != null ? escapeHtml(perf.score) + '% · ' + escapeHtml(perf.label || "") : "—") + (perf.non_optimal_count ? ' · ' + escapeHtml(perf.non_optimal_count) + ' non-optimal' : '') + '</dd></div><div><dt>Sessions</dt><dd>' + escapeHtml(perf.sessions_active || 0) + ' active · ' + escapeHtml(formatMbps(perf.download_mbps || 0)) + ' Mbps↓</dd></div><div><dt>Last change</dt><dd>' + escapeHtml(router.last_change_at || "—") + '</dd></div></dl>' +
+      '<div class="noc-inspect-hero sev-' + escapeHtml(router.severity) + '"><div><span class="noc-sev-tag">' + escapeHtml(router.severity) + '</span><strong>' + escapeHtml(titleCase(router.status)) + '</strong>' + (router.score != null ? '<span class="noc-score">' + escapeHtml(router.score) + '%</span>' : '') + '</div></div>' +
+      '<dl class="noc-dl noc-dl-compact"><div><dt>Site</dt><dd>' + escapeHtml(router.site_label || "—") + '</dd></div><div><dt>Clients</dt><dd>' + escapeHtml(router.customer_count) + '</dd></div><div><dt>Performance</dt><dd>' + (perf.score != null ? escapeHtml(perf.score) + '%' : "—") + '</dd></div><div><dt>Changed</dt><dd>' + escapeHtml(router.last_change_at || "—") + '</dd></div></dl>' +
       '<div class="noc-inspect-actions"><a class="btn btn-primary btn-sm" href="' + escapeHtml(router.detail_url) + '">Open router</a>' +
       (router.severity !== "ok" && router.account_status !== "suspended" ? '<button type="button" class="btn btn-ghost btn-sm" data-noc-reconnect data-reconnect-url="' + escapeHtml(router.reconnect_url) + '" data-router-name="' + escapeHtml(router.name) + '">Reconnect</button>' : '') +
-      '<a class="btn btn-ghost btn-sm" href="?focus=performance">Performance</a></div>';
+      '</div>';
   }
   function renderOpsTimeline() {
     var list = ((state.board && state.board.timeline) || []).filter(function (event) {
@@ -443,8 +793,8 @@
       body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Quiet timeline</p><p class="noc-empty-copy">No recent events.</p></div>';
       return;
     }
-    body.innerHTML = list.map(function (event) {
-      return '<article class="noc-tl-item sev-' + escapeHtml(event.severity) + '" data-tl-router="' + escapeHtml(event.router_id || "") + '"><div class="noc-tl-rail"></div><div class="noc-tl-body"><div class="noc-tl-top"><span class="noc-sev-tag">' + escapeHtml(String(event.kind || "").replace("_", " ")) + '</span><span>' + escapeHtml(event.at || "") + '</span></div><strong>' + escapeHtml(event.title) + '</strong><p>' + escapeHtml(event.detail || "") + '</p></div></article>';
+    body.innerHTML = list.slice(0, 12).map(function (event) {
+      return '<article class="noc-tl-item sev-' + escapeHtml(event.severity) + '" data-tl-router="' + escapeHtml(event.router_id || "") + '"><div class="noc-tl-rail"></div><div class="noc-tl-body"><div class="noc-tl-top"><span class="noc-sev-tag">' + escapeHtml(String(event.kind || "").replace("_", " ")) + '</span><span>' + escapeHtml(event.at || "") + '</span></div><strong>' + escapeHtml(event.title) + '</strong></div></article>';
     }).join("");
   }
 
@@ -479,9 +829,9 @@
         table.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No problem routers</p><p class="noc-empty-copy">Fleet looks healthy for this filter.</p></div>';
       } else {
         table.innerHTML =
-          '<table class="org-table noc-detail-table"><thead><tr><th>Router</th><th>Status</th><th>Clients</th><th>Changed</th><th>24h</th></tr></thead><tbody>' +
+          '<table class="org-table noc-detail-table"><thead><tr><th>Router</th><th>Status</th><th>Clients</th><th>Site</th></tr></thead><tbody>' +
           list.map(function (row) {
-            return '<tr class="noc-row sev-' + escapeHtml(row.severity) + (String(state.selectedRouterId) === String(row.id) ? " is-selected" : "") + '" data-select-router="' + escapeHtml(row.id) + '"><td data-label="Router"><strong>' + escapeHtml(row.name) + '</strong><div class="noc-muted">' + escapeHtml(row.host || "—") + ' · ' + escapeHtml(row.site_label || "") + '</div></td><td data-label="Status"><span class="noc-sev-tag">' + escapeHtml(titleCase(row.status)) + '</span><div class="noc-muted">' + escapeHtml(row.reason || "") + '</div></td><td data-label="Clients">' + escapeHtml(row.customer_count) + '</td><td data-label="Changed">' + escapeHtml(row.last_change_at || "—") + '</td><td data-label="24h">' + sparkSvg(row.sparkline) + '</td></tr>';
+            return '<tr class="noc-row sev-' + escapeHtml(row.severity) + (String(state.selectedRouterId) === String(row.id) ? " is-selected" : "") + '" data-select-router="' + escapeHtml(row.id) + '"><td data-label="Router"><strong>' + escapeHtml(row.name) + '</strong></td><td data-label="Status"><span class="noc-sev-tag">' + escapeHtml(titleCase(row.status)) + '</span></td><td data-label="Clients">' + escapeHtml(row.customer_count) + '</td><td data-label="Site">' + escapeHtml(row.site_label || "—") + '</td></tr>';
           }).join("") +
           "</tbody></table>";
       }
@@ -493,23 +843,18 @@
     if (router && state.selectedRouterId == null) state.selectedRouterId = router.id;
     if (!detail) return;
     if (!router || router.severity === "ok") {
-      if (detailTitle) detailTitle.textContent = "Select a router";
-      detail.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Pick a problem router</p><p class="noc-empty-copy">See health sparkline, last change, drop events, and reconnect.</p></div>';
+      if (detailTitle) detailTitle.textContent = "Router details";
+      detail.innerHTML = "";
+      setPanelVisible("[data-down-detail-panel]", false);
       return;
     }
+    setPanelVisible("[data-down-detail-panel]", true);
     if (detailTitle) detailTitle.textContent = router.name;
-    var drops = dropsForRouter(router.id);
     detail.innerHTML =
-      '<div class="noc-inspect-hero sev-' + escapeHtml(router.severity) + '"><div><span class="noc-sev-tag">' + escapeHtml(router.severity) + '</span><strong>' + escapeHtml(titleCase(router.status)) + '</strong>' + (router.score != null ? '<span class="noc-score">' + escapeHtml(router.score) + '%</span>' : '') + '</div><p>' + escapeHtml(router.reason || "") + '</p></div>' +
-      '<div class="noc-inspect-block"><p class="noc-inspect-label">24h health</p>' + sparkSvg(router.sparkline) + '</div>' +
-      '<dl class="noc-dl"><div><dt>Host</dt><dd><span class="org-code">' + escapeHtml(router.host || "—") + '</span></dd></div><div><dt>Via</dt><dd>' + escapeHtml(router.via || "—") + '</dd></div><div><dt>Site</dt><dd>' + escapeHtml(router.site_label || "—") + '</dd></div><div><dt>Clients</dt><dd>' + escapeHtml(router.active_customers) + ' active / ' + escapeHtml(router.customer_count) + ' total</dd></div><div><dt>Last change</dt><dd>' + escapeHtml(router.last_change_at || "—") + (router.last_change_from ? " (" + escapeHtml(titleCase(router.last_change_from)) + " → " + escapeHtml(titleCase(router.last_change_to)) + ")" : "") + '</dd></div></dl>' +
+      '<div class="noc-inspect-hero sev-' + escapeHtml(router.severity) + '"><div><span class="noc-sev-tag">' + escapeHtml(router.severity) + '</span><strong>' + escapeHtml(titleCase(router.status)) + '</strong>' + (router.score != null ? '<span class="noc-score">' + escapeHtml(router.score) + '%</span>' : '') + '</div></div>' +
+      '<dl class="noc-dl noc-dl-compact"><div><dt>Host</dt><dd><span class="org-code">' + escapeHtml(router.host || "—") + '</span></dd></div><div><dt>Site</dt><dd>' + escapeHtml(router.site_label || "—") + '</dd></div><div><dt>Clients</dt><dd>' + escapeHtml(router.customer_count) + '</dd></div><div><dt>Changed</dt><dd>' + escapeHtml(router.last_change_at || "—") + '</dd></div></dl>' +
       '<div class="noc-inspect-actions"><a class="btn btn-primary btn-sm" href="' + escapeHtml(router.detail_url) + '">Open router</a>' +
       (router.account_status !== "suspended" ? '<button type="button" class="btn btn-ghost btn-sm" data-noc-reconnect data-reconnect-url="' + escapeHtml(router.reconnect_url) + '" data-router-name="' + escapeHtml(router.name) + '">Reconnect</button>' : '') +
-      '<a class="btn btn-ghost btn-sm" href="?focus=impact">Client impact</a></div>' +
-      '<div class="noc-inspect-block"><p class="noc-inspect-label">Recent drops</p>' +
-      (drops.length ? '<ul class="noc-mini-list">' + drops.slice(0, 8).map(function (ev) {
-        return '<li><strong>' + escapeHtml(ev.at) + '</strong> ' + escapeHtml(ev.from_score) + '% → ' + escapeHtml(ev.to_score) + '%<span>' + escapeHtml(ev.reason || "") + '</span></li>';
-      }).join("") + '</ul>' : '<p class="noc-muted">No drop events recorded for this router in 24h.</p>') +
       '</div>';
   }
 
@@ -566,11 +911,6 @@
         return String(row.router_id || "") === String(state.impactNas);
       });
     }
-    if (state.impactReason) {
-      clients = clients.filter(function (row) {
-        return String(row.reason || "") === state.impactReason;
-      });
-    }
     if (state.search) {
       clients = clients.filter(function (row) {
         return matchesSearch([row.full_name, row.account_number, row.plan_name, row.reason, row.router_name, row.kind].join(" "), state.search);
@@ -580,7 +920,6 @@
   }
   function fillImpactFilters(clientsAll) {
     var nasSelect = root.querySelector("[data-impact-nas]");
-    var reasonSelect = root.querySelector("[data-impact-reason]");
     if (nasSelect) {
       var nasMap = {};
       clientsAll.forEach(function (row) {
@@ -593,16 +932,6 @@
         return '<option value="' + escapeHtml(id) + '">' + escapeHtml(nasMap[id]) + '</option>';
       }).join("");
       nasSelect.value = state.impactNas;
-    }
-    if (reasonSelect) {
-      var reasons = {};
-      clientsAll.forEach(function (row) {
-        if (row.reason) reasons[row.reason] = (reasons[row.reason] || 0) + 1;
-      });
-      reasonSelect.innerHTML = '<option value="">All reasons</option>' + Object.keys(reasons).sort().map(function (reason) {
-        return '<option value="' + escapeHtml(reason) + '">' + escapeHtml(reason) + " (" + reasons[reason] + ")</option>";
-      }).join("");
-      reasonSelect.value = state.impactReason;
     }
   }
   function renderImpact() {
@@ -623,31 +952,6 @@
     setText("[data-impact-stat='idle']", String(summary.clients_idle || 0));
     setText("[data-impact-stat='nas']", String(Object.keys(nasSet).length));
 
-    var byRouter = {};
-    clients.forEach(function (row) {
-      var rid = String(row.router_id || "none");
-      if (!byRouter[rid]) byRouter[rid] = [];
-      byRouter[rid].push(row);
-    });
-    var groupsBody = root.querySelector("[data-impact-groups-body]");
-    var groupsCount = root.querySelector("[data-impact-groups]");
-    if (groupsCount) groupsCount.textContent = String(Object.keys(byRouter).length);
-    if (groupsBody) {
-      if (!Object.keys(byRouter).length) {
-        groupsBody.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No quality groups</p><p class="noc-empty-copy">No stuck or underperforming sessions match these filters.</p></div>';
-      } else {
-        groupsBody.innerHTML = Object.keys(byRouter).map(function (rid) {
-          var rows = byRouter[rid];
-          var router = rid !== "none" ? routerById(rid) : null;
-          var title = router ? router.name : (rows[0].router_name || "Unassigned NAS");
-          var kinds = {};
-          rows.forEach(function (r) { kinds[r.kind || "issue"] = (kinds[r.kind || "issue"] || 0) + 1; });
-          var kindText = Object.keys(kinds).map(function (k) { return kinds[k] + " " + kindLabel(k); }).join(", ");
-          return '<button type="button" class="noc-impact-group is-button' + (String(state.impactNas) === String(rid) ? " is-selected" : "") + '" data-impact-pick-nas="' + escapeHtml(rid === "none" ? "" : rid) + '"><header class="noc-impact-group-head"><div><strong>' + escapeHtml(title) + '</strong><span>' + rows.length + ' issues</span></div></header><p class="noc-muted" style="padding:0.55rem 0.8rem 0.8rem">' + escapeHtml(kindText) + '</p></button>';
-        }).join("");
-      }
-    }
-
     var table = root.querySelector("[data-impact-table]");
     var count = root.querySelector("[data-impact-count]");
     if (count) count.textContent = String(clients.length);
@@ -657,18 +961,18 @@
       return;
     }
     table.innerHTML =
-      '<table class="org-table noc-detail-table"><thead><tr><th>Client</th><th>NAS</th><th>Issue</th><th>Plan / peak</th><th>Detail</th></tr></thead><tbody>' +
+      '<table class="org-table noc-detail-table"><thead><tr><th>Client</th><th>NAS</th><th>Issue</th><th>Speed</th></tr></thead><tbody>' +
       clients.slice(0, 100).map(function (row) {
         var rid = row.router_id;
         var router = rid != null ? routerById(rid) : null;
-        var planPeak = "—";
+        var speed = "—";
         if (row.kind === "stuck") {
-          planPeak = row.not_surfing_episodes_24h != null ? (row.not_surfing_episodes_24h + " episodes/24h") : "—";
-        } else if (row.plan_download_mbps != null || row.peak_download_mbps != null) {
-          planPeak = formatMbps(row.peak_download_mbps) + " / " + (row.plan_download_mbps != null ? row.plan_download_mbps + " Mbps" : "—");
-          if (row.attainment_pct != null) planPeak += " (" + row.attainment_pct + "%)";
+          speed = "Not surfing";
+        } else if (row.peak_download_mbps != null) {
+          speed = formatMbps(row.peak_download_mbps) + " Mbps";
+          if (row.attainment_pct != null) speed += " (" + row.attainment_pct + "%)";
         }
-        return '<tr><td data-label="Client"><a href="' + escapeHtml(row.url || "#") + '">' + escapeHtml(row.full_name || row.account_number || ("#" + row.id)) + '</a></td><td data-label="NAS">' + escapeHtml(router ? router.name : (row.router_name || "—")) + '</td><td data-label="Issue"><span class="noc-sev-tag">' + escapeHtml(kindLabel(row.kind)) + '</span></td><td data-label="Plan / peak">' + escapeHtml(planPeak) + '</td><td data-label="Detail">' + escapeHtml(row.reason || "—") + '</td></tr>';
+        return '<tr><td data-label="Client"><a href="' + escapeHtml(row.url || "#") + '">' + escapeHtml(row.full_name || row.account_number || ("#" + row.id)) + '</a></td><td data-label="NAS">' + escapeHtml(router ? router.name : (row.router_name || "—")) + '</td><td data-label="Issue"><span class="noc-sev-tag">' + escapeHtml(kindLabel(row.kind)) + '</span></td><td data-label="Speed">' + escapeHtml(speed) + '</td></tr>';
       }).join("") +
       "</tbody></table>";
   }
@@ -677,31 +981,15 @@
   function filteredFaults() {
     return ((state.board && state.board.faults) || []).filter(function (fault) {
       if (state.faultStatus && fault.status !== state.faultStatus) return false;
-      if (state.faultIssue && fault.issue !== state.faultIssue) return false;
       if (state.faultUnassigned && (fault.technician || "Unassigned") !== "Unassigned") return false;
       return matchesSearch([fault.ticket_number, fault.customer_name, fault.issue_label, fault.technician, fault.notes, fault.router_name].join(" "), state.search);
     });
   }
-  function fillFaultIssueFilter() {
-    var select = root.querySelector("[data-fault-issue]");
-    if (!select) return;
-    var issues = {};
-    ((state.board && state.board.faults) || []).forEach(function (fault) {
-      issues[fault.issue] = fault.issue_label || fault.issue;
-    });
-    select.innerHTML = '<option value="">All issues</option>' + Object.keys(issues).map(function (key) {
-      return '<option value="' + escapeHtml(key) + '">' + escapeHtml(issues[key]) + '</option>';
-    }).join("");
-    select.value = state.faultIssue;
-  }
   function renderFaults() {
     var summary = (state.board && state.board.summary) || {};
     setText("[data-fault-stat='total']", String(summary.faults_open || 0));
-    setText("[data-fault-stat='open']", String(summary.faults_status_open || 0));
-    setText("[data-fault-stat='assigned']", String(summary.faults_assigned || 0));
     setText("[data-fault-stat='progress']", String(summary.faults_in_progress || 0));
     setText("[data-fault-stat='unassigned']", String(summary.faults_unassigned || 0));
-    fillFaultIssueFilter();
 
     var list = filteredFaults();
     var table = root.querySelector("[data-fault-table]");
@@ -712,9 +1000,9 @@
         table.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No open faults</p><p class="noc-empty-copy">No tickets match these filters.</p></div>';
       } else {
         table.innerHTML =
-          '<table class="org-table noc-detail-table"><thead><tr><th>Ticket</th><th>Client</th><th>Issue</th><th>Status</th><th>Technician</th><th>Raised</th></tr></thead><tbody>' +
+          '<table class="org-table noc-detail-table"><thead><tr><th>Ticket</th><th>Client</th><th>Issue</th><th>Status</th><th>Tech</th></tr></thead><tbody>' +
           list.map(function (fault) {
-            return '<tr class="' + (String(state.selectedFaultId) === String(fault.id) ? "is-selected" : "") + '" data-select-fault="' + escapeHtml(fault.id) + '"><td data-label="Ticket"><span class="org-code">' + escapeHtml(fault.ticket_number) + '</span></td><td data-label="Client">' + escapeHtml(fault.customer_name) + '</td><td data-label="Issue">' + escapeHtml(fault.issue_label) + '</td><td data-label="Status"><span class="noc-sev-tag">' + escapeHtml(fault.status_label) + '</span></td><td data-label="Technician">' + escapeHtml(fault.technician) + '</td><td data-label="Raised">' + escapeHtml(fault.created_at) + '</td></tr>';
+            return '<tr class="' + (String(state.selectedFaultId) === String(fault.id) ? "is-selected" : "") + '" data-select-fault="' + escapeHtml(fault.id) + '"><td data-label="Ticket"><span class="org-code">' + escapeHtml(fault.ticket_number) + '</span></td><td data-label="Client">' + escapeHtml(fault.customer_name) + '</td><td data-label="Issue">' + escapeHtml(fault.issue_label) + '</td><td data-label="Status"><span class="noc-sev-tag">' + escapeHtml(fault.status_label) + '</span></td><td data-label="Tech">' + escapeHtml(fault.technician) + '</td></tr>';
           }).join("") +
           "</tbody></table>";
       }
@@ -726,24 +1014,26 @@
     if (fault && state.selectedFaultId == null) state.selectedFaultId = fault.id;
     if (!detail) return;
     if (!fault) {
-      if (detailTitle) detailTitle.textContent = "Select a ticket";
-      detail.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Pick a fault ticket</p><p class="noc-empty-copy">See notes, client, technician, and linked NAS.</p></div>';
+      if (detailTitle) detailTitle.textContent = "Ticket details";
+      detail.innerHTML = "";
+      setPanelVisible("[data-fault-detail-panel]", false);
       return;
     }
+    setPanelVisible("[data-fault-detail-panel]", true);
     if (detailTitle) detailTitle.textContent = fault.ticket_number;
     var router = fault.router_id != null ? routerById(fault.router_id) : null;
     detail.innerHTML =
-      '<div class="noc-inspect-hero sev-major"><div><span class="noc-sev-tag">' + escapeHtml(fault.status_label) + '</span><strong>' + escapeHtml(fault.issue_label) + '</strong></div><p>' + escapeHtml(fault.notes || "No notes") + '</p></div>' +
-      '<dl class="noc-dl">' +
+      '<div class="noc-inspect-hero sev-major"><div><span class="noc-sev-tag">' + escapeHtml(fault.status_label) + '</span><strong>' + escapeHtml(fault.issue_label) + '</strong></div></div>' +
+      '<dl class="noc-dl noc-dl-compact">' +
       '<div><dt>Client</dt><dd>' + (fault.customer_url ? '<a href="' + escapeHtml(fault.customer_url) + '">' + escapeHtml(fault.customer_name) + '</a>' : escapeHtml(fault.customer_name)) + '</dd></div>' +
       '<div><dt>Technician</dt><dd>' + escapeHtml(fault.technician || "Unassigned") + '</dd></div>' +
       '<div><dt>Router</dt><dd>' + escapeHtml(fault.router_name || (router ? router.name : "—")) + '</dd></div>' +
       '<div><dt>Raised</dt><dd>' + escapeHtml(fault.created_at) + '</dd></div>' +
       '</dl>' +
+      (fault.notes ? '<p class="noc-muted">' + escapeHtml(fault.notes) + '</p>' : '') +
       '<div class="noc-inspect-actions">' +
       (fault.customer_url ? '<a class="btn btn-primary btn-sm" href="' + escapeHtml(fault.customer_url) + '">Open client</a>' : '') +
       (router ? '<a class="btn btn-ghost btn-sm" href="' + escapeHtml(router.detail_url) + '">Open NAS</a>' : '') +
-      (clientsUrl ? '<a class="btn btn-ghost btn-sm" href="' + escapeHtml(clientsUrl) + '">PPPoE clients</a>' : '') +
       '</div>';
   }
 
@@ -824,18 +1114,16 @@
         routerTable.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No routers</p><p class="noc-empty-copy">Clear filters or wait for usage samples.</p></div>';
       } else {
         routerTable.innerHTML =
-          '<table class="org-table noc-detail-table"><thead><tr><th>MikroTik</th><th>Health</th><th>Perf</th><th>Sessions</th><th>Throughput</th><th>Under / idle</th><th>Plan attain</th></tr></thead><tbody>' +
+          '<table class="org-table noc-detail-table"><thead><tr><th>Router</th><th>Health</th><th>Performance</th><th>Issues</th></tr></thead><tbody>' +
           routers.map(function (row) {
             var perf = row.performance || {};
             var selected = String(state.selectedRouterId) === String(row.id) ? " is-selected" : "";
+            var issues = escapeHtml(perf.underperforming_count || 0) + " under · " + escapeHtml(perf.idle_count || 0) + " idle";
             return '<tr class="tone-' + escapeHtml(perf.tone || "unknown") + selected + '" data-select-router="' + escapeHtml(row.id) + '">' +
-              '<td data-label="MikroTik"><strong>' + escapeHtml(row.name) + '</strong><div class="noc-muted">' + escapeHtml(row.site_label || "") + '</div></td>' +
-              '<td data-label="Health"><span class="noc-sev-tag">' + escapeHtml(titleCase(row.status)) + '</span>' + (row.score != null ? ' ' + escapeHtml(row.score) + '%' : '') + '</td>' +
-              '<td data-label="Perf"><strong>' + (perf.score != null ? escapeHtml(perf.score) + '%' : '—') + '</strong> <span class="noc-muted">' + escapeHtml(perf.label || "") + '</span></td>' +
-              '<td data-label="Sessions">' + escapeHtml(perf.sessions_active || 0) + '</td>' +
-              '<td data-label="Throughput">' + escapeHtml(formatMbps(perf.download_mbps || 0)) + '↓ / ' + escapeHtml(formatMbps(perf.upload_mbps || 0)) + '↑</td>' +
-              '<td data-label="Under / idle">' + escapeHtml(perf.underperforming_count || 0) + ' / ' + escapeHtml(perf.idle_count || 0) + '</td>' +
-              '<td data-label="Plan attain">' + (perf.avg_attainment_pct != null ? escapeHtml(perf.avg_attainment_pct) + '%' : '—') + '</td>' +
+              '<td data-label="Router"><strong>' + escapeHtml(row.name) + '</strong></td>' +
+              '<td data-label="Health">' + (row.score != null ? escapeHtml(row.score) + '%' : '—') + '</td>' +
+              '<td data-label="Performance">' + (perf.score != null ? escapeHtml(perf.score) + '%' : '—') + '</td>' +
+              '<td data-label="Issues">' + issues + '</td>' +
               '</tr>';
           }).join("") +
           '</tbody></table>';
@@ -854,8 +1142,6 @@
           return '<article class="noc-improve sev-' + escapeHtml(item.severity || "info") + '">' +
             '<div class="noc-improve-top"><span class="noc-sev-tag">' + escapeHtml(item.severity || "info") + '</span><span>' + escapeHtml(item.customers || 0) + ' clients</span></div>' +
             '<h3>' + escapeHtml(item.title || "") + '</h3>' +
-            '<p>' + escapeHtml(item.detail || "") + '</p>' +
-            '<p class="noc-improve-action">' + escapeHtml(item.action || "") + '</p>' +
             (item.href ? '<a class="btn btn-ghost btn-sm" href="' + escapeHtml(item.href) + '">Open</a>' : '') +
             '</article>';
         }).join("");
@@ -873,18 +1159,15 @@
           '</p></div>';
       } else {
         clientTable.innerHTML =
-          '<table class="org-table noc-detail-table"><thead><tr><th>Client</th><th>NAS</th><th>Issue</th><th>Peak / plan</th><th>Live</th><th>Why</th></tr></thead><tbody>' +
+          '<table class="org-table noc-detail-table"><thead><tr><th>Client</th><th>NAS</th><th>Issue</th><th>Speed</th></tr></thead><tbody>' +
           clients.map(function (row) {
-            var peak = formatMbps(row.peak_download_mbps) + ' Mbps';
-            var plan = row.plan_download_mbps != null ? (row.plan_download_mbps + ' Mbps') : '—';
-            var attain = row.attainment_pct != null ? (row.attainment_pct + '%') : '—';
+            var speed = formatMbps(row.peak_download_mbps) + ' Mbps';
+            if (row.attainment_pct != null) speed += ' (' + row.attainment_pct + '%)';
             return '<tr>' +
               '<td data-label="Client">' + (row.url ? '<a href="' + escapeHtml(row.url) + '">' + escapeHtml(row.full_name) + '</a>' : escapeHtml(row.full_name)) + '</td>' +
               '<td data-label="NAS">' + escapeHtml(row.router_name || '—') + '</td>' +
               '<td data-label="Issue"><span class="noc-sev-tag">' + escapeHtml(kindLabel(row.kind)) + '</span></td>' +
-              '<td data-label="Peak / plan">' + escapeHtml(peak) + ' / ' + escapeHtml(plan) + ' <span class="noc-muted">(' + escapeHtml(attain) + ')</span></td>' +
-              '<td data-label="Live">' + escapeHtml(formatMbps(row.live_download_mbps)) + '↓</td>' +
-              '<td data-label="Why">' + escapeHtml(row.reason || '—') + '</td>' +
+              '<td data-label="Speed">' + escapeHtml(speed) + '</td>' +
               '</tr>';
           }).join("") +
           '</tbody></table>';
@@ -917,6 +1200,7 @@
     } else if (mode === "faults") {
       renderFaults();
     }
+    applyDisplayMode();
   }
 
   async function fetchJson(url) {
@@ -997,13 +1281,6 @@
       renderAll();
       return;
     }
-    var viewBtn = event.target.closest("[data-view]");
-    if (viewBtn && root.contains(viewBtn)) {
-      state.view = viewBtn.getAttribute("data-view") || "sites";
-      root.querySelectorAll("[data-view]").forEach(function (el) { el.classList.toggle("is-active", el === viewBtn); });
-      renderOpsMatrix();
-      return;
-    }
     var alarmCard = event.target.closest("[data-alarm-id]");
     if (alarmCard && root.contains(alarmCard) && !event.target.closest("[data-ack-alarm]")) {
       state.selectedAlarmId = alarmCard.getAttribute("data-alarm-id");
@@ -1042,13 +1319,6 @@
       renderFaults();
       return;
     }
-    var impactNas = event.target.closest("[data-impact-pick-nas]");
-    if (impactNas && root.contains(impactNas)) {
-      var nas = impactNas.getAttribute("data-impact-pick-nas") || "";
-      state.impactNas = state.impactNas === nas ? "" : nas;
-      renderImpact();
-      return;
-    }
     var tl = event.target.closest("[data-tl-router]");
     if (tl && root.contains(tl)) {
       var rid = tl.getAttribute("data-tl-router");
@@ -1069,16 +1339,11 @@
       refreshBoard(true);
       return;
     }
-    if (event.target.closest("[data-noc-ack-all]")) {
-      filteredAlarms().forEach(function (alarm) { state.acked[alarm.id] = Date.now(); });
-      saveAcked();
-      renderOpsAlarms();
+    var displayBtn = event.target.closest("[data-noc-display]");
+    if (displayBtn && root.contains(displayBtn)) {
+      state.displayMode = displayBtn.getAttribute("data-noc-display") || "visual";
+      applyDisplayMode();
       return;
-    }
-    if (event.target.closest("[data-noc-clear-ack]")) {
-      state.acked = {};
-      saveAcked();
-      renderOpsAlarms();
     }
   });
 
@@ -1100,23 +1365,19 @@
     });
   });
   var hideAcked = root.querySelector("[data-noc-hide-acked]");
-  if (hideAcked) hideAcked.addEventListener("change", function () { state.hideAcked = !!hideAcked.checked; renderOpsAlarms(); });
+  if (hideAcked) hideAcked.addEventListener("change", function () { state.hideAcked = !!hideAcked.checked; renderAll(); });
   var downTone = root.querySelector("[data-down-tone]");
-  if (downTone) downTone.addEventListener("change", function () { state.downTone = downTone.value || ""; renderDown(); });
+  if (downTone) downTone.addEventListener("change", function () { state.downTone = downTone.value || ""; renderAll(); });
   var perfTone = root.querySelector("[data-perf-tone]");
-  if (perfTone) perfTone.addEventListener("change", function () { state.perfTone = perfTone.value || ""; renderPerformance(); });
+  if (perfTone) perfTone.addEventListener("change", function () { state.perfTone = perfTone.value || ""; renderAll(); });
   var impactNasSel = root.querySelector("[data-impact-nas]");
-  if (impactNasSel) impactNasSel.addEventListener("change", function () { state.impactNas = impactNasSel.value || ""; renderImpact(); });
+  if (impactNasSel) impactNasSel.addEventListener("change", function () { state.impactNas = impactNasSel.value || ""; renderAll(); });
   var impactKindSel = root.querySelector("[data-impact-kind]");
-  if (impactKindSel) impactKindSel.addEventListener("change", function () { state.impactKind = impactKindSel.value || ""; renderImpact(); });
-  var impactReasonSel = root.querySelector("[data-impact-reason]");
-  if (impactReasonSel) impactReasonSel.addEventListener("change", function () { state.impactReason = impactReasonSel.value || ""; renderImpact(); });
+  if (impactKindSel) impactKindSel.addEventListener("change", function () { state.impactKind = impactKindSel.value || ""; renderAll(); });
   var faultStatus = root.querySelector("[data-fault-status]");
-  if (faultStatus) faultStatus.addEventListener("change", function () { state.faultStatus = faultStatus.value || ""; renderFaults(); });
-  var faultIssue = root.querySelector("[data-fault-issue]");
-  if (faultIssue) faultIssue.addEventListener("change", function () { state.faultIssue = faultIssue.value || ""; renderFaults(); });
+  if (faultStatus) faultStatus.addEventListener("change", function () { state.faultStatus = faultStatus.value || ""; renderAll(); });
   var faultUnassigned = root.querySelector("[data-fault-unassigned]");
-  if (faultUnassigned) faultUnassigned.addEventListener("change", function () { state.faultUnassigned = !!faultUnassigned.checked; renderFaults(); });
+  if (faultUnassigned) faultUnassigned.addEventListener("change", function () { state.faultUnassigned = !!faultUnassigned.checked; renderAll(); });
 
   renderAll();
   refreshBoard(false);
@@ -1126,6 +1387,9 @@
   }, 20000);
   window.addEventListener("beforeunload", function () {
     if (pollTimer) window.clearInterval(pollTimer);
+  });
+  document.getElementById("theme-toggle") && document.getElementById("theme-toggle").addEventListener("click", function () {
+    window.setTimeout(function () { if (state.displayMode === "visual") renderVisuals(); }, 80);
   });
 })();
 </script>
