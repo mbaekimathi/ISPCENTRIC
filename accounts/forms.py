@@ -2551,6 +2551,7 @@ class HotspotSettingsForm(forms.ModelForm):
         model = Organization
         fields = [
             "hotspot_enabled",
+            "hotspot_block_tethering",
             "adverts_enabled",
             "hotspot_portal_title",
             "hotspot_login_message",
@@ -2571,6 +2572,7 @@ class HotspotSettingsForm(forms.ModelForm):
         ]
         labels = {
             "hotspot_enabled": "Enable Hotspot",
+            "hotspot_block_tethering": "Block USB / Bluetooth / personal hotspot sharing",
             "adverts_enabled": "Show Refer & earn after connect",
             "hotspot_portal_title": "Portal title",
             "hotspot_login_message": "Login message",
@@ -2593,6 +2595,11 @@ class HotspotSettingsForm(forms.ModelForm):
             "hotspot_enabled": (
                 "Turn on Hotspot portals and voucher defaults. "
                 "Save & push applies this to the MikroTik."
+            ),
+            "hotspot_block_tethering": (
+                "On by default. Drops typical tethered traffic behind a paid Hotspot phone "
+                "(TTL 63 / 127). Turn off to allow USB / Bluetooth / personal hotspot sharing. "
+                "Does not affect PPPoE LAN clients."
             ),
             "adverts_enabled": (
                 "When on, the Hotspot success page and PPPoE payment-result page "
@@ -2620,6 +2627,9 @@ class HotspotSettingsForm(forms.ModelForm):
         }
         widgets = {
             "hotspot_enabled": forms.CheckboxInput(attrs={"id": "id_hotspot_enabled"}),
+            "hotspot_block_tethering": forms.CheckboxInput(
+                attrs={"id": "id_hotspot_block_tethering"}
+            ),
             "adverts_enabled": forms.CheckboxInput(
                 attrs={"id": "id_adverts_enabled"}
             ),

@@ -69,6 +69,22 @@
             {% endif %}
           </div>
 
+          <div class="access-toggle-bar access-toggle-bar--secondary">
+            <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.hotspot_block_tethering.id_for_label }}">
+              {{ form.hotspot_block_tethering }}
+              <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+              <span class="mikrotik-wifi-switch-text">
+                {{ form.hotspot_block_tethering.label }}
+              </span>
+            </label>
+            {% if form.hotspot_block_tethering.help_text %}
+              <p class="field-hint">{{ form.hotspot_block_tethering.help_text }}</p>
+            {% endif %}
+            {% if form.hotspot_block_tethering.errors %}
+              <div class="field-error">{{ form.hotspot_block_tethering.errors|striptags }}</div>
+            {% endif %}
+          </div>
+
           <div class="access-metric-row" aria-label="Hotspot service summary">
             <div class="access-metric">
               <span>Service</span>

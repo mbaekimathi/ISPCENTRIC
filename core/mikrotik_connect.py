@@ -9361,6 +9361,7 @@ def fetch_hotspot_client_macs(
             "ok": False,
             "active_macs": [],
             "connected_macs": [],
+            "wifi_ssid": "",
             "error": "Router host or username missing.",
         }
     if is_mikrotik_host_cooling_down(host):
@@ -9368,6 +9369,7 @@ def fetch_hotspot_client_macs(
             "ok": False,
             "active_macs": [],
             "connected_macs": [],
+            "wifi_ssid": "",
             "error": "Router recently unreachable — cooling down.",
             "cooling_down": True,
         }
@@ -9375,6 +9377,32 @@ def fetch_hotspot_client_macs(
     def _mac(value: str) -> str:
         compact = "".join(ch for ch in (value or "") if ch.isalnum()).upper()
         return compact if len(compact) == 12 else ""
+
+    def _first_wifi_ssid(sock: socket.socket) -> str:
+        """Best-effort live AP SSID — the Wi‑Fi name phones actually join."""
+        for path in ("/interface/wifi", "/interface/wifiwave2", "/interface/wireless"):
+            try:
+                rows = _print(sock, path, props="ssid,configuration.ssid,disabled")
+            except Exception:
+                rows = []
+            for row in rows:
+                if (row.get("disabled") or "").lower() in {"true", "yes"}:
+                    continue
+                ssid = (
+                    row.get("ssid") or row.get("configuration.ssid") or ""
+                ).strip()
+                if ssid:
+                    return ssid
+            if path.endswith("/wifi") or path.endswith("/wifiwave2"):
+                try:
+                    configs = _print(sock, f"{path}/configuration", props="ssid")
+                except Exception:
+                    configs = []
+                for row in configs:
+                    ssid = (row.get("ssid") or "").strip()
+                    if ssid:
+                        return ssid
+        return ""
 
     try:
         with _api_session(host, username, password, port=port, timeout=timeout) as sock:
@@ -9397,11 +9425,17 @@ def fetch_hotspot_client_macs(
                 if (mac := _mac(row.get("mac-address") or ""))
             }
             connected_macs.update(active_macs)
+            wifi_ssid = ""
+            try:
+                wifi_ssid = _first_wifi_ssid(sock)
+            except Exception:
+                wifi_ssid = ""
             clear_mikrotik_host_cooldown(host)
             return {
                 "ok": True,
                 "active_macs": sorted(active_macs),
                 "connected_macs": sorted(connected_macs),
+                "wifi_ssid": wifi_ssid,
                 "error": "",
             }
     except TimeoutError:
@@ -9418,6 +9452,7 @@ def fetch_hotspot_client_macs(
         "ok": False,
         "active_macs": [],
         "connected_macs": [],
+        "wifi_ssid": "",
         "error": error,
     }
 
@@ -11935,6 +11970,86 @@ def _ensure_hotspot_pool_wan_guard(
         )
     else:
         notes.append("warning: Hotspot pool WAN guard not installed")
+    return notes
+
+
+def _ensure_hotspot_tether_block(
+    sock: socket.socket,
+    *,
+    enabled: bool = False,
+) -> list[str]:
+    """
+    Drop typical USB / Bluetooth / personal-hotspot sharing behind paid Hotspot MACs.
+
+    Phones that NAT tethered devices usually decrement IP TTL (64→63, 128→127).
+    Rules match paid clients on ``ispcentric-hotspot-ok`` before the pool WAN accept.
+    Not perfect — determined users can raise TTL — but stops ordinary sharing.
+    """
+    notes: list[str] = []
+    stale_ids: list[str] = []
+    ok_accept_id = ""
+    for row in _print(
+        sock,
+        "/ip/firewall/filter",
+        props=".id,comment,chain,action,src-address-list",
+    ):
+        comment = row.get("comment") or ""
+        if ISP_HOTSPOT_TAG not in comment:
+            continue
+        if (row.get("chain") or "").strip() != "forward":
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        if "tether" in comment.lower():
+            stale_ids.append(item_id)
+            continue
+        if (
+            "pool wan ok" in comment
+            and (row.get("action") or "").strip() == "accept"
+            and (row.get("src-address-list") or "").strip() == ISP_HOTSPOT_OK_LIST
+        ):
+            ok_accept_id = item_id
+    for item_id in stale_ids:
+        _remove(sock, "/ip/firewall/filter", item_id)
+
+    if not enabled:
+        if stale_ids:
+            notes.append("Hotspot tether block removed")
+        return notes
+
+    place_before = ok_accept_id or _first_forward_drop_id(sock)
+    rules = [
+        {
+            "chain": "forward",
+            "action": "drop",
+            "src-address-list": ISP_HOTSPOT_OK_LIST,
+            "out-interface-list": "WAN",
+            "ttl": "equal:63",
+            "comment": f"{ISP_HOTSPOT_TAG} tether ttl63",
+        },
+        {
+            "chain": "forward",
+            "action": "drop",
+            "src-address-list": ISP_HOTSPOT_OK_LIST,
+            "out-interface-list": "WAN",
+            "ttl": "equal:127",
+            "comment": f"{ISP_HOTSPOT_TAG} tether ttl127",
+        },
+    ]
+    added = 0
+    for rule in rules:
+        terminal = _add_filter_rule(sock, rule, place_before=place_before)
+        if terminal.get("_reply") == "!trap" and place_before:
+            terminal = _add_filter_rule(sock, rule)
+        if terminal.get("_reply") != "!trap":
+            added += 1
+    if added:
+        notes.append(
+            f"Hotspot tether block on ({added} TTL drop rule(s) for {ISP_HOTSPOT_OK_LIST})"
+        )
+    else:
+        notes.append("warning: Hotspot tether block not installed")
     return notes
 
 
@@ -16171,6 +16286,14 @@ def repair_unpaid_hotspot_leaking_on_router(router) -> dict[str, Any]:
                 notes.extend(
                     _ensure_hotspot_pool_wan_guard(sock, portal_url=portal)
                 )
+                notes.extend(
+                    _ensure_hotspot_tether_block(
+                        sock,
+                        enabled=bool(
+                            getattr(org, "hotspot_block_tethering", True)
+                        ),
+                    )
+                )
                 # Re-assert option 114 + login.html lightly when leaks were found
                 # so devices that were surfing without a popup get redirected.
                 if notes:
@@ -20335,6 +20458,7 @@ def _disable_isp_hotspot_stack(sock: socket.socket) -> list[str]:
     removed += _remove_isp_hotspot_tagged(sock, "/ip/firewall/address-list")
     removed += _remove_isp_hotspot_tagged(sock, "/ip/dns/static")
     removed += _remove_isp_hotspot_tagged(sock, "/ip/firewall/nat")
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/firewall/filter")
     removed += _remove_isp_hotspot_tagged(sock, "/ip/pool")
     removed += _remove_isp_hotspot_tagged(sock, "/ip/address")
     removed += _clear_captive_portal_dhcp_option(sock)
@@ -20680,6 +20804,12 @@ def _ensure_isp_hotspot_stack(
     notes.extend(
         _ensure_hotspot_pool_wan_guard(sock, portal_url=pay_url or garden_url)
     )
+    notes.extend(
+        _ensure_hotspot_tether_block(
+            sock,
+            enabled=bool(getattr(organization, "hotspot_block_tethering", True)),
+        )
+    )
     notes.extend(_bounce_isp_hotspot_clients(sock))
     return notes
 
@@ -20895,6 +21025,14 @@ def apply_hotspot_on_router(
                     # cannot leak through apps (QUIC/HTTPS).
                     notes.extend(
                         _ensure_hotspot_pool_wan_guard(sock, portal_url=garden)
+                    )
+                    notes.extend(
+                        _ensure_hotspot_tether_block(
+                            sock,
+                            enabled=bool(
+                                getattr(org, "hotspot_block_tethering", True)
+                            ),
+                        )
                     )
                 else:
                     notes = _disable_isp_hotspot_stack(sock)

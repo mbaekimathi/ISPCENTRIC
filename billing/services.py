@@ -1298,8 +1298,14 @@ def payment_stk_candidates(payment):
     STK rows that may hold the M-Pesa SMS receipt for a payment.
 
     Prefer the reverse FK, then invoice-linked STKs (payment FK missing), then
-    a CheckoutRequestID stored on payment.reference.
+    a CheckoutRequestID stored on payment.reference, then same-customer
+    success rows near the payment time (orphan STK / cleared FKs).
     """
+    from datetime import timedelta
+
+    from django.db.models import Q
+    from django.utils import timezone as dj_tz
+
     from billing.models import StkPushRequest
 
     seen: set[int] = set()
@@ -1327,6 +1333,50 @@ def payment_stk_candidates(payment):
     if ref and _is_mpesa_checkout_placeholder(ref):
         yield from _yield(
             StkPushRequest.objects.filter(checkout_request_id=ref).order_by("-id")
+        )
+
+    # 4) STK attached through an access voucher that points at this payment.
+    yield from _yield(
+        StkPushRequest.objects.filter(
+            access_vouchers__payment_id=payment.pk
+        )
+        .distinct()
+        .order_by("-id")
+    )
+
+    # 5) Same customer + amount near payment time when FKs were never attached.
+    customer_id = None
+    invoice = getattr(payment, "invoice", None)
+    if invoice is not None:
+        customer_id = getattr(invoice, "customer_id", None)
+    if customer_id is None and invoice_id:
+        from billing.models import Invoice
+
+        customer_id = (
+            Invoice.objects.filter(pk=invoice_id)
+            .values_list("customer_id", flat=True)
+            .first()
+        )
+    received_at = getattr(payment, "received_at", None)
+    org_id = getattr(payment, "organization_id", None)
+    if customer_id and received_at and org_id:
+        if dj_tz.is_naive(received_at):
+            received_at = dj_tz.make_aware(received_at, dj_tz.get_current_timezone())
+        window_start = received_at - timedelta(hours=6)
+        window_end = received_at + timedelta(hours=6)
+        yield from _yield(
+            StkPushRequest.objects.filter(
+                organization_id=org_id,
+                customer_id=customer_id,
+                status=StkPushRequest.Status.SUCCESS,
+                amount=payment.amount,
+            )
+            .filter(
+                Q(completed_at__range=(window_start, window_end))
+                | Q(completed_at__isnull=True, created_at__range=(window_start, window_end))
+            )
+            .filter(Q(payment_id__isnull=True) | Q(payment_id=payment.pk))
+            .order_by("-id")
         )
 
 
@@ -1513,9 +1563,10 @@ def recharge_customer_cash(
     """
     Record a cash payment and immediately extend the customer's prepaid package.
 
-    Hotspot: also issues fresh access vouchers and expects the caller to kick
-    MikroTik sessions so devices autoconnect or redeem a voucher to start fresh.
-    PPPoE: activates access right away (no vouchers).
+    Hotspot: issues fresh access vouchers, autoconnects the primary device when
+    a MAC is known, and returns remaining codes for other gadgets (SMS when
+    configured). Caller should NAS-sync with reauthenticate so the primary can
+    surf on Wi‑Fi. PPPoE: activates access right away (no vouchers).
 
     When ``period_start`` and ``period_end`` are provided, that range is the
     purchased duration. Active clients keep remaining paid time (duration is
@@ -1525,7 +1576,11 @@ def recharge_customer_cash(
     from django.db import transaction
 
     from billing.models import BillingPlan, Payment
-    from billing.vouchers import create_vouchers_for_cash_recharge, format_voucher_code
+    from billing.vouchers import (
+        autoconnect_primary_after_cash_recharge,
+        create_vouchers_for_cash_recharge,
+        format_voucher_code,
+    )
 
     if plan is None:
         raise ValueError("Select a package to recharge.")
@@ -1541,6 +1596,8 @@ def recharge_customer_cash(
         raise ValueError("Partial recharge requires both from and to dates.")
 
     vouchers = []
+    share_vouchers = []
+    hotspot_autoconnected = False
     stacked = customer_subscription_window_active(customer)
     with transaction.atomic():
         update_fields: list[str] = []
@@ -1590,9 +1647,28 @@ def recharge_customer_cash(
                 customer=customer,
                 plan=plan,
                 payment=payment,
+                notify=False,
             )
+            connect = autoconnect_primary_after_cash_recharge(customer, vouchers)
+            hotspot_autoconnected = bool(connect.get("autoconnected"))
+            share_vouchers = list(connect.get("extra_vouchers") or [])
+            customer.refresh_from_db()
 
-    voucher_codes = [format_voucher_code(row.code) for row in vouchers]
+    voucher_codes = [format_voucher_code(row.code) for row in share_vouchers]
+    from accounts.communications import notify_org_event
+
+    if share_vouchers:
+        notify_org_event(
+            "hotspot_voucher",
+            organization=organization,
+            client=customer,
+            context={
+                "voucher_code": ", ".join(voucher_codes),
+                "package_name": getattr(plan, "name", "") or "",
+            },
+            subject="Hotspot voucher issued",
+        )
+
     pay_ctx = {
         "amount": str(amount),
         "invoice_number": invoice.invoice_number if invoice else "",
@@ -1608,8 +1684,6 @@ def recharge_customer_cash(
         context=pay_ctx,
         stacked=stacked,
     )
-    from accounts.communications import notify_org_event
-
     notify_org_event(
         "invoice_receipt",
         organization=organization,
@@ -1617,8 +1691,8 @@ def recharge_customer_cash(
         context=pay_ctx,
         subject="Invoice / receipt",
     )
-    # PPPoE cash recharge restores access immediately (no voucher gate).
-    if not vouchers:
+    # PPPoE (no vouchers) or Hotspot primary autoconnect restores access now.
+    if not vouchers or hotspot_autoconnected:
         notify_client_internet_reconnected(
             organization=organization,
             customer=customer,
@@ -1632,7 +1706,8 @@ def recharge_customer_cash(
         "vouchers": vouchers,
         "voucher_codes": voucher_codes,
         "kick_sessions": bool(vouchers),
-        "unlink_hotspot_after_sync": bool(vouchers),
+        "unlink_hotspot_after_sync": bool(vouchers) and not hotspot_autoconnected,
+        "hotspot_autoconnected": hotspot_autoconnected,
         "stacked": stacked,
     }
 

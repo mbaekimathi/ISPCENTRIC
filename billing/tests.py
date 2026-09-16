@@ -2248,6 +2248,119 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertEqual(payment.reference, "RAWCLIENT1")
         self.assertEqual(response.context["payments"][0].display_reference, "RAWCLIENT1")
 
+    def test_client_billing_heals_receipt_from_rejected_callback_raw(self):
+        """Receipts stored under callback_rejected must still surface on billing."""
+        from datetime import date
+
+        from billing.models import Invoice, Payment, StkPushRequest
+
+        self.client.force_login(self.owner)
+        invoice = Invoice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            invoice_number="INV-MPESA-REJ-1",
+            amount=self.plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        payment = Payment.objects.create(
+            organization=self.org,
+            invoice=invoice,
+            amount=self.plan.price,
+            method=Payment.Method.MPESA,
+            reference="",
+            phone="0723983803",
+        )
+        StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            amount=self.plan.price,
+            phone="0723983803",
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_REJ_CLIENT",
+            mpesa_receipt="",
+            status=StkPushRequest.Status.SUCCESS,
+            payment=payment,
+            invoice=invoice,
+            raw_callback={
+                "reject_reason": "Callback amount 30.0 does not match STK amount 30.00.",
+                "callback_rejected": {
+                    "Body": {
+                        "stkCallback": {
+                            "CheckoutRequestID": "ws_CO_REJ_CLIENT",
+                            "ResultCode": 0,
+                            "CallbackMetadata": {
+                                "Item": [
+                                    {"Name": "Amount", "Value": 30.0},
+                                    {
+                                        "Name": "MpesaReceiptNumber",
+                                        "Value": "REJHEAL01",
+                                    },
+                                    {"Name": "PhoneNumber", "Value": 254723983803},
+                                ]
+                            },
+                        }
+                    }
+                },
+            },
+        )
+
+        response = self.client.get(f"/app/clients/{self.customer.pk}/billing/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "REJHEAL01")
+        payment.refresh_from_db()
+        self.assertEqual(payment.reference, "REJHEAL01")
+        self.assertEqual(response.context["payments"][0].display_reference, "REJHEAL01")
+
+    def test_client_billing_heals_receipt_from_orphan_customer_stk(self):
+        """Recover receipt when STK success row was never linked to payment/invoice."""
+        from datetime import date, timedelta
+
+        from django.utils import timezone
+
+        from billing.models import Invoice, Payment, StkPushRequest
+
+        self.client.force_login(self.owner)
+        now = timezone.now()
+        invoice = Invoice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            invoice_number="INV-MPESA-ORPHAN-TIME-1",
+            amount=self.plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        payment = Payment.objects.create(
+            organization=self.org,
+            invoice=invoice,
+            amount=self.plan.price,
+            method=Payment.Method.MPESA,
+            reference="",
+            phone="0723983803",
+            received_at=now,
+        )
+        StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            amount=self.plan.price,
+            phone="0723983803",
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_ORPHAN_TIME",
+            mpesa_receipt="ORPHANTM1",
+            status=StkPushRequest.Status.SUCCESS,
+            payment=None,
+            invoice=None,
+            completed_at=now - timedelta(minutes=2),
+        )
+
+        response = self.client.get(f"/app/clients/{self.customer.pk}/billing/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "ORPHANTM1")
+        payment.refresh_from_db()
+        self.assertEqual(payment.reference, "ORPHANTM1")
+
     def test_client_detail_shows_available_voucher(self):
         from billing.stk import fulfill_successful_stk
         from billing.vouchers import format_voucher_code
@@ -3364,20 +3477,31 @@ class HotspotCashRechargeVoucherTests(TestCase):
         )
         self.customer.refresh_from_db()
         self.assertTrue(result["kick_sessions"])
-        self.assertEqual(len(result["voucher_codes"]), 2)
+        self.assertTrue(result["hotspot_autoconnected"])
+        # Primary device consumes one voucher; sibling code is returned for sharing.
+        self.assertEqual(len(result["voucher_codes"]), 1)
+        self.assertFalse(result["unlink_hotspot_after_sync"])
         self.assertGreater(self.customer.package_end, original_end)
+        self.assertEqual(
+            (self.customer.hotspot_mac or "").upper(), "AA:BB:CC:DD:EE:70"
+        )
 
         vouchers = list(
             AccessVoucher.objects.filter(payment=result["payment"]).order_by("id")
         )
         self.assertEqual(len(vouchers), 2)
-        self.assertTrue(all(v.status == AccessVoucher.Status.VALID for v in vouchers))
+        primary, extra = vouchers
+        self.assertEqual(primary.status, AccessVoucher.Status.INVALID)
+        self.assertEqual(
+            (primary.redeemed_mac or "").upper(), "AA:BB:CC:DD:EE:70"
+        )
+        self.assertEqual(extra.status, AccessVoucher.Status.VALID)
         self.assertTrue(all(v.subscription_applied for v in vouchers))
 
         end_after_recharge = self.customer.package_end
         redeemed = redeem_access_voucher(
             organization=self.org,
-            code=vouchers[0].code,
+            code=extra.code,
             customer=self.customer,
             mac="AA:BB:CC:DD:EE:71",
             provision=False,
@@ -3386,8 +3510,8 @@ class HotspotCashRechargeVoucherTests(TestCase):
         self.customer.refresh_from_db()
         # Package was already extended by cash recharge — redeem must not stack again.
         self.assertEqual(self.customer.package_end, end_after_recharge)
-        vouchers[0].refresh_from_db()
-        self.assertEqual(vouchers[0].status, AccessVoucher.Status.INVALID)
+        extra.refresh_from_db()
+        self.assertEqual(extra.status, AccessVoucher.Status.INVALID)
 
     def test_hotspot_cash_recharge_invalidates_previous_unused_vouchers(self):
         from billing.models import AccessVoucher
@@ -3408,9 +3532,32 @@ class HotspotCashRechargeVoucherTests(TestCase):
         )
         old.refresh_from_db()
         self.assertEqual(old.status, AccessVoucher.Status.INVALID)
+        # Primary MAC burns one voucher; one unused sibling remains for the 2nd device.
         self.assertEqual(
             AccessVoucher.objects.filter(
                 customer=self.customer, status=AccessVoucher.Status.VALID
+            ).count(),
+            1,
+        )
+
+    def test_hotspot_cash_recharge_without_mac_returns_all_vouchers(self):
+        from billing.models import AccessVoucher
+
+        self.customer.hotspot_mac = ""
+        self.customer.save(update_fields=["hotspot_mac"])
+        result = recharge_customer_cash(
+            customer=self.customer,
+            organization=self.org,
+            plan=self.plan,
+            amount="50.00",
+            recorded_by=self.owner,
+        )
+        self.assertFalse(result["hotspot_autoconnected"])
+        self.assertTrue(result["unlink_hotspot_after_sync"])
+        self.assertEqual(len(result["voucher_codes"]), 2)
+        self.assertEqual(
+            AccessVoucher.objects.filter(
+                payment=result["payment"], status=AccessVoucher.Status.VALID
             ).count(),
             2,
         )

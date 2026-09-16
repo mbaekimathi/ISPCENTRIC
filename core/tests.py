@@ -7931,6 +7931,98 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         self.assertFalse(result["ok"])
         self.assertIn("absolute pay URL", result["error"])
 
+    def test_hotspot_tether_block_installs_ttl_drops_before_ok(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import (
+            ISP_HOTSPOT_OK_LIST,
+            ISP_HOTSPOT_TAG,
+            _ensure_hotspot_tether_block,
+        )
+
+        adds: list[dict] = []
+        place_befores: list[str] = []
+
+        def fake_add_filter(sock, rule, place_before=""):
+            adds.append(dict(rule))
+            place_befores.append(place_before)
+            return {"_reply": "!done", "ret": f"*t{len(adds)}"}
+
+        existing = [
+            {
+                ".id": "*ok",
+                "chain": "forward",
+                "action": "accept",
+                "src-address-list": ISP_HOTSPOT_OK_LIST,
+                "comment": f"{ISP_HOTSPOT_TAG} pool wan ok",
+            }
+        ]
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=existing),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._add_filter_rule",
+                side_effect=fake_add_filter,
+            ),
+            patch("core.mikrotik_connect._first_forward_drop_id", return_value="*drop"),
+        ):
+            notes = _ensure_hotspot_tether_block(MagicMock(), enabled=True)
+
+        self.assertTrue(any("tether block on" in n for n in notes))
+        self.assertEqual(len(adds), 2)
+        self.assertTrue(all(pb == "*ok" for pb in place_befores))
+        ttls = {r.get("ttl") for r in adds}
+        self.assertEqual(ttls, {"equal:63", "equal:127"})
+        self.assertTrue(
+            all(
+                r.get("action") == "drop"
+                and r.get("src-address-list") == ISP_HOTSPOT_OK_LIST
+                and ISP_HOTSPOT_TAG in (r.get("comment") or "")
+                for r in adds
+            )
+        )
+
+    def test_hotspot_tether_block_removes_rules_when_disabled(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import (
+            ISP_HOTSPOT_TAG,
+            _ensure_hotspot_tether_block,
+        )
+
+        removed: list[str] = []
+        existing = [
+            {
+                ".id": "*t1",
+                "chain": "forward",
+                "action": "drop",
+                "comment": f"{ISP_HOTSPOT_TAG} tether ttl63",
+            },
+            {
+                ".id": "*ok",
+                "chain": "forward",
+                "action": "accept",
+                "comment": f"{ISP_HOTSPOT_TAG} pool wan ok",
+            },
+        ]
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=existing),
+            patch(
+                "core.mikrotik_connect._remove",
+                side_effect=lambda sock, path, item_id: removed.append(item_id)
+                or {"_reply": "!done"},
+            ),
+            patch("core.mikrotik_connect._add_filter_rule") as add_mock,
+        ):
+            notes = _ensure_hotspot_tether_block(MagicMock(), enabled=False)
+
+        self.assertIn("*t1", removed)
+        self.assertNotIn("*ok", removed)
+        add_mock.assert_not_called()
+        self.assertTrue(any("tether block removed" in n for n in notes))
+
 
 class AccessFlowCorrectionLoopTests(TestCase):
     """

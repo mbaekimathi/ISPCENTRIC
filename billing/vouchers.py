@@ -177,6 +177,7 @@ def create_vouchers_for_cash_recharge(
     customer,
     plan,
     payment=None,
+    notify: bool = True,
 ) -> list[AccessVoucher]:
     """
     Issue a fresh Hotspot voucher batch after staff cash recharge.
@@ -186,6 +187,9 @@ def create_vouchers_for_cash_recharge(
     code per device slot. Device rows are left linked briefly so the caller can
     NAS-disable them; unlink after that sync.
     Package is already extended by the recharge, so vouchers are marked applied.
+
+    When ``notify`` is False, skip the hotspot_voucher SMS/WhatsApp event so the
+    caller can notify only the shareable extra-device codes after autoconnect.
     """
     if customer is None or plan is None:
         raise ValueError("Voucher requires a customer and plan.")
@@ -212,7 +216,7 @@ def create_vouchers_for_cash_recharge(
                 subscription_applied=True,
             )
         )
-    if created:
+    if created and notify:
         from accounts.communications import notify_org_event
 
         codes = ", ".join(format_voucher_code(row.code) for row in created)
@@ -227,6 +231,57 @@ def create_vouchers_for_cash_recharge(
             subject="Hotspot voucher issued",
         )
     return created
+
+
+def autoconnect_primary_after_cash_recharge(customer, vouchers: list) -> dict:
+    """
+    Bind the client's primary Hotspot MAC to the first new voucher so they can
+    surf when they join Wi‑Fi. Sibling codes stay VALID for other devices.
+    """
+    from billing.devices import (
+        attach_hotspot_device,
+        normalize_device_mac,
+        set_primary_hotspot_mac,
+        unlink_hotspot_devices,
+    )
+
+    vouchers = list(vouchers or [])
+    primary_mac = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
+    if not vouchers:
+        return {
+            "autoconnected": False,
+            "primary_mac": primary_mac,
+            "extra_vouchers": [],
+            "keep_macs": [primary_mac] if primary_mac else [],
+        }
+    if not primary_mac:
+        return {
+            "autoconnected": False,
+            "primary_mac": "",
+            "extra_vouchers": vouchers,
+            "keep_macs": [],
+        }
+
+    primary_voucher = vouchers[0]
+    unlink_hotspot_devices(customer, keep_macs=[primary_mac])
+    set_primary_hotspot_mac(customer, primary_mac)
+    attach_hotspot_device(customer, primary_mac, enforce_cap=True)
+    try:
+        _claim_voucher_mac(primary_voucher, primary_mac)
+        _mark_voucher_used(primary_voucher, mac=primary_mac)
+    except ValueError:
+        return {
+            "autoconnected": False,
+            "primary_mac": primary_mac,
+            "extra_vouchers": vouchers,
+            "keep_macs": [primary_mac],
+        }
+    return {
+        "autoconnected": True,
+        "primary_mac": primary_mac,
+        "extra_vouchers": vouchers[1:],
+        "keep_macs": [primary_mac],
+    }
 
 
 def vouchers_for_batch(voucher: AccessVoucher | None) -> list[AccessVoucher]:

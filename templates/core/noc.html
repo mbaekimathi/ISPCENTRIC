@@ -1,0 +1,897 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}{% if noc_focus == "down" %}Down routers{% elif noc_focus == "impact" %}Client impact{% elif noc_focus == "faults" %}Open faults{% else %}NOC{% endif %} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+{{ board|json_script:"noc-board-data" }}
+<div
+  class="noc-console{% if noc_focus %} is-mode-{{ noc_focus }}{% else %} is-mode-ops{% endif %}"
+  data-noc-console
+  data-summary-url="{{ noc_summary_url }}"
+  data-mikrotik-status-url="{{ mikrotik_status_url }}"
+  data-surfing-url="{{ surfing_url }}"
+  data-focus="{{ noc_focus|default:'' }}"
+  data-clients-url="{{ clients_url }}"
+  data-mikrotik-url="{{ mikrotik_url }}"
+>
+  <header class="noc-top">
+    <div class="noc-top-copy">
+      <p class="noc-kicker">Network Operations Center</p>
+      <h1>
+        {% if noc_focus == "down" %}Down routers
+        {% elif noc_focus == "impact" %}Client impact
+        {% elif noc_focus == "faults" %}Open faults
+        {% else %}Ops console{% endif %}
+      </h1>
+      <p class="noc-top-sub">
+        {% if noc_focus == "down" %}
+          Only outage and degraded NAS gear — health history, clients exposed, reconnect actions.
+        {% elif noc_focus == "impact" %}
+          Only subscribers who are dialed and in-package but still not surfing — by NAS and reason.
+        {% elif noc_focus == "faults" %}
+          Only open field fault tickets — status, technician, client, and linked router.
+        {% else %}
+          Cross-fleet alarm triage: severity queue, sites, inspector, and chronology.
+        {% endif %}
+      </p>
+    </div>
+    <div class="noc-top-actions">
+      <span class="noc-live-pill" data-live-pill>{% if board.summary.has_live_cache %}Live{% else %}Standby{% endif %}</span>
+      <span class="noc-clock" data-noc-clock>—</span>
+      <button type="button" class="btn btn-primary btn-sm" data-noc-refresh {% if not board.summary.routers_total %}disabled{% endif %}>
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M4 12a8 8 0 0 1 14.1-5.1M20 12a8 8 0 0 1-14.1 5.1M16 4v4h4M8 20v-4H4"/></svg>
+        Probe now
+      </button>
+      <a class="btn btn-ghost btn-sm" href="{{ mikrotik_url }}">MikroTik</a>
+      <a class="btn btn-ghost btn-sm" href="{{ clients_url }}">Clients</a>
+    </div>
+  </header>
+
+  <nav class="noc-mode-tabs" aria-label="NOC views">
+    <a class="noc-mode-tab{% if not noc_focus %} is-active{% endif %}" href="{% url 'core:noc' %}">Ops board</a>
+    <a class="noc-mode-tab{% if noc_focus == 'down' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=down">Down routers</a>
+    <a class="noc-mode-tab{% if noc_focus == 'impact' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=impact">Client impact</a>
+    <a class="noc-mode-tab{% if noc_focus == 'faults' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=faults">Open faults</a>
+  </nav>
+
+  {# -------- OPS BOARD -------- #}
+  <div class="noc-view" data-noc-view="ops" {% if noc_focus %}hidden{% endif %}>
+    <div class="noc-sev-strip" aria-label="Alarm severity">
+      <button type="button" class="noc-sev is-critical" data-filter-sev="critical"><span class="noc-sev-label">Critical</span><strong data-stat="critical">{{ board.summary.alarms_critical }}</strong></button>
+      <button type="button" class="noc-sev is-major" data-filter-sev="major"><span class="noc-sev-label">Major</span><strong data-stat="major">{{ board.summary.alarms_major }}</strong></button>
+      <button type="button" class="noc-sev is-minor" data-filter-sev="minor"><span class="noc-sev-label">Minor</span><strong data-stat="minor">{{ board.summary.alarms_minor }}</strong></button>
+      <button type="button" class="noc-sev is-all is-active" data-filter-sev=""><span class="noc-sev-label">Open alarms</span><strong data-stat="alarms">{{ board.summary.alarms_open }}</strong></button>
+      <div class="noc-sev-meta">
+        <span><strong data-stat="at-risk">{{ board.summary.customers_at_risk }}</strong> clients at risk</span>
+        <span><strong data-stat="sites">{{ board.summary.sites_total }}</strong> sites</span>
+        <span><strong data-stat="health">{{ board.summary.health_score|default:"—" }}{% if board.summary.health_score is not None %}%{% endif %}</strong> fleet</span>
+      </div>
+    </div>
+    <div class="noc-filters">
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="ops" placeholder="Search alarms, routers, sites…" autocomplete="off"></label>
+      <select data-noc-site data-scope="ops"><option value="">All sites</option></select>
+      <label class="noc-check"><input type="checkbox" data-noc-hide-acked> Hide acknowledged</label>
+      <div class="noc-filter-actions">
+        <button type="button" class="btn btn-ghost btn-sm" data-noc-ack-all>Ack visible</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-noc-clear-ack>Clear acks</button>
+      </div>
+    </div>
+    <div class="noc-grid">
+      <section class="noc-pane"><header class="noc-pane-head"><div><p class="noc-pane-kicker">Queue</p><h2>Alarms</h2></div><span class="noc-pane-count" data-alarm-count>0</span></header><div class="noc-alarm-list" data-alarm-list></div></section>
+      <section class="noc-pane"><header class="noc-pane-head"><div><p class="noc-pane-kicker">Topology</p><h2>Sites &amp; fleet</h2></div><div class="noc-view-toggle"><button type="button" class="is-active" data-view="sites">Sites</button><button type="button" data-view="fleet">Fleet</button></div></header><div class="noc-matrix-body" data-matrix-body></div></section>
+      <section class="noc-pane"><header class="noc-pane-head"><div><p class="noc-pane-kicker">Inspector</p><h2 data-inspector-title>Select an alarm or router</h2></div></header><div class="noc-inspector-body" data-inspector-body><div class="noc-empty"><p class="noc-empty-title">Nothing selected</p><p class="noc-empty-copy">Pick an alarm or router tile.</p></div></div></section>
+    </div>
+    <section class="noc-pane noc-timeline"><header class="noc-pane-head"><div><p class="noc-pane-kicker">Chronology</p><h2>Event timeline</h2></div><span class="noc-pane-count" data-timeline-count>0</span></header><div class="noc-timeline-list" data-timeline-list></div></section>
+  </div>
+
+  {# -------- DOWN ROUTERS -------- #}
+  <div class="noc-view" data-noc-view="down" {% if noc_focus != "down" %}hidden{% endif %}>
+    <div class="noc-kpi-row" aria-label="Outage snapshot">
+      <article class="noc-kpi sev-critical"><p class="noc-kpi-label">Down</p><p class="noc-kpi-value" data-down-stat="down">{{ board.summary.routers_down }}</p><p class="noc-kpi-meta">NAS offline</p></article>
+      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Degraded</p><p class="noc-kpi-value" data-down-stat="degraded">{{ board.summary.routers_degraded }}</p><p class="noc-kpi-meta">Reachable / auth / limited</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">Clients on down NAS</p><p class="noc-kpi-value" data-down-stat="on-down">{{ board.summary.customers_on_down }}</p><p class="noc-kpi-meta">Assigned subscribers</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">Clients on degraded</p><p class="noc-kpi-value" data-down-stat="on-degraded">{{ board.summary.customers_on_degraded }}</p><p class="noc-kpi-meta">May be affected</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">Problem health</p><p class="noc-kpi-value" data-down-stat="problem-health">{% if board.summary.problem_health_score is not None %}{{ board.summary.problem_health_score }}%{% else %}—{% endif %}</p><p class="noc-kpi-meta">Avg score of problem routers</p></article>
+    </div>
+    <div class="noc-filters">
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="down" placeholder="Search problem routers…" autocomplete="off"></label>
+      <select data-noc-site data-scope="down"><option value="">All sites</option></select>
+      <select data-down-tone>
+        <option value="">Down + degraded</option>
+        <option value="down">Down only</option>
+        <option value="degraded">Degraded only</option>
+      </select>
+    </div>
+    <div class="noc-split">
+      <section class="noc-pane">
+        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Outages</p><h2>Problem routers</h2></div><span class="noc-pane-count" data-down-count>0</span></header>
+        <div class="noc-table-wrap" data-down-table></div>
+      </section>
+      <section class="noc-pane">
+        <header class="noc-pane-head"><div><p class="noc-pane-kicker">History</p><h2 data-down-detail-title>Select a router</h2></div></header>
+        <div class="noc-inspector-body" data-down-detail>
+          <div class="noc-empty"><p class="noc-empty-title">Pick a problem router</p><p class="noc-empty-copy">See health sparkline, last change, drop events, and reconnect.</p></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  {# -------- CLIENT IMPACT -------- #}
+  <div class="noc-view" data-noc-view="impact" {% if noc_focus != "impact" %}hidden{% endif %}>
+    <div class="noc-kpi-row" aria-label="Impact snapshot">
+      <article class="noc-kpi tone-ok"><p class="noc-kpi-label">Surfing</p><p class="noc-kpi-value" data-impact-stat="surfing">—</p><p class="noc-kpi-meta">Online now</p></article>
+      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Not surfing</p><p class="noc-kpi-value" data-impact-stat="not-surfing">—</p><p class="noc-kpi-meta">Dialed, in-package, no internet</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">Checked</p><p class="noc-kpi-value" data-impact-stat="checked">—</p><p class="noc-kpi-meta">PPPoE clients probed</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">NAS with impact</p><p class="noc-kpi-value" data-impact-stat="nas">—</p><p class="noc-kpi-meta">Routers hosting stuck clients</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">Top reason</p><p class="noc-kpi-value noc-kpi-value-sm" data-impact-stat="top-reason">—</p><p class="noc-kpi-meta">Most common block</p></article>
+    </div>
+    <div class="noc-filters">
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="impact" placeholder="Search client, plan, NAS, reason…" autocomplete="off"></label>
+      <select data-impact-nas><option value="">All NAS</option></select>
+      <select data-impact-reason><option value="">All reasons</option></select>
+      <a class="btn btn-ghost btn-sm" href="{{ clients_url }}">Open PPPoE list</a>
+    </div>
+    <div class="noc-split noc-split-impact">
+      <section class="noc-pane">
+        <header class="noc-pane-head"><div><p class="noc-pane-kicker">By NAS</p><h2>Impact groups</h2></div><span class="noc-pane-count" data-impact-groups>0</span></header>
+        <div class="noc-impact-board-body" data-impact-groups-body></div>
+      </section>
+      <section class="noc-pane">
+        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Clients</p><h2>Stuck sessions</h2></div><span class="noc-pane-count" data-impact-count>0</span></header>
+        <div class="noc-table-wrap" data-impact-table></div>
+      </section>
+    </div>
+  </div>
+
+  {# -------- OPEN FAULTS -------- #}
+  <div class="noc-view" data-noc-view="faults" {% if noc_focus != "faults" %}hidden{% endif %}>
+    <div class="noc-kpi-row" aria-label="Fault snapshot">
+      <article class="noc-kpi"><p class="noc-kpi-label">Active tickets</p><p class="noc-kpi-value" data-fault-stat="total">{{ board.summary.faults_open }}</p><p class="noc-kpi-meta">Not resolved/closed</p></article>
+      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Open</p><p class="noc-kpi-value" data-fault-stat="open">{{ board.summary.faults_status_open }}</p><p class="noc-kpi-meta">Awaiting assignment</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">Assigned</p><p class="noc-kpi-value" data-fault-stat="assigned">{{ board.summary.faults_assigned }}</p><p class="noc-kpi-meta">With a technician</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">In progress</p><p class="noc-kpi-value" data-fault-stat="progress">{{ board.summary.faults_in_progress }}</p><p class="noc-kpi-meta">Being worked</p></article>
+      <article class="noc-kpi sev-critical"><p class="noc-kpi-label">Unassigned</p><p class="noc-kpi-value" data-fault-stat="unassigned">{{ board.summary.faults_unassigned }}</p><p class="noc-kpi-meta">Need a tech</p></article>
+    </div>
+    <div class="noc-filters">
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="faults" placeholder="Search ticket, client, tech, issue…" autocomplete="off"></label>
+      <select data-fault-status>
+        <option value="">All statuses</option>
+        <option value="open">Open</option>
+        <option value="assigned">Assigned</option>
+        <option value="in_progress">In progress</option>
+      </select>
+      <select data-fault-issue>
+        <option value="">All issues</option>
+      </select>
+      <label class="noc-check"><input type="checkbox" data-fault-unassigned> Unassigned only</label>
+    </div>
+    <div class="noc-split">
+      <section class="noc-pane">
+        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Tickets</p><h2>Open faults</h2></div><span class="noc-pane-count" data-fault-count>0</span></header>
+        <div class="noc-table-wrap" data-fault-table></div>
+      </section>
+      <section class="noc-pane">
+        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Detail</p><h2 data-fault-detail-title>Select a ticket</h2></div></header>
+        <div class="noc-inspector-body" data-fault-detail>
+          <div class="noc-empty"><p class="noc-empty-title">Pick a fault ticket</p><p class="noc-empty-copy">See notes, client, technician, and linked NAS.</p></div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block client_extra_js %}
+{{ block.super }}
+<script>
+(function () {
+  var root = document.querySelector("[data-noc-console]");
+  if (!root) return;
+
+  var summaryUrl = root.getAttribute("data-summary-url") || "";
+  var statusUrl = root.getAttribute("data-mikrotik-status-url") || "";
+  var surfingUrl = root.getAttribute("data-surfing-url") || "";
+  var clientsUrl = root.getAttribute("data-clients-url") || "";
+  var focus = (root.getAttribute("data-focus") || "").trim();
+  var mode = focus || "ops";
+  var boardEl = document.getElementById("noc-board-data");
+  var state = {
+    board: boardEl ? JSON.parse(boardEl.textContent || "{}") : {},
+    surfing: null,
+    view: "sites",
+    filterSev: "",
+    filterSite: "",
+    search: "",
+    hideAcked: false,
+    downTone: "",
+    impactNas: "",
+    impactReason: "",
+    faultStatus: "",
+    faultIssue: "",
+    faultUnassigned: false,
+    selectedAlarmId: "",
+    selectedRouterId: null,
+    selectedFaultId: null,
+    acked: loadAcked(),
+  };
+  var busy = false;
+  var pollTimer = null;
+
+  function loadAcked() {
+    try { return JSON.parse(localStorage.getItem("ispcentric.noc.acked") || "{}") || {}; }
+    catch (e) { return {}; }
+  }
+  function saveAcked() {
+    try { localStorage.setItem("ispcentric.noc.acked", JSON.stringify(state.acked || {})); } catch (e) {}
+  }
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function titleCase(value) {
+    return String(value || "").replace(/_/g, " ").replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
+  }
+  function getCookie(name) {
+    var match = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/([.$?*|{}()[\]\\/+^])/g, "\\$1") + "=([^;]*)"));
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+  function setText(sel, value) {
+    root.querySelectorAll(sel).forEach(function (el) { el.textContent = value; });
+  }
+  function routerById(id) {
+    return ((state.board && state.board.routers) || []).find(function (row) { return String(row.id) === String(id); }) || null;
+  }
+  function alarmById(id) {
+    return ((state.board && state.board.alarms) || []).find(function (row) { return row.id === id; }) || null;
+  }
+  function faultById(id) {
+    return ((state.board && state.board.faults) || []).find(function (row) { return String(row.id) === String(id); }) || null;
+  }
+  function matchesSearch(hay, q) {
+    if (!q) return true;
+    return String(hay || "").toLowerCase().indexOf(q) >= 0;
+  }
+  function sparkSvg(scores) {
+    var vals = Array.isArray(scores) ? scores.slice(-24) : [];
+    if (!vals.length) return '<span class="noc-spark-empty">No history</span>';
+    var w = 140, h = 32, max = 100, min = 0;
+    var step = vals.length > 1 ? w / (vals.length - 1) : w;
+    var points = vals.map(function (v, i) {
+      var x = i * step;
+      var y = h - ((Math.max(min, Math.min(max, Number(v) || 0)) - min) / (max - min)) * h;
+      return x.toFixed(1) + "," + y.toFixed(1);
+    }).join(" ");
+    var last = Number(vals[vals.length - 1] || 0);
+    var tone = last >= 90 ? "ok" : last >= 40 ? "warn" : "bad";
+    return '<svg class="noc-spark tone-' + tone + '" viewBox="0 0 ' + w + ' ' + h + '" width="140" height="32" aria-hidden="true"><polyline fill="none" stroke="currentColor" stroke-width="2" points="' + points + '"/></svg>';
+  }
+
+  function fillSiteSelects() {
+    var sites = (state.board && state.board.sites) || [];
+    var html = '<option value="">All sites</option>' + sites.map(function (site) {
+      return '<option value="' + escapeHtml(site.key) + '">' + escapeHtml(site.label) + " (" + site.routers_total + ")</option>";
+    }).join("");
+    root.querySelectorAll("[data-noc-site]").forEach(function (select) {
+      var current = select.getAttribute("data-scope") === "down" ? state.filterSite : state.filterSite;
+      select.innerHTML = html;
+      select.value = state.filterSite;
+    });
+  }
+
+  /* ===== OPS ===== */
+  function filteredAlarms() {
+    return ((state.board && state.board.alarms) || []).filter(function (alarm) {
+      if (state.filterSev && alarm.severity !== state.filterSev) return false;
+      if (state.hideAcked && state.acked[alarm.id]) return false;
+      if (state.filterSite) {
+        var router = alarm.router_id != null ? routerById(alarm.router_id) : null;
+        if (!router || router.site_key !== state.filterSite) return false;
+      }
+      return matchesSearch([alarm.title, alarm.detail, alarm.router_name, alarm.site_label, alarm.customer_name].join(" "), state.search);
+    });
+  }
+  function filteredRoutersOps() {
+    return ((state.board && state.board.routers) || []).filter(function (row) {
+      if (state.filterSev && row.severity !== state.filterSev && row.severity !== "ok") return false;
+      if (state.filterSev && row.severity === "ok") return false;
+      if (state.filterSite && row.site_key !== state.filterSite) return false;
+      return matchesSearch([row.name, row.host, row.location, row.status, row.reason].join(" "), state.search);
+    });
+  }
+  function renderOpsAlarms() {
+    var list = filteredAlarms();
+    var body = root.querySelector("[data-alarm-list]");
+    var count = root.querySelector("[data-alarm-count]");
+    if (count) count.textContent = String(list.length);
+    if (!body) return;
+    if (!list.length) {
+      body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Queue clear</p><p class="noc-empty-copy">No alarms match these filters.</p></div>';
+      return;
+    }
+    body.innerHTML = list.map(function (alarm) {
+      var acked = !!state.acked[alarm.id];
+      var selected = state.selectedAlarmId === alarm.id ? " is-selected" : "";
+      return (
+        '<article class="noc-alarm sev-' + escapeHtml(alarm.severity) + selected + (acked ? " is-acked" : "") + '" data-alarm-id="' + escapeHtml(alarm.id) + '">' +
+        '<div class="noc-alarm-top"><span class="noc-sev-tag">' + escapeHtml(alarm.severity) + '</span><span>' + escapeHtml(alarm.at || "now") + '</span></div>' +
+        '<h3>' + escapeHtml(alarm.title) + '</h3><p>' + escapeHtml(alarm.detail || "") + '</p>' +
+        '<div class="noc-alarm-meta">' +
+        (alarm.customers ? '<span>' + escapeHtml(alarm.customers) + ' clients</span>' : '') +
+        (alarm.kind ? '<span>' + escapeHtml(alarm.kind) + '</span>' : '') +
+        '</div>' +
+        '<div class="noc-alarm-actions"><button type="button" class="btn btn-ghost btn-sm" data-ack-alarm="' + escapeHtml(alarm.id) + '">' + (acked ? "Unack" : "Ack") + '</button></div></article>'
+      );
+    }).join("");
+  }
+  function renderOpsMatrix() {
+    var body = root.querySelector("[data-matrix-body]");
+    if (!body) return;
+    if (state.view === "sites") {
+      var routers = filteredRoutersOps();
+      var ids = {};
+      routers.forEach(function (r) { ids[r.id] = true; });
+      var sites = ((state.board && state.board.sites) || []).filter(function (site) {
+        if (state.filterSite && site.key !== state.filterSite) return false;
+        return (site.router_ids || []).some(function (id) { return ids[id]; });
+      });
+      if (!sites.length) {
+        body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No sites</p><p class="noc-empty-copy">Clear filters or onboard routers.</p></div>';
+        return;
+      }
+      body.innerHTML = '<div class="noc-site-grid">' + sites.map(function (site) {
+        return '<button type="button" class="noc-site-card sev-' + escapeHtml(site.worst_severity) + '" data-select-site="' + escapeHtml(site.key) + '"><div class="noc-site-top"><strong>' + escapeHtml(site.label) + '</strong><span class="noc-sev-tag">' + escapeHtml(site.worst_severity) + '</span></div><div class="noc-site-stats"><span>' + site.routers_online + '/' + site.routers_total + ' up</span><span>' + site.customers_at_risk + ' at risk</span></div></button>';
+      }).join("") + '</div>';
+      return;
+    }
+    var list = filteredRoutersOps();
+    if (!list.length) {
+      body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No routers</p><p class="noc-empty-copy">No fleet rows match.</p></div>';
+      return;
+    }
+    body.innerHTML = '<div class="noc-fleet-grid">' + list.map(function (row) {
+      return '<button type="button" class="noc-fleet-card sev-' + escapeHtml(row.severity) + (String(state.selectedRouterId) === String(row.id) ? " is-selected" : "") + '" data-select-router="' + escapeHtml(row.id) + '"><div class="noc-fleet-top"><strong>' + escapeHtml(row.name) + '</strong><span class="noc-sev-tag">' + escapeHtml(row.severity) + '</span></div><div class="noc-fleet-host">' + escapeHtml(row.host || "—") + ' · ' + escapeHtml(titleCase(row.status)) + '</div>' + sparkSvg(row.sparkline) + '<div class="noc-fleet-meta"><span>' + escapeHtml(row.customer_count) + ' clients</span><span>' + escapeHtml(row.site_label) + '</span></div></button>';
+    }).join("") + '</div>';
+  }
+  function renderOpsInspector() {
+    var body = root.querySelector("[data-inspector-body]");
+    var title = root.querySelector("[data-inspector-title]");
+    if (!body) return;
+    var alarm = state.selectedAlarmId ? alarmById(state.selectedAlarmId) : null;
+    var router = state.selectedRouterId != null ? routerById(state.selectedRouterId) : (alarm && alarm.router_id != null ? routerById(alarm.router_id) : null);
+    if (alarm && alarm.kind === "fault" && !router) {
+      if (title) title.textContent = alarm.title;
+      body.innerHTML = '<div class="noc-inspect-block"><p class="noc-inspect-label">Fault</p><p>' + escapeHtml(alarm.detail || "") + '</p><p class="noc-muted">Open the Faults view for full ticket workflow.</p><a class="btn btn-ghost btn-sm" href="?focus=faults">Open faults</a></div>';
+      return;
+    }
+    if (!router) {
+      if (title) title.textContent = "Select an alarm or router";
+      body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Nothing selected</p><p class="noc-empty-copy">Pick an alarm or router tile.</p></div>';
+      return;
+    }
+    if (title) title.textContent = router.name;
+    body.innerHTML =
+      '<div class="noc-inspect-hero sev-' + escapeHtml(router.severity) + '"><div><span class="noc-sev-tag">' + escapeHtml(router.severity) + '</span><strong>' + escapeHtml(titleCase(router.status)) + '</strong>' + (router.score != null ? '<span class="noc-score">' + escapeHtml(router.score) + '%</span>' : '') + '</div><p>' + escapeHtml(router.reason || "") + '</p></div>' +
+      '<div class="noc-inspect-block"><p class="noc-inspect-label">24h health</p>' + sparkSvg(router.sparkline) + '</div>' +
+      '<dl class="noc-dl"><div><dt>Host</dt><dd><span class="org-code">' + escapeHtml(router.host || "—") + '</span></dd></div><div><dt>Site</dt><dd>' + escapeHtml(router.site_label || "—") + '</dd></div><div><dt>Clients</dt><dd>' + escapeHtml(router.customer_count) + '</dd></div><div><dt>Last change</dt><dd>' + escapeHtml(router.last_change_at || "—") + '</dd></div></dl>' +
+      '<div class="noc-inspect-actions"><a class="btn btn-primary btn-sm" href="' + escapeHtml(router.detail_url) + '">Open router</a>' +
+      (router.severity !== "ok" && router.account_status !== "suspended" ? '<button type="button" class="btn btn-ghost btn-sm" data-noc-reconnect data-reconnect-url="' + escapeHtml(router.reconnect_url) + '" data-router-name="' + escapeHtml(router.name) + '">Reconnect</button>' : '') +
+      '<a class="btn btn-ghost btn-sm" href="?focus=down">Down routers</a></div>';
+  }
+  function renderOpsTimeline() {
+    var list = ((state.board && state.board.timeline) || []).filter(function (event) {
+      if (state.filterSite) {
+        var router = event.router_id != null ? routerById(event.router_id) : null;
+        if (!router || router.site_key !== state.filterSite) return false;
+      }
+      return matchesSearch([event.title, event.detail, event.kind].join(" "), state.search);
+    });
+    var body = root.querySelector("[data-timeline-list]");
+    var count = root.querySelector("[data-timeline-count]");
+    if (count) count.textContent = String(list.length);
+    if (!body) return;
+    if (!list.length) {
+      body.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Quiet timeline</p><p class="noc-empty-copy">No recent events.</p></div>';
+      return;
+    }
+    body.innerHTML = list.map(function (event) {
+      return '<article class="noc-tl-item sev-' + escapeHtml(event.severity) + '" data-tl-router="' + escapeHtml(event.router_id || "") + '"><div class="noc-tl-rail"></div><div class="noc-tl-body"><div class="noc-tl-top"><span class="noc-sev-tag">' + escapeHtml(String(event.kind || "").replace("_", " ")) + '</span><span>' + escapeHtml(event.at || "") + '</span></div><strong>' + escapeHtml(event.title) + '</strong><p>' + escapeHtml(event.detail || "") + '</p></div></article>';
+    }).join("");
+  }
+
+  /* ===== DOWN ===== */
+  function problemRouters() {
+    return ((state.board && state.board.routers) || []).filter(function (row) {
+      if (row.severity === "ok") return false;
+      if (state.downTone && row.tone !== state.downTone) return false;
+      if (state.filterSite && row.site_key !== state.filterSite) return false;
+      return matchesSearch([row.name, row.host, row.location, row.status, row.reason].join(" "), state.search);
+    });
+  }
+  function dropsForRouter(routerId) {
+    return (((state.board && state.board.drops) || {}).events || []).filter(function (ev) {
+      return String(ev.router_id) === String(routerId);
+    });
+  }
+  function renderDown() {
+    var summary = (state.board && state.board.summary) || {};
+    setText("[data-down-stat='down']", String(summary.routers_down || 0));
+    setText("[data-down-stat='degraded']", String(summary.routers_degraded || 0));
+    setText("[data-down-stat='on-down']", String(summary.customers_on_down || 0));
+    setText("[data-down-stat='on-degraded']", String(summary.customers_on_degraded || 0));
+    setText("[data-down-stat='problem-health']", summary.problem_health_score == null ? "—" : (summary.problem_health_score + "%"));
+
+    var list = problemRouters();
+    var table = root.querySelector("[data-down-table]");
+    var count = root.querySelector("[data-down-count]");
+    if (count) count.textContent = String(list.length);
+    if (table) {
+      if (!list.length) {
+        table.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No problem routers</p><p class="noc-empty-copy">Fleet looks healthy for this filter.</p></div>';
+      } else {
+        table.innerHTML =
+          '<table class="org-table noc-detail-table"><thead><tr><th>Router</th><th>Status</th><th>Clients</th><th>Changed</th><th>24h</th></tr></thead><tbody>' +
+          list.map(function (row) {
+            return '<tr class="noc-row sev-' + escapeHtml(row.severity) + (String(state.selectedRouterId) === String(row.id) ? " is-selected" : "") + '" data-select-router="' + escapeHtml(row.id) + '"><td data-label="Router"><strong>' + escapeHtml(row.name) + '</strong><div class="noc-muted">' + escapeHtml(row.host || "—") + ' · ' + escapeHtml(row.site_label || "") + '</div></td><td data-label="Status"><span class="noc-sev-tag">' + escapeHtml(titleCase(row.status)) + '</span><div class="noc-muted">' + escapeHtml(row.reason || "") + '</div></td><td data-label="Clients">' + escapeHtml(row.customer_count) + '</td><td data-label="Changed">' + escapeHtml(row.last_change_at || "—") + '</td><td data-label="24h">' + sparkSvg(row.sparkline) + '</td></tr>';
+          }).join("") +
+          "</tbody></table>";
+      }
+    }
+
+    var detail = root.querySelector("[data-down-detail]");
+    var detailTitle = root.querySelector("[data-down-detail-title]");
+    var router = state.selectedRouterId != null ? routerById(state.selectedRouterId) : list[0] || null;
+    if (router && state.selectedRouterId == null) state.selectedRouterId = router.id;
+    if (!detail) return;
+    if (!router || router.severity === "ok") {
+      if (detailTitle) detailTitle.textContent = "Select a router";
+      detail.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Pick a problem router</p><p class="noc-empty-copy">See health sparkline, last change, drop events, and reconnect.</p></div>';
+      return;
+    }
+    if (detailTitle) detailTitle.textContent = router.name;
+    var drops = dropsForRouter(router.id);
+    detail.innerHTML =
+      '<div class="noc-inspect-hero sev-' + escapeHtml(router.severity) + '"><div><span class="noc-sev-tag">' + escapeHtml(router.severity) + '</span><strong>' + escapeHtml(titleCase(router.status)) + '</strong>' + (router.score != null ? '<span class="noc-score">' + escapeHtml(router.score) + '%</span>' : '') + '</div><p>' + escapeHtml(router.reason || "") + '</p></div>' +
+      '<div class="noc-inspect-block"><p class="noc-inspect-label">24h health</p>' + sparkSvg(router.sparkline) + '</div>' +
+      '<dl class="noc-dl"><div><dt>Host</dt><dd><span class="org-code">' + escapeHtml(router.host || "—") + '</span></dd></div><div><dt>Via</dt><dd>' + escapeHtml(router.via || "—") + '</dd></div><div><dt>Site</dt><dd>' + escapeHtml(router.site_label || "—") + '</dd></div><div><dt>Clients</dt><dd>' + escapeHtml(router.active_customers) + ' active / ' + escapeHtml(router.customer_count) + ' total</dd></div><div><dt>Last change</dt><dd>' + escapeHtml(router.last_change_at || "—") + (router.last_change_from ? " (" + escapeHtml(titleCase(router.last_change_from)) + " → " + escapeHtml(titleCase(router.last_change_to)) + ")" : "") + '</dd></div></dl>' +
+      '<div class="noc-inspect-actions"><a class="btn btn-primary btn-sm" href="' + escapeHtml(router.detail_url) + '">Open router</a>' +
+      (router.account_status !== "suspended" ? '<button type="button" class="btn btn-ghost btn-sm" data-noc-reconnect data-reconnect-url="' + escapeHtml(router.reconnect_url) + '" data-router-name="' + escapeHtml(router.name) + '">Reconnect</button>' : '') +
+      '<a class="btn btn-ghost btn-sm" href="?focus=impact">Client impact</a></div>' +
+      '<div class="noc-inspect-block"><p class="noc-inspect-label">Recent drops</p>' +
+      (drops.length ? '<ul class="noc-mini-list">' + drops.slice(0, 8).map(function (ev) {
+        return '<li><strong>' + escapeHtml(ev.at) + '</strong> ' + escapeHtml(ev.from_score) + '% → ' + escapeHtml(ev.to_score) + '%<span>' + escapeHtml(ev.reason || "") + '</span></li>';
+      }).join("") + '</ul>' : '<p class="noc-muted">No drop events recorded for this router in 24h.</p>') +
+      '</div>';
+  }
+
+  /* ===== IMPACT ===== */
+  function impactClients() {
+    var clients = ((state.surfing && state.surfing.clients) || []).filter(function (row) {
+      return row && row.internet_allowed && row.connected && !row.surfing;
+    });
+    if (state.impactNas) {
+      clients = clients.filter(function (row) {
+        return String(row.connected_router_id || row.router_id || "") === String(state.impactNas);
+      });
+    }
+    if (state.impactReason) {
+      clients = clients.filter(function (row) {
+        return String(row.reason || "") === state.impactReason;
+      });
+    }
+    if (state.search) {
+      clients = clients.filter(function (row) {
+        return matchesSearch([row.full_name, row.account_number, row.plan_name, row.reason, row.connected_router_name].join(" "), state.search);
+      });
+    }
+    return clients;
+  }
+  function fillImpactFilters(clientsAll) {
+    var nasSelect = root.querySelector("[data-impact-nas]");
+    var reasonSelect = root.querySelector("[data-impact-reason]");
+    if (nasSelect) {
+      var nasMap = {};
+      clientsAll.forEach(function (row) {
+        var rid = row.connected_router_id || row.router_id;
+        if (rid == null) return;
+        var router = routerById(rid);
+        nasMap[rid] = router ? router.name : (row.connected_router_name || ("NAS #" + rid));
+      });
+      nasSelect.innerHTML = '<option value="">All NAS</option>' + Object.keys(nasMap).map(function (id) {
+        return '<option value="' + escapeHtml(id) + '">' + escapeHtml(nasMap[id]) + '</option>';
+      }).join("");
+      nasSelect.value = state.impactNas;
+    }
+    if (reasonSelect) {
+      var reasons = {};
+      clientsAll.forEach(function (row) {
+        if (row.reason) reasons[row.reason] = (reasons[row.reason] || 0) + 1;
+      });
+      reasonSelect.innerHTML = '<option value="">All reasons</option>' + Object.keys(reasons).sort().map(function (reason) {
+        return '<option value="' + escapeHtml(reason) + '">' + escapeHtml(reason) + " (" + reasons[reason] + ")</option>";
+      }).join("");
+      reasonSelect.value = state.impactReason;
+    }
+  }
+  function renderImpact() {
+    var allStuck = ((state.surfing && state.surfing.clients) || []).filter(function (row) {
+      return row && row.internet_allowed && row.connected && !row.surfing;
+    });
+    fillImpactFilters(allStuck);
+    var clients = impactClients();
+    var surfing = (state.surfing && state.surfing.surfing_count) || 0;
+    var checked = (state.surfing && state.surfing.checked) || ((state.surfing && state.surfing.clients) || []).length || 0;
+    var nasSet = {};
+    allStuck.forEach(function (row) {
+      var rid = row.connected_router_id || row.router_id;
+      if (rid != null) nasSet[rid] = true;
+    });
+    var reasonCounts = {};
+    allStuck.forEach(function (row) {
+      var reason = row.reason || "Unknown";
+      reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+    });
+    var topReason = Object.keys(reasonCounts).sort(function (a, b) { return reasonCounts[b] - reasonCounts[a]; })[0] || "—";
+
+    setText("[data-impact-stat='surfing']", String(surfing));
+    setText("[data-impact-stat='not-surfing']", String(allStuck.length));
+    setText("[data-impact-stat='checked']", String(checked));
+    setText("[data-impact-stat='nas']", String(Object.keys(nasSet).length));
+    setText("[data-impact-stat='top-reason']", topReason);
+
+    var byRouter = {};
+    clients.forEach(function (row) {
+      var rid = String(row.connected_router_id || row.router_id || "none");
+      if (!byRouter[rid]) byRouter[rid] = [];
+      byRouter[rid].push(row);
+    });
+    var groupsBody = root.querySelector("[data-impact-groups-body]");
+    var groupsCount = root.querySelector("[data-impact-groups]");
+    if (groupsCount) groupsCount.textContent = String(Object.keys(byRouter).length);
+    if (groupsBody) {
+      if (!Object.keys(byRouter).length) {
+        groupsBody.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No impact groups</p><p class="noc-empty-copy">No stuck sessions match these filters.</p></div>';
+      } else {
+        groupsBody.innerHTML = Object.keys(byRouter).map(function (rid) {
+          var rows = byRouter[rid];
+          var router = rid !== "none" ? routerById(rid) : null;
+          var title = router ? router.name : (rows[0].connected_router_name || "Unassigned NAS");
+          return '<button type="button" class="noc-impact-group is-button' + (String(state.impactNas) === String(rid) ? " is-selected" : "") + '" data-impact-pick-nas="' + escapeHtml(rid === "none" ? "" : rid) + '"><header class="noc-impact-group-head"><div><strong>' + escapeHtml(title) + '</strong><span>' + rows.length + ' stuck</span></div></header><p class="noc-muted" style="padding:0.55rem 0.8rem 0.8rem">' + escapeHtml((rows[0] && rows[0].reason) || "Multiple reasons") + '</p></button>';
+        }).join("");
+      }
+    }
+
+    var table = root.querySelector("[data-impact-table]");
+    var count = root.querySelector("[data-impact-count]");
+    if (count) count.textContent = String(clients.length);
+    if (!table) return;
+    if (!clients.length) {
+      table.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No stuck clients</p><p class="noc-empty-copy">Everyone who is dialed and in-package is surfing — or no probe data yet.</p></div>';
+      return;
+    }
+    table.innerHTML =
+      '<table class="org-table noc-detail-table"><thead><tr><th>Client</th><th>NAS</th><th>Plan</th><th>Reason</th><th>24h episodes</th></tr></thead><tbody>' +
+      clients.slice(0, 80).map(function (row) {
+        var rid = row.connected_router_id || row.router_id;
+        var router = rid != null ? routerById(rid) : null;
+        return '<tr><td data-label="Client"><a href="' + escapeHtml(row.url) + '">' + escapeHtml(row.full_name || row.account_number || ("#" + row.id)) + '</a></td><td data-label="NAS">' + escapeHtml(router ? router.name : (row.connected_router_name || "—")) + '</td><td data-label="Plan">' + escapeHtml(row.plan_name || "—") + '</td><td data-label="Reason">' + escapeHtml(row.reason || "—") + '</td><td data-label="24h episodes">' + escapeHtml(row.not_surfing_episodes_24h != null ? row.not_surfing_episodes_24h : "—") + '</td></tr>';
+      }).join("") +
+      "</tbody></table>";
+  }
+
+  /* ===== FAULTS ===== */
+  function filteredFaults() {
+    return ((state.board && state.board.faults) || []).filter(function (fault) {
+      if (state.faultStatus && fault.status !== state.faultStatus) return false;
+      if (state.faultIssue && fault.issue !== state.faultIssue) return false;
+      if (state.faultUnassigned && (fault.technician || "Unassigned") !== "Unassigned") return false;
+      return matchesSearch([fault.ticket_number, fault.customer_name, fault.issue_label, fault.technician, fault.notes, fault.router_name].join(" "), state.search);
+    });
+  }
+  function fillFaultIssueFilter() {
+    var select = root.querySelector("[data-fault-issue]");
+    if (!select) return;
+    var issues = {};
+    ((state.board && state.board.faults) || []).forEach(function (fault) {
+      issues[fault.issue] = fault.issue_label || fault.issue;
+    });
+    select.innerHTML = '<option value="">All issues</option>' + Object.keys(issues).map(function (key) {
+      return '<option value="' + escapeHtml(key) + '">' + escapeHtml(issues[key]) + '</option>';
+    }).join("");
+    select.value = state.faultIssue;
+  }
+  function renderFaults() {
+    var summary = (state.board && state.board.summary) || {};
+    setText("[data-fault-stat='total']", String(summary.faults_open || 0));
+    setText("[data-fault-stat='open']", String(summary.faults_status_open || 0));
+    setText("[data-fault-stat='assigned']", String(summary.faults_assigned || 0));
+    setText("[data-fault-stat='progress']", String(summary.faults_in_progress || 0));
+    setText("[data-fault-stat='unassigned']", String(summary.faults_unassigned || 0));
+    fillFaultIssueFilter();
+
+    var list = filteredFaults();
+    var table = root.querySelector("[data-fault-table]");
+    var count = root.querySelector("[data-fault-count]");
+    if (count) count.textContent = String(list.length);
+    if (table) {
+      if (!list.length) {
+        table.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No open faults</p><p class="noc-empty-copy">No tickets match these filters.</p></div>';
+      } else {
+        table.innerHTML =
+          '<table class="org-table noc-detail-table"><thead><tr><th>Ticket</th><th>Client</th><th>Issue</th><th>Status</th><th>Technician</th><th>Raised</th></tr></thead><tbody>' +
+          list.map(function (fault) {
+            return '<tr class="' + (String(state.selectedFaultId) === String(fault.id) ? "is-selected" : "") + '" data-select-fault="' + escapeHtml(fault.id) + '"><td data-label="Ticket"><span class="org-code">' + escapeHtml(fault.ticket_number) + '</span></td><td data-label="Client">' + escapeHtml(fault.customer_name) + '</td><td data-label="Issue">' + escapeHtml(fault.issue_label) + '</td><td data-label="Status"><span class="noc-sev-tag">' + escapeHtml(fault.status_label) + '</span></td><td data-label="Technician">' + escapeHtml(fault.technician) + '</td><td data-label="Raised">' + escapeHtml(fault.created_at) + '</td></tr>';
+          }).join("") +
+          "</tbody></table>";
+      }
+    }
+
+    var detail = root.querySelector("[data-fault-detail]");
+    var detailTitle = root.querySelector("[data-fault-detail-title]");
+    var fault = state.selectedFaultId != null ? faultById(state.selectedFaultId) : list[0] || null;
+    if (fault && state.selectedFaultId == null) state.selectedFaultId = fault.id;
+    if (!detail) return;
+    if (!fault) {
+      if (detailTitle) detailTitle.textContent = "Select a ticket";
+      detail.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Pick a fault ticket</p><p class="noc-empty-copy">See notes, client, technician, and linked NAS.</p></div>';
+      return;
+    }
+    if (detailTitle) detailTitle.textContent = fault.ticket_number;
+    var router = fault.router_id != null ? routerById(fault.router_id) : null;
+    detail.innerHTML =
+      '<div class="noc-inspect-hero sev-major"><div><span class="noc-sev-tag">' + escapeHtml(fault.status_label) + '</span><strong>' + escapeHtml(fault.issue_label) + '</strong></div><p>' + escapeHtml(fault.notes || "No notes") + '</p></div>' +
+      '<dl class="noc-dl">' +
+      '<div><dt>Client</dt><dd>' + (fault.customer_url ? '<a href="' + escapeHtml(fault.customer_url) + '">' + escapeHtml(fault.customer_name) + '</a>' : escapeHtml(fault.customer_name)) + '</dd></div>' +
+      '<div><dt>Technician</dt><dd>' + escapeHtml(fault.technician || "Unassigned") + '</dd></div>' +
+      '<div><dt>Router</dt><dd>' + escapeHtml(fault.router_name || (router ? router.name : "—")) + '</dd></div>' +
+      '<div><dt>Raised</dt><dd>' + escapeHtml(fault.created_at) + '</dd></div>' +
+      '</dl>' +
+      '<div class="noc-inspect-actions">' +
+      (fault.customer_url ? '<a class="btn btn-primary btn-sm" href="' + escapeHtml(fault.customer_url) + '">Open client</a>' : '') +
+      (router ? '<a class="btn btn-ghost btn-sm" href="' + escapeHtml(router.detail_url) + '">Open NAS</a>' : '') +
+      (clientsUrl ? '<a class="btn btn-ghost btn-sm" href="' + escapeHtml(clientsUrl) + '">PPPoE clients</a>' : '') +
+      '</div>';
+  }
+
+  function applyOpsSummary(summary) {
+    if (!summary) return;
+    setText("[data-stat='critical']", String(summary.alarms_critical || 0));
+    setText("[data-stat='major']", String(summary.alarms_major || 0));
+    setText("[data-stat='minor']", String(summary.alarms_minor || 0));
+    setText("[data-stat='alarms']", String(summary.alarms_open || 0));
+    setText("[data-stat='at-risk']", String(summary.customers_at_risk || 0));
+    setText("[data-stat='sites']", String(summary.sites_total || 0));
+    setText("[data-stat='health']", summary.health_score == null ? "—" : (summary.health_score + "%"));
+  }
+
+  function renderAll() {
+    var summary = (state.board && state.board.summary) || {};
+    var pill = root.querySelector("[data-live-pill]");
+    if (pill) pill.textContent = summary.has_live_cache ? "Live" : "Standby";
+    var clock = root.querySelector("[data-noc-clock]");
+    if (clock) {
+      var stamp = (state.board && state.board.generated_at) || "";
+      clock.textContent = stamp ? ("Updated " + new Date(stamp).toLocaleTimeString()) : "—";
+    }
+    fillSiteSelects();
+    if (mode === "ops") {
+      applyOpsSummary(summary);
+      renderOpsAlarms();
+      renderOpsMatrix();
+      renderOpsInspector();
+      renderOpsTimeline();
+    } else if (mode === "down") {
+      renderDown();
+    } else if (mode === "impact") {
+      renderImpact();
+    } else if (mode === "faults") {
+      renderFaults();
+    }
+  }
+
+  async function fetchJson(url) {
+    var res = await fetch(url, { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error("Request failed");
+    return res.json();
+  }
+
+  async function refreshBoard(forceStatus) {
+    if (busy) return;
+    busy = true;
+    var btn = root.querySelector("[data-noc-refresh]");
+    if (btn) btn.disabled = true;
+    try {
+      if (forceStatus && statusUrl) {
+        await fetchJson(statusUrl + (statusUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1");
+      }
+      var board = await fetchJson(summaryUrl);
+      if (board && board.ok) state.board = board;
+      if (mode === "impact" || mode === "ops") {
+        if (surfingUrl) {
+          try {
+            var surfing = await fetchJson(surfingUrl + (surfingUrl.indexOf("?") >= 0 ? "&" : "?") + "service=pppoe");
+            if (surfing && surfing.ok) state.surfing = surfing;
+          } catch (e) {}
+        }
+      }
+      if (mode === "ops" && !state.selectedAlarmId && !state.selectedRouterId) {
+        var first = filteredAlarms()[0];
+        if (first) {
+          state.selectedAlarmId = first.id;
+          if (first.router_id != null) state.selectedRouterId = first.router_id;
+        }
+      }
+      renderAll();
+    } catch (err) {
+    } finally {
+      busy = false;
+      if (btn) btn.disabled = !(((state.board && state.board.summary) || {}).routers_total);
+    }
+  }
+
+  async function reconnectRouter(btn) {
+    var url = btn.getAttribute("data-reconnect-url");
+    if (!url || btn.disabled) return;
+    var name = btn.getAttribute("data-router-name") || "router";
+    btn.disabled = true;
+    btn.textContent = "Working…";
+    try {
+      var res = await fetch(url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+          "X-CSRFToken": getCookie("csrftoken"),
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: "",
+      });
+      var data = {};
+      try { data = await res.json(); } catch (e) { data = {}; }
+      if (!res.ok || !data.ok) window.alert(data.error || ("Could not reconnect " + name + "."));
+      await refreshBoard(true);
+    } catch (err) {
+      window.alert("Network error while reconnecting " + name + ".");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Reconnect";
+    }
+  }
+
+  root.addEventListener("click", function (event) {
+    var sevBtn = event.target.closest("[data-filter-sev]");
+    if (sevBtn && root.contains(sevBtn)) {
+      state.filterSev = sevBtn.getAttribute("data-filter-sev") || "";
+      root.querySelectorAll("[data-filter-sev]").forEach(function (el) { el.classList.toggle("is-active", el === sevBtn); });
+      renderAll();
+      return;
+    }
+    var viewBtn = event.target.closest("[data-view]");
+    if (viewBtn && root.contains(viewBtn)) {
+      state.view = viewBtn.getAttribute("data-view") || "sites";
+      root.querySelectorAll("[data-view]").forEach(function (el) { el.classList.toggle("is-active", el === viewBtn); });
+      renderOpsMatrix();
+      return;
+    }
+    var alarmCard = event.target.closest("[data-alarm-id]");
+    if (alarmCard && root.contains(alarmCard) && !event.target.closest("[data-ack-alarm]")) {
+      state.selectedAlarmId = alarmCard.getAttribute("data-alarm-id");
+      var alarm = alarmById(state.selectedAlarmId);
+      state.selectedRouterId = alarm && alarm.router_id != null ? alarm.router_id : state.selectedRouterId;
+      renderAll();
+      return;
+    }
+    var ackBtn = event.target.closest("[data-ack-alarm]");
+    if (ackBtn && root.contains(ackBtn)) {
+      var id = ackBtn.getAttribute("data-ack-alarm");
+      if (state.acked[id]) delete state.acked[id];
+      else state.acked[id] = Date.now();
+      saveAcked();
+      renderOpsAlarms();
+      return;
+    }
+    var siteBtn = event.target.closest("[data-select-site]");
+    if (siteBtn && root.contains(siteBtn)) {
+      var key = siteBtn.getAttribute("data-select-site") || "";
+      state.filterSite = state.filterSite === key ? "" : key;
+      fillSiteSelects();
+      renderAll();
+      return;
+    }
+    var routerBtn = event.target.closest("[data-select-router]");
+    if (routerBtn && root.contains(routerBtn)) {
+      state.selectedRouterId = routerBtn.getAttribute("data-select-router");
+      state.selectedAlarmId = "";
+      renderAll();
+      return;
+    }
+    var faultBtn = event.target.closest("[data-select-fault]");
+    if (faultBtn && root.contains(faultBtn)) {
+      state.selectedFaultId = faultBtn.getAttribute("data-select-fault");
+      renderFaults();
+      return;
+    }
+    var impactNas = event.target.closest("[data-impact-pick-nas]");
+    if (impactNas && root.contains(impactNas)) {
+      var nas = impactNas.getAttribute("data-impact-pick-nas") || "";
+      state.impactNas = state.impactNas === nas ? "" : nas;
+      renderImpact();
+      return;
+    }
+    var tl = event.target.closest("[data-tl-router]");
+    if (tl && root.contains(tl)) {
+      var rid = tl.getAttribute("data-tl-router");
+      if (rid) {
+        state.selectedRouterId = rid;
+        state.selectedAlarmId = "";
+        renderAll();
+      }
+      return;
+    }
+    var reconnect = event.target.closest("[data-noc-reconnect]");
+    if (reconnect && root.contains(reconnect)) {
+      event.preventDefault();
+      reconnectRouter(reconnect);
+      return;
+    }
+    if (event.target.closest("[data-noc-refresh]")) {
+      refreshBoard(true);
+      return;
+    }
+    if (event.target.closest("[data-noc-ack-all]")) {
+      filteredAlarms().forEach(function (alarm) { state.acked[alarm.id] = Date.now(); });
+      saveAcked();
+      renderOpsAlarms();
+      return;
+    }
+    if (event.target.closest("[data-noc-clear-ack]")) {
+      state.acked = {};
+      saveAcked();
+      renderOpsAlarms();
+    }
+  });
+
+  root.querySelectorAll("[data-noc-search]").forEach(function (input) {
+    input.addEventListener("input", function () {
+      var scope = input.getAttribute("data-scope") || mode;
+      if (scope !== mode) return;
+      state.search = (input.value || "").trim().toLowerCase();
+      renderAll();
+    });
+  });
+  root.querySelectorAll("[data-noc-site]").forEach(function (select) {
+    select.addEventListener("change", function () {
+      var scope = select.getAttribute("data-scope") || mode;
+      if (scope !== mode && scope !== "ops" && scope !== "down") return;
+      if (mode !== "ops" && mode !== "down") return;
+      state.filterSite = select.value || "";
+      renderAll();
+    });
+  });
+  var hideAcked = root.querySelector("[data-noc-hide-acked]");
+  if (hideAcked) hideAcked.addEventListener("change", function () { state.hideAcked = !!hideAcked.checked; renderOpsAlarms(); });
+  var downTone = root.querySelector("[data-down-tone]");
+  if (downTone) downTone.addEventListener("change", function () { state.downTone = downTone.value || ""; renderDown(); });
+  var impactNasSel = root.querySelector("[data-impact-nas]");
+  if (impactNasSel) impactNasSel.addEventListener("change", function () { state.impactNas = impactNasSel.value || ""; renderImpact(); });
+  var impactReasonSel = root.querySelector("[data-impact-reason]");
+  if (impactReasonSel) impactReasonSel.addEventListener("change", function () { state.impactReason = impactReasonSel.value || ""; renderImpact(); });
+  var faultStatus = root.querySelector("[data-fault-status]");
+  if (faultStatus) faultStatus.addEventListener("change", function () { state.faultStatus = faultStatus.value || ""; renderFaults(); });
+  var faultIssue = root.querySelector("[data-fault-issue]");
+  if (faultIssue) faultIssue.addEventListener("change", function () { state.faultIssue = faultIssue.value || ""; renderFaults(); });
+  var faultUnassigned = root.querySelector("[data-fault-unassigned]");
+  if (faultUnassigned) faultUnassigned.addEventListener("change", function () { state.faultUnassigned = !!faultUnassigned.checked; renderFaults(); });
+
+  renderAll();
+  refreshBoard(false);
+  pollTimer = window.setInterval(function () {
+    if (document.hidden) return;
+    refreshBoard(false);
+  }, 20000);
+  window.addEventListener("beforeunload", function () {
+    if (pollTimer) window.clearInterval(pollTimer);
+  });
+})();
+</script>
+{% endblock %}

@@ -37,6 +37,7 @@ _STK_RAW_PRESERVE_KEYS = (
     "initiate",
     "callback",
     "callback_receipt",
+    "callback_rejected",
     "awaiting_daraja_confirm",
     "query",
     "hotspot_mac",
@@ -199,6 +200,9 @@ def _merge_stk_raw_callback(existing, incoming) -> dict:
 
 def _callback_metadata_map(items) -> dict:
     out = {}
+    # Safaricom sometimes sends a single Item as an object, not a one-element list.
+    if isinstance(items, dict):
+        items = [items]
     if not isinstance(items, list):
         return out
     for item in items:
@@ -223,8 +227,28 @@ def _receipt_from_mapping(data) -> str:
         or data.get("MpesaReceiptNo")
         or data.get("mpesa_receipt")
         or data.get("callback_receipt")
+        or data.get("ReceiptNumber")
         or ""
     ).strip()
+
+
+def _receipt_from_stk_callback_dict(stk_callback: dict) -> str:
+    """Pull receipt from a Daraja stkCallback object (or Body wrapper)."""
+    if not isinstance(stk_callback, dict):
+        return ""
+    meta = stk_callback.get("CallbackMetadata") or {}
+    if isinstance(meta, dict):
+        from_meta = _receipt_from_mapping(_callback_metadata_map(meta.get("Item")))
+        if from_meta:
+            return from_meta
+    from_cb = _receipt_from_mapping(stk_callback)
+    if from_cb:
+        return from_cb
+    body = stk_callback.get("Body") if isinstance(stk_callback.get("Body"), dict) else {}
+    nested = body.get("stkCallback") if isinstance(body.get("stkCallback"), dict) else {}
+    if nested and nested is not stk_callback:
+        return _receipt_from_stk_callback_dict(nested)
+    return ""
 
 
 def _phone_from_mapping(data) -> str:
@@ -251,23 +275,38 @@ def extract_mpesa_receipt_from_raw(raw) -> str:
         return direct
 
     # Deferred confirm path stores {"callback": <daraja body>, "callback_receipt": "…"}.
+    # Some paths store the inner stkCallback object directly under "callback".
     nested_callback = raw.get("callback")
     if isinstance(nested_callback, dict):
         nested = extract_mpesa_receipt_from_raw(nested_callback)
         if nested:
             return nested
+        from_stk = _receipt_from_stk_callback_dict(nested_callback)
+        if from_stk:
+            return from_stk
+
+    # Amount-mismatch / unconfirmed rejects still carry MpesaReceiptNumber.
+    rejected = raw.get("callback_rejected")
+    if isinstance(rejected, dict):
+        from_rejected = extract_mpesa_receipt_from_raw(rejected)
+        if from_rejected:
+            return from_rejected
+        from_rejected_cb = _receipt_from_stk_callback_dict(rejected)
+        if from_rejected_cb:
+            return from_rejected_cb
 
     body = raw.get("Body") if isinstance(raw.get("Body"), dict) else {}
     stk_callback = body.get("stkCallback") if isinstance(body.get("stkCallback"), dict) else {}
     if stk_callback:
-        meta = stk_callback.get("CallbackMetadata") or {}
-        if isinstance(meta, dict):
-            from_meta = _receipt_from_mapping(_callback_metadata_map(meta.get("Item")))
-            if from_meta:
-                return from_meta
-        from_cb = _receipt_from_mapping(stk_callback)
+        from_cb = _receipt_from_stk_callback_dict(stk_callback)
         if from_cb:
             return from_cb
+
+    # Raw may itself be an stkCallback object (CallbackMetadata at top level).
+    if raw.get("CallbackMetadata") or raw.get("CheckoutRequestID"):
+        from_self = _receipt_from_stk_callback_dict(raw)
+        if from_self:
+            return from_self
 
     query = raw.get("query")
     if isinstance(query, dict):
@@ -292,6 +331,12 @@ def extract_mpesa_phone_from_raw(raw) -> str:
         nested = extract_mpesa_phone_from_raw(nested_callback)
         if nested:
             return nested
+
+    rejected = raw.get("callback_rejected")
+    if isinstance(rejected, dict):
+        from_rejected = extract_mpesa_phone_from_raw(rejected)
+        if from_rejected:
+            return from_rejected
 
     body = raw.get("Body") if isinstance(raw.get("Body"), dict) else {}
     stk_callback = body.get("stkCallback") if isinstance(body.get("stkCallback"), dict) else {}
@@ -1894,11 +1939,26 @@ def process_stk_callback_payload(payload: dict) -> dict:
                 checkout_id,
                 amount_error,
             )
+            update_fields = ["raw_callback"]
             stk.raw_callback = _merge_stk_raw_callback(
                 stk.raw_callback,
                 {"callback_rejected": payload, "reject_reason": amount_error},
             )
-            stk.save(update_fields=["raw_callback"])
+            # Keep the SMS receipt even when we refuse to fulfill — a later
+            # Daraja query may confirm the same CheckoutRequestID.
+            if receipt and (stk.mpesa_receipt or "").strip() != receipt:
+                stk.mpesa_receipt = receipt[:64]
+                update_fields.append("mpesa_receipt")
+            if payer_phone:
+                from billing.services import format_customer_phone_display
+
+                display_phone = format_customer_phone_display(payer_phone)[:20]
+                if display_phone and (stk.phone or "").strip() != display_phone:
+                    stk.phone = display_phone
+                    update_fields.append("phone")
+            stk.save(update_fields=update_fields)
+            if receipt:
+                ensure_stk_payment_receipt(stk, receipt=receipt)
             return {
                 "ok": False,
                 "error": amount_error,

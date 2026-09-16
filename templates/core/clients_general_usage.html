@@ -868,6 +868,19 @@
     });
   }
 
+  function usageLevelLabel(user) {
+    var bytes = Number(user && user.data_used_bytes) || 0;
+    var peak = Math.max(
+      Number(user && user.peak_download_bps) || 0,
+      Number(user && user.live_download_bps) || 0
+    );
+    var active = !!(user && user.latest_active);
+    if (bytes >= 500 * 1024 * 1024 || peak >= 5000000) return "High";
+    if (bytes >= 50 * 1024 * 1024 || peak >= 1000000) return "Medium";
+    if (bytes > 0 || peak > 0 || active) return "Low";
+    return "Idle";
+  }
+
   function applySurfOverlay(users) {
     if (!users || !users.length) return users;
     users.forEach(function (user) {
@@ -895,6 +908,8 @@
         user.devices_connected = 0;
         user.gadgets_connected = 0;
       }
+      // Live surfing poll can flip presence after the sample payload was built.
+      user.usage_level = usageLevelLabel(user);
     });
     return users;
   }

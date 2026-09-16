@@ -1,0 +1,214 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Vouchers — {{ customer.full_name }} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+{% with initials=customer.full_name|default:customer.account_number|slice:":2"|upper %}
+<div class="client-detail-page client-detail-simple client-billing-page client-vouchers-page">
+
+  <nav class="client-cat-nav client-vouchers-nav" aria-label="Voucher sections">
+    <a class="client-cat-nav-item is-vouchers is-active" href="#client-vouchers">Vouchers</a>
+    {% if billing_url %}
+      <a class="client-cat-nav-item is-billing" href="{{ billing_url }}">Payments</a>
+    {% endif %}
+    {% if recharge_url %}
+      <a class="client-cat-nav-item is-vouchers client-billing-nav-recharge" href="{{ recharge_url }}">Recharge</a>
+    {% endif %}
+    {% if back_url %}
+      <a class="client-cat-nav-item client-billing-nav-back" href="{{ back_url }}">← Client profile</a>
+    {% endif %}
+  </nav>
+
+  <section class="client-billing-deck client-vouchers-deck" aria-labelledby="client-vouchers-title">
+    <div class="client-billing-deck-top">
+      <div class="client-billing-identity">
+        <span class="client-billing-avatar client-vouchers-avatar" aria-hidden="true">{{ initials }}</span>
+        <div>
+          <p class="client-billing-kicker">
+            <span class="client-cat client-cat-vouchers">
+              <span class="client-cat-ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 3v2h6V7H9Zm0 4v2h6v-2H9Zm0 4v2h4v-2H9Z"/></svg>
+              </span>
+              Client vouchers
+            </span>
+          </p>
+          <h1 class="client-billing-title" id="client-vouchers-title">{{ customer.full_name }}</h1>
+          <p class="client-billing-lead">
+            Access codes for
+            <span class="org-code">{{ customer.account_number }}</span>
+            {% if customer.plan %}
+              · {{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}
+            {% endif %}
+            · {{ customer.get_service_type_display }}
+          </p>
+        </div>
+      </div>
+      <div class="client-billing-hero-meta">
+        <span class="client-billing-chip is-live">{{ valid_voucher_count }} valid voucher{{ valid_voucher_count|pluralize }}</span>
+        <span class="client-billing-chip">{{ customer.get_status_display }}</span>
+        {% if recharge_url %}
+          <a class="client-billing-recharge-btn client-vouchers-recharge-btn" href="{{ recharge_url }}">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v4.59l2.3 2.3-1.42 1.42L10 12V7Z"/></svg>
+            Recharge client
+          </a>
+        {% endif %}
+      </div>
+    </div>
+
+    <ul class="client-vouchers-metrics" aria-label="Voucher summary">
+      <li class="{% if valid_voucher_count %}is-good{% endif %}">
+        <span class="client-billing-metric-label">Ready to share</span>
+        <strong>{{ valid_voucher_count }}</strong>
+        <em>Unused codes</em>
+      </li>
+      <li>
+        <span class="client-billing-metric-label">All codes</span>
+        <strong>{{ vouchers|length }}</strong>
+        <em>Issued for this client</em>
+      </li>
+      <li>
+        <span class="client-billing-metric-label">Used / burned</span>
+        <strong>{{ used_voucher_count }}</strong>
+        <em>Already activated</em>
+      </li>
+    </ul>
+  </section>
+
+  <section class="panel client-simple-panel client-billing-panel client-vouchers-panel" id="client-vouchers" data-cat="vouchers">
+    <header class="client-billing-section-head">
+      <div>
+        <p class="client-cat client-cat-vouchers">
+          <span class="client-cat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 3v2h6V7H9Zm0 4v2h6v-2H9Zm0 4v2h4v-2H9Z"/></svg>
+          </span>
+          Device activation
+        </p>
+        <h2 class="client-billing-section-title">Access vouchers</h2>
+        <p class="client-billing-section-meta">
+          One-time codes from successful payments and cash recharges. Hotspot packages issue one voucher per device.
+          Share a valid code so that device can connect — a used voucher cannot be reused.
+        </p>
+      </div>
+      <div class="client-billing-section-badges">
+        <span class="org-status {% if valid_voucher_count %}org-status-active{% endif %}">
+          {{ valid_voucher_count }} valid
+        </span>
+        <span class="org-status">{{ vouchers|length }} total</span>
+      </div>
+    </header>
+
+    {% if vouchers %}
+      <ul class="client-voucher-cards" aria-label="Access vouchers">
+        {% for row in vouchers %}
+          <li class="client-voucher-card is-{{ row.status }}">
+            <div class="client-voucher-card-kicker">
+              <span>{% if row.status == "valid" %}Ready to share{% else %}{{ row.status_label }}{% endif %}</span>
+              <span class="voucher-status-pill is-{{ row.status }}">{{ row.status_label }}</span>
+            </div>
+            {% if row.share.can_share %}
+              <button
+                type="button"
+                class="org-code voucher-code client-voucher-code-btn"
+                data-voucher-code
+                data-copy-voucher
+                data-copy-text="{{ row.code_display }}"
+                title="Copy {{ row.code_display }}"
+              >{{ row.code_display }}</button>
+            {% else %}
+              <span class="org-code voucher-code client-voucher-code-btn" data-voucher-code>{{ row.code_display }}</span>
+            {% endif %}
+            <p class="client-voucher-card-meta">
+              <span class="client-voucher-plan">{{ row.plan_name }}</span>
+              {% if row.mpesa_receipt %} · M-Pesa {{ row.mpesa_receipt }}{% endif %}
+              · {{ row.created_at|date:"M j, Y g:i A" }}
+              {% if row.status == "expired" and row.redeemed_at %}
+                · Used {{ row.redeemed_at|date:"M j, g:i A" }}
+              {% elif row.status == "invalid" and row.invalidated_at %}
+                · Burned {{ row.invalidated_at|date:"M j, g:i A" }}
+              {% endif %}
+            </p>
+            {% if row.share.can_share %}
+              <div class="voucher-share-actions client-voucher-card-actions" data-voucher-share>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  data-copy-voucher
+                  data-copy-text="{{ row.share.share_text|escape }}"
+                >Copy</button>
+                {% if row.share.whatsapp_client_url %}
+                  <a
+                    class="btn btn-sm voucher-share-wa"
+                    href="{{ row.share.whatsapp_client_url }}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >WhatsApp client</a>
+                {% else %}
+                  <a
+                    class="btn btn-sm voucher-share-wa"
+                    href="{{ row.share.whatsapp_share_url }}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >WhatsApp</a>
+                {% endif %}
+                <a class="btn btn-sm" href="{{ row.share.sms_url }}">SMS</a>
+                {% if row.share.pay_url %}
+                  <a
+                    class="btn btn-sm btn-ghost"
+                    href="{{ row.share.pay_url }}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >Pay page</a>
+                {% endif %}
+              </div>
+            {% else %}
+              <p class="client-simple-hint">Not shareable ({{ row.status_label|lower }})</p>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="client-voucher-empty client-billing-empty client-vouchers-empty">
+        <span class="client-vouchers-empty-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M7 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 3v2h6V7H9Zm0 4v2h6v-2H9Zm0 4v2h4v-2H9Z"/></svg>
+        </span>
+        <strong>No vouchers yet</strong>
+        <p class="empty client-simple-note">
+          When this client pays or is recharged, activation codes appear here so you can share them.
+        </p>
+        {% if recharge_url %}
+          <p class="client-simple-hint">
+            <a class="client-vouchers-empty-link" href="{{ recharge_url }}">Recharge this client</a> to issue Hotspot vouchers for extra devices.
+          </p>
+        {% endif %}
+      </div>
+    {% endif %}
+  </section>
+
+</div>
+{% endwith %}
+{% endblock %}
+
+{% block client_extra_js %}
+{{ block.super }}
+<script>
+(function () {
+  document.querySelectorAll("[data-copy-voucher]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var text = btn.getAttribute("data-copy-text") || "";
+      var label = btn.textContent;
+      function done() {
+        btn.textContent = "Copied";
+        window.setTimeout(function () { btn.textContent = label; }, 1400);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(function () {
+          window.prompt("Copy voucher message:", text);
+        });
+      } else {
+        window.prompt("Copy voucher message:", text);
+      }
+    });
+  });
+})();
+</script>
+{% endblock %}

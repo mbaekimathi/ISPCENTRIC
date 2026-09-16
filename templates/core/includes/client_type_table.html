@@ -3,9 +3,9 @@
     <table class="clients-list-table">
       <thead>
         <tr>
-          <th>Client</th>
-          {% if show_hotspot %}<th>Phone</th>{% endif %}
+          <th>{% if show_hotspot %}Client / phone{% else %}Client{% endif %}</th>
           <th>Account</th>
+          <th>Used</th>
           {% if show_pppoe %}<th>PPPoE</th><th>Session</th>{% endif %}
           {% if show_hotspot %}<th>Session</th><th>Connected to</th>{% endif %}
           {% if show_router %}<th>MikroTik</th><th>Remote</th>{% endif %}
@@ -17,42 +17,80 @@
           <tr
             class="clients-list-table-row"
             data-client-row
+            data-used-ratio="{% if c.subscription_progress %}{{ c.subscription_used_ratio }}{% endif %}"
             data-search="{{ c.full_name|default:'' }} {{ c.phone|default:'' }} {{ c.account_number|default:'' }} {{ c.pppoe_username|default:'' }} {{ c.hotspot_mac|default:'' }}"
           >
-            <td class="clients-list-table-client-cell" data-label="Client">
+            <td class="clients-list-table-client-cell{% if show_hotspot %} is-hotspot-identity{% endif %}" data-label="{% if show_hotspot %}Client / phone{% else %}Client{% endif %}">
               <div class="clients-list-table-identity">
                 <span class="clients-avatar" aria-hidden="true">{{ c.full_name|slice:":1"|upper }}</span>
                 <div class="clients-name-stack">
-                  <a class="clients-list-table-name" href="{% url 'core:client_detail' c.id %}">{{ c.full_name }}</a>
                   {% if show_hotspot %}
+                    {% if c.phone %}
+                      <a class="clients-list-table-phone is-featured" href="tel:{{ c.phone }}">{{ c.phone }}</a>
+                    {% else %}
+                      <span class="clients-list-table-phone is-empty">No phone</span>
+                    {% endif %}
+                    <a class="clients-list-table-name is-secondary" href="{% url 'core:client_detail' c.id %}">{{ c.full_name }}</a>
                     {% if c.hotspot_mac %}
                       <span class="clients-list-table-mac" title="Device MAC">{{ c.hotspot_mac }}</span>
                     {% endif %}
-                  {% elif c.phone %}
-                    <span class="clients-list-table-phone">{{ c.phone }}</span>
+                  {% else %}
+                    <a class="clients-list-table-name" href="{% url 'core:client_detail' c.id %}">{{ c.full_name }}</a>
+                    {% if c.phone %}
+                      <span class="clients-list-table-phone">{{ c.phone }}</span>
+                    {% endif %}
                   {% endif %}
                 </div>
               </div>
             </td>
-            {% if show_hotspot %}
-              <td class="clients-list-table-phone-cell" data-label="Phone">
-                {% if c.phone %}
-                  <a class="clients-list-table-phone is-featured" href="tel:{{ c.phone }}">{{ c.phone }}</a>
-                {% else %}
-                  <span class="clients-list-table-phone is-empty">No phone</span>
-                {% endif %}
-              </td>
-            {% endif %}
             <td class="clients-list-table-account-cell" data-label="Account">
               <div class="clients-list-table-stack">
                 <span class="clients-list-table-account">{{ c.account_number|default:"—" }}</span>
                 {% if c.plan %}
                   <span class="clients-list-table-plan">{{ c.plan.name }}</span>
                 {% endif %}
+                {% if c.package_start or c.package_end %}
+                  <span class="clients-list-table-period" title="Package period">
+                    {% if c.package_start and c.package_end %}
+                      {% if c.package_uses_clock_time %}
+                        {{ c.package_start|date:"M j, g:i A" }} – {{ c.package_end|date:"M j, g:i A" }}
+                      {% else %}
+                        {{ c.package_start|date:"M j" }} – {{ c.package_end|date:"M j, Y" }}
+                      {% endif %}
+                    {% elif c.package_end %}
+                      {% if c.package_uses_clock_time %}
+                        Until {{ c.package_end|date:"M j, g:i A" }}
+                      {% else %}
+                        Until {{ c.package_end|date:"M j, Y" }}
+                      {% endif %}
+                    {% else %}
+                      {% if c.package_uses_clock_time %}
+                        From {{ c.package_start|date:"M j, g:i A" }}
+                      {% else %}
+                        From {{ c.package_start|date:"M j, Y" }}
+                      {% endif %}
+                    {% endif %}
+                  </span>
+                {% endif %}
                 {% if pending_activation or not show_pppoe %}
                   <span class="badge clients-account-status">{{ c.get_status_display }}</span>
                 {% endif %}
               </div>
+            </td>
+            <td class="clients-list-table-used-cell" data-label="Used">
+              {% if c.subscription_progress %}
+                <div
+                  class="clients-list-used{% if c.subscription_used_expired %} is-spent{% elif c.subscription_used_attention %} is-ending{% endif %}"
+                  title="{% if c.subscription_used_expired %}Subscription expired{% else %}{{ c.subscription_used_percent }}% of package period used{% endif %}"
+                >
+                  <span class="clients-list-used-pct">{{ c.subscription_used_percent }}%</span>
+                  <span class="clients-list-used-track" aria-hidden="true">
+                    <span style="width: {{ c.subscription_used_percent }}%;"></span>
+                  </span>
+                </div>
+              {% else %}
+                <span class="clients-list-table-phone is-empty">—</span>
+              {% endif %}
             </td>
             {% if show_pppoe %}
               <td data-label="PPPoE">
@@ -91,25 +129,35 @@
                 <span
                   class="badge clients-surf-badge clients-conn-badge is-checking"
                   data-hotspot-connected="{{ c.id }}"
-                  title="Checking which MikroTik / Wi‑Fi this device is on…"
+                  title="Checking which Wi‑Fi / client router this device is on…"
                 >…</span>
               </td>
             {% endif %}
             {% if show_router %}
               <td data-label="MikroTik">
                 {% if c.router %}
-                  <a class="clients-list-table-link" href="{% url 'core:mikrotik_detail' c.router.id %}">{{ c.router.name }}</a>
+                  <span class="clients-mikrotik-cell">
+                    <span
+                      class="mikrotik-link-status is-checking"
+                      data-router-status="{{ c.router.id }}"
+                      data-router-host="{{ c.router.host }}"
+                      title="Checking ISP MikroTik status…"
+                    >
+                      <span class="mikrotik-link-dot" aria-hidden="true"></span>
+                      <span class="mikrotik-link-label visually-hidden">Checking…</span>
+                    </span>
+                    <a class="clients-list-table-link" href="{% url 'core:mikrotik_detail' c.router.id %}">{{ c.router.name }}</a>
+                  </span>
                 {% else %}
-                  —
+                  <span class="clients-list-table-phone is-empty">No MikroTik</span>
                 {% endif %}
               </td>
               <td data-label="Remote">
                 {% if c.router %}
                   <span
-                    class="mikrotik-link-status is-checking"
-                    data-router-status="{{ c.router.id }}"
-                    data-router-host="{{ c.router.host }}"
-                    title="Checking whether the system can reach this MikroTik remotely…"
+                    class="mikrotik-link-status clients-remote-status is-checking"
+                    data-client-remote="{{ c.id }}"
+                    title="Checking whether this client's router can be opened remotely…"
                   >
                     <span class="mikrotik-link-dot" aria-hidden="true"></span>
                     <span class="mikrotik-link-label">…</span>

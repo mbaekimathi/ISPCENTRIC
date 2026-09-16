@@ -14,6 +14,8 @@ urlpatterns = [
         views.workspace_analytics,
         name="workspace_analytics",
     ),
+    path("app/noc/", views.noc, name="noc"),
+    path("app/noc/summary/", views.noc_summary, name="noc_summary"),
     path("app/audits/", views.audits, name="audits"),
     path("app/mikrotik/", views.mikrotik, name="mikrotik"),
     path(
@@ -123,6 +125,11 @@ urlpatterns = [
     path("app/clients/", views.my_clients, name="my_clients"),
     path("app/clients/surfing/", views.clients_surfing_status, name="clients_surfing"),
     path(
+        "app/clients/remote-access/",
+        views.clients_remote_access_status,
+        name="clients_remote_access",
+    ),
+    path(
         "app/clients/usage/",
         views.clients_general_usage,
         name="clients_general_usage",
@@ -168,6 +175,11 @@ urlpatterns = [
         "app/clients/<int:customer_id>/billing/",
         views.client_billing,
         name="client_billing",
+    ),
+    path(
+        "app/clients/<int:customer_id>/vouchers/",
+        views.client_vouchers,
+        name="client_vouchers",
     ),
     path(
         "app/clients/<int:customer_id>/router-login/",

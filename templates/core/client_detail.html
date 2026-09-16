@@ -153,6 +153,12 @@
       Billing
       {% if payment_count %}<span class="client-cmd-link-badge">{{ payment_count }}</span>{% endif %}
     </a>
+    {% if show_available_vouchers or voucher_page_url %}
+      <a class="client-cmd-link" href="{{ voucher_page_url }}">
+        Vouchers
+        {% if valid_voucher_count %}<span class="client-cmd-link-badge">{{ valid_voucher_count }}</span>{% endif %}
+      </a>
+    {% endif %}
     {% if can_live_usage %}
       <a class="client-cmd-link" href="{% url 'core:client_usage_analysis' customer.id %}">Usage</a>
     {% endif %}
@@ -492,8 +498,17 @@
                   <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h10M4 17h13"/></svg>
                 </span>
                 <span class="client-cmd-quick-copy">
-                  <strong>Billing & vouchers</strong>
-                  <span>{% if payment_count %}{{ payment_count }} payment{{ payment_count|pluralize }}{% else %}Payments{% endif %} and access codes</span>
+                  <strong>Billing</strong>
+                  <span>{% if payment_count %}{{ payment_count }} payment{{ payment_count|pluralize }}{% else %}Payments &amp; invoices{% endif %}</span>
+                </span>
+              </a>
+              <a class="client-cmd-quick-item" href="{{ voucher_page_url }}">
+                <span class="client-cmd-quick-ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 3v2h6V7H9Zm0 4v2h6v-2H9Zm0 4v2h4v-2H9Z"/></svg>
+                </span>
+                <span class="client-cmd-quick-copy">
+                  <strong>Vouchers</strong>
+                  <span>{% if valid_voucher_count %}{{ valid_voucher_count }} unused code{{ valid_voucher_count|pluralize }}{% else %}Access codes{% endif %}</span>
                 </span>
               </a>
               {% if can_access_wifi and customer.router %}
@@ -833,7 +848,7 @@
         {% endif %}
         <p class="client-simple-note">
           {% if used_voucher_count and not available_vouchers %}All vouchers from the last payment have been used.{% endif %}
-          <a href="{{ voucher_billing_url }}#client-vouchers">Full voucher history</a>
+          <a href="{{ voucher_page_url }}">Full voucher history</a>
         </p>
       </div>
       {% endif %}
@@ -914,6 +929,48 @@
         <button type="submit" class="btn btn-primary" data-save-label="{% if customer.status == 'installed' %}Activate account{% else %}Recharge account{% endif %}">{% if customer.status == "installed" %}Activate account{% else %}Recharge account{% endif %}</button>
       </footer>
     </form>
+  </div>
+</div>
+
+<div
+  class="role-modal client-action-modal pppoe-modal client-extra-vouchers-modal"
+  id="client-extra-vouchers-modal"
+  hidden
+  aria-hidden="true"
+>
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+  <div class="role-modal-panel pppoe-panel client-extra-vouchers-panel" role="dialog" aria-modal="true" aria-labelledby="client-extra-vouchers-title">
+    <header class="role-modal-head pppoe-head client-extra-vouchers-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker client-extra-vouchers-kicker">Extra devices</p>
+        <h2 id="client-extra-vouchers-title">Share vouchers</h2>
+        <p class="role-modal-sub pppoe-sub" data-extra-vouchers-sub>
+          The primary device is autoconnected. Share these codes for other gadgets on this package.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="pppoe-body client-extra-vouchers-body">
+      <div class="client-extra-vouchers-banner" data-extra-vouchers-banner>
+        <span class="client-extra-vouchers-banner-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 5h2v6h-2Zm0 8h2v2h-2Z"/></svg>
+        </span>
+        <p>Tap a code to copy. Extra gadgets redeem on the Hotspot pay page.</p>
+      </div>
+      <ul class="client-voucher-cards client-extra-vouchers-list" data-extra-vouchers-list aria-label="Extra device vouchers"></ul>
+      <p class="client-extra-vouchers-sms" data-extra-vouchers-sms-hint hidden>
+        <span aria-hidden="true">✓</span>
+        SMS queued when Hotspot voucher messaging is enabled.
+      </p>
+    </div>
+    <footer class="pppoe-foot client-extra-vouchers-foot">
+      {% if voucher_page_url %}
+        <a class="btn btn-ghost" href="{{ voucher_page_url }}">Open vouchers page</a>
+      {% endif %}
+      <button type="button" class="btn btn-primary client-extra-vouchers-done" data-close-client-modal>Done</button>
+    </footer>
   </div>
 </div>
 
@@ -1290,15 +1347,20 @@
               window.refreshClientSubscription(false);
             }
             showPackageToast(data.message || "Recharged.", "success");
-            if (data.voucher_codes && data.voucher_codes.length) {
+            if (data.hotspot_autoconnected) {
               showPackageToast(
-                "Voucher" + (data.voucher_codes.length === 1 ? "" : "s") + ": " + data.voucher_codes.join(", "),
+                "Primary device autoconnected — they can surf on Wi‑Fi.",
                 "info"
               );
             }
-            if (data.kick_sessions) {
-              showPackageToast("Device session cleared — autoconnect or enter a voucher to start fresh.", "info");
-            } else if (data.syncing) {
+            if (data.voucher_codes && data.voucher_codes.length) {
+              showExtraVouchersModal(data.voucher_codes, !!data.hotspot_autoconnected);
+            } else if (data.kick_sessions && !data.hotspot_autoconnected) {
+              showPackageToast(
+                "Device session cleared — enter a voucher on the pay page to start surfing.",
+                "info"
+              );
+            } else if (data.syncing && !data.hotspot_autoconnected) {
               showPackageToast("Internet restored on MikroTik — finishing CPE sync…", "info");
             }
           })
@@ -1462,8 +1524,70 @@
       }, type === "error" ? 5000 : 3000);
     }
 
+    function showExtraVouchersModal(codes, autoconnected) {
+      var modal = document.getElementById("client-extra-vouchers-modal");
+      var list = modal && modal.querySelector("[data-extra-vouchers-list]");
+      var sub = modal && modal.querySelector("[data-extra-vouchers-sub]");
+      var smsHint = modal && modal.querySelector("[data-extra-vouchers-sms-hint]");
+      if (!modal || !list) {
+        showPackageToast(
+          "Voucher" + (codes.length === 1 ? "" : "s") + ": " + codes.join(", "),
+          "info"
+        );
+        return;
+      }
+      list.innerHTML = "";
+      codes.forEach(function (code) {
+        var li = document.createElement("li");
+        li.className = "client-voucher-card is-valid client-extra-voucher-card";
+        li.innerHTML =
+          '<div class="client-voucher-card-kicker">' +
+            '<span>Device code</span>' +
+            '<span class="voucher-status-pill is-valid">Valid</span>' +
+          "</div>" +
+          '<button type="button" class="org-code voucher-code client-voucher-code-btn" data-copy-voucher data-copy-text=""></button>' +
+          '<p class="client-voucher-card-meta">Tap to copy · share with the extra gadget</p>' +
+          '<div class="voucher-share-actions client-voucher-card-actions">' +
+            '<button type="button" class="btn btn-sm" data-copy-voucher data-copy-text="">Copy code</button>' +
+          "</div>";
+        var codeBtn = li.querySelector(".client-voucher-code-btn");
+        var copyBtn = li.querySelector(".client-voucher-card-actions [data-copy-voucher]");
+        codeBtn.textContent = code;
+        codeBtn.setAttribute("data-copy-text", code);
+        copyBtn.setAttribute("data-copy-text", code);
+        list.appendChild(li);
+      });
+      if (sub) {
+        sub.textContent = autoconnected
+          ? "The primary device is autoconnected. Share these codes for other gadgets on this package."
+          : "Share these codes so extra gadgets can connect on this package.";
+      }
+      if (smsHint) smsHint.hidden = false;
+      list.querySelectorAll("[data-copy-voucher]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var text = btn.getAttribute("data-copy-text") || "";
+          var label = btn.textContent;
+          function done() {
+            btn.textContent = "Copied";
+            window.setTimeout(function () {
+              btn.textContent = btn.classList.contains("client-voucher-code-btn") ? text : label;
+            }, 1400);
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(function () {
+              window.prompt("Copy voucher:", text);
+            });
+          } else {
+            window.prompt("Copy voucher:", text);
+          }
+        });
+      });
+      openClientModal("client-extra-vouchers-modal");
+    }
+
     window.updatePackageSection = updatePackageSection;
     window.showPackageToast = showPackageToast;
+    window.showExtraVouchersModal = showExtraVouchersModal;
   })();
 
   (function setupRechargeAmountSync() {

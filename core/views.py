@@ -88,6 +88,7 @@ from billing.services import (
     resume_customer_package,
     set_customer_package_renewed,
     subscription_access_deadline,
+    subscription_period_progress,
 )
 from billing.stk import (
     consume_mikrotik_onboarding_payment,
@@ -234,6 +235,37 @@ CLIENT_SIDEBARS = {
             {"key": "referral", "label": "Referrals", "url_name": "core:referrals"},
         ],
     },
+    "noc": {
+        "label": "NOC",
+        "items": [
+            {"key": "noc", "label": "Ops board", "url_name": "core:noc"},
+            {
+                "key": "noc_down",
+                "label": "Down routers",
+                "url_name": "core:noc",
+                "query": "focus=down",
+            },
+            {
+                "key": "noc_impact",
+                "label": "Client impact",
+                "url_name": "core:noc",
+                "query": "focus=impact",
+            },
+            {
+                "key": "noc_faults",
+                "label": "Open faults",
+                "url_name": "core:noc",
+                "query": "focus=faults",
+            },
+            {"key": "mikrotik", "label": "MikroTik fleet", "url_name": "core:mikrotik"},
+            {
+                "key": "clients_pppoe",
+                "label": "PPPoE clients",
+                "url_name": "core:my_clients",
+                "tab": "pppoe",
+            },
+        ],
+    },
     "audits": {
         "label": "Audits",
         "items": [
@@ -261,6 +293,7 @@ CLIENT_SIDEBARS = {
         "label": "MikroTik",
         "items": [
             {"key": "mikrotik", "label": "All routers", "url_name": "core:mikrotik"},
+            {"key": "noc", "label": "NOC", "url_name": "core:noc"},
             {
                 "key": "onboard",
                 "label": "Connect to a New MikroTik",
@@ -291,6 +324,12 @@ CLIENT_SIDEBARS = {
                 "key": "general_usage",
                 "label": "General usage",
                 "url_name": "core:clients_general_usage",
+            },
+            {
+                "key": "noc_impact",
+                "label": "NOC impact",
+                "url_name": "core:noc",
+                "query": "focus=impact",
             },
             {
                 "key": "clients_pppoe",
@@ -1331,6 +1370,14 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
             "label": "Client billing",
             "href": reverse(
                 "core:client_billing",
+                kwargs={"customer_id": customer.pk},
+            ),
+        },
+        {
+            "key": "vouchers",
+            "label": "Client vouchers",
+            "href": reverse(
+                "core:client_vouchers",
                 kwargs={"customer_id": customer.pk},
             ),
         },
@@ -5341,6 +5388,66 @@ def workspace(request):
             referral_pending_count=referral_pending_count,
         ),
     )
+
+
+@client_workspace_required
+def noc(request):
+    """Network Operations Center — live fleet health, impact, and open faults."""
+    from core.noc_board import build_noc_board
+
+    org = resolve_organization(request.user, request)
+    board = build_noc_board(org)
+    focus = (request.GET.get("focus") or "").strip().lower()
+    if focus not in {"", "down", "impact", "faults"}:
+        focus = ""
+    sidebar_active = {
+        "down": "noc_down",
+        "impact": "noc_impact",
+        "faults": "noc_faults",
+    }.get(focus, "noc")
+    page_titles = {
+        "down": "Down routers",
+        "impact": "Client impact",
+        "faults": "Open faults",
+    }
+    page_subs = {
+        "down": "Outage and degraded routers ready for triage and reconnect.",
+        "impact": "Dialed PPPoE clients on active packages still without internet.",
+        "faults": "Open field fault tickets with technician assignment.",
+    }
+    return render(
+        request,
+        "core/noc.html",
+        client_page_context(
+            request,
+            active_nav="noc",
+            sidebar_active=sidebar_active,
+            page_title=page_titles.get(focus, "NOC"),
+            page_kicker="Operations",
+            page_subtitle=page_subs.get(
+                focus,
+                "Alarm queue, site matrix, router inspector, and event timeline.",
+            ),
+            board=board,
+            noc_focus=focus,
+            noc_summary_url=reverse("core:noc_summary"),
+            mikrotik_status_url=reverse("core:mikrotik_status"),
+            surfing_url=reverse("core:clients_surfing"),
+            mikrotik_url=reverse("core:mikrotik"),
+            clients_url=f"{reverse('core:my_clients')}?tab=pppoe",
+        ),
+    )
+
+
+@client_workspace_required
+@require_GET
+def noc_summary(request):
+    """JSON snapshot for the NOC board (cached fleet status + faults)."""
+    from core.noc_board import build_noc_board
+
+    org = resolve_organization(request.user, request)
+    board = build_noc_board(org)
+    return JsonResponse(board)
 
 
 @client_workspace_required
@@ -11797,10 +11904,94 @@ def my_clients(request):
             | Q(account_number__icontains=clients_query)
             | Q(pppoe_username__icontains=clients_query)
         )
-    # Hotspot list is reordered live by session state on the current page.
-    # Cap page size so large ISPs are not forced to render thousands of rows.
+
+    clients_sort = (request.GET.get("sort") or "used").strip().lower()
+    valid_sorts = {"used", "used_asc", "ending", "newest", "name", "session"}
+    if clients_sort not in valid_sorts:
+        clients_sort = "used"
+    if clients_sort == "session" and tab != "hotspot":
+        clients_sort = "used"
+    clients_sort_choices = [
+        ("used", "Most used"),
+        ("used_asc", "Least used"),
+        ("ending", "Ending soonest"),
+        ("newest", "Newest first"),
+        ("name", "Name A–Z"),
+    ]
+    if tab == "hotspot" and not pending_view:
+        clients_sort_choices.append(("session", "Live session"))
+
+    # Attach package progress for the Used column, then sort before pagination
+    # so the chosen order applies across the full filtered list.
     page_size = 200 if tab == "hotspot" else 100
-    paginator = Paginator(tab_qs, page_size)
+    now = timezone.localtime()
+    ranked_customers = list(tab_qs)
+    for customer in ranked_customers:
+        progress = subscription_period_progress(customer, now=now)
+        customer.subscription_progress = progress
+        if progress:
+            customer.subscription_used_percent = progress["percent"]
+            customer.subscription_used_ratio = progress["ratio"]
+            customer.subscription_used_expired = progress["expired"]
+            customer.subscription_used_attention = progress["needs_attention"]
+        else:
+            customer.subscription_used_percent = None
+            customer.subscription_used_ratio = None
+            customer.subscription_used_expired = False
+            customer.subscription_used_attention = False
+        customer.package_uses_clock_time = plan_uses_clock_time(
+            getattr(customer, "plan", None)
+        )
+
+    def _client_name_key(customer):
+        return (customer.full_name or "").lower()
+
+    if clients_sort == "used_asc":
+        ranked_customers.sort(
+            key=lambda c: (
+                c.subscription_used_ratio is None,
+                c.subscription_used_ratio or 0.0,
+                _client_name_key(c),
+            )
+        )
+    elif clients_sort == "ending":
+        from datetime import timedelta
+
+        far_future = now + timedelta(days=36500)
+
+        def _ending_key(customer):
+            progress = customer.subscription_progress
+            if not progress:
+                return (1, far_future, _client_name_key(customer))
+            deadline = progress.get("access_deadline") or getattr(
+                customer, "package_end", None
+            )
+            return (0, deadline or far_future, _client_name_key(customer))
+
+        ranked_customers.sort(key=_ending_key)
+    elif clients_sort == "newest":
+        ranked_customers.sort(
+            key=lambda c: (
+                c.created_at is None,
+                -(c.created_at.timestamp() if c.created_at else 0.0),
+                _client_name_key(c),
+            )
+        )
+    elif clients_sort == "name":
+        ranked_customers.sort(key=_client_name_key)
+    elif clients_sort == "session":
+        # Initial name order; the browser re-ranks by live Hotspot session.
+        ranked_customers.sort(key=_client_name_key)
+    else:
+        # Default: most of the package period used first.
+        ranked_customers.sort(
+            key=lambda c: (
+                c.subscription_used_ratio is None,
+                -(c.subscription_used_ratio or 0.0),
+                _client_name_key(c),
+            )
+        )
+    paginator = Paginator(ranked_customers, page_size)
     page_obj = paginator.get_page(request.GET.get("page") or 1)
     page_customers = list(page_obj)
 
@@ -11848,6 +12039,8 @@ def my_clients(request):
         clients_page=page_obj,
         clients_query=clients_query,
         clients_match_count=paginator.count,
+        clients_sort=clients_sort,
+        clients_sort_choices=clients_sort_choices,
         client_routers=client_routers,
         clients_router_param=clients_router_param,
         clients_router_id=clients_router_id,
@@ -11880,6 +12073,8 @@ def my_clients(request):
             query_params["q"] = clients_query
         if clients_router_param:
             query_params["router"] = clients_router_param
+        if clients_sort and clients_sort != "used":
+            query_params["sort"] = clients_sort
         item["href"] = f"{base_path}?{urlencode(query_params)}"
         item["badge"] = tab_badges[key]
     return render(request, "core/my_clients.html", ctx)
@@ -11950,6 +12145,7 @@ def client_detail(request, customer_id: int):
         provision: bool,
         voucher_codes: list | None = None,
         kick_sessions: bool = False,
+        hotspot_autoconnected: bool = False,
     ) -> JsonResponse:
         from django.utils import timezone as dj_tz
 
@@ -12007,6 +12203,7 @@ def client_detail(request, customer_id: int):
             "remaining_label": remaining_label,
             "syncing": provision,
             "kick_sessions": bool(kick_sessions),
+            "hotspot_autoconnected": bool(hotspot_autoconnected),
             "voucher_codes": codes,
             "voucher_code": codes[0] if codes else "",
             "can_pause_package": customer_can_pause_package(customer),
@@ -12181,8 +12378,8 @@ def client_detail(request, customer_id: int):
                 if result.get("unlink_hotspot_after_sync"):
                     from billing.devices import unlink_hotspot_devices
 
-                    # NAS sync above disabled linked MACs (no redeemed vouchers).
-                    # Now drop device links until each gadget redeems a fresh code.
+                    # No primary MAC to keep — drop all links until each gadget
+                    # redeems a fresh code (NAS sync above already disabled them).
                     unlink_hotspot_devices(customer)
                     customer.refresh_from_db()
 
@@ -12202,12 +12399,23 @@ def client_detail(request, customer_id: int):
                     f"({invoice.invoice_number}). Surfing window "
                     f"{start_label} → {end_label}."
                 )
+                if result.get("hotspot_autoconnected"):
+                    msg += (
+                        " Primary device autoconnected — they can surf when "
+                        "they join the Wi‑Fi."
+                    )
                 if voucher_codes:
                     codes_label = ", ".join(voucher_codes)
                     msg += (
-                        f" New voucher{'s' if len(voucher_codes) != 1 else ''}: "
-                        f"{codes_label}. Device session cleared — they can "
-                        "autoconnect or enter a voucher on the pay page."
+                        f" Extra device voucher"
+                        f"{'s' if len(voucher_codes) != 1 else ''}: {codes_label}."
+                    )
+                elif result.get("kick_sessions") and not result.get(
+                    "hotspot_autoconnected"
+                ):
+                    msg += (
+                        " Device session cleared — enter a voucher on the "
+                        "pay page to start surfing."
                     )
                 if is_ajax:
                     return _package_json_response(
@@ -12216,6 +12424,9 @@ def client_detail(request, customer_id: int):
                         provision=provision,
                         voucher_codes=voucher_codes,
                         kick_sessions=kick_sessions,
+                        hotspot_autoconnected=bool(
+                            result.get("hotspot_autoconnected")
+                        ),
                     )
                 messages.success(request, msg)
                 return redirect("core:client_detail", customer_id=customer.pk)
@@ -12383,6 +12594,9 @@ def client_detail(request, customer_id: int):
         show_available_vouchers=show_available_vouchers,
         voucher_billing_url=reverse(
             "core:client_billing", kwargs={"customer_id": customer.pk}
+        ),
+        voucher_page_url=reverse(
+            "core:client_vouchers", kwargs={"customer_id": customer.pk}
         ),
         invoice_count=invoice_count,
         payment_count=payment_count,
@@ -14725,9 +14939,16 @@ def _payment_mpesa_reference(payment: Payment) -> str:
     return payment_mpesa_reference(payment)
 
 
+def _client_recharge_url(customer) -> str:
+    return (
+        f"{reverse('core:client_detail', kwargs={'customer_id': customer.pk})}"
+        "?open=recharge"
+    )
+
+
 @client_workspace_required
 def client_billing(request, customer_id: int):
-    """Dedicated page listing successful payments and access vouchers for one client."""
+    """Dedicated page listing successful payments for one client."""
     org = resolve_organization(request.user, request)
     customer = get_object_or_404(
         Customer.objects.select_related("plan", "router", "organization"),
@@ -14777,13 +14998,6 @@ def client_billing(request, customer_id: int):
         else None
     ) or 0
 
-    from billing.vouchers import vouchers_for_customer_billing
-
-    voucher_rows = vouchers_for_customer_billing(customer, request=request) if org else []
-    valid_voucher_count = sum(
-        1 for row in voucher_rows if row["status"] == "valid"
-    )
-
     ctx = client_page_context(
         request,
         active_nav="client_detail",
@@ -14797,16 +15011,11 @@ def client_billing(request, customer_id: int):
         invoice_paid=invoice_stats.get("paid") or 0,
         invoice_overdue=invoice_stats.get("overdue") or 0,
         amount_paid=amount_paid,
-        vouchers=voucher_rows,
-        valid_voucher_count=valid_voucher_count,
-        voucher_pay_url=(
-            voucher_rows[0]["share"]["pay_url"] if voucher_rows else ""
+        vouchers_url=reverse(
+            "core:client_vouchers", kwargs={"customer_id": customer.pk}
         ),
         back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
-        recharge_url=(
-            f"{reverse('core:client_detail', kwargs={'customer_id': customer.pk})}"
-            "?open=recharge"
-        ),
+        recharge_url=_client_recharge_url(customer),
     )
     ctx["client_nav_main"] = [
         *CLIENT_COMMON_NAV_START,
@@ -14815,6 +15024,51 @@ def client_billing(request, customer_id: int):
     ctx["sidebar_label"] = "Client"
     apply_client_shared_forms(ctx, customer, org)
     return render(request, "core/client_billing.html", ctx)
+
+
+@client_workspace_required
+def client_vouchers(request, customer_id: int):
+    """Dedicated page listing access vouchers for one client."""
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("plan", "router", "organization"),
+        pk=customer_id,
+        organization=org,
+    )
+    can_access_wifi = customer_can_access_router(customer, org)
+
+    from billing.vouchers import vouchers_for_customer_billing
+
+    voucher_rows = vouchers_for_customer_billing(customer, request=request) if org else []
+    valid_voucher_count = sum(1 for row in voucher_rows if row["status"] == "valid")
+    used_voucher_count = max(0, len(voucher_rows) - valid_voucher_count)
+
+    ctx = client_page_context(
+        request,
+        active_nav="client_detail",
+        sidebar_active="vouchers",
+        page_title=f"Vouchers · {customer.full_name}",
+        customer=customer,
+        can_access_wifi=can_access_wifi,
+        vouchers=voucher_rows,
+        valid_voucher_count=valid_voucher_count,
+        used_voucher_count=used_voucher_count,
+        voucher_pay_url=(
+            voucher_rows[0]["share"]["pay_url"] if voucher_rows else ""
+        ),
+        billing_url=reverse(
+            "core:client_billing", kwargs={"customer_id": customer.pk}
+        ),
+        back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
+        recharge_url=_client_recharge_url(customer),
+    )
+    ctx["client_nav_main"] = [
+        *CLIENT_COMMON_NAV_START,
+        *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
+    ]
+    ctx["sidebar_label"] = "Client"
+    apply_client_shared_forms(ctx, customer, org)
+    return render(request, "core/client_vouchers.html", ctx)
 
 
 @client_workspace_required
@@ -15007,6 +15261,199 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> dict:
     return {"ok": True, "written": written, "error": ""}
 
 
+def _client_remote_access_row(customer, *, force: bool = False) -> dict:
+    """
+    Per-client CPE remote-access status for the clients list Remote column.
+
+    This is NOT ISP MikroTik reachability — Connected/ready means Open client
+    router should be able to reach the subscriber CPE web UI.
+    """
+    from core.connectivity_verification import evaluate_layered_cpe_access
+    from core.mikrotik_connect import customer_cpe_access_eligible
+
+    customer_id = int(customer.pk)
+    cache_key = f"client_remote_access:{customer_id}:v2"
+    if not force:
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict) and cached.get("id") == customer_id:
+            return cached
+
+    title_offline = "Client router offline or unreachable for remote access"
+    if not customer_cpe_access_eligible(customer):
+        row = {
+            "id": customer_id,
+            "status": "unavailable",
+            "label": "N/A",
+            "title": "This client has no CPE to open remotely (Hotspot or incomplete setup)",
+            "failure_class": "not_eligible",
+        }
+        cache.set(cache_key, row, 120)
+        return row
+
+    try:
+        evaluation = evaluate_layered_cpe_access(
+            customer,
+            timeout=6.0,
+            try_api=False,
+            auto_enable=False,
+        )
+    except Exception as exc:
+        row = {
+            "id": customer_id,
+            "status": "offline",
+            "label": "Unavailable",
+            "title": str(exc) or title_offline,
+            "failure_class": "probe_error",
+        }
+        cache.set(cache_key, row, 30)
+        return row
+
+    failure = (evaluation.get("failure_class") or "").strip().lower()
+    layers = ((evaluation.get("details") or {}).get("layers") or {})
+    hint = (evaluation.get("hint") or evaluation.get("error") or "").strip()
+    web_ok = bool(layers.get("web_ok") or evaluation.get("ok"))
+
+    if failure in {"ok", "web_ok_api_failed"} or web_ok:
+        row = {
+            "id": customer_id,
+            "status": "ready",
+            "label": "Ready",
+            "title": hint
+            or "Client router web UI is reachable — Open client router should work",
+            "failure_class": failure or "ok",
+        }
+        cache.set(cache_key, row, 90)
+        return row
+
+    if failure in {"wan_mgmt_blocked", "firewall_blocked", "bad_credentials"} or (
+        layers.get("session_active") and layers.get("ping_ok")
+    ):
+        labels = {
+            "wan_mgmt_blocked": "Blocked",
+            "firewall_blocked": "Firewall",
+            "bad_credentials": "Password",
+        }
+        row = {
+            "id": customer_id,
+            "status": "blocked",
+            "label": labels.get(failure, "Blocked"),
+            "title": hint
+            or "Client is online but remote management ports are closed from the ISP side",
+            "failure_class": failure or "wan_mgmt_blocked",
+        }
+        cache.set(cache_key, row, 60)
+        return row
+
+    if layers.get("session_active") and not layers.get("ping_ok"):
+        row = {
+            "id": customer_id,
+            "status": "blocked",
+            "label": "No path",
+            "title": hint
+            or "PPPoE/session is up but the ISP MikroTik cannot reach CPE management",
+            "failure_class": failure or "proxy_failed",
+        }
+        cache.set(cache_key, row, 45)
+        return row
+
+    if failure == "nas_down":
+        row = {
+            "id": customer_id,
+            "status": "offline",
+            "label": "NAS down",
+            "title": hint or "Assigned ISP MikroTik is unreachable",
+            "failure_class": "nas_down",
+        }
+        cache.set(cache_key, row, 30)
+        return row
+
+    row = {
+        "id": customer_id,
+        "status": "offline",
+        "label": "Offline",
+        "title": hint or title_offline,
+        "failure_class": failure or "offline",
+    }
+    cache.set(cache_key, row, 45)
+    return row
+
+
+@client_workspace_required
+@require_GET
+def clients_remote_access_status(request):
+    """
+    Live Remote-column status: can we open each client's CPE web UI?
+
+    Distinct from mikrotik_status (ISP NAS). Pass ?ids=1,2,3 for the visible
+    rows; omit ids to probe all eligible PPPoE/static clients (capped).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization.", "clients": []}, status=400)
+
+    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+    raw_ids = (request.GET.get("ids") or "").strip()
+    customer_ids: list[int] = []
+    if raw_ids:
+        for part in raw_ids.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                customer_ids.append(int(part))
+            except (TypeError, ValueError):
+                continue
+        # Cap to keep list probes from melting the NAS with concurrent NAT installs.
+        customer_ids = customer_ids[:40]
+
+    qs = (
+        Customer.objects.filter(organization=org)
+        .select_related("router")
+        .order_by("id")
+    )
+    if customer_ids:
+        qs = qs.filter(pk__in=customer_ids)
+    else:
+        qs = qs.filter(
+            service_type__in=[Customer.ServiceType.PPPOE, Customer.ServiceType.STATIC]
+        )[:40]
+
+    customers = list(qs)
+    if not customers:
+        return JsonResponse({"ok": True, "clients": []})
+
+    # Preserve request order when ids were supplied.
+    if customer_ids:
+        by_id = {c.pk: c for c in customers}
+        customers = [by_id[i] for i in customer_ids if i in by_id]
+
+    rows: list[dict] = []
+    workers = min(4, max(1, len(customers)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_client_remote_access_row, customer, force=force): customer.pk
+            for customer in customers
+        }
+        by_pk: dict[int, dict] = {}
+        for future in as_completed(futures):
+            pk = futures[future]
+            try:
+                by_pk[pk] = future.result(timeout=20.0)
+            except Exception as exc:
+                by_pk[pk] = {
+                    "id": pk,
+                    "status": "offline",
+                    "label": "Unavailable",
+                    "title": str(exc) or "Could not check remote access",
+                    "failure_class": "probe_error",
+                }
+        rows = [by_pk[c.pk] for c in customers if c.pk in by_pk]
+
+    return JsonResponse({"ok": True, "clients": rows})
+
+
 @client_workspace_required
 @require_GET
 def clients_surfing_status(request):
@@ -15032,7 +15479,7 @@ def clients_surfing_status(request):
         else Customer.ServiceType.PPPOE
     )
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
-    cache_key = f"clients_surfing:{org.pk}:{service}:v5"
+    cache_key = f"clients_surfing:{org.pk}:{service}:v6"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -15087,16 +15534,29 @@ def clients_surfing_status(request):
     active_by_router: dict[int, set[str]] = {}
     connected_by_router: dict[int, set[str]] = {}
     nas_blocked_by_router: dict[int, set[str]] = {}
+    wifi_ssid_by_router: dict[int, str] = {
+        rid: (getattr(router, "wifi_ssid", None) or "").strip()
+        for rid, router in routers_by_id.items()
+        if (getattr(router, "wifi_ssid", None) or "").strip()
+    }
     router_errors: dict[int, str] = {}
 
-    def _probe_router(router) -> tuple[int, set[str], set[str], set[str], str]:
+    def _probe_router(router) -> tuple[int, set[str], set[str], set[str], str, str]:
         from core.mikrotik_connect import is_mikrotik_host_cooling_down
 
         router_id = router.pk
+        stored_ssid = (getattr(router, "wifi_ssid", None) or "").strip()
         if router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
-            return router_id, set(), set(), set(), "Router suspended"
+            return router_id, set(), set(), set(), "Router suspended", stored_ssid
         if is_mikrotik_host_cooling_down(router.host):
-            return router_id, set(), set(), set(), "Router recently unreachable"
+            return (
+                router_id,
+                set(),
+                set(),
+                set(),
+                "Router recently unreachable",
+                stored_ssid,
+            )
         if service == "hotspot":
             result = fetch_hotspot_client_macs(
                 router.host,
@@ -15107,6 +15567,7 @@ def clients_surfing_status(request):
             active = set(result.get("active_macs") or [])
             connected = set(result.get("connected_macs") or [])
             nas_blocked: set[str] = set()
+            live_ssid = (result.get("wifi_ssid") or "").strip() or stored_ssid
         else:
             result = fetch_active_pppoe_usernames(
                 router.host,
@@ -15117,14 +15578,16 @@ def clients_surfing_status(request):
             active = {name.lower() for name in (result.get("usernames") or [])}
             connected = set()
             nas_blocked = {name.lower() for name in (result.get("blocked") or [])}
+            live_ssid = stored_ssid
         if result.get("ok"):
-            return router_id, active, connected, nas_blocked, ""
+            return router_id, active, connected, nas_blocked, "", live_ssid
         return (
             router_id,
             set(),
             set(),
             set(),
             result.get("error") or "Could not reach router",
+            live_ssid,
         )
 
     if not use_live_snapshot and routers_by_id:
@@ -15138,14 +15601,21 @@ def clients_surfing_status(request):
             ]
             for future in as_completed(futures):
                 try:
-                    router_id, active, connected, nas_blocked, error = future.result(
-                        timeout=12.0
-                    )
+                    (
+                        router_id,
+                        active,
+                        connected,
+                        nas_blocked,
+                        error,
+                        wifi_ssid,
+                    ) = future.result(timeout=12.0)
                 except Exception:
                     continue
                 active_by_router[router_id] = active
                 connected_by_router[router_id] = connected
                 nas_blocked_by_router[router_id] = nas_blocked
+                if wifi_ssid:
+                    wifi_ssid_by_router[router_id] = wifi_ssid
                 if error:
                     router_errors[router_id] = error
 
@@ -15433,14 +15903,25 @@ def clients_surfing_status(request):
             if live_router is None and customer.router_id:
                 live_router = routers_by_id.get(customer.router_id) or customer.router
             connected_router_name = (
-                (getattr(live_router, "name", None) or "").strip() or "MikroTik"
+                (getattr(live_router, "name", None) or "").strip()
             )
-            connected_wifi_ssid = (getattr(live_router, "wifi_ssid", None) or "").strip()
+            # Connected-to column shows the Wi‑Fi / client-router SSID phones join,
+            # not the ISP MikroTik inventory name (that stays in the MikroTik column).
+            probe_ssid = ""
+            if connected_router_id:
+                probe_ssid = (wifi_ssid_by_router.get(connected_router_id) or "").strip()
+            if not probe_ssid and customer.router_id:
+                probe_ssid = (wifi_ssid_by_router.get(customer.router_id) or "").strip()
+            connected_wifi_ssid = (
+                probe_ssid
+                or (getattr(live_router, "wifi_ssid", None) or "").strip()
+            )
             if service == "hotspot":
-                connection_label = connected_router_name
+                connection_label = connected_wifi_ssid or "Hotspot Wi‑Fi"
                 connection_reason = (
-                    f"Connected to {connected_router_name}"
-                    + (f" · {connected_wifi_ssid}" if connected_wifi_ssid else "")
+                    f"Connected to {connected_wifi_ssid}"
+                    if connected_wifi_ssid
+                    else "Connected to Hotspot Wi‑Fi"
                 )
             else:
                 connection_label = "Connected"
@@ -15478,6 +15959,7 @@ def clients_surfing_status(request):
                 "account_number": customer.account_number or "",
                 "plan_name": customer.plan.name if customer.plan_id else "",
                 "service_type": customer.service_type,
+                "router_id": customer.router_id,
                 "url": reverse(
                     "core:client_detail", kwargs={"customer_id": customer.pk}
                 ),
@@ -15491,6 +15973,7 @@ def clients_surfing_status(request):
                 "connected": connected,
                 "connection_label": connection_label,
                 "connection_reason": connection_reason,
+                "connected_router_id": connected_router_id,
                 "connected_router_name": connected_router_name,
                 "connected_wifi_ssid": connected_wifi_ssid,
                 "devices": devices_connected,

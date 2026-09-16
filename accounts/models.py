@@ -177,6 +177,15 @@ class Organization(models.Model):
         default=15,
         help_text="Disconnect idle Hotspot sessions after this many minutes. Use 0 for no idle timeout.",
     )
+    hotspot_block_tethering = models.BooleanField(
+        "Block Hotspot tethering",
+        default=True,
+        help_text=(
+            "On by default. MikroTik drops typical USB / Bluetooth / personal-hotspot "
+            "sharing behind a paid Hotspot device (TTL 63 / 127). Turn off to allow sharing. "
+            "Does not affect PPPoE."
+        ),
+    )
     adverts_enabled = models.BooleanField(
         "Show Click to earn on captive pages",
         default=False,

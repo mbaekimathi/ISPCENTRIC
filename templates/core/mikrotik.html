@@ -3,10 +3,11 @@
 {% block title %}MikroTik — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="mikrotik-page" data-mikrotik-fleet>
+<div class="mikrotik-page ops-surface" data-mikrotik-fleet>
   <section class="mikrotik-fleet">
     <header class="mikrotik-fleet-head">
       <div class="mikrotik-fleet-title">
+        <p class="ops-kicker">Fleet operations</p>
         <h1>MikroTik</h1>
         <p class="mikrotik-fleet-summary">
           <span><strong>{{ routers_total|default:0 }}</strong> router{{ routers_total|default:0|pluralize }}</span>

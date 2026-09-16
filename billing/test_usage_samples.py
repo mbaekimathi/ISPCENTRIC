@@ -1153,6 +1153,8 @@ class HotspotMergeTests(TestCase):
         self.assertTrue(row["latest_active"])
         self.assertEqual(row["gadgets_connected"], 2)
         self.assertEqual(row["live_download_bps"], 2_500_000)
+        # Live rate (~2.5 Mbps) must lift Idle → at least Medium even with 0 sample bytes.
+        self.assertEqual(row["usage_level"], "Medium")
         self.assertEqual(payload["live"]["clients_online"], 1)
         self.assertEqual(payload["summary"]["gadgets_online"], 2)
 
@@ -1214,6 +1216,48 @@ class HotspotMergeTests(TestCase):
         self.assertEqual(cleared["top_users"][0]["gadgets_connected"], 0)
         self.assertEqual(cleared["top_users"][0]["devices_connected"], 0)
         self.assertEqual(cleared["summary"]["gadgets_online"], 0)
+
+        # Online with no sample traffic must not stay Idle (Surfing + Idle bug).
+        cache.set(
+            _org_live_usage_cache_key(self.org.pk),
+            {
+                "ok": True,
+                "at": timezone.now().isoformat(),
+                "pppoe": {},
+                "hotspot": {
+                    self.customer.pk: {
+                        "session_active": True,
+                        "download_bps": 0,
+                        "upload_bps": 0,
+                        "gadgets": 1,
+                    }
+                },
+            },
+            60,
+        )
+        was_idle = apply_live_usage_overlay(
+            {
+                "ok": True,
+                "service": "hotspot",
+                "top_users": [
+                    {
+                        "customer_id": self.customer.pk,
+                        "latest_active": False,
+                        "data_used_bytes": 0,
+                        "peak_download_bps": 0,
+                        "usage_level": "Idle",
+                        "gadgets_connected": 0,
+                        "devices_connected": 0,
+                    }
+                ],
+                "summary": {"clients_online": 0, "gadgets_online": 0},
+            },
+            self.org,
+            service="hotspot",
+        )
+        self.assertTrue(was_idle["top_users"][0]["live_active"])
+        self.assertTrue(was_idle["top_users"][0]["latest_active"])
+        self.assertEqual(was_idle["top_users"][0]["usage_level"], "Low")
 
     def test_stale_sample_detection(self):
         from billing.usage_samples import client_usage_sample_is_stale

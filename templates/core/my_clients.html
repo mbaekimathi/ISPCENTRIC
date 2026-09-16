@@ -3,10 +3,11 @@
 {% block title %}My clients — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="clients-dash is-tab-{{ active_tab }}" data-clients-dash data-active-tab="{{ active_tab }}">
+<div class="clients-dash ops-surface is-tab-{{ active_tab }}" data-clients-dash data-active-tab="{{ active_tab }}" data-clients-sort="{{ clients_sort|default:'used' }}">
   <section class="clients-workspace">
     <header class="clients-workspace-head">
       <div class="clients-workspace-title">
+        <p class="ops-kicker">Subscriber operations</p>
         <h1>My clients</h1>
         <p class="clients-workspace-summary">
           <span><strong>{{ pppoe_count|add:static_count|add:hotspot_count }}</strong> subscribers</span>
@@ -16,6 +17,9 @@
         </p>
       </div>
       <div class="clients-workspace-actions">
+        <a class="btn btn-ghost btn-sm clients-hero-btn" href="{% url 'core:noc' %}{% if active_tab == 'pppoe' %}?focus=impact{% endif %}">
+          NOC
+        </a>
         {% if active_tab == 'pppoe' %}
           {% if pending_view %}
             <a class="btn btn-ghost btn-sm clients-hero-btn" href="{% url 'core:my_clients' %}?tab=pppoe">
@@ -44,7 +48,7 @@
     <nav class="clients-seg" aria-label="Client type">
       <a
         class="clients-seg-item tone-pppoe{% if active_tab == 'pppoe' and not pending_view %} is-active{% endif %}"
-        href="?tab=pppoe{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
+        href="?tab=pppoe{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}{% if clients_sort and clients_sort != 'used' and clients_sort != 'session' %}&amp;sort={{ clients_sort|urlencode }}{% endif %}"
         {% if active_tab == 'pppoe' and not pending_view %}aria-current="page"{% endif %}
       >
         <span class="clients-seg-ico" aria-hidden="true">
@@ -55,7 +59,7 @@
       </a>
       <a
         class="clients-seg-item tone-pending{% if pending_view %} is-active{% endif %}"
-        href="?tab=pppoe&amp;view=pending{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
+        href="?tab=pppoe&amp;view=pending{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}{% if clients_sort and clients_sort != 'used' and clients_sort != 'session' %}&amp;sort={{ clients_sort|urlencode }}{% endif %}"
         {% if pending_view %}aria-current="page"{% endif %}
       >
         <span class="clients-seg-ico" aria-hidden="true">
@@ -66,7 +70,7 @@
       </a>
       <a
         class="clients-seg-item tone-static{% if active_tab == 'static' %} is-active{% endif %}"
-        href="?tab=static{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
+        href="?tab=static{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}{% if clients_sort and clients_sort != 'used' and clients_sort != 'session' %}&amp;sort={{ clients_sort|urlencode }}{% endif %}"
         {% if active_tab == 'static' %}aria-current="page"{% endif %}
       >
         <span class="clients-seg-ico" aria-hidden="true">
@@ -77,7 +81,7 @@
       </a>
       <a
         class="clients-seg-item tone-hotspot{% if active_tab == 'hotspot' %} is-active{% endif %}"
-        href="?tab=hotspot{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
+        href="?tab=hotspot{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}{% if clients_sort and clients_sort != 'used' %}&amp;sort={{ clients_sort|urlencode }}{% endif %}"
         {% if active_tab == 'hotspot' %}aria-current="page"{% endif %}
       >
         <span class="clients-seg-ico" aria-hidden="true">
@@ -93,6 +97,7 @@
         <input type="hidden" name="tab" value="{{ active_tab }}">
         {% if pending_view %}<input type="hidden" name="view" value="pending">{% endif %}
         {% if clients_query %}<input type="hidden" name="q" value="{{ clients_query }}">{% endif %}
+        {% if clients_sort and clients_sort != 'used' %}<input type="hidden" name="sort" value="{{ clients_sort }}">{% endif %}
         <label class="clients-router-filter-label" for="clients-router-filter">MikroTik</label>
         <div class="clients-router-select">
           <select
@@ -109,6 +114,27 @@
               <option value="{{ router.id }}" {% if clients_router_id == router.id %}selected{% endif %}>
                 {{ router.name }}{% if router.host %} · {{ router.host }}{% endif %}
               </option>
+            {% endfor %}
+          </select>
+        </div>
+      </form>
+      <form class="clients-router-filter clients-sort-filter" method="get" action="{% url 'core:my_clients' %}">
+        <input type="hidden" name="tab" value="{{ active_tab }}">
+        {% if pending_view %}<input type="hidden" name="view" value="pending">{% endif %}
+        {% if clients_query %}<input type="hidden" name="q" value="{{ clients_query }}">{% endif %}
+        {% if clients_router_param %}<input type="hidden" name="router" value="{{ clients_router_param }}">{% endif %}
+        <label class="clients-router-filter-label" for="clients-sort-filter">Sort</label>
+        <div class="clients-router-select">
+          <select
+            id="clients-sort-filter"
+            name="sort"
+            class="clients-router-filter-select"
+            data-clients-sort-filter
+            aria-label="Sort clients"
+            onchange="this.form.submit()"
+          >
+            {% for value, label in clients_sort_choices %}
+              <option value="{{ value }}" {% if clients_sort == value %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
           </select>
         </div>
@@ -140,8 +166,18 @@
     </div>
 
     <div class="clients-workspace-meta">
-        {% if active_tab == 'hotspot' %}
-          <p class="clients-status-hint">Ordered by live status: surfing, then connected (not surfing), then disconnected · Phone is the primary contact · MAC stays as device technical ID · refreshes every 10s.</p>
+        {% if clients_sort == 'used' %}
+          <p class="clients-status-hint">Ordered by package used — highest first.</p>
+        {% elif clients_sort == 'used_asc' %}
+          <p class="clients-status-hint">Ordered by package used — lowest first.</p>
+        {% elif clients_sort == 'ending' %}
+          <p class="clients-status-hint">Ordered by package ending soonest.</p>
+        {% elif clients_sort == 'newest' %}
+          <p class="clients-status-hint">Ordered by newest registration first.</p>
+        {% elif clients_sort == 'name' %}
+          <p class="clients-status-hint">Ordered by client name A–Z.</p>
+        {% elif clients_sort == 'session' %}
+          <p class="clients-status-hint">Ordered by live status: surfing, then connected (not surfing), then disconnected · refreshes every 10s.</p>
         {% endif %}
       <div class="clients-search-meta" data-clients-search-meta {% if not clients_query and not clients_router_param %}hidden{% endif %}>
         <span class="clients-search-meta-ico" aria-hidden="true">
@@ -156,7 +192,7 @@
           {% endif %}
         </span>
         {% if clients_router_param %}
-          <a class="clients-filter-clear" href="?tab={{ active_tab }}{% if pending_view %}&amp;view=pending{% endif %}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}">Clear router</a>
+          <a class="clients-filter-clear" href="?tab={{ active_tab }}{% if pending_view %}&amp;view=pending{% endif %}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_sort and clients_sort != 'used' %}&amp;sort={{ clients_sort|urlencode }}{% endif %}">Clear router</a>
         {% endif %}
       </div>
     </div>
@@ -175,13 +211,13 @@
       {% if clients_page and clients_page.paginator.num_pages > 1 %}
         <nav class="clients-pagination" aria-label="Client pages">
           {% if clients_page.has_previous %}
-            <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}{% if pending_view %}&amp;view=pending{% endif %}&amp;page={{ clients_page.previous_page_number }}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">Previous</a>
+            <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}{% if pending_view %}&amp;view=pending{% endif %}&amp;page={{ clients_page.previous_page_number }}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}{% if clients_sort and clients_sort != 'used' %}&amp;sort={{ clients_sort|urlencode }}{% endif %}">Previous</a>
           {% endif %}
           <span class="clients-pagination-meta">
             Page {{ clients_page.number }} of {{ clients_page.paginator.num_pages }}
           </span>
           {% if clients_page.has_next %}
-            <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}{% if pending_view %}&amp;view=pending{% endif %}&amp;page={{ clients_page.next_page_number }}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">Next</a>
+            <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}{% if pending_view %}&amp;view=pending{% endif %}&amp;page={{ clients_page.next_page_number }}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}{% if clients_sort and clients_sort != 'used' %}&amp;sort={{ clients_sort|urlencode }}{% endif %}">Next</a>
           {% endif %}
         </nav>
       {% endif %}
@@ -257,6 +293,7 @@
   var activeTab = dash ? (dash.getAttribute("data-active-tab") || "pppoe") : "pppoe";
   var clientsView = "{% if clients_view %}{{ clients_view|escapejs }}{% endif %}";
   var routerFilter = "{% if clients_router_param %}{{ clients_router_param|escapejs }}{% endif %}";
+  var clientsSort = "{% if clients_sort %}{{ clients_sort|escapejs }}{% else %}used{% endif %}";
   var debounceTimer = null;
   var fetchSeq = 0;
   var lastServerQuery = "{% if clients_query %}{{ clients_query|escapejs }}{% endif %}";
@@ -331,6 +368,8 @@
     else url.searchParams.delete("q");
     if (routerFilter) url.searchParams.set("router", routerFilter);
     else url.searchParams.delete("router");
+    if (clientsSort && clientsSort !== "used") url.searchParams.set("sort", clientsSort);
+    else url.searchParams.delete("sort");
     url.searchParams.delete("page");
     if (listHost) listHost.classList.add("is-search-loading");
     fetch(url.toString(), {
@@ -496,13 +535,35 @@
       "is-auth-failed",
       "is-reachable"
     );
-    var connected = status === "connected" || (!status && !!online);
-    el.classList.add(connected ? "is-connected" : "is-disconnected");
+    var state = (status || "").toLowerCase();
+    if (!state) state = online ? "connected" : "disconnected";
     var label = el.querySelector(".mikrotik-link-label");
-    if (label) label.textContent = connected ? "Connected" : "Disconnected";
-    el.title = connected
-      ? "System can reach this MikroTik remotely"
-      : "System cannot reach this MikroTik remotely";
+    if (state === "connected") {
+      el.classList.add("is-connected");
+      if (label) label.textContent = "ISP online";
+      el.title = "ISP MikroTik is online (this is not client-router remote access)";
+    } else if (state === "limited" || state === "auth_failed" || state === "reachable") {
+      // Orange = reachable but not fully online (ping-only / auth / unconfirmed API).
+      el.classList.add("is-limited");
+      if (label) {
+        label.textContent =
+          state === "limited"
+            ? "Ping only"
+            : state === "auth_failed"
+              ? "Login rejected"
+              : "Reachable";
+      }
+      el.title =
+        state === "limited"
+          ? "ISP MikroTik answers ping but API is blocked"
+          : state === "auth_failed"
+            ? "ISP MikroTik reachable but API login was rejected"
+            : "ISP MikroTik reachable but API status is unconfirmed";
+    } else {
+      el.classList.add("is-disconnected");
+      if (label) label.textContent = "ISP offline";
+      el.title = "ISP MikroTik is offline";
+    }
   }
 
   function refreshStatus(force) {
@@ -558,12 +619,122 @@
   });
 })();
 </script>
+<script>
+(function () {
+  if (!document.querySelector("[data-client-remote]")) return;
+  var remoteUrl = "{% url 'core:clients_remote_access' %}";
+  var timer = null;
+  var started = false;
+  var inFlight = false;
+
+  function setRemoteStatus(el, status, label, title) {
+    if (!el) return;
+    el.classList.remove(
+      "is-checking",
+      "is-connected",
+      "is-disconnected",
+      "is-limited",
+      "is-auth-failed",
+      "is-reachable",
+      "is-unavailable"
+    );
+    var state = (status || "").toLowerCase();
+    var textEl = el.querySelector(".mikrotik-link-label");
+    if (state === "ready") {
+      el.classList.add("is-connected");
+      if (textEl) textEl.textContent = label || "Ready";
+      el.title = title || "Client router web UI is reachable — Open client router should work";
+    } else if (state === "blocked") {
+      el.classList.add("is-limited");
+      if (textEl) textEl.textContent = label || "Blocked";
+      el.title = title || "Client is online but remote management is blocked from the ISP side";
+    } else if (state === "unavailable") {
+      el.classList.add("is-unavailable");
+      if (textEl) textEl.textContent = label || "N/A";
+      el.title = title || "This client has no CPE to open remotely";
+    } else {
+      el.classList.add("is-disconnected");
+      if (textEl) textEl.textContent = label || "Offline";
+      el.title = title || "Client router is offline or unreachable for remote access";
+    }
+  }
+
+  function visibleRemoteIds() {
+    var ids = [];
+    document.querySelectorAll("[data-client-remote]").forEach(function (el) {
+      var id = el.getAttribute("data-client-remote");
+      if (id && ids.indexOf(id) < 0) ids.push(id);
+    });
+    return ids;
+  }
+
+  function refreshRemote(force) {
+    if (document.hidden || inFlight) return;
+    var ids = visibleRemoteIds();
+    if (!ids.length) return;
+    inFlight = true;
+    var url = remoteUrl + "?ids=" + encodeURIComponent(ids.join(","));
+    if (force) url += "&refresh=1";
+    fetch(url, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data.ok || !data.clients) return;
+        data.clients.forEach(function (item) {
+          document.querySelectorAll('[data-client-remote="' + item.id + '"]').forEach(function (el) {
+            setRemoteStatus(el, item.status || "", item.label || "", item.title || "");
+          });
+        });
+      })
+      .catch(function () {
+        document.querySelectorAll("[data-client-remote]").forEach(function (el) {
+          if (el.classList.contains("is-checking")) {
+            setRemoteStatus(el, "offline", "Unavailable", "Could not check remote access");
+          }
+        });
+      })
+      .finally(function () {
+        inFlight = false;
+      });
+  }
+
+  function startPolling() {
+    if (started) return;
+    started = true;
+    refreshRemote(false);
+    timer = setInterval(function () { refreshRemote(false); }, 60000);
+  }
+
+  if (window.requestIdleCallback) {
+    window.requestIdleCallback(startPolling, { timeout: 1800 });
+  } else {
+    setTimeout(startPolling, 700);
+  }
+  var lastRemoteForceAt = 0;
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) return;
+    var now = Date.now();
+    var force = now - lastRemoteForceAt > 60000;
+    if (force) lastRemoteForceAt = now;
+    refreshRemote(force);
+  });
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) refreshRemote(false);
+  });
+  window.addEventListener("beforeunload", function () {
+    if (timer) clearInterval(timer);
+  });
+})();
+</script>
 {% endif %}
 {% if active_tab == 'pppoe' or active_tab == 'hotspot' %}
 <script>
 (function () {
   var surfUrl = "{% url 'core:clients_surfing' %}";
   var service = "{{ active_tab|escapejs }}";
+  var clientsSort = "{% if clients_sort %}{{ clients_sort|escapejs }}{% else %}used{% endif %}";
   var timer = null;
   var inFlight = false;
 
@@ -587,30 +758,16 @@
     el.title = reason || el.textContent;
   }
 
-  function escapeConnText(value) {
-    return String(value || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
   function applyConnectionBadge(el, connected, reason, routerName, wifiSsid) {
     if (!el) return;
     el.classList.remove("is-checking", "is-surfing", "is-not-surfing", "is-disconnected", "is-device-online", "is-device-offline");
     if (connected) {
       el.classList.add("is-device-online");
-      var name = (routerName || "").trim() || "MikroTik";
+      // Show the Wi‑Fi / client-router name phones join — not the ISP MikroTik.
       var wifi = (wifiSsid || "").trim();
-      if (wifi) {
-        el.innerHTML =
-          '<span class="clients-conn-mikrotik">' + escapeConnText(name) + "</span>" +
-          '<span class="clients-conn-wifi">' + escapeConnText(wifi) + "</span>";
-        el.title = reason || (name + " · " + wifi);
-      } else {
-        el.textContent = name;
-        el.title = reason || (name + " — connected");
-      }
+      var label = wifi || "Hotspot Wi‑Fi";
+      el.textContent = label;
+      el.title = reason || ("Connected to " + label);
     } else {
       el.classList.add("is-device-offline");
       el.textContent = "Disconnected";
@@ -628,13 +785,34 @@
 
   function reorderHotspotRows(byId) {
     if (service !== "hotspot" || !byId) return;
+    // Only re-rank the page when the user asked for live session order,
+    // or when keeping used-% order with session as a tie-breaker.
+    if (clientsSort !== "session" && clientsSort !== "used" && clientsSort !== "used_asc") {
+      return;
+    }
     var tbody = document.querySelector(".clients-list-table.is-hotspot-table tbody")
       || document.querySelector(".clients-list-table-wrap.is-hotspot-table tbody")
       || document.querySelector("#clients-list-host .clients-list-table tbody");
     if (!tbody) return;
     var rows = Array.prototype.slice.call(tbody.querySelectorAll("[data-client-row]"));
     if (rows.length < 2) return;
+    function usedRatio(row) {
+      var raw = row.getAttribute("data-used-ratio");
+      if (raw === null || raw === "") return null;
+      var n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    }
     rows.sort(function (a, b) {
+      if (clientsSort === "used" || clientsSort === "used_asc") {
+        var aRatio = usedRatio(a);
+        var bRatio = usedRatio(b);
+        var aMissing = aRatio === null;
+        var bMissing = bRatio === null;
+        if (aMissing !== bMissing) return aMissing ? 1 : -1;
+        if (!aMissing && aRatio !== bRatio) {
+          return clientsSort === "used_asc" ? (aRatio - bRatio) : (bRatio - aRatio);
+        }
+      }
       var aBadge = a.querySelector("[data-hotspot-surf]");
       var bBadge = b.querySelector("[data-hotspot-surf]");
       var aId = aBadge ? aBadge.getAttribute("data-hotspot-surf") : "";
@@ -697,8 +875,8 @@
             el,
             !!item.connected,
             item.connection_reason || "",
-            item.connected_router_name || item.connection_label || "",
-            item.connected_wifi_ssid || ""
+            item.connected_router_name || "",
+            item.connected_wifi_ssid || item.connection_label || ""
           );
         });
         reorderHotspotRows(byId);

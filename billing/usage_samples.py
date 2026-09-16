@@ -830,6 +830,16 @@ def apply_live_usage_overlay(
                 user["devices_connected"] = 0
             user["live_state"] = "offline"
             user["live_label"] = "Offline"
+        # Presence can flip after the sample-based payload is built; keep the
+        # Idle/Low/Medium/High chip in sync with live session + rates.
+        user["usage_level"] = _usage_level_label(
+            data_used_bytes=int(user.get("data_used_bytes") or 0),
+            peak_download_bps=max(
+                int(user.get("peak_download_bps") or 0),
+                down,
+            ),
+            latest_active=bool(user.get("latest_active")),
+        )
 
     summary = payload.setdefault("summary", {})
     if isinstance(summary, dict) and has_live:
