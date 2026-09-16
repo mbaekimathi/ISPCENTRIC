@@ -472,11 +472,54 @@ class ClientRouterProxyTests(TestCase):
     def test_client_page_loads_live_router_data_panel(self):
         response = self.client.get(f"/app/clients/{self.customer.pk}/")
 
-        self.assertContains(response, "Router details")
+        self.assertContains(response, "Client router (CPE)")
+        self.assertContains(response, 'id="client-router-data"')
         self.assertContains(
             response,
             f"/app/clients/{self.customer.pk}/router-data/",
         )
+
+    @patch("core.views.fetch_customer_cpe_web_data")
+    @patch("core.views.probe_customer_cpe_web")
+    def test_router_data_uses_nas_default_cpe_password_when_client_has_none(
+        self, probe, fetch
+    ):
+        self.nas.default_cpe_username = "cpeadmin"
+        self.nas.default_cpe_password = "fleet-default"
+        self.nas.save(update_fields=["default_cpe_username", "default_cpe_password"])
+        self.customer.cpe_password = ""
+        self.customer.cpe_username = ""
+        self.customer.save(update_fields=["cpe_password", "cpe_username"])
+        probe.return_value = {
+            "reachable": True,
+            "port": 80,
+            "cpe_host": "10.20.0.55",
+            "gateway": "10.20.0.1",
+        }
+        fetch.return_value = {
+            "ok": True,
+            "vendor": "Tenda",
+            "model": "Tenda_0C8890",
+            "cpe_host": "10.20.0.55",
+            "status": {"connected": True},
+            "wifi": {"ssid": "Client WiFi"},
+            "wan": {},
+            "system": {},
+            "devices": [],
+            "error": "",
+        }
+
+        response = self.client.get(
+            f"/app/clients/{self.customer.pk}/router-data/?refresh=1"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        fetch.assert_called_once()
+        self.assertEqual(fetch.call_args.kwargs["cpe_password"], "fleet-default")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.cpe_password, "fleet-default")
+        self.assertEqual(self.customer.cpe_username, "cpeadmin")
 
     @patch("core.views.fetch_customer_cpe_web_data")
     @patch("core.views.probe_customer_cpe_web")
@@ -701,7 +744,8 @@ class ClientRouterProxyTests(TestCase):
         self.assertContains(response, 'value="fleet-default"')
         self.assertContains(response, "From NAS default")
         self.assertContains(response, "Save &amp; connect")
-        self.assertContains(response, "requestSubmit")
+        self.assertContains(response, 'data-router-password-form')
+        self.assertContains(response, 'data-start-url')
 
     def test_start_saves_username_and_password_from_operator(self):
         with patch(

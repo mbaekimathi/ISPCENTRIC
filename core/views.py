@@ -240,6 +240,12 @@ CLIENT_SIDEBARS = {
         "items": [
             {"key": "noc", "label": "Ops board", "url_name": "core:noc"},
             {
+                "key": "noc_performance",
+                "label": "Performance",
+                "url_name": "core:noc",
+                "query": "focus=performance",
+            },
+            {
                 "key": "noc_down",
                 "label": "Down routers",
                 "url_name": "core:noc",
@@ -247,7 +253,7 @@ CLIENT_SIDEBARS = {
             },
             {
                 "key": "noc_impact",
-                "label": "Client impact",
+                "label": "Client quality",
                 "url_name": "core:noc",
                 "query": "focus=impact",
             },
@@ -327,9 +333,15 @@ CLIENT_SIDEBARS = {
             },
             {
                 "key": "noc_impact",
-                "label": "NOC impact",
+                "label": "NOC client quality",
                 "url_name": "core:noc",
                 "query": "focus=impact",
+            },
+            {
+                "key": "noc_performance",
+                "label": "NOC performance",
+                "url_name": "core:noc",
+                "query": "focus=performance",
             },
             {
                 "key": "clients_pppoe",
@@ -724,6 +736,14 @@ def _finalize_uplink_apply_result(router: MikroTikRouter, result: dict) -> dict:
         )
         result["message"] = (result.get("message") or "").rstrip() + note
     return result
+
+
+def _resolve_customer_cpe_probe_credentials(customer) -> tuple[str, str, str, str]:
+    """Resolve CPE login for automated probe/fetch (client row, then NAS default)."""
+    default_user, default_pass = customer_cpe_default_credentials(customer)
+    user = (customer.cpe_username or "").strip() or default_user or "admin"
+    password = (customer.cpe_password or "").strip() or default_pass
+    return user, password, default_user, default_pass
 
 
 def _cpe_router_failure_class(probe: dict | None = None, *, nas_ok: bool = True) -> str:
@@ -5398,22 +5418,25 @@ def noc(request):
     org = resolve_organization(request.user, request)
     board = build_noc_board(org)
     focus = (request.GET.get("focus") or "").strip().lower()
-    if focus not in {"", "down", "impact", "faults"}:
+    if focus not in {"", "down", "impact", "faults", "performance"}:
         focus = ""
     sidebar_active = {
         "down": "noc_down",
         "impact": "noc_impact",
         "faults": "noc_faults",
+        "performance": "noc_performance",
     }.get(focus, "noc")
     page_titles = {
         "down": "Down routers",
-        "impact": "Client impact",
+        "impact": "Client quality",
         "faults": "Open faults",
+        "performance": "MikroTik performance",
     }
     page_subs = {
         "down": "Outage and degraded routers ready for triage and reconnect.",
-        "impact": "Dialed PPPoE clients on active packages still without internet.",
+        "impact": "Stuck sessions and dialed clients running below package speed.",
         "faults": "Open field fault tickets with technician assignment.",
+        "performance": "How each MikroTik and its clients are performing, plus what to improve.",
     }
     return render(
         request,
@@ -13611,6 +13634,10 @@ def client_cpe_wifi(request, customer_id: int):
     firewall_blocked = False
     prep_steps: list = []
     needs_password = False
+    saved_cpe_pass = (customer.cpe_password or "").strip()
+    cpe_user, cpe_pass, default_cpe_user, default_cpe_pass = (
+        _resolve_customer_cpe_probe_credentials(customer)
+    )
 
     # Prefer the consumer CPE web API (Tenda, etc.) — this is where most
     # subscriber routers expose the live SSID/password/radio settings.
@@ -13620,6 +13647,9 @@ def client_cpe_wifi(request, customer_id: int):
         nas.username,
         nas.password or "",
         customer=customer,
+        cpe_username=cpe_user,
+        cpe_password=cpe_pass,
+        pppoe_password=customer.pppoe_password or "",
         timeout=6.0,
     )
     session_active = bool(probe.get("session_active"))
@@ -13630,7 +13660,7 @@ def client_cpe_wifi(request, customer_id: int):
             nas.username,
             nas.password or "",
             customer=customer,
-            cpe_password=customer.cpe_password or "",
+            cpe_password=cpe_pass,
             session_cookies=cache.get(f"cpe-web-customer:{org.pk}:{customer.pk}") or {},
             cpe_port=int(probe["port"]),
             timeout=8.0,
@@ -13662,8 +13692,8 @@ def client_cpe_wifi(request, customer_id: int):
             nas.username,
             nas.password or "",
             customer=customer,
-            cpe_username=customer.cpe_username or "admin",
-            cpe_password=customer.cpe_password or "",
+            cpe_username=cpe_user,
+            cpe_password=cpe_pass,
             pppoe_password=customer.pppoe_password or "",
             timeout=6.0,
             auto_enable=(request.GET.get("setup") or "").strip() in {"1", "true", "yes"},
@@ -13705,7 +13735,7 @@ def client_cpe_wifi(request, customer_id: int):
             hint = hint or live.get("hint") or ""
             err_l = f"{error} {hint}".lower()
             needs_password = needs_password or (
-                not (customer.cpe_password or "").strip()
+                not cpe_pass
                 or "password" in err_l
                 or "login" in err_l
                 or "auth" in err_l
@@ -13727,7 +13757,18 @@ def client_cpe_wifi(request, customer_id: int):
     elif not needs_password and session_active and not firewall_blocked:
         # Reachable CPE but neither web nor API could authenticate — ask for
         # the router admin password so remote access can use the correct one.
-        needs_password = not (customer.cpe_password or "").strip() or bool(error)
+        needs_password = not cpe_pass or bool(error)
+
+    if auth_ok and not (customer.cpe_password or "").strip() and cpe_pass:
+        cred_fields: list[str] = []
+        if cpe_pass != (customer.cpe_password or ""):
+            customer.cpe_password = cpe_pass
+            cred_fields.append("cpe_password")
+        if cpe_user and cpe_user != (customer.cpe_username or "").strip():
+            customer.cpe_username = cpe_user
+            cred_fields.append("cpe_username")
+        if cred_fields:
+            customer.save(update_fields=cred_fields)
 
     payload = {
         "ok": True,
@@ -13751,7 +13792,8 @@ def client_cpe_wifi(request, customer_id: int):
         "firewall_blocked": firewall_blocked,
         "prep_steps": prep_steps,
         "needs_password": bool(needs_password) and not auth_ok,
-        "cpe_username": (customer.cpe_username or "").strip() or "admin",
+        "cpe_username": cpe_user,
+        "uses_nas_default_password": bool(default_cpe_pass) and not bool(saved_cpe_pass),
     }
     cache.set(cache_key, payload, 12 if auth_ok else 5)
     return JsonResponse(payload)
@@ -13865,6 +13907,9 @@ def client_cpe_router_data(request, customer_id: int):
         return JsonResponse(payload)
 
     cpe_host = (probe.get("cpe_host") or "").strip()
+    cpe_user, cpe_pass, default_cpe_user, default_cpe_pass = (
+        _resolve_customer_cpe_probe_credentials(customer)
+    )
     fetch_timeout = 6.0 if devices_only else 10.0
     payload = fetch_customer_cpe_web_data(
         nas_host,
@@ -13874,16 +13919,30 @@ def client_cpe_router_data(request, customer_id: int):
         cpe_scope=customer_cpe_proxy_scope(customer),
         cpe_address=cpe_host,
         gateway_ip=(probe.get("gateway") or "").strip(),
-        cpe_password=customer.cpe_password or "",
+        cpe_password=cpe_pass,
         session_cookies=cache.get(f"cpe-web-customer:{org.pk}:{customer.pk}") or {},
         cpe_port=int(probe["port"]),
         timeout=fetch_timeout,
         groups=("devices",) if devices_only else None,
     )
     payload["port"] = int(probe["port"])
+    error_l = (payload.get("error") or "").lower()
     payload["needs_password"] = not payload.get("ok") and (
-        "password" in (payload.get("error") or "").lower()
+        not cpe_pass
+        or "password" in error_l
+        or "rejected" in error_l
+        or "login" in error_l
     )
+    if payload.get("ok") and not (customer.cpe_password or "").strip() and cpe_pass:
+        update_fields: list[str] = []
+        if cpe_pass != (customer.cpe_password or ""):
+            customer.cpe_password = cpe_pass
+            update_fields.append("cpe_password")
+        if cpe_user and cpe_user != (customer.cpe_username or "").strip():
+            customer.cpe_username = cpe_user
+            update_fields.append("cpe_username")
+        if update_fields:
+            customer.save(update_fields=update_fields)
     if payload.get("ok") and not devices_only:
         wifi = payload.get("wifi") or {}
         ssid = (wifi.get("ssid") or "").strip()
@@ -14381,11 +14440,15 @@ def clients_general_usage(request):
     tab = (request.GET.get("tab") or "pppoe").strip().lower()
     if tab not in {"pppoe", "hotspot"}:
         tab = "pppoe"
+    view_mode = (request.GET.get("view") or "visual").strip().lower()
+    if view_mode not in {"visual", "raw"}:
+        view_mode = "visual"
     router_ctx = _clients_usage_router_filter(request, org)
     filter_qs = usage_filter_querystring(
         usage_filter,
         extra={
             "tab": tab,
+            "view": view_mode,
             "router": router_ctx.get("clients_router_param") or "",
         },
     )
@@ -14393,6 +14456,7 @@ def clients_general_usage(request):
         usage_filter,
         extra={
             "tab": "pppoe",
+            "view": view_mode,
             "router": router_ctx.get("clients_router_param") or "",
         },
     )
@@ -14400,12 +14464,29 @@ def clients_general_usage(request):
         usage_filter,
         extra={
             "tab": "hotspot",
+            "view": view_mode,
+            "router": router_ctx.get("clients_router_param") or "",
+        },
+    )
+    filter_qs_visual = usage_filter_querystring(
+        usage_filter,
+        extra={
+            "tab": tab,
+            "view": "visual",
+            "router": router_ctx.get("clients_router_param") or "",
+        },
+    )
+    filter_qs_raw = usage_filter_querystring(
+        usage_filter,
+        extra={
+            "tab": tab,
+            "view": "raw",
             "router": router_ctx.get("clients_router_param") or "",
         },
     )
     filter_qs_clear_router = usage_filter_querystring(
         usage_filter,
-        extra={"tab": tab},
+        extra={"tab": tab, "view": view_mode},
     )
     filter_qs_client = usage_filter_querystring(usage_filter)
 
@@ -14448,8 +14529,15 @@ def clients_general_usage(request):
             },
             "summary": {},
             "top_users": [],
-            "top_chart": {"labels": [], "data_used_mb": []},
-            "error": "No organization is linked to this workspace.",
+        "top_chart": {
+            "labels": [],
+            "data_used_mb": [],
+            "online_ratio": [],
+            "downtime_count": [],
+            "live_download_bps": [],
+        },
+        "level_chart": {"labels": ["High", "Medium", "Low", "Idle"], "counts": [0, 0, 0, 0]},
+        "error": "No organization is linked to this workspace.",
             "range_label": usage_filter["label"],
             "requested_range_label": usage_filter["label"],
             "users_partial": False,
@@ -14471,6 +14559,7 @@ def clients_general_usage(request):
             page_kicker="Subscribers",
             page_subtitle="PPPoE and Hotspot usage analytics by service.",
             active_tab=tab,
+            view_mode=view_mode,
             trend_hours=effective_hours,
             requested_hours=requested,
             auto_widened=bool(trends.get("auto_widened")),
@@ -14481,6 +14570,8 @@ def clients_general_usage(request):
             usage_filter_qs=filter_qs,
             usage_filter_qs_pppoe=filter_qs_pppoe,
             usage_filter_qs_hotspot=filter_qs_hotspot,
+            usage_filter_qs_visual=filter_qs_visual,
+            usage_filter_qs_raw=filter_qs_raw,
             usage_filter_qs_clear_router=filter_qs_clear_router,
             usage_filter_qs_client=filter_qs_client,
             trends=trends,

@@ -1,12 +1,15 @@
 """NOC ops console tests."""
 
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from accounts.models import FaultTicket, Organization
-from billing.models import Customer
+from billing.models import BillingPlan, Customer, CustomerUsageSample
 from core.models import MikroTikRouter
 from core.noc_board import build_noc_board
 
@@ -32,6 +35,13 @@ class NocBoardTests(TestCase):
             password="secret",
             location="Westlands",
         )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="10 Mbps Home",
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            price=1000,
+        )
         self.customer = Customer.objects.create(
             organization=self.org,
             full_name="Alice Client",
@@ -40,6 +50,7 @@ class NocBoardTests(TestCase):
             service_type=Customer.ServiceType.PPPOE,
             status=Customer.Status.ACTIVE,
             router=self.router,
+            plan=self.plan,
             pppoe_username="alice",
         )
 
@@ -81,15 +92,95 @@ class NocBoardTests(TestCase):
         self.assertTrue(any(a["kind"] == "fault" for a in board["alarms"]))
         self.assertEqual(board["sites"][0]["label"], "Westlands")
         self.assertTrue(board["timeline"])
+        self.assertIn("performance", board["routers"][0])
+        self.assertIn("improvements", board)
+        self.assertIn("non_optimal_clients", board)
+        self.assertTrue(
+            any(i["kind"] == "router_down" for i in board["improvements"])
+        )
+
+    def test_build_noc_board_flags_underperforming_clients(self):
+        cache.set(
+            f"mikrotik_status:{self.org.pk}",
+            [
+                {
+                    "id": self.router.pk,
+                    "name": "Edge A",
+                    "host": "10.9.0.10",
+                    "online": True,
+                    "status": "connected",
+                    "error": "",
+                    "via": "api",
+                }
+            ],
+            60,
+        )
+        now = timezone.now()
+        # Peak ~0.5 Mbps on a 10 Mbps plan over several active samples.
+        for minutes_ago in (1, 3, 5, 8):
+            CustomerUsageSample.objects.create(
+                customer=self.customer,
+                organization=self.org,
+                sampled_at=now - timedelta(minutes=minutes_ago),
+                session_active=True,
+                uptime_seconds=600,
+                download_bps=500_000,
+                upload_bps=50_000,
+                bytes_in=10_000_000,
+                bytes_out=1_000_000,
+            )
+        cache.set(
+            f"org_live_usage:v1:{self.org.pk}",
+            {
+                "ok": True,
+                "at": now.isoformat(),
+                "pppoe": {
+                    self.customer.pk: {
+                        "session_active": True,
+                        "download_bps": 400_000,
+                        "upload_bps": 40_000,
+                        "gadgets": 1,
+                    }
+                },
+                "hotspot": {},
+            },
+            120,
+        )
+
+        board = build_noc_board(self.org)
+        self.assertTrue(board["ok"])
+        self.assertGreaterEqual(board["summary"]["clients_underperforming"], 1)
+        self.assertGreaterEqual(board["summary"]["clients_non_optimal"], 1)
+        self.assertTrue(board["non_optimal_clients"])
+        row = board["non_optimal_clients"][0]
+        self.assertEqual(row["kind"], "underperforming")
+        self.assertEqual(row["id"], self.customer.pk)
+        perf = board["routers"][0]["performance"]
+        self.assertGreaterEqual(perf["underperforming_count"], 1)
+        self.assertGreaterEqual(perf["sessions_active"], 1)
+        self.assertTrue(
+            any(
+                i["kind"] in {"underperforming", "client"}
+                for i in board["improvements"]
+            )
+        )
 
     def test_noc_page_and_summary_require_owner_workspace(self):
         self.client.force_login(self.owner)
         page = self.client.get(reverse("core:noc"))
         self.assertEqual(page.status_code, 200)
         self.assertContains(page, "Ops console")
-        self.assertContains(page, "data-noc-view=\"ops\"")
+        self.assertContains(page, 'data-noc-view="ops"')
         self.assertContains(page, "noc-mode-tabs")
+        self.assertContains(page, "Performance")
         self.assertNotContains(page, "workspace-dash-kpi")
+
+        performance = self.client.get(reverse("core:noc") + "?focus=performance")
+        self.assertEqual(performance.status_code, 200)
+        self.assertContains(performance, "MikroTik performance")
+        self.assertContains(performance, 'data-noc-view="performance"')
+        self.assertContains(performance, "Areas to improve")
+        self.assertContains(performance, "Not optimally running")
 
         down = self.client.get(reverse("core:noc") + "?focus=down")
         self.assertEqual(down.status_code, 200)
@@ -100,10 +191,10 @@ class NocBoardTests(TestCase):
 
         impact = self.client.get(reverse("core:noc") + "?focus=impact")
         self.assertEqual(impact.status_code, 200)
-        self.assertContains(impact, "Client impact")
+        self.assertContains(impact, "Client quality")
         self.assertContains(impact, 'data-noc-view="impact"')
-        self.assertContains(impact, "Stuck sessions")
-        self.assertContains(impact, "Impact groups")
+        self.assertContains(impact, "Non-optimal sessions")
+        self.assertContains(impact, "Quality groups")
 
         faults = self.client.get(reverse("core:noc") + "?focus=faults")
         self.assertEqual(faults.status_code, 200)
@@ -119,6 +210,9 @@ class NocBoardTests(TestCase):
         self.assertIn("alarms", payload)
         self.assertIn("sites", payload)
         self.assertIn("timeline", payload)
+        self.assertIn("non_optimal_clients", payload)
+        self.assertIn("improvements", payload)
+        self.assertIn("clients_non_optimal", payload["summary"])
 
     def test_mikrotik_nav_includes_noc_not_workspace(self):
         self.client.force_login(self.owner)

@@ -4,38 +4,23 @@
 
 {% block client_content %}
 <div
-  class="client-detail-page client-usage-analysis-page clients-general-usage-page is-tab-{{ active_tab|default:'pppoe' }}"
+  class="client-detail-page clients-general-usage-page clients-usage-table-page is-tab-{{ active_tab|default:'pppoe' }} is-view-{{ view_mode|default:'visual' }}"
   data-active-tab="{{ active_tab|default:'pppoe' }}"
+  data-view-mode="{{ view_mode|default:'visual' }}"
 >
   <section class="clients-usage-workspace">
     <header class="clients-usage-workspace-head">
       <div class="clients-usage-workspace-title">
-        <div class="clients-usage-workspace-brand">
-          <span class="clients-usage-workspace-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8">
-              <path d="M4 19V9m5 10V5m5 14v-7m5 7V8" stroke-linecap="round"/>
-            </svg>
-          </span>
-          <div>
-            <p class="clients-usage-workspace-kicker">Analytics</p>
-            <h1>General usage</h1>
-          </div>
-        </div>
+        <p class="clients-usage-workspace-kicker">Subscribers</p>
+        <h1>General usage</h1>
         <p class="clients-usage-workspace-lead">
-          Period data used is counter growth after each renew/reset baseline (not MikroTik session peaks) for
           {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %}
           · {{ range_label|default:trend_hours }}{% if router_filter_label %} · {{ router_filter_label }}{% elif clients_router_param == "none" %} · Unassigned{% endif %}.
         </p>
       </div>
       <div class="clients-usage-workspace-actions">
-        <a class="btn btn-ghost btn-sm clients-usage-hero-btn" href="{% url 'core:my_clients' %}?tab={{ active_tab|default:'pppoe' }}">
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm13 10v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-          Clients
-        </a>
-        <button type="button" class="btn btn-primary btn-sm clients-usage-hero-btn" data-usage-refresh>
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-2.6-6.3M21 3v6h-6"/></svg>
-          Refresh
-        </button>
+        <a class="btn btn-ghost btn-sm" href="{% url 'core:my_clients' %}?tab={{ active_tab|default:'pppoe' }}">Clients</a>
+        <button type="button" class="btn btn-primary btn-sm" data-usage-refresh>Refresh</button>
       </div>
     </header>
 
@@ -47,9 +32,6 @@
             href="?{{ usage_filter_qs_pppoe }}"
             {% if active_tab == 'pppoe' %}aria-current="page"{% endif %}
           >
-            <span class="clients-seg-ico" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
-            </span>
             <span class="clients-seg-label">PPPoE</span>
           </a>
           <a
@@ -57,15 +39,30 @@
             href="?{{ usage_filter_qs_hotspot }}"
             {% if active_tab == 'hotspot' %}aria-current="page"{% endif %}
           >
-            <span class="clients-seg-ico" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
-            </span>
             <span class="clients-seg-label">Hotspot</span>
+          </a>
+        </nav>
+
+        <nav class="clients-seg clients-usage-view-tabs" aria-label="Usage view">
+          <a
+            class="clients-seg-item{% if view_mode != 'raw' %} is-active{% endif %}"
+            href="?{{ usage_filter_qs_visual }}"
+            {% if view_mode != 'raw' %}aria-current="page"{% endif %}
+          >
+            <span class="clients-seg-label">Visual analytics</span>
+          </a>
+          <a
+            class="clients-seg-item{% if view_mode == 'raw' %} is-active{% endif %}"
+            href="?{{ usage_filter_qs_raw }}"
+            {% if view_mode == 'raw' %}aria-current="page"{% endif %}
+          >
+            <span class="clients-seg-label">Raw data</span>
           </a>
         </nav>
 
         <form class="clients-router-filter clients-usage-router-filter" method="get" action="{% url 'core:clients_general_usage' %}">
           <input type="hidden" name="tab" value="{{ active_tab|default:'pppoe' }}">
+          <input type="hidden" name="view" value="{{ view_mode|default:'visual' }}">
           <input type="hidden" name="range" value="{{ usage_filter.range }}">
           {% if usage_filter.range == 'time' %}
             <input type="hidden" name="time" value="{{ usage_filter.time }}">
@@ -85,7 +82,6 @@
               id="usage-router-filter"
               name="router"
               class="clients-router-filter-select"
-              data-usage-router-filter
               aria-label="Filter usage by MikroTik router"
               onchange="this.form.submit()"
             >
@@ -106,7 +102,6 @@
       <div class="clients-usage-range-wrap">
         {% include "core/includes/usage_range_filter.html" with usage_filter=usage_filter usage_filter_id="clients-usage-range-filter" usage_filter_action="" %}
       </div>
-      {# Preserve tab + router when applying the range filter (hidden fields injected via small form merge) #}
       <script>
       (function () {
         var form = document.getElementById("clients-usage-range-filter");
@@ -122,6 +117,7 @@
           form.appendChild(input);
         }
         addHidden("tab", "{{ active_tab|default:'pppoe'|escapejs }}");
+        addHidden("view", "{{ view_mode|default:'visual'|escapejs }}");
         {% if clients_router_param %}addHidden("router", "{{ clients_router_param|escapejs }}");{% endif %}
       })();
       </script>
@@ -139,167 +135,139 @@
           Little or no traffic in {{ requested_range_label|default:requested_hours }}; showing {{ range_label|default:trend_hours }} instead.
         </p>
       {% endif %}
-
-      <details class="clients-usage-tracking-panel" data-usage-tracking-panel{% if clients_router_param %} open{% endif %}>
-        <summary class="clients-usage-tracking-summary">
-          <span class="clients-usage-tracking-summary-copy">
-            <span class="clients-usage-tracking-kicker">Tracking</span>
-            <strong>Reset usage &amp; renewal date</strong>
-          </span>
-          <span class="clients-usage-tracking-summary-hint">
-            {% if clients_router_param %}Bulk actions for this MikroTik{% else %}Select a MikroTik for bulk actions{% endif %}
-          </span>
-        </summary>
-        <div class="clients-usage-tracking-body">
-          <p class="clients-usage-tracking-lead">
-            Restart data-used counters after a package renewal, or set the renewal date so totals stay accurate.
-            {% if router_filter_label %}
-              Bulk actions apply to clients on <strong>{{ router_filter_label }}</strong>.
-            {% elif clients_router_param == "none" %}
-              Bulk actions apply to unassigned clients.
-            {% else %}
-              Filter by MikroTik above, or use Reset / Renewed on each client row.
-            {% endif %}
-          </p>
-          <div class="clients-usage-tracking-actions">
-            {% if clients_router_param %}
-              <button type="button" class="btn btn-ghost btn-sm" data-usage-reset-router>
-                Reset all on this MikroTik
-              </button>
-              <button type="button" class="btn btn-primary btn-sm" data-usage-renew-router>
-                Set renewed date for MikroTik
-              </button>
-            {% else %}
-              <p class="clients-usage-tracking-hint">Select a MikroTik above for bulk actions, or use row actions below.</p>
-            {% endif %}
-          </div>
-          <p class="clients-usage-tracking-status" data-usage-tracking-status hidden role="status"></p>
-        </div>
-      </details>
     </div>
 
-    <section class="clients-usage-overview" id="usage-overview" data-cat="live">
-      <header class="clients-usage-section-head clients-usage-section-head-inline">
-        <div>
-          <h2>{% if active_tab == 'hotspot' %}Hotspot summary{% else %}PPPoE summary{% endif %}</h2>
-          <p class="clients-usage-section-meta" data-usage-summary-copy>
-            Live presence and sampled totals for the selected window.
-          </p>
-        </div>
-      </header>
-
-      <dl class="client-kv-row client-usage-stats clients-usage-stat-grid" id="usage-summary">
-        <div class="client-kv client-usage-stat" data-ico="clients">
-          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg></span>Clients</dt>
-          <dd><strong data-sum="clients">—</strong><span><span data-sum="clients-tracked">—</span> with samples</span></dd>
-        </div>
-        <div class="client-kv client-usage-stat" data-ico="surf">
-          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Surfing now</dt>
-          <dd><strong data-sum="surfing-now">—</strong><span><span data-sum="online-now">—</span> dialed in</span></dd>
-        </div>
-        <div class="client-kv client-usage-stat" data-ico="uptime">
-          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Window uptime</dt>
-          <dd><strong data-sum="online">—</strong><span>samples online</span></dd>
-        </div>
-        <div class="client-kv client-usage-stat" data-ico="down">
-          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 4h2v10.2l3.3-3.3 1.4 1.4L12 19l-5.7-5.7 1.4-1.4L11 14.2Z"/></svg></span>Peak download</dt>
-          <dd><strong data-sum="peak-down">—</strong><span>Highest rate</span></dd>
-        </div>
-        <div class="client-kv client-usage-stat" data-ico="data">
-          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data used</dt>
-          <dd><strong data-sum="data">—</strong><span>This window</span></dd>
-        </div>
-        <div class="client-kv client-usage-stat" data-ico="top">
-          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Highest user</dt>
-          <dd><strong data-sum="top-user">—</strong><span data-sum="top-user-data">Most data</span></dd>
-        </div>
-        {% if active_tab == 'hotspot' %}
-        <div class="client-kv client-usage-stat" data-ico="gadgets">
-          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 6h16v12H4Zm2 2v8h12V8Z"/></svg></span>Gadgets surfing</dt>
-          <dd><strong data-sum="gadgets">—</strong><span>Active now</span></dd>
-        </div>
-        {% endif %}
-      </dl>
-    </section>
-
     <section
-      class="clients-usage-charts"
-      id="usage-charts"
-      data-cat="live"
+      class="clients-usage-summary-strip"
+      id="usage-overview"
       data-trends-url="{{ trends_url }}"
       data-filter-qs="{{ usage_filter_qs|escape }}"
       data-tab="{{ active_tab|default:'pppoe' }}"
+      data-view="{{ view_mode|default:'visual' }}"
       data-router="{% if clients_router_param %}{{ clients_router_param|escape }}{% endif %}"
       data-range-label="{{ range_label|default:trend_hours|escape }}"
     >
+      <div class="clients-usage-summary-item">
+        <span class="clients-usage-summary-label">Clients</span>
+        <strong data-sum="clients">—</strong>
+        <small><span data-sum="clients-tracked">—</span> tracked</small>
+      </div>
+      <div class="clients-usage-summary-item">
+        <span class="clients-usage-summary-label">Surfing</span>
+        <strong data-sum="surfing-now">—</strong>
+        <small><span data-sum="online-now">—</span> dialed in</small>
+      </div>
+      <div class="clients-usage-summary-item">
+        <span class="clients-usage-summary-label">Window uptime</span>
+        <strong data-sum="online">—</strong>
+        <small>samples online</small>
+      </div>
+      <div class="clients-usage-summary-item">
+        <span class="clients-usage-summary-label">Data used</span>
+        <strong data-sum="data">—</strong>
+        <small>This window</small>
+      </div>
+      <div class="clients-usage-summary-item">
+        <span class="clients-usage-summary-label">Peak download</span>
+        <strong data-sum="peak-down">—</strong>
+        <small>Highest rate</small>
+      </div>
+      <div class="clients-usage-summary-item">
+        <span class="clients-usage-summary-label">Top user</span>
+        <strong data-sum="top-user">—</strong>
+        <small data-sum="top-user-data">Most data</small>
+      </div>
+      {% if active_tab == 'hotspot' %}
+      <div class="clients-usage-summary-item">
+        <span class="clients-usage-summary-label">Gadgets</span>
+        <strong data-sum="gadgets">—</strong>
+        <small>Active now</small>
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="clients-usage-visual-panel" data-usage-panel="visual"{% if view_mode == 'raw' %} hidden{% endif %}>
       <header class="clients-usage-section-head clients-usage-section-head-inline">
         <div>
-          <h2>Charts</h2>
-          <p class="clients-usage-section-meta">Presence, throughput, traffic, and top users.</p>
+          <h2>Visual analytics</h2>
+          <p class="clients-usage-section-meta">
+            Full-window presence, throughput, traffic, usage mix, and ranked clients for
+            {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %}.
+          </p>
         </div>
       </header>
 
-      <div class="client-usage-chart-grid clients-usage-chart-grid">
+      <div class="client-usage-chart-grid clients-usage-chart-grid clients-usage-visual-grid">
         <article class="client-usage-chart-card">
           <header>
-            <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Presence</p>
             <h3>Online clients</h3>
             <p>Active {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} sessions per interval.</p>
           </header>
           <div class="client-usage-chart-wrap">
-            <canvas id="chart-online" height="220"></canvas>
+            <canvas id="chart-online" height="240"></canvas>
           </div>
         </article>
 
         <article class="client-usage-chart-card">
           <header>
-            <p class="client-cat client-cat-access"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>Throughput</p>
             <h3>Download &amp; upload</h3>
             <p>Combined live speed samples (kbps).</p>
           </header>
           <div class="client-usage-chart-wrap">
-            <canvas id="chart-throughput" height="220"></canvas>
+            <canvas id="chart-throughput" height="240"></canvas>
           </div>
         </article>
 
         <article class="client-usage-chart-card">
           <header>
-            <p class="client-cat client-cat-billing"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Traffic</p>
             <h3>Data transferred</h3>
             <p>Counter growth between samples after each usage baseline (MB).</p>
           </header>
           <div class="client-usage-chart-wrap">
-            <canvas id="chart-data" height="220"></canvas>
+            <canvas id="chart-data" height="240"></canvas>
           </div>
         </article>
 
-        <article class="client-usage-chart-card clients-usage-chart-card-rank">
+        <article class="client-usage-chart-card">
           <header>
-            <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Top users</p>
-            <h3>Highest data users</h3>
-            <p>Top 10 by period data used (not session peak).</p>
+            <h3>Usage mix</h3>
+            <p>Clients by usage level in this window.</p>
           </header>
           <div class="client-usage-chart-wrap">
-            <canvas id="chart-top" height="220"></canvas>
+            <canvas id="chart-levels" height="240"></canvas>
+          </div>
+        </article>
+
+        <article class="client-usage-chart-card clients-usage-chart-card-rank is-wide">
+          <header>
+            <h3>Highest data users</h3>
+            <p>Up to 40 clients by period data used — for capacity and plan decisions.</p>
+          </header>
+          <div class="client-usage-chart-wrap is-tall">
+            <canvas id="chart-top" height="420"></canvas>
+          </div>
+        </article>
+
+        <article class="client-usage-chart-card clients-usage-chart-card-rank is-wide">
+          <header>
+            <h3>Online ratio by client</h3>
+            <p>Same ranked set — who stayed online through the window.</p>
+          </header>
+          <div class="client-usage-chart-wrap is-tall">
+            <canvas id="chart-uptime" height="420"></canvas>
           </div>
         </article>
       </div>
     </section>
 
-    <section class="panel staff-panel staff-panel-solid clients-usage-users-panel tone-{{ active_tab|default:'pppoe' }}">
-      <header class="clients-usage-users-head">
-        <div class="clients-usage-users-title-row">
-          <span class="clients-usage-users-ico" aria-hidden="true">
-            {% if active_tab == 'hotspot' %}
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
-            {% else %}
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
-            {% endif %}
-          </span>
-          <div class="clients-usage-users-copy">
-            <h2>{% if active_tab == 'hotspot' %}Hotspot users{% else %}PPPoE users{% endif %} <span class="clients-usage-users-count" data-users-count>{% if trends.users_total_count %}{{ trends.users_total_count }}{% else %}{{ top_users|length }}{% endif %}</span></h2>
-            <p class="panel-sub" data-users-sort-copy>Highest data usage first{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.</p>
-          </div>
+    <section class="panel staff-panel staff-panel-solid clients-usage-table-panel tone-{{ active_tab|default:'pppoe' }}" data-usage-panel="raw"{% if view_mode != 'raw' %} hidden{% endif %}>
+      <header class="clients-usage-table-head">
+        <div>
+          <h2>
+            {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} raw data
+            <span class="clients-usage-users-count" data-users-count>{% if trends.users_total_count %}{{ trends.users_total_count }}{% else %}{{ top_users|length }}{% endif %}</span>
+          </h2>
+          <p class="panel-sub" data-users-sort-copy>Highest data usage first</p>
         </div>
         <div class="clients-usage-users-sort" role="group" aria-label="Sort users">
           <label class="clients-usage-users-sort-label" for="usage-users-sort">Sort</label>
@@ -314,145 +282,94 @@
         </div>
       </header>
 
-      <div class="clients-usage-users-shell">
-        <div
-          class="clients-usage-users-list"
-          data-top-users-body
-          data-users-table
-          data-show-gadgets="{% if active_tab == 'hotspot' %}1{% else %}0{% endif %}"
-        >
-          {% for user in top_users %}
-            <article
-              class="clients-usage-user-card clients-usage-user-row"
-              data-customer-id="{{ user.customer_id }}"
-              data-level="{{ user.usage_level|default:'Idle'|lower }}"
-              style="--i:{{ forloop.counter0 }}"
-            >
-              <div class="clients-usage-user-card-top">
-                <span class="clients-usage-rank{% if user.rank == 1 %} is-top-1{% elif user.rank == 2 %} is-top-2{% elif user.rank == 3 %} is-top-3{% endif %}">{{ user.rank }}</span>
-                <a class="clients-usage-user-link" href="{% url 'core:client_detail' user.customer_id %}">
-                  <span class="clients-avatar" aria-hidden="true">{{ user.full_name|slice:":1"|upper }}</span>
-                  <span class="clients-usage-user-copy">
-                    <strong class="clients-usage-user-name">{{ user.full_name }}</strong>
-                    <span class="clients-usage-user-meta">
-                      <span class="clients-usage-user-account">{{ user.account_number }}</span>
-                      {% if user.router_name %}<span class="clients-usage-user-sep" aria-hidden="true">·</span><span class="clients-usage-user-router">{{ user.router_name }}</span>{% endif %}
-                      <span class="clients-usage-user-sep" aria-hidden="true">·</span>
-                      <span class="clients-usage-user-devices{% if user.devices_connected %} is-active{% endif %}" title="{% if active_tab == 'hotspot' %}Gadgets with an active Hotspot session{% else %}Dialed CPE on this client's MikroTik{% endif %}">
-                        {% with n=user.devices_connected|default:0 %}{{ n }} device{{ n|pluralize }}{% endwith %}
+      <div class="clients-usage-table-wrap">
+        <table class="clients-usage-data-table" data-users-table data-show-gadgets="{% if active_tab == 'hotspot' %}1{% else %}0{% endif %}">
+          <thead>
+            <tr>
+              <th class="is-rank">#</th>
+              <th>Client</th>
+              <th>Status</th>
+              <th>Data used</th>
+              <th>Live</th>
+              <th>Online</th>
+              <th>Down</th>
+              {% if active_tab == 'hotspot' %}<th>Gadgets</th>{% endif %}
+              <th>Tracking</th>
+              <th class="is-actions"></th>
+            </tr>
+          </thead>
+          <tbody data-top-users-body>
+            {% for user in top_users %}
+              <tr
+                class="clients-usage-data-row"
+                data-customer-id="{{ user.customer_id }}"
+                data-level="{{ user.usage_level|default:'Idle'|lower }}"
+              >
+                <td class="is-rank" data-label="#">{{ user.rank }}</td>
+                <td data-label="Client">
+                  <a class="clients-usage-table-client" href="{% url 'core:client_detail' user.customer_id %}">
+                    <span class="clients-avatar" aria-hidden="true">{{ user.full_name|slice:":1"|upper }}</span>
+                    <span class="clients-usage-table-client-copy">
+                      <strong>{{ user.full_name }}</strong>
+                      <span>
+                        {{ user.account_number }}{% if user.router_name %} · {{ user.router_name }}{% endif %}
                       </span>
                     </span>
-                  </span>
-                </a>
-                <div class="clients-usage-user-badges">
+                  </a>
+                </td>
+                <td data-label="Status">
                   <span
-                    class="clients-usage-online clients-surf-badge {% if user.access_state %}is-{{ user.access_state }}{% elif user.live_active or user.latest_active %}is-surfing{% else %}is-disconnected{% endif %}"
+                    class="clients-surf-badge {% if user.access_state %}is-{{ user.access_state }}{% elif user.live_active or user.latest_active %}is-surfing{% else %}is-disconnected{% endif %}"
                     data-usage-status
                     title="{{ user.access_label|default:user.live_label|default:'' }}"
                   >
-                    <span class="clients-usage-online-dot" aria-hidden="true"></span>
                     <span data-usage-status-label>{% if user.access_label %}{{ user.access_label }}{% elif user.live_active or user.latest_active %}Surfing{% else %}Offline{% endif %}</span>
                   </span>
                   <span class="clients-usage-level is-{{ user.usage_level|default:'Idle'|lower }}">{{ user.usage_level|default:"Idle" }}</span>
-                  <span class="clients-usage-online-ratio">{{ user.online_ratio|default:0 }}% up</span>
-                </div>
-                <div class="clients-usage-row-actions">
-                  <a class="clients-usage-view-btn" href="{% url 'core:client_usage_analysis' user.customer_id %}{% if usage_filter_qs_client %}?{{ usage_filter_qs_client }}{% endif %}">
-                    <span>Usage</span>
-                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
-                  </a>
-                  <div class="clients-usage-track-actions">
-                    <button type="button" class="clients-usage-track-link" data-usage-reset-one data-customer-id="{{ user.customer_id }}" data-customer-name="{{ user.full_name }}">Reset</button>
-                    <button type="button" class="clients-usage-track-link" data-usage-renew-one data-customer-id="{{ user.customer_id }}" data-customer-name="{{ user.full_name }}" data-package-start="{{ user.package_start|default:'' }}">Renewed</button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="clients-usage-user-metrics" aria-label="Usage metrics">
-                <div class="clients-usage-metric is-data">
-                  <span class="clients-usage-metric-label">Data</span>
-                  <div class="clients-usage-data-cell">
-                    <strong class="clients-usage-data-value" data-bytes="{{ user.data_used_bytes|default:0 }}">—</strong>
-                    <span class="clients-usage-data-bar" aria-hidden="true"><span class="clients-usage-data-bar-fill"></span></span>
-                  </div>
-                </div>
-                <div class="clients-usage-metric">
-                  <span class="clients-usage-metric-label">Live</span>
-                  <div class="clients-usage-rate-cell clients-usage-live-rate" data-live-rate>
+                </td>
+                <td data-label="Data used">
+                  <strong class="clients-usage-data-value" data-bytes="{{ user.data_used_bytes|default:0 }}">—</strong>
+                </td>
+                <td data-label="Live">
+                  <div class="clients-usage-rate-stack" data-live-rate>
                     <strong data-live-down data-bps="{{ user.live_download_bps|default:0 }}">—</strong>
                     <small data-live-up data-bps="{{ user.live_upload_bps|default:0 }}"></small>
                   </div>
-                </div>
-                <div class="clients-usage-metric">
-                  <span class="clients-usage-metric-label">Peak</span>
-                  <div class="clients-usage-rate-cell">
-                    <strong>{% if user.prime_at_label %}{{ user.prime_at_label }}{% else %}—{% endif %}</strong>
-                    <small data-bps="{{ user.prime_download_bps|default:0 }}"></small>
-                  </div>
-                </div>
-                <div class="clients-usage-metric">
-                  <span class="clients-usage-metric-label">Lowest</span>
-                  <div class="clients-usage-rate-cell">
-                    <strong>{% if user.lowest_at_label %}{{ user.lowest_at_label }}{% else %}—{% endif %}</strong>
-                    <small data-bps="{{ user.lowest_download_bps|default:0 }}"></small>
-                  </div>
-                </div>
-                <div class="clients-usage-metric is-compact">
-                  <span class="clients-usage-metric-label">Down</span>
+                </td>
+                <td data-label="Online">{{ user.online_ratio|default:0 }}%</td>
+                <td data-label="Down">
                   <span class="clients-usage-downtime{% if user.downtime_count %} is-warn{% endif %}">{{ user.downtime_count|default:0 }}</span>
-                </div>
+                </td>
                 {% if active_tab == 'hotspot' %}
-                <div class="clients-usage-metric is-compact">
-                  <span class="clients-usage-metric-label">Gadgets</span>
+                <td data-label="Gadgets">
                   <span class="clients-usage-gadgets{% if user.gadgets_connected %} is-active{% endif %}" data-gadgets>{{ user.gadgets_connected|default:0 }}</span>
-                </div>
+                </td>
                 {% endif %}
-                <div class="clients-usage-metric is-track">
-                  <span class="clients-usage-metric-label">Tracking</span>
-                  <div class="clients-usage-track-cell" data-usage-track-cell>
+                <td data-label="Tracking">
+                  <div class="clients-usage-rate-stack" data-usage-track-cell>
                     <strong data-track-renewed>{% if user.package_start_label %}{{ user.package_start_label }}{% else %}—{% endif %}</strong>
                     <small data-track-since>{% if user.usage_tracking_label %}Since {{ user.usage_tracking_label }}{% else %}Full window{% endif %}</small>
                   </div>
-                </div>
-              </div>
-            </article>
-          {% empty %}
-            <div class="clients-usage-users-empty" data-empty-row>
-              <span class="clients-usage-users-empty-ico" aria-hidden="true">
-                {% if active_tab == 'hotspot' %}
-                  <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
-                {% else %}
-                  <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
-                {% endif %}
-              </span>
-              <p class="clients-usage-users-empty-title">No {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} clients yet</p>
-              <p class="clients-usage-users-empty-copy">Add clients in this service tab, assign them to a MikroTik, then Refresh to pull live usage.</p>
-            </div>
-          {% endfor %}
-        </div>
+                </td>
+                <td class="is-actions" data-label="Actions">
+                  <div class="clients-usage-table-actions">
+                    <a href="{% url 'core:client_usage_analysis' user.customer_id %}{% if usage_filter_qs_client %}?{{ usage_filter_qs_client }}{% endif %}">Usage</a>
+                  </div>
+                </td>
+              </tr>
+            {% empty %}
+              <tr class="clients-usage-empty-row" data-empty-row>
+                <td colspan="{% if active_tab == 'hotspot' %}10{% else %}9{% endif %}">
+                  No {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} clients yet. Add clients, assign a MikroTik, then Refresh.
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
     </section>
-
   </section>
 </div>
-
-<dialog class="clients-usage-renew-dialog" data-usage-renew-dialog>
-  <form method="dialog" class="clients-usage-renew-form" data-usage-renew-form>
-    {% csrf_token %}
-    <header class="clients-usage-renew-head">
-      <h3 data-usage-renew-title>Set package renewed date</h3>
-      <p data-usage-renew-copy>Data used will restart from this date, and the package window will be recalculated from the plan duration.</p>
-    </header>
-    <label class="clients-usage-renew-field">
-      <span>Renewed on</span>
-      <input type="datetime-local" name="renewed_at" data-usage-renew-input required>
-    </label>
-    <footer class="clients-usage-renew-foot">
-      <button type="button" class="btn btn-ghost btn-sm" data-usage-renew-cancel>Cancel</button>
-      <button type="submit" class="btn btn-primary btn-sm" data-usage-renew-submit>Save renewal</button>
-    </footer>
-  </form>
-</dialog>
 {% endblock %}
 
 {% block client_extra_js %}
@@ -460,44 +377,33 @@
 <script src="{% static 'vendor/chart.umd.min.js' %}"></script>
 <script>
 (function () {
-  var root = document.getElementById("usage-charts");
+  var root = document.getElementById("usage-overview");
   if (!root) return;
   var trendsUrl = root.getAttribute("data-trends-url");
   var filterQs = root.getAttribute("data-filter-qs") || "";
   var tab = root.getAttribute("data-tab") || "pppoe";
-  var routerFilter = root.getAttribute("data-router") || "";
-  var rangeLabel = root.getAttribute("data-range-label") || "";
+  var viewMode = root.getAttribute("data-view") || "visual";
   var surfingUrl = "{{ surfing_url|default:'/app/clients/surfing/'|escapejs }}";
-  var resetUrl = "{{ usage_reset_url|default:'/app/clients/usage/reset/'|escapejs }}";
-  var setRenewedUrl = "{{ usage_set_renewed_url|default:'/app/clients/usage/set-renewed/'|escapejs }}";
   var showGadgets = tab === "hotspot";
+  var colSpan = showGadgets ? 10 : 9;
   var stamp = document.querySelector("[data-usage-stamp]");
   var refreshBtn = document.querySelector("[data-usage-refresh]");
   var countEl = document.querySelector("[data-users-count]");
   var sortSelect = document.querySelector("[data-users-sort]");
   var sortCopy = document.querySelector("[data-users-sort-copy]");
-  var trackStatus = document.querySelector("[data-usage-tracking-status]");
-  var renewDialog = document.querySelector("[data-usage-renew-dialog]");
-  var renewForm = document.querySelector("[data-usage-renew-form]");
-  var renewInput = document.querySelector("[data-usage-renew-input]");
-  var renewTitle = document.querySelector("[data-usage-renew-title]");
-  var renewCopy = document.querySelector("[data-usage-renew-copy]");
-  var csrfToken = renewForm
-    ? ((renewForm.querySelector("input[name=csrfmiddlewaretoken]") || {}).value || "")
-    : "";
-  var renewTarget = null;
   var initial = {{ trends_json|safe }};
   var charts = {};
   var inFlight = false;
   var surfInFlight = false;
   var renderToken = 0;
-  var FIRST_PAINT = 20;
-  var CHUNK = 30;
+  var FIRST_PAINT = 40;
+  var CHUNK = 40;
   var usersCache = [];
   var usersTotalHint = 0;
   var usersExpectMore = false;
   var sortMode = "data-desc";
   var surfById = {};
+  var lastPayload = initial || {};
 
   var SORT_COPY = {
     "data-desc": "Highest data usage first",
@@ -556,25 +462,8 @@
   }
 
   function syncSortUi() {
-    if (sortSelect && sortSelect.value !== sortMode) {
-      sortSelect.value = sortMode;
-    }
-    if (sortCopy) {
-      var base = SORT_COPY[sortMode] || SORT_COPY["data-desc"];
-      var rest = sortCopy.getAttribute("data-sort-rest");
-      if (rest == null) {
-        var full = sortCopy.textContent || "";
-        var dash = full.indexOf(" — ");
-        var onIdx = full.indexOf(" on ");
-        var forIdx = full.indexOf(" for ");
-        if (dash >= 0) rest = full.slice(dash);
-        else if (onIdx >= 0) rest = full.slice(onIdx);
-        else if (forIdx >= 0) rest = full.slice(forIdx);
-        else rest = "";
-        sortCopy.setAttribute("data-sort-rest", rest);
-      }
-      sortCopy.textContent = base + (rest || "");
-    }
+    if (sortSelect && sortSelect.value !== sortMode) sortSelect.value = sortMode;
+    if (sortCopy) sortCopy.textContent = SORT_COPY[sortMode] || SORT_COPY["data-desc"];
   }
 
   function setSortMode(mode, opts) {
@@ -592,16 +481,14 @@
   }
 
   function userBytes(user) {
-    if (!user) return 0;
-    return Number(user.data_used_bytes || 0) || 0;
+    return Number((user && user.data_used_bytes) || 0) || 0;
   }
 
   function clientUsageQs(qs) {
-    // Per-client analysis ignores org tab/router filters — keep only the time window.
     return String(qs || "")
       .split("&")
       .filter(function (part) {
-        return part && part.indexOf("tab=") !== 0 && part.indexOf("router=") !== 0;
+        return part && part.indexOf("tab=") !== 0 && part.indexOf("router=") !== 0 && part.indexOf("view=") !== 0;
       })
       .join("&");
   }
@@ -666,107 +553,58 @@
     return { state: state, label: label, title: (user && user.access_reason) || label };
   }
 
-  function rowHtml(user, idx) {
-    var bytes = Number(user.data_used_bytes || 0) || 0;
+  function rowHtml(user) {
+    var bytes = userBytes(user);
     var level = user.usage_level || "Idle";
     var levelKey = String(level).toLowerCase();
     var detail = "/app/clients/" + user.customer_id + "/";
     var clientQs = clientUsageQs(filterQs);
     var usage = "/app/clients/" + user.customer_id + "/usage-analysis/" + (clientQs ? ("?" + clientQs) : "");
-    var rankClass = user.rank === 1 ? " is-top-1" : user.rank === 2 ? " is-top-2" : user.rank === 3 ? " is-top-3" : "";
     var initialLetter = esc((user.full_name || "?").slice(0, 1).toUpperCase());
-    var meta = '<span class="clients-usage-user-account">' + esc(user.account_number || "") + "</span>";
-    if (user.router_name) {
-      meta += '<span class="clients-usage-user-sep" aria-hidden="true">·</span><span class="clients-usage-user-router">' + esc(user.router_name) + "</span>";
-    }
-    var deviceCount = Number(user.devices_connected != null ? user.devices_connected : (user.gadgets_connected || 0)) || 0;
-    var deviceTitle = showGadgets
-      ? "Gadgets with an active Hotspot session"
-      : "Dialed CPE on this client's MikroTik";
-    meta += '<span class="clients-usage-user-sep" aria-hidden="true">·</span>' +
-      '<span class="clients-usage-user-devices' + (deviceCount ? " is-active" : "") + '" title="' + esc(deviceTitle) + '">' +
-      esc(deviceCount) + " device" + (deviceCount === 1 ? "" : "s") +
-      "</span>";
+    var meta = esc(user.account_number || "");
+    if (user.router_name) meta += " · " + esc(user.router_name);
     var status = statusMeta(user);
     var liveDown = Number(user.live_download_bps || 0) || 0;
     var liveUp = Number(user.live_upload_bps || 0) || 0;
     return (
-      '<article class="clients-usage-user-card clients-usage-user-row" data-customer-id="' + esc(user.customer_id) + '" data-level="' + esc(levelKey) + '" style="--i:' + idx + '">' +
-        '<div class="clients-usage-user-card-top">' +
-          '<span class="clients-usage-rank' + rankClass + '">' + esc(user.rank) + "</span>" +
-          '<a class="clients-usage-user-link" href="' + detail + '">' +
+      '<tr class="clients-usage-data-row" data-customer-id="' + esc(user.customer_id) + '" data-level="' + esc(levelKey) + '">' +
+        '<td class="is-rank" data-label="#">' + esc(user.rank) + "</td>" +
+        '<td data-label="Client">' +
+          '<a class="clients-usage-table-client" href="' + detail + '">' +
             '<span class="clients-avatar" aria-hidden="true">' + initialLetter + "</span>" +
-            '<span class="clients-usage-user-copy">' +
-              '<strong class="clients-usage-user-name">' + esc(user.full_name) + "</strong>" +
-              '<span class="clients-usage-user-meta">' + meta + "</span>" +
+            '<span class="clients-usage-table-client-copy">' +
+              "<strong>" + esc(user.full_name) + "</strong>" +
+              "<span>" + meta + "</span>" +
             "</span></a>" +
-          '<div class="clients-usage-user-badges">' +
-            '<span class="clients-usage-online clients-surf-badge is-' + esc(status.state) + '" data-usage-status title="' + esc(status.title) + '">' +
-              '<span class="clients-usage-online-dot" aria-hidden="true"></span>' +
-              '<span data-usage-status-label>' + esc(status.label) + "</span>" +
-            "</span>" +
-            '<span class="clients-usage-level is-' + esc(levelKey) + '">' + esc(level) + "</span>" +
-            '<span class="clients-usage-online-ratio">' + esc(user.online_ratio != null ? user.online_ratio : 0) + "% up</span>" +
+        "</td>" +
+        '<td data-label="Status">' +
+          '<span class="clients-surf-badge is-' + esc(status.state) + '" data-usage-status title="' + esc(status.title) + '">' +
+            '<span data-usage-status-label>' + esc(status.label) + "</span>" +
+          "</span>" +
+          '<span class="clients-usage-level is-' + esc(levelKey) + '">' + esc(level) + "</span>" +
+        "</td>" +
+        '<td data-label="Data used"><strong class="clients-usage-data-value" data-bytes="' + esc(bytes) + '">—</strong></td>' +
+        '<td data-label="Live">' +
+          '<div class="clients-usage-rate-stack" data-live-rate>' +
+            '<strong data-live-down data-bps="' + esc(liveDown) + '">—</strong>' +
+            '<small data-live-up data-bps="' + esc(liveUp) + '"></small>' +
           "</div>" +
-          '<div class="clients-usage-row-actions">' +
-            '<a class="clients-usage-view-btn" href="' + usage + '">' +
-              "<span>Usage</span>" +
-              '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>' +
-            "</a>" +
-            '<div class="clients-usage-track-actions">' +
-              '<button type="button" class="clients-usage-track-link" data-usage-reset-one data-customer-id="' + esc(user.customer_id) + '" data-customer-name="' + esc(user.full_name) + '">Reset</button>' +
-              '<button type="button" class="clients-usage-track-link" data-usage-renew-one data-customer-id="' + esc(user.customer_id) + '" data-customer-name="' + esc(user.full_name) + '" data-package-start="' + esc(user.package_start || "") + '">Renewed</button>' +
-            "</div>" +
+        "</td>" +
+        '<td data-label="Online">' + esc(user.online_ratio != null ? user.online_ratio : 0) + "%</td>" +
+        '<td data-label="Down"><span class="clients-usage-downtime' + (user.downtime_count ? " is-warn" : "") + '">' + esc(user.downtime_count || 0) + "</span></td>" +
+        (showGadgets
+          ? ('<td data-label="Gadgets"><span class="clients-usage-gadgets' + (user.gadgets_connected ? " is-active" : "") + '" data-gadgets>' + esc(user.gadgets_connected || 0) + "</span></td>")
+          : "") +
+        '<td data-label="Tracking">' +
+          '<div class="clients-usage-rate-stack" data-usage-track-cell>' +
+            "<strong data-track-renewed>" + esc(user.package_start_label || "—") + "</strong>" +
+            "<small data-track-since>" + esc(user.usage_tracking_label ? ("Since " + user.usage_tracking_label) : "Full window") + "</small>" +
           "</div>" +
-        "</div>" +
-        '<div class="clients-usage-user-metrics" aria-label="Usage metrics">' +
-          '<div class="clients-usage-metric is-data">' +
-            '<span class="clients-usage-metric-label">Data</span>' +
-            '<div class="clients-usage-data-cell">' +
-              '<strong class="clients-usage-data-value" data-bytes="' + esc(bytes) + '">—</strong>' +
-              '<span class="clients-usage-data-bar" aria-hidden="true"><span class="clients-usage-data-bar-fill"></span></span>' +
-            "</div>" +
-          "</div>" +
-          '<div class="clients-usage-metric">' +
-            '<span class="clients-usage-metric-label">Live</span>' +
-            '<div class="clients-usage-rate-cell clients-usage-live-rate" data-live-rate>' +
-              '<strong data-live-down data-bps="' + esc(liveDown) + '">—</strong>' +
-              '<small data-live-up data-bps="' + esc(liveUp) + '"></small>' +
-            "</div>" +
-          "</div>" +
-          '<div class="clients-usage-metric">' +
-            '<span class="clients-usage-metric-label">Peak</span>' +
-            '<div class="clients-usage-rate-cell">' +
-              "<strong>" + esc(user.prime_at_label || "—") + "</strong>" +
-              '<small data-bps="' + esc(user.prime_download_bps || 0) + '"></small>' +
-            "</div>" +
-          "</div>" +
-          '<div class="clients-usage-metric">' +
-            '<span class="clients-usage-metric-label">Lowest</span>' +
-            '<div class="clients-usage-rate-cell">' +
-              "<strong>" + esc(user.lowest_at_label || "—") + "</strong>" +
-              '<small data-bps="' + esc(user.lowest_download_bps || 0) + '"></small>' +
-            "</div>" +
-          "</div>" +
-          '<div class="clients-usage-metric is-compact">' +
-            '<span class="clients-usage-metric-label">Down</span>' +
-            '<span class="clients-usage-downtime' + (user.downtime_count ? " is-warn" : "") + '">' + esc(user.downtime_count || 0) + "</span>" +
-          "</div>" +
-          (showGadgets
-            ? ('<div class="clients-usage-metric is-compact">' +
-                '<span class="clients-usage-metric-label">Gadgets</span>' +
-                '<span class="clients-usage-gadgets' + (user.gadgets_connected ? " is-active" : "") + '" data-gadgets">' + esc(user.gadgets_connected || 0) + "</span>" +
-              "</div>")
-            : "") +
-          '<div class="clients-usage-metric is-track">' +
-            '<span class="clients-usage-metric-label">Tracking</span>' +
-            '<div class="clients-usage-track-cell" data-usage-track-cell>' +
-              "<strong data-track-renewed>" + esc(user.package_start_label || "—") + "</strong>" +
-              "<small data-track-since>" + esc(user.usage_tracking_label ? ("Since " + user.usage_tracking_label) : "Full window") + "</small>" +
-            "</div>" +
-          "</div>" +
-        "</div>" +
-      "</article>"
+        "</td>" +
+        '<td class="is-actions" data-label="Actions">' +
+          '<div class="clients-usage-table-actions"><a href="' + usage + '">Usage</a></div>' +
+        "</td>" +
+      "</tr>"
     );
   }
 
@@ -775,9 +613,9 @@
       ? ("Loading more clients… " + loaded + " of " + total)
       : "Loading more clients…";
     return (
-      '<div class="clients-usage-loading-row" data-loading-row>' +
-        '<span class="clients-usage-loading-copy">' + esc(label) + "</span>" +
-      "</div>"
+      '<tr class="clients-usage-loading-row" data-loading-row>' +
+        '<td colspan="' + colSpan + '">' + esc(label) + "</td>" +
+      "</tr>"
     );
   }
 
@@ -791,15 +629,9 @@
 
     if (!users.length) {
       body.innerHTML =
-        '<div class="clients-usage-users-empty" data-empty-row>' +
-        '<span class="clients-usage-users-empty-ico" aria-hidden="true">' +
-        (showGadgets
-          ? '<svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>'
-          : '<svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>') +
-        '</span>' +
-        '<p class="clients-usage-users-empty-title">No ' + (showGadgets ? "Hotspot" : "PPPoE") + ' clients yet</p>' +
-        '<p class="clients-usage-users-empty-copy">Add clients in this service tab, assign them to a MikroTik, then Refresh to pull live usage.</p>' +
-        '</div>';
+        '<tr class="clients-usage-empty-row" data-empty-row>' +
+        '<td colspan="' + colSpan + '">No ' + (showGadgets ? "Hotspot" : "PPPoE") +
+        " clients yet. Add clients, assign a MikroTik, then Refresh.</td></tr>";
       setUsersCount(0);
       return;
     }
@@ -809,9 +641,7 @@
     function paintChunk(end, showLoading) {
       if (token !== renderToken) return;
       var html = users.slice(0, end).map(rowHtml).join("");
-      if (showLoading && end < users.length) {
-        html += loadingRowHtml(end, totalHint || users.length);
-      } else if (showLoading && opts.expectMore) {
+      if (showLoading && (end < users.length || opts.expectMore)) {
         html += loadingRowHtml(end, totalHint || users.length);
       }
       body.innerHTML = html;
@@ -833,26 +663,14 @@
       }
       offset = Math.min(users.length, offset + CHUNK);
       paintChunk(offset, offset < users.length || !!opts.expectMore);
-      if (offset < users.length) {
-        window.requestAnimationFrame(appendMore);
-      }
+      if (offset < users.length) window.requestAnimationFrame(appendMore);
     }
     window.requestAnimationFrame(appendMore);
   }
 
   function formatTableCells() {
-    var maxBytes = 0;
     document.querySelectorAll("[data-bytes]").forEach(function (el) {
-      var n = Number(el.getAttribute("data-bytes")) || 0;
-      if (n > maxBytes) maxBytes = n;
-      el.textContent = fmtBytes(n);
-    });
-    document.querySelectorAll(".clients-usage-data-bar-fill").forEach(function (fill) {
-      var cell = fill.closest(".clients-usage-data-cell");
-      var valueEl = cell && cell.querySelector("[data-bytes]");
-      var n = valueEl ? Number(valueEl.getAttribute("data-bytes")) || 0 : 0;
-      var pct = maxBytes > 0 ? Math.max(4, Math.round((n / maxBytes) * 100)) : 0;
-      fill.style.width = pct + "%";
+      el.textContent = fmtBytes(Number(el.getAttribute("data-bytes")) || 0);
     });
     document.querySelectorAll("[data-bps]").forEach(function (el) {
       var n = Number(el.getAttribute("data-bps")) || 0;
@@ -900,7 +718,7 @@
         user.devices_connected = devices;
         user.gadgets_connected = devices;
       } else if (showGadgets) {
-        // Hotspot: keep sample-based gadget counts when surfing payload omits them.
+        // keep sample-based counts
       } else if (row.session_online) {
         user.devices_connected = Math.max(Number(user.devices_connected) || 0, 1);
         user.gadgets_connected = user.devices_connected;
@@ -908,26 +726,41 @@
         user.devices_connected = 0;
         user.gadgets_connected = 0;
       }
-      // Live surfing poll can flip presence after the sample payload was built.
       user.usage_level = usageLevelLabel(user);
     });
     return users;
+  }
+
+  function buildLevelChart(users) {
+    var counts = { High: 0, Medium: 0, Low: 0, Idle: 0 };
+    (users || []).forEach(function (u) {
+      var level = u.usage_level || "Idle";
+      if (!counts[level]) level = "Idle";
+      counts[level] += 1;
+    });
+    return {
+      labels: ["High", "Medium", "Low", "Idle"],
+      counts: [counts.High, counts.Medium, counts.Low, counts.Idle]
+    };
+  }
+
+  function buildTopChart(users) {
+    var list = applySort(users || []).slice(0, 40);
+    return {
+      labels: list.map(function (u) { return u.full_name || "Client"; }),
+      data_used_mb: list.map(function (u) {
+        return Math.round((userBytes(u) / (1024 * 1024)) * 1000) / 1000;
+      }),
+      online_ratio: list.map(function (u) { return Number(u.online_ratio || 0) || 0; }),
+      downtime_count: list.map(function (u) { return Number(u.downtime_count || 0) || 0; }),
+      live_download_bps: list.map(function (u) { return Number(u.live_download_bps || 0) || 0; })
+    };
   }
 
   function applySummary(data, opts) {
     opts = opts || {};
     var summary = (data && data.summary) || {};
     var live = (data && data.live) || {};
-    var summaryCopy = document.querySelector("[data-usage-summary-copy]");
-    var serviceLabel = showGadgets ? "Hotspot" : "PPPoE";
-    var routerName = (data && data.router_name) || "";
-    var routerSuffix = routerName
-      ? (" on " + routerName)
-      : ((data && data.router_filter === "none") ? " for unassigned clients" : "");
-    if (summaryCopy) {
-      summaryCopy.textContent =
-        serviceLabel + " live surfing + analytics for " + (data.range_label || rangeLabel) + routerSuffix + ".";
-    }
     setSum("clients", summary.clients_total != null ? summary.clients_total : (summary.clients_tracked || "0"));
     setSum("clients-tracked", summary.clients_tracked != null ? summary.clients_tracked : "0");
     var dialed = live.clients_online != null ? live.clients_online : (summary.clients_online != null ? summary.clients_online : 0);
@@ -942,8 +775,8 @@
     }
     setSum("top-user", summary.top_user_name || "—");
     setSum("top-user-data", summary.top_user_name
-      ? fmtBytes(summary.top_user_bytes) + " period usage"
-      : "Most period usage");
+      ? fmtBytes(summary.top_user_bytes)
+      : "Most data");
     if (summary.sampling_hint && summary.sampling_fresh === false) {
       setStamp(summary.sampling_hint, true);
     } else if (opts.stampText) {
@@ -984,49 +817,82 @@
 
   function ensureCharts() {
     if (!window.Chart || charts.online) return;
+    if (!document.getElementById("chart-online")) return;
     var empty = { labels: [], datasets: [] };
+    var defaults = chartDefaults();
     charts.online = new Chart(document.getElementById("chart-online"), {
       type: "line",
       data: empty,
-      options: Object.assign({}, chartDefaults(), {
-        plugins: Object.assign({}, chartDefaults().plugins, {
-          legend: { display: false }
-        })
+      options: Object.assign({}, defaults, {
+        plugins: Object.assign({}, defaults.plugins, { legend: { display: false } })
       })
     });
     charts.throughput = new Chart(document.getElementById("chart-throughput"), {
       type: "line",
       data: empty,
-      options: chartDefaults()
+      options: defaults
     });
     charts.data = new Chart(document.getElementById("chart-data"), {
       type: "bar",
       data: empty,
-      options: Object.assign({}, chartDefaults(), {
-        plugins: Object.assign({}, chartDefaults().plugins, {
-          legend: { display: false }
-        })
+      options: Object.assign({}, defaults, {
+        plugins: Object.assign({}, defaults.plugins, { legend: { display: false } })
       })
+    });
+    charts.levels = new Chart(document.getElementById("chart-levels"), {
+      type: "doughnut",
+      data: empty,
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { color: defaults.plugins.legend.labels.color, boxWidth: 12, font: { weight: "600" } }
+          },
+          tooltip: defaults.plugins.tooltip
+        }
+      }
     });
     charts.top = new Chart(document.getElementById("chart-top"), {
       type: "bar",
       data: empty,
-      options: Object.assign({}, chartDefaults(), {
+      options: Object.assign({}, defaults, {
         indexAxis: "y",
-        plugins: Object.assign({}, chartDefaults().plugins, {
-          legend: { display: false }
+        plugins: Object.assign({}, defaults.plugins, { legend: { display: false } })
+      })
+    });
+    charts.uptime = new Chart(document.getElementById("chart-uptime"), {
+      type: "bar",
+      data: empty,
+      options: Object.assign({}, defaults, {
+        indexAxis: "y",
+        plugins: Object.assign({}, defaults.plugins, { legend: { display: false } }),
+        scales: Object.assign({}, defaults.scales, {
+          x: Object.assign({}, defaults.scales.x, {
+            max: 100,
+            ticks: Object.assign({}, defaults.scales.x.ticks, {
+              callback: function (v) { return v + "%"; }
+            })
+          })
         })
       })
     });
   }
 
-  function paint(data, opts) {
-    opts = opts || {};
+  function paintCharts(data, users) {
     ensureCharts();
     if (!charts.online) return;
     var labels = (data && data.labels) || [];
     var series = (data && data.series) || {};
-    var topChart = (data && data.top_chart) || {};
+    var topChart = (data && data.top_chart) || buildTopChart(users);
+    var levelChart = (data && data.level_chart) || buildLevelChart(users);
+    if (users && users.length) {
+      topChart = buildTopChart(users);
+      levelChart = buildLevelChart(users);
+    }
+    var dense = labels.length > 40;
     charts.online.data = {
       labels: labels,
       datasets: [{
@@ -1036,7 +902,7 @@
         backgroundColor: "rgba(46,204,113,0.18)",
         fill: true,
         tension: 0.3,
-        pointRadius: labels.length > 40 ? 0 : 2
+        pointRadius: dense ? 0 : 2
       }]
     };
     charts.throughput.data = {
@@ -1049,7 +915,7 @@
           backgroundColor: "rgba(79,140,255,0.12)",
           fill: true,
           tension: 0.3,
-          pointRadius: labels.length > 40 ? 0 : 2
+          pointRadius: dense ? 0 : 2
         },
         {
           label: "Upload (kbps)",
@@ -1058,7 +924,7 @@
           backgroundColor: "rgba(232,163,23,0.12)",
           fill: true,
           tension: 0.3,
-          pointRadius: labels.length > 40 ? 0 : 2
+          pointRadius: dense ? 0 : 2
         }
       ]
     };
@@ -1071,6 +937,14 @@
         borderRadius: 4
       }]
     };
+    charts.levels.data = {
+      labels: levelChart.labels || [],
+      datasets: [{
+        data: levelChart.counts || [],
+        backgroundColor: ["#dc2626", "#d97706", "#059669", "#94a3b8"],
+        borderWidth: 0
+      }]
+    };
     charts.top.data = {
       labels: topChart.labels || [],
       datasets: [{
@@ -1080,28 +954,44 @@
         borderRadius: 4
       }]
     };
-    charts.online.update("none");
-    charts.throughput.update("none");
-    charts.data.update("none");
-    charts.top.update("none");
+    charts.uptime.data = {
+      labels: topChart.labels || [],
+      datasets: [{
+        label: "Online ratio (%)",
+        data: topChart.online_ratio || [],
+        backgroundColor: "rgba(46,204,113,0.65)",
+        borderRadius: 4
+      }]
+    };
+    Object.keys(charts).forEach(function (key) {
+      charts[key].update("none");
+    });
+  }
+
+  function paint(data, opts) {
+    opts = opts || {};
+    lastPayload = data || lastPayload;
     var users = applySurfOverlay(((data && data.top_users) || []).slice());
     var surfingCount = 0;
     users.forEach(function (u) {
       if (u.access_state === "surfing" || (!u.access_state && u.latest_active)) surfingCount += 1;
     });
-    if (data && data.summary) {
-      data.summary.clients_surfing = surfingCount;
-    }
+    if (data && data.summary) data.summary.clients_surfing = surfingCount;
     applySummary(data, opts);
+    paintCharts(data, users);
     var totalHint = (data && (data.users_total_count || (data.summary && data.summary.clients_total))) || users.length;
     usersCache = users;
     usersTotalHint = totalHint;
     usersExpectMore = !!opts.expectMore;
-    renderUsers(usersCache, {
-      progressive: opts.progressive !== false,
-      expectMore: usersExpectMore,
-      totalHint: usersTotalHint
-    });
+    if (viewMode === "raw") {
+      renderUsers(usersCache, {
+        progressive: opts.progressive !== false,
+        expectMore: usersExpectMore,
+        totalHint: usersTotalHint
+      });
+    } else {
+      setUsersCount(totalHint || users.length);
+    }
   }
 
   function loadSurfing(forceRefresh) {
@@ -1128,11 +1018,14 @@
             if (u.access_state === "surfing") surfingCount += 1;
           });
           setSum("surfing-now", surfingCount);
-          renderUsers(usersCache, {
-            progressive: false,
-            expectMore: usersExpectMore,
-            totalHint: usersTotalHint || usersCache.length
-          });
+          paintCharts(lastPayload, usersCache);
+          if (viewMode === "raw") {
+            renderUsers(usersCache, {
+              progressive: false,
+              expectMore: usersExpectMore,
+              totalHint: usersTotalHint || usersCache.length
+            });
+          }
         }
         return data;
       })
@@ -1169,16 +1062,15 @@
   }
 
   function boot() {
-    ensureCharts();
     syncSortUi();
     var partial = !!(initial && initial.users_partial);
     paint(initial, {
-      progressive: true,
+      progressive: viewMode === "raw",
       expectMore: partial,
       stampText: partial ? "Loading clients…" : "Updating live status…",
       loading: true
     });
-    formatTableCells();
+    if (viewMode === "raw") formatTableCells();
     loadSurfing(false);
 
     var chain = Promise.resolve();
@@ -1216,206 +1108,6 @@
   if (refreshBtn) {
     refreshBtn.addEventListener("click", function () {
       loadTrends(true, { stampText: "Refreshing…" });
-    });
-  }
-
-  function showUsageToast(message, isError, title) {
-    if (!message) return;
-    if (typeof window.showToast === "function") {
-      window.showToast({
-        type: isError ? "error" : "success",
-        title: title || (isError ? "Update failed" : "Usage updated"),
-        text: message,
-        ms: isError ? 7000 : 5600
-      });
-      return;
-    }
-    // Fallback when toast script is unavailable.
-    if (!trackStatus) return;
-    trackStatus.hidden = false;
-    trackStatus.textContent = message;
-    trackStatus.classList.toggle("is-error", !!isError);
-  }
-
-  function setTrackStatus(message, isError, opts) {
-    opts = opts || {};
-    if (!message) {
-      if (trackStatus) {
-        trackStatus.hidden = true;
-        trackStatus.textContent = "";
-        trackStatus.classList.remove("is-error");
-      }
-      return;
-    }
-    // Loading / progress stays inline; final results go top-right.
-    if (opts.toast || opts.final) {
-      showUsageToast(message, isError, opts.title);
-      if (trackStatus) {
-        trackStatus.hidden = true;
-        trackStatus.textContent = "";
-        trackStatus.classList.remove("is-error");
-      }
-      return;
-    }
-    if (!trackStatus) {
-      showUsageToast(message, isError, opts.title);
-      return;
-    }
-    trackStatus.hidden = false;
-    trackStatus.textContent = message;
-    trackStatus.classList.toggle("is-error", !!isError);
-  }
-
-  function toLocalInputValue(isoOrDate) {
-    var d = isoOrDate ? new Date(isoOrDate) : new Date();
-    if (isNaN(d.getTime())) d = new Date();
-    var pad = function (n) { return String(n).padStart(2, "0"); };
-    return (
-      d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
-      "T" + pad(d.getHours()) + ":" + pad(d.getMinutes())
-    );
-  }
-
-  function postTracking(url, fields) {
-    var body = new FormData();
-    if (csrfToken) body.append("csrfmiddlewaretoken", csrfToken);
-    body.append("tab", tab);
-    if (routerFilter) body.append("router", routerFilter);
-    Object.keys(fields || {}).forEach(function (key) {
-      if (fields[key] != null && fields[key] !== "") body.append(key, fields[key]);
-    });
-    return fetch(url, {
-      method: "POST",
-      body: body,
-      credentials: "same-origin",
-      headers: {
-        "X-Requested-With": "XMLHttpRequest",
-        "X-CSRFToken": csrfToken
-      }
-    }).then(function (res) {
-      return res.json().then(function (data) {
-        if (!res.ok || !data || !data.ok) {
-          var err = new Error((data && data.error) || "Request failed");
-          err.payload = data;
-          throw err;
-        }
-        return data;
-      });
-    });
-  }
-
-  function openRenewDialog(target) {
-    renewTarget = target || null;
-    if (!renewDialog || !renewInput) return;
-    var name = (target && target.name) || (routerFilter ? "this MikroTik" : "selected clients");
-    if (renewTitle) {
-      renewTitle.textContent = target && target.customerId
-        ? ("Set renewed date — " + name)
-        : "Set renewed date for MikroTik";
-    }
-    if (renewCopy) {
-      renewCopy.textContent = target && target.customerId
-        ? ("Package start and personal data-used tracking for " + name + " will restart from this date. History is kept.")
-        : ("Applies to every listed client on the selected MikroTik. Package windows and personal data-used totals restart from this date. History is kept.");
-    }
-    renewInput.value = toLocalInputValue(target && target.packageStart);
-    if (typeof renewDialog.showModal === "function") renewDialog.showModal();
-    else renewDialog.setAttribute("open", "open");
-  }
-
-  function closeRenewDialog() {
-    renewTarget = null;
-    if (!renewDialog) return;
-    if (typeof renewDialog.close === "function") renewDialog.close();
-    else renewDialog.removeAttribute("open");
-  }
-
-  function afterTrackingChange(data) {
-    var title = (data && data.toast_title) || "Usage updated";
-    setTrackStatus((data && data.message) || "Updated.", false, {
-      toast: true,
-      final: true,
-      title: title
-    });
-    loadTrends(true, { stampText: "Updating usage…" });
-  }
-
-  function resetUsage(opts) {
-    opts = opts || {};
-    var label = opts.customerName || (routerFilter ? "everyone on this MikroTik" : "these clients");
-    var confirmText = opts.scope === "router"
-      ? ("Reset combined MikroTik usage for " + label + "? Totals restart from now. Client personal usage (from package renewal) and history are kept.")
-      : ("Reset data used for " + label + "? Totals will restart from now. History is kept.");
-    if (!window.confirm(confirmText)) {
-      return;
-    }
-    setTrackStatus("Resetting data used…", false);
-    postTracking(resetUrl, {
-      customer_id: opts.customerId || "",
-      scope: opts.scope || ""
-    })
-      .then(afterTrackingChange)
-      .catch(function (err) {
-        setTrackStatus((err && err.message) || "Could not reset usage.", true, {
-          toast: true,
-          final: true,
-          title: "Reset failed"
-        });
-      });
-  }
-
-  document.addEventListener("click", function (ev) {
-    var resetOne = ev.target.closest("[data-usage-reset-one]");
-    if (resetOne) {
-      resetUsage({
-        customerId: resetOne.getAttribute("data-customer-id"),
-        customerName: resetOne.getAttribute("data-customer-name") || "this client"
-      });
-      return;
-    }
-    var renewOne = ev.target.closest("[data-usage-renew-one]");
-    if (renewOne) {
-      openRenewDialog({
-        customerId: renewOne.getAttribute("data-customer-id"),
-        name: renewOne.getAttribute("data-customer-name") || "client",
-        packageStart: renewOne.getAttribute("data-package-start") || ""
-      });
-      return;
-    }
-    if (ev.target.closest("[data-usage-reset-router]")) {
-      resetUsage({ scope: "router" });
-      return;
-    }
-    if (ev.target.closest("[data-usage-renew-router]")) {
-      openRenewDialog({ scope: "router", name: "this MikroTik" });
-      return;
-    }
-    if (ev.target.closest("[data-usage-renew-cancel]")) {
-      closeRenewDialog();
-    }
-  });
-
-  if (renewForm) {
-    renewForm.addEventListener("submit", function (ev) {
-      ev.preventDefault();
-      if (!renewInput || !renewInput.value) return;
-      setTrackStatus("Saving package renewal…", false);
-      postTracking(setRenewedUrl, {
-        customer_id: (renewTarget && renewTarget.customerId) || "",
-        scope: (renewTarget && renewTarget.scope) || (renewTarget && renewTarget.customerId ? "" : "router"),
-        renewed_at: renewInput.value
-      })
-        .then(function (data) {
-          closeRenewDialog();
-          afterTrackingChange(data);
-        })
-        .catch(function (err) {
-          setTrackStatus((err && err.message) || "Could not save renewal date.", true, {
-            toast: true,
-            final: true,
-            title: "Renewal failed"
-          });
-        });
     });
   }
 

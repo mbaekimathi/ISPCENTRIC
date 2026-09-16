@@ -280,35 +280,60 @@
 </div>
 
 {# Delete confirmation from the routers list #}
-<div class="role-modal mikrotik-action-modal" id="mikrotik-delete-modal" hidden aria-hidden="true">
+<div class="role-modal mikrotik-action-modal pppoe-modal mikrotik-delete-modal" id="mikrotik-delete-modal" hidden aria-hidden="true">
   <div class="role-modal-backdrop" data-close-delete-modal></div>
-  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-delete-title">
-    <header class="role-modal-head">
-      <div>
-        <p class="role-modal-kicker">Remove router</p>
-        <h2 id="mikrotik-delete-title">Delete MikroTik</h2>
-        <p class="role-modal-sub" id="mikrotik-delete-sub">
-          This permanently removes the router from ISPCENTRIC. The physical device is not reset.
-        </p>
+  <div class="role-modal-panel mikrotik-action-panel mikrotik-delete-panel" role="alertdialog" aria-modal="true" aria-labelledby="mikrotik-delete-title" aria-describedby="mikrotik-delete-desc">
+    <header class="role-modal-head mikrotik-delete-head">
+      <div class="mikrotik-delete-head-main">
+        <span class="mikrotik-delete-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 6h18"></path>
+            <path d="M8 6V4h8v2"></path>
+            <path d="M19 6l-1 14H6L5 6"></path>
+            <path d="M10 11v6"></path>
+            <path d="M14 11v6"></path>
+          </svg>
+        </span>
+        <div class="mikrotik-delete-head-copy">
+          <p class="role-modal-kicker">Remove router</p>
+          <h2 id="mikrotik-delete-title">Delete this MikroTik?</h2>
+        </div>
       </div>
       <button type="button" class="role-modal-close" data-close-delete-modal aria-label="Close">×</button>
     </header>
-    <form method="post" class="mikrotik-action-form" id="mikrotik-delete-form" action="">
+    <form method="post" class="mikrotik-action-form" id="mikrotik-delete-form" action="" data-no-page-loader="1">
       {% csrf_token %}
-      <div class="mikrotik-action-scroll">
-        <div class="org-delete-box mikrotik-delete-box">
-          <p>
-            Delete <strong id="mikrotik-delete-name">this MikroTik</strong>
-            (<span id="mikrotik-delete-host">—</span>) from this workspace?
-          </p>
-          <p class="org-delete-warn" id="mikrotik-delete-clients-warn" hidden>
-            <span id="mikrotik-delete-client-count">0</span> linked client(s) will be kept and unassigned from this router.
-          </p>
+      <div class="mikrotik-action-scroll mikrotik-delete-body">
+        <p class="role-modal-sub mikrotik-delete-desc" id="mikrotik-delete-desc">
+          This permanently removes the router from ISPCENTRIC. The physical MikroTik is
+          <strong class="mikrotik-delete-emph">not</strong> factory-reset or wiped.
+        </p>
+        <div class="mikrotik-delete-target" role="group" aria-label="Router to delete">
+          <span class="mikrotik-delete-target-label">Router</span>
+          <strong id="mikrotik-delete-name">this MikroTik</strong>
+          <span class="mikrotik-delete-host" id="mikrotik-delete-host">—</span>
         </div>
+        <div class="mikrotik-delete-warning" role="note" id="mikrotik-delete-clients-warn" hidden>
+          <span class="mikrotik-delete-warning-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+              <path d="M12 2 1.5 20h21L12 2zm0 5.2c.55 0 1 .45 1 1v5.1c0 .55-.45 1-1 1s-1-.45-1-1V8.2c0-.55.45-1 1-1zm-.05 9.35a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1z"></path>
+            </svg>
+          </span>
+          <div class="mikrotik-delete-warning-copy">
+            <p class="mikrotik-delete-warning-title">Linked clients stay</p>
+            <p>
+              <span id="mikrotik-delete-client-count">0</span> linked client(s) will be kept and unassigned from this router.
+            </p>
+          </div>
+        </div>
+        <label class="mikrotik-confirm-check mikrotik-delete-confirm" for="mikrotik-delete-confirm">
+          <input type="checkbox" id="mikrotik-delete-confirm">
+          <span>I understand this removes the router from this workspace.</span>
+        </label>
       </div>
-      <div class="role-modal-actions">
-        <button type="button" class="btn btn-ghost" data-close-delete-modal>Cancel</button>
-        <button type="submit" class="btn btn-danger" id="mikrotik-delete-submit">Delete router</button>
+      <div class="role-modal-actions mikrotik-delete-actions">
+        <button type="button" class="btn btn-ghost mikrotik-delete-cancel" data-close-delete-modal>Cancel</button>
+        <button type="submit" class="btn btn-danger mikrotik-delete-submit" id="mikrotik-delete-submit" disabled>Delete router</button>
       </div>
     </form>
   </div>
@@ -3847,11 +3872,18 @@
   var deleteForm = document.getElementById("mikrotik-delete-form");
   if (!deleteModal || !deleteForm) return;
 
+  var titleEl = document.getElementById("mikrotik-delete-title");
   var nameEl = document.getElementById("mikrotik-delete-name");
   var hostEl = document.getElementById("mikrotik-delete-host");
   var warnEl = document.getElementById("mikrotik-delete-clients-warn");
   var countEl = document.getElementById("mikrotik-delete-client-count");
+  var confirmEl = document.getElementById("mikrotik-delete-confirm");
   var submitBtn = document.getElementById("mikrotik-delete-submit");
+
+  function syncDeleteSubmit() {
+    if (!submitBtn) return;
+    submitBtn.disabled = !(confirmEl && confirmEl.checked);
+  }
 
   function openDeleteModal(btn) {
     var url = btn.getAttribute("data-delete-url") || "";
@@ -3859,14 +3891,20 @@
     var host = btn.getAttribute("data-router-host") || "—";
     var count = Number(btn.getAttribute("data-customer-count") || 0) || 0;
     deleteForm.action = url;
+    if (titleEl) titleEl.textContent = "Delete " + name + "?";
     if (nameEl) nameEl.textContent = name;
     if (hostEl) hostEl.textContent = host;
     if (countEl) countEl.textContent = String(count);
     if (warnEl) warnEl.hidden = count < 1;
+    if (confirmEl) confirmEl.checked = false;
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Delete router";
+    }
     deleteModal.hidden = false;
     deleteModal.setAttribute("aria-hidden", "false");
     document.body.classList.add("role-modal-open");
-    if (submitBtn) setTimeout(function () { submitBtn.focus(); }, 40);
+    if (confirmEl) setTimeout(function () { confirmEl.focus(); }, 40);
   }
 
   function closeDeleteModal() {
@@ -3876,6 +3914,15 @@
       document.body.classList.remove("role-modal-open");
     }
     deleteForm.action = "";
+    if (confirmEl) confirmEl.checked = false;
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Delete router";
+    }
+  }
+
+  if (confirmEl) {
+    confirmEl.addEventListener("change", syncDeleteSubmit);
   }
 
   document.querySelectorAll("[data-delete-router]").forEach(function (btn) {
@@ -3887,7 +3934,12 @@
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && !deleteModal.hidden) closeDeleteModal();
   });
-  deleteForm.addEventListener("submit", function () {
+  deleteForm.addEventListener("submit", function (e) {
+    if (confirmEl && !confirmEl.checked) {
+      e.preventDefault();
+      syncDeleteSubmit();
+      return;
+    }
     if (submitBtn) {
       submitBtn.disabled = true;
       submitBtn.textContent = "Deleting…";

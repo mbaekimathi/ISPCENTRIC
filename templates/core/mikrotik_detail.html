@@ -1086,7 +1086,11 @@
 
   function closeRestartModal() {
     if (!restartModal) return;
-    closeModal(restartModal);
+    restartModal.hidden = true;
+    restartModal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".mikrotik-action-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
   }
 
   if (restartConfirm && restartSubmit) {

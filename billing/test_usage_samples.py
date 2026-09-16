@@ -1343,12 +1343,12 @@ class OrgUsageDevicesConnectedTests(TestCase):
         owner = get_user_model().objects.get(username="usage-dev-owner")
         self.client.force_login(owner)
         response = self.client.get(
-            reverse("core:clients_general_usage") + "?tab=hotspot"
+            reverse("core:clients_general_usage") + "?tab=hotspot&view=raw"
         )
         self.assertEqual(response.status_code, 200)
         html = response.content.decode("utf-8")
-        self.assertIn("clients-usage-user-devices", html)
-        self.assertRegex(html, r"\b2 devices?\b")
+        self.assertIn("clients-usage-gadgets", html)
+        self.assertRegex(html, r'class="clients-usage-gadgets[^"]*"[^>]*>2<')
         # Plan bandwidth must not appear in the CLIENT meta column markup.
         self.assertNotIn("clients-usage-user-plan", html)
         self.assertNotIn(">15 MBPS<", html)

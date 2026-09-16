@@ -2740,7 +2740,14 @@ def _empty_org_payload(hours: int, *, error: str = "", service: str = "") -> dic
         },
         "summary": {},
         "top_users": [],
-        "top_chart": {"labels": [], "data_used_mb": []},
+        "top_chart": {
+            "labels": [],
+            "data_used_mb": [],
+            "online_ratio": [],
+            "downtime_count": [],
+            "live_download_bps": [],
+        },
+        "level_chart": {"labels": ["High", "Medium", "Low", "Idle"], "counts": [0, 0, 0, 0]},
         "error": error,
     }
 
@@ -3235,10 +3242,29 @@ def _build_org_usage_payload(
         },
         "top_users": top_users,
         "top_chart": {
-            "labels": [u["full_name"] for u in top_users[:10]],
+            # Full ranked list (capped for readable charts) — used for decision visuals.
+            "labels": [u["full_name"] for u in top_users[:40]],
             "data_used_mb": [
                 round(int(u["data_used_bytes"] or 0) / (1024 * 1024), 3)
-                for u in top_users[:10]
+                for u in top_users[:40]
+            ],
+            "online_ratio": [
+                float(u.get("online_ratio") or 0) for u in top_users[:40]
+            ],
+            "downtime_count": [
+                int(u.get("downtime_count") or 0) for u in top_users[:40]
+            ],
+            "live_download_bps": [
+                int(u.get("live_download_bps") or 0) for u in top_users[:40]
+            ],
+        },
+        "level_chart": {
+            "labels": ["High", "Medium", "Low", "Idle"],
+            "counts": [
+                sum(1 for u in top_users if (u.get("usage_level") or "Idle") == "High"),
+                sum(1 for u in top_users if (u.get("usage_level") or "Idle") == "Medium"),
+                sum(1 for u in top_users if (u.get("usage_level") or "Idle") == "Low"),
+                sum(1 for u in top_users if (u.get("usage_level") or "Idle") == "Idle"),
             ],
         },
         "summary": {

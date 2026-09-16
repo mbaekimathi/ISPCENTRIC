@@ -1,6 +1,6 @@
 {% extends "core/client_base.html" %}
 
-{% block title %}{% if noc_focus == "down" %}Down routers{% elif noc_focus == "impact" %}Client impact{% elif noc_focus == "faults" %}Open faults{% else %}NOC{% endif %} — ISPCENTRIC{% endblock %}
+{% block title %}{% if noc_focus == "down" %}Down routers{% elif noc_focus == "impact" %}Client quality{% elif noc_focus == "faults" %}Open faults{% elif noc_focus == "performance" %}MikroTik performance{% else %}NOC{% endif %} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
 {{ board|json_script:"noc-board-data" }}
@@ -19,17 +19,20 @@
       <p class="noc-kicker">Network Operations Center</p>
       <h1>
         {% if noc_focus == "down" %}Down routers
-        {% elif noc_focus == "impact" %}Client impact
+        {% elif noc_focus == "impact" %}Client quality
         {% elif noc_focus == "faults" %}Open faults
+        {% elif noc_focus == "performance" %}MikroTik performance
         {% else %}Ops console{% endif %}
       </h1>
       <p class="noc-top-sub">
         {% if noc_focus == "down" %}
           Only outage and degraded NAS gear — health history, clients exposed, reconnect actions.
         {% elif noc_focus == "impact" %}
-          Only subscribers who are dialed and in-package but still not surfing — by NAS and reason.
+          Stuck dialed sessions plus clients running far below their package Mbps.
         {% elif noc_focus == "faults" %}
           Only open field fault tickets — status, technician, client, and linked router.
+        {% elif noc_focus == "performance" %}
+          Per-MikroTik health and client throughput vs plan, ranked improvements, and non-optimal sessions.
         {% else %}
           Cross-fleet alarm triage: severity queue, sites, inspector, and chronology.
         {% endif %}
@@ -49,8 +52,9 @@
 
   <nav class="noc-mode-tabs" aria-label="NOC views">
     <a class="noc-mode-tab{% if not noc_focus %} is-active{% endif %}" href="{% url 'core:noc' %}">Ops board</a>
+    <a class="noc-mode-tab{% if noc_focus == 'performance' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=performance">Performance</a>
     <a class="noc-mode-tab{% if noc_focus == 'down' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=down">Down routers</a>
-    <a class="noc-mode-tab{% if noc_focus == 'impact' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=impact">Client impact</a>
+    <a class="noc-mode-tab{% if noc_focus == 'impact' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=impact">Client quality</a>
     <a class="noc-mode-tab{% if noc_focus == 'faults' %} is-active{% endif %}" href="{% url 'core:noc' %}?focus=faults">Open faults</a>
   </nav>
 
@@ -63,6 +67,7 @@
       <button type="button" class="noc-sev is-all is-active" data-filter-sev=""><span class="noc-sev-label">Open alarms</span><strong data-stat="alarms">{{ board.summary.alarms_open }}</strong></button>
       <div class="noc-sev-meta">
         <span><strong data-stat="at-risk">{{ board.summary.customers_at_risk }}</strong> clients at risk</span>
+        <span><strong data-stat="non-optimal">{{ board.summary.clients_non_optimal }}</strong> non-optimal</span>
         <span><strong data-stat="sites">{{ board.summary.sites_total }}</strong> sites</span>
         <span><strong data-stat="health">{{ board.summary.health_score|default:"—" }}{% if board.summary.health_score is not None %}%{% endif %}</strong> fleet</span>
       </div>
@@ -74,6 +79,7 @@
       <div class="noc-filter-actions">
         <button type="button" class="btn btn-ghost btn-sm" data-noc-ack-all>Ack visible</button>
         <button type="button" class="btn btn-ghost btn-sm" data-noc-clear-ack>Clear acks</button>
+        <a class="btn btn-ghost btn-sm" href="?focus=performance">Open performance</a>
       </div>
     </div>
     <div class="noc-grid">
@@ -82,6 +88,41 @@
       <section class="noc-pane"><header class="noc-pane-head"><div><p class="noc-pane-kicker">Inspector</p><h2 data-inspector-title>Select an alarm or router</h2></div></header><div class="noc-inspector-body" data-inspector-body><div class="noc-empty"><p class="noc-empty-title">Nothing selected</p><p class="noc-empty-copy">Pick an alarm or router tile.</p></div></div></section>
     </div>
     <section class="noc-pane noc-timeline"><header class="noc-pane-head"><div><p class="noc-pane-kicker">Chronology</p><h2>Event timeline</h2></div><span class="noc-pane-count" data-timeline-count>0</span></header><div class="noc-timeline-list" data-timeline-list></div></section>
+  </div>
+
+  {# -------- PERFORMANCE -------- #}
+  <div class="noc-view" data-noc-view="performance" {% if noc_focus != "performance" %}hidden{% endif %}>
+    <div class="noc-kpi-row" aria-label="Performance snapshot">
+      <article class="noc-kpi"><p class="noc-kpi-label">Fleet score</p><p class="noc-kpi-value" data-perf-stat="score">{% if board.summary.performance_score is not None %}{{ board.summary.performance_score }}%{% else %}—{% endif %}</p><p class="noc-kpi-meta" data-perf-stat="label">{{ board.summary.performance_label|default:"No data" }}</p></article>
+      <article class="noc-kpi tone-ok"><p class="noc-kpi-label">Sessions active</p><p class="noc-kpi-value" data-perf-stat="sessions">{{ board.summary.sessions_active }}</p><p class="noc-kpi-meta">Dialed PPPoE now</p></article>
+      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Under plan</p><p class="noc-kpi-value" data-perf-stat="under">{{ board.summary.clients_underperforming }}</p><p class="noc-kpi-meta">Peak ≪ package Mbps</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">Idle dialed</p><p class="noc-kpi-value" data-perf-stat="idle">{{ board.summary.clients_idle }}</p><p class="noc-kpi-meta">Connected, almost no traffic</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">Live throughput</p><p class="noc-kpi-value" data-perf-stat="throughput">{{ board.summary.fleet_throughput_mbps }}</p><p class="noc-kpi-meta">Mbps down+up across fleet</p></article>
+    </div>
+    <div class="noc-filters">
+      <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="performance" placeholder="Search routers, sites, clients…" autocomplete="off"></label>
+      <select data-noc-site data-scope="performance"><option value="">All sites</option></select>
+      <select data-perf-tone>
+        <option value="">All performance</option>
+        <option value="bad">Needs attention</option>
+        <option value="warn">Fair</option>
+        <option value="ok">Strong / good</option>
+      </select>
+    </div>
+    <div class="noc-split noc-split-perf">
+      <section class="noc-pane">
+        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Fleet</p><h2>MikroTik performance</h2></div><span class="noc-pane-count" data-perf-router-count>0</span></header>
+        <div class="noc-table-wrap" data-perf-router-table></div>
+      </section>
+      <section class="noc-pane">
+        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Actions</p><h2>Areas to improve</h2></div><span class="noc-pane-count" data-perf-improve-count>0</span></header>
+        <div class="noc-improve-list" data-perf-improve-list></div>
+      </section>
+    </div>
+    <section class="noc-pane">
+      <header class="noc-pane-head"><div><p class="noc-pane-kicker">Clients</p><h2>Not optimally running</h2></div><span class="noc-pane-count" data-perf-client-count>0</span></header>
+      <div class="noc-table-wrap" data-perf-client-table></div>
+    </section>
   </div>
 
   {# -------- DOWN ROUTERS -------- #}
@@ -116,28 +157,34 @@
     </div>
   </div>
 
-  {# -------- CLIENT IMPACT -------- #}
+  {# -------- CLIENT QUALITY (impact) -------- #}
   <div class="noc-view" data-noc-view="impact" {% if noc_focus != "impact" %}hidden{% endif %}>
-    <div class="noc-kpi-row" aria-label="Impact snapshot">
+    <div class="noc-kpi-row" aria-label="Quality snapshot">
       <article class="noc-kpi tone-ok"><p class="noc-kpi-label">Surfing</p><p class="noc-kpi-value" data-impact-stat="surfing">—</p><p class="noc-kpi-meta">Online now</p></article>
-      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Not surfing</p><p class="noc-kpi-value" data-impact-stat="not-surfing">—</p><p class="noc-kpi-meta">Dialed, in-package, no internet</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">Checked</p><p class="noc-kpi-value" data-impact-stat="checked">—</p><p class="noc-kpi-meta">PPPoE clients probed</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">NAS with impact</p><p class="noc-kpi-value" data-impact-stat="nas">—</p><p class="noc-kpi-meta">Routers hosting stuck clients</p></article>
-      <article class="noc-kpi"><p class="noc-kpi-label">Top reason</p><p class="noc-kpi-value noc-kpi-value-sm" data-impact-stat="top-reason">—</p><p class="noc-kpi-meta">Most common block</p></article>
+      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Stuck (not surfing)</p><p class="noc-kpi-value" data-impact-stat="not-surfing">—</p><p class="noc-kpi-meta">Dialed, in-package, no internet</p></article>
+      <article class="noc-kpi sev-major"><p class="noc-kpi-label">Under plan</p><p class="noc-kpi-value" data-impact-stat="under">{{ board.summary.clients_underperforming }}</p><p class="noc-kpi-meta">Peak ≪ package Mbps</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">Idle dialed</p><p class="noc-kpi-value" data-impact-stat="idle">{{ board.summary.clients_idle }}</p><p class="noc-kpi-meta">Connected, almost no traffic</p></article>
+      <article class="noc-kpi"><p class="noc-kpi-label">NAS with issues</p><p class="noc-kpi-value" data-impact-stat="nas">—</p><p class="noc-kpi-meta">Routers hosting quality problems</p></article>
     </div>
     <div class="noc-filters">
       <label class="noc-search"><span class="visually-hidden">Search</span><input type="search" data-noc-search data-scope="impact" placeholder="Search client, plan, NAS, reason…" autocomplete="off"></label>
       <select data-impact-nas><option value="">All NAS</option></select>
+      <select data-impact-kind>
+        <option value="">All quality issues</option>
+        <option value="stuck">Stuck (not surfing)</option>
+        <option value="underperforming">Under plan speed</option>
+        <option value="idle">Idle dialed</option>
+      </select>
       <select data-impact-reason><option value="">All reasons</option></select>
       <a class="btn btn-ghost btn-sm" href="{{ clients_url }}">Open PPPoE list</a>
     </div>
     <div class="noc-split noc-split-impact">
       <section class="noc-pane">
-        <header class="noc-pane-head"><div><p class="noc-pane-kicker">By NAS</p><h2>Impact groups</h2></div><span class="noc-pane-count" data-impact-groups>0</span></header>
+        <header class="noc-pane-head"><div><p class="noc-pane-kicker">By NAS</p><h2>Quality groups</h2></div><span class="noc-pane-count" data-impact-groups>0</span></header>
         <div class="noc-impact-board-body" data-impact-groups-body></div>
       </section>
       <section class="noc-pane">
-        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Clients</p><h2>Stuck sessions</h2></div><span class="noc-pane-count" data-impact-count>0</span></header>
+        <header class="noc-pane-head"><div><p class="noc-pane-kicker">Clients</p><h2>Non-optimal sessions</h2></div><span class="noc-pane-count" data-impact-count>0</span></header>
         <div class="noc-table-wrap" data-impact-table></div>
       </section>
     </div>
@@ -204,8 +251,10 @@
     search: "",
     hideAcked: false,
     downTone: "",
+    perfTone: "",
     impactNas: "",
     impactReason: "",
+    impactKind: "",
     faultStatus: "",
     faultIssue: "",
     faultUnassigned: false,
@@ -369,13 +418,14 @@
       return;
     }
     if (title) title.textContent = router.name;
+    var perf = router.performance || {};
     body.innerHTML =
       '<div class="noc-inspect-hero sev-' + escapeHtml(router.severity) + '"><div><span class="noc-sev-tag">' + escapeHtml(router.severity) + '</span><strong>' + escapeHtml(titleCase(router.status)) + '</strong>' + (router.score != null ? '<span class="noc-score">' + escapeHtml(router.score) + '%</span>' : '') + '</div><p>' + escapeHtml(router.reason || "") + '</p></div>' +
       '<div class="noc-inspect-block"><p class="noc-inspect-label">24h health</p>' + sparkSvg(router.sparkline) + '</div>' +
-      '<dl class="noc-dl"><div><dt>Host</dt><dd><span class="org-code">' + escapeHtml(router.host || "—") + '</span></dd></div><div><dt>Site</dt><dd>' + escapeHtml(router.site_label || "—") + '</dd></div><div><dt>Clients</dt><dd>' + escapeHtml(router.customer_count) + '</dd></div><div><dt>Last change</dt><dd>' + escapeHtml(router.last_change_at || "—") + '</dd></div></dl>' +
+      '<dl class="noc-dl"><div><dt>Host</dt><dd><span class="org-code">' + escapeHtml(router.host || "—") + '</span></dd></div><div><dt>Site</dt><dd>' + escapeHtml(router.site_label || "—") + '</dd></div><div><dt>Clients</dt><dd>' + escapeHtml(router.customer_count) + '</dd></div><div><dt>Perf</dt><dd>' + (perf.score != null ? escapeHtml(perf.score) + '% · ' + escapeHtml(perf.label || "") : "—") + (perf.non_optimal_count ? ' · ' + escapeHtml(perf.non_optimal_count) + ' non-optimal' : '') + '</dd></div><div><dt>Sessions</dt><dd>' + escapeHtml(perf.sessions_active || 0) + ' active · ' + escapeHtml(formatMbps(perf.download_mbps || 0)) + ' Mbps↓</dd></div><div><dt>Last change</dt><dd>' + escapeHtml(router.last_change_at || "—") + '</dd></div></dl>' +
       '<div class="noc-inspect-actions"><a class="btn btn-primary btn-sm" href="' + escapeHtml(router.detail_url) + '">Open router</a>' +
       (router.severity !== "ok" && router.account_status !== "suspended" ? '<button type="button" class="btn btn-ghost btn-sm" data-noc-reconnect data-reconnect-url="' + escapeHtml(router.reconnect_url) + '" data-router-name="' + escapeHtml(router.name) + '">Reconnect</button>' : '') +
-      '<a class="btn btn-ghost btn-sm" href="?focus=down">Down routers</a></div>';
+      '<a class="btn btn-ghost btn-sm" href="?focus=performance">Performance</a></div>';
   }
   function renderOpsTimeline() {
     var list = ((state.board && state.board.timeline) || []).filter(function (event) {
@@ -463,14 +513,57 @@
       '</div>';
   }
 
-  /* ===== IMPACT ===== */
-  function impactClients() {
-    var clients = ((state.surfing && state.surfing.clients) || []).filter(function (row) {
+  /* ===== IMPACT / CLIENT QUALITY ===== */
+  function stuckClientsRaw() {
+    return ((state.surfing && state.surfing.clients) || []).filter(function (row) {
       return row && row.internet_allowed && row.connected && !row.surfing;
+    }).map(function (row) {
+      return {
+        id: row.id,
+        full_name: row.full_name,
+        account_number: row.account_number,
+        url: row.url,
+        router_id: row.connected_router_id || row.router_id,
+        router_name: row.connected_router_name,
+        plan_name: row.plan_name,
+        kind: "stuck",
+        reason: row.reason || "Dialed but not surfing",
+        not_surfing_episodes_24h: row.not_surfing_episodes_24h,
+        peak_download_mbps: null,
+        plan_download_mbps: null,
+        attainment_pct: null,
+        live_download_mbps: null,
+      };
     });
+  }
+  function qualityClientsAll() {
+    var stuck = stuckClientsRaw();
+    var nonOptimal = ((state.board && state.board.non_optimal_clients) || []).slice();
+    var seen = {};
+    var merged = [];
+    stuck.forEach(function (row) {
+      seen[String(row.id) + ":stuck"] = true;
+      merged.push(row);
+    });
+    nonOptimal.forEach(function (row) {
+      var key = String(row.id) + ":" + (row.kind || "under");
+      if (seen[key]) return;
+      // Prefer stuck row when same client also appears as idle/under.
+      if (seen[String(row.id) + ":stuck"]) return;
+      merged.push(row);
+    });
+    return merged;
+  }
+  function impactClients() {
+    var clients = qualityClientsAll();
+    if (state.impactKind) {
+      clients = clients.filter(function (row) {
+        return String(row.kind || "") === String(state.impactKind);
+      });
+    }
     if (state.impactNas) {
       clients = clients.filter(function (row) {
-        return String(row.connected_router_id || row.router_id || "") === String(state.impactNas);
+        return String(row.router_id || "") === String(state.impactNas);
       });
     }
     if (state.impactReason) {
@@ -480,7 +573,7 @@
     }
     if (state.search) {
       clients = clients.filter(function (row) {
-        return matchesSearch([row.full_name, row.account_number, row.plan_name, row.reason, row.connected_router_name].join(" "), state.search);
+        return matchesSearch([row.full_name, row.account_number, row.plan_name, row.reason, row.router_name, row.kind].join(" "), state.search);
       });
     }
     return clients;
@@ -491,10 +584,10 @@
     if (nasSelect) {
       var nasMap = {};
       clientsAll.forEach(function (row) {
-        var rid = row.connected_router_id || row.router_id;
+        var rid = row.router_id;
         if (rid == null) return;
         var router = routerById(rid);
-        nasMap[rid] = router ? router.name : (row.connected_router_name || ("NAS #" + rid));
+        nasMap[rid] = router ? router.name : (row.router_name || ("NAS #" + rid));
       });
       nasSelect.innerHTML = '<option value="">All NAS</option>' + Object.keys(nasMap).map(function (id) {
         return '<option value="' + escapeHtml(id) + '">' + escapeHtml(nasMap[id]) + '</option>';
@@ -513,34 +606,26 @@
     }
   }
   function renderImpact() {
-    var allStuck = ((state.surfing && state.surfing.clients) || []).filter(function (row) {
-      return row && row.internet_allowed && row.connected && !row.surfing;
-    });
-    fillImpactFilters(allStuck);
+    var allQuality = qualityClientsAll();
+    fillImpactFilters(allQuality);
     var clients = impactClients();
     var surfing = (state.surfing && state.surfing.surfing_count) || 0;
-    var checked = (state.surfing && state.surfing.checked) || ((state.surfing && state.surfing.clients) || []).length || 0;
+    var stuck = stuckClientsRaw();
+    var summary = (state.board && state.board.summary) || {};
     var nasSet = {};
-    allStuck.forEach(function (row) {
-      var rid = row.connected_router_id || row.router_id;
-      if (rid != null) nasSet[rid] = true;
+    allQuality.forEach(function (row) {
+      if (row.router_id != null) nasSet[row.router_id] = true;
     });
-    var reasonCounts = {};
-    allStuck.forEach(function (row) {
-      var reason = row.reason || "Unknown";
-      reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
-    });
-    var topReason = Object.keys(reasonCounts).sort(function (a, b) { return reasonCounts[b] - reasonCounts[a]; })[0] || "—";
 
     setText("[data-impact-stat='surfing']", String(surfing));
-    setText("[data-impact-stat='not-surfing']", String(allStuck.length));
-    setText("[data-impact-stat='checked']", String(checked));
+    setText("[data-impact-stat='not-surfing']", String(stuck.length));
+    setText("[data-impact-stat='under']", String(summary.clients_underperforming || 0));
+    setText("[data-impact-stat='idle']", String(summary.clients_idle || 0));
     setText("[data-impact-stat='nas']", String(Object.keys(nasSet).length));
-    setText("[data-impact-stat='top-reason']", topReason);
 
     var byRouter = {};
     clients.forEach(function (row) {
-      var rid = String(row.connected_router_id || row.router_id || "none");
+      var rid = String(row.router_id || "none");
       if (!byRouter[rid]) byRouter[rid] = [];
       byRouter[rid].push(row);
     });
@@ -549,13 +634,16 @@
     if (groupsCount) groupsCount.textContent = String(Object.keys(byRouter).length);
     if (groupsBody) {
       if (!Object.keys(byRouter).length) {
-        groupsBody.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No impact groups</p><p class="noc-empty-copy">No stuck sessions match these filters.</p></div>';
+        groupsBody.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No quality groups</p><p class="noc-empty-copy">No stuck or underperforming sessions match these filters.</p></div>';
       } else {
         groupsBody.innerHTML = Object.keys(byRouter).map(function (rid) {
           var rows = byRouter[rid];
           var router = rid !== "none" ? routerById(rid) : null;
-          var title = router ? router.name : (rows[0].connected_router_name || "Unassigned NAS");
-          return '<button type="button" class="noc-impact-group is-button' + (String(state.impactNas) === String(rid) ? " is-selected" : "") + '" data-impact-pick-nas="' + escapeHtml(rid === "none" ? "" : rid) + '"><header class="noc-impact-group-head"><div><strong>' + escapeHtml(title) + '</strong><span>' + rows.length + ' stuck</span></div></header><p class="noc-muted" style="padding:0.55rem 0.8rem 0.8rem">' + escapeHtml((rows[0] && rows[0].reason) || "Multiple reasons") + '</p></button>';
+          var title = router ? router.name : (rows[0].router_name || "Unassigned NAS");
+          var kinds = {};
+          rows.forEach(function (r) { kinds[r.kind || "issue"] = (kinds[r.kind || "issue"] || 0) + 1; });
+          var kindText = Object.keys(kinds).map(function (k) { return kinds[k] + " " + kindLabel(k); }).join(", ");
+          return '<button type="button" class="noc-impact-group is-button' + (String(state.impactNas) === String(rid) ? " is-selected" : "") + '" data-impact-pick-nas="' + escapeHtml(rid === "none" ? "" : rid) + '"><header class="noc-impact-group-head"><div><strong>' + escapeHtml(title) + '</strong><span>' + rows.length + ' issues</span></div></header><p class="noc-muted" style="padding:0.55rem 0.8rem 0.8rem">' + escapeHtml(kindText) + '</p></button>';
         }).join("");
       }
     }
@@ -565,15 +653,22 @@
     if (count) count.textContent = String(clients.length);
     if (!table) return;
     if (!clients.length) {
-      table.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No stuck clients</p><p class="noc-empty-copy">Everyone who is dialed and in-package is surfing — or no probe data yet.</p></div>';
+      table.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No non-optimal clients</p><p class="noc-empty-copy">No stuck sessions or under-plan dialed clients match these filters.</p></div>';
       return;
     }
     table.innerHTML =
-      '<table class="org-table noc-detail-table"><thead><tr><th>Client</th><th>NAS</th><th>Plan</th><th>Reason</th><th>24h episodes</th></tr></thead><tbody>' +
-      clients.slice(0, 80).map(function (row) {
-        var rid = row.connected_router_id || row.router_id;
+      '<table class="org-table noc-detail-table"><thead><tr><th>Client</th><th>NAS</th><th>Issue</th><th>Plan / peak</th><th>Detail</th></tr></thead><tbody>' +
+      clients.slice(0, 100).map(function (row) {
+        var rid = row.router_id;
         var router = rid != null ? routerById(rid) : null;
-        return '<tr><td data-label="Client"><a href="' + escapeHtml(row.url) + '">' + escapeHtml(row.full_name || row.account_number || ("#" + row.id)) + '</a></td><td data-label="NAS">' + escapeHtml(router ? router.name : (row.connected_router_name || "—")) + '</td><td data-label="Plan">' + escapeHtml(row.plan_name || "—") + '</td><td data-label="Reason">' + escapeHtml(row.reason || "—") + '</td><td data-label="24h episodes">' + escapeHtml(row.not_surfing_episodes_24h != null ? row.not_surfing_episodes_24h : "—") + '</td></tr>';
+        var planPeak = "—";
+        if (row.kind === "stuck") {
+          planPeak = row.not_surfing_episodes_24h != null ? (row.not_surfing_episodes_24h + " episodes/24h") : "—";
+        } else if (row.plan_download_mbps != null || row.peak_download_mbps != null) {
+          planPeak = formatMbps(row.peak_download_mbps) + " / " + (row.plan_download_mbps != null ? row.plan_download_mbps + " Mbps" : "—");
+          if (row.attainment_pct != null) planPeak += " (" + row.attainment_pct + "%)";
+        }
+        return '<tr><td data-label="Client"><a href="' + escapeHtml(row.url || "#") + '">' + escapeHtml(row.full_name || row.account_number || ("#" + row.id)) + '</a></td><td data-label="NAS">' + escapeHtml(router ? router.name : (row.router_name || "—")) + '</td><td data-label="Issue"><span class="noc-sev-tag">' + escapeHtml(kindLabel(row.kind)) + '</span></td><td data-label="Plan / peak">' + escapeHtml(planPeak) + '</td><td data-label="Detail">' + escapeHtml(row.reason || "—") + '</td></tr>';
       }).join("") +
       "</tbody></table>";
   }
@@ -659,8 +754,142 @@
     setText("[data-stat='minor']", String(summary.alarms_minor || 0));
     setText("[data-stat='alarms']", String(summary.alarms_open || 0));
     setText("[data-stat='at-risk']", String(summary.customers_at_risk || 0));
+    setText("[data-stat='non-optimal']", String(summary.clients_non_optimal || 0));
     setText("[data-stat='sites']", String(summary.sites_total || 0));
     setText("[data-stat='health']", summary.health_score == null ? "—" : (summary.health_score + "%"));
+  }
+
+  function formatMbps(value) {
+    var n = Number(value);
+    if (!isFinite(n)) return "—";
+    if (n >= 100) return String(Math.round(n));
+    if (n >= 10) return n.toFixed(1);
+    return n.toFixed(2);
+  }
+
+  function kindLabel(kind) {
+    if (kind === "underperforming") return "Under plan";
+    if (kind === "idle") return "Idle dialed";
+    if (kind === "stuck") return "Stuck";
+    return titleCase(kind || "Issue");
+  }
+
+  /* ===== PERFORMANCE ===== */
+  function filteredPerfRouters() {
+    return ((state.board && state.board.routers) || []).filter(function (row) {
+      var perf = row.performance || {};
+      if (state.filterSite && row.site_key !== state.filterSite) return false;
+      if (state.perfTone && (perf.tone || "unknown") !== state.perfTone) return false;
+      return matchesSearch([row.name, row.host, row.location, row.status, perf.label].join(" "), state.search);
+    }).sort(function (a, b) {
+      var pa = (a.performance && a.performance.score != null) ? a.performance.score : 999;
+      var pb = (b.performance && b.performance.score != null) ? b.performance.score : 999;
+      if (pa !== pb) return pa - pb;
+      return (b.performance && b.performance.non_optimal_count || 0) - (a.performance && a.performance.non_optimal_count || 0);
+    });
+  }
+  function filteredPerfClients() {
+    return ((state.board && state.board.non_optimal_clients) || []).filter(function (row) {
+      if (state.filterSite) {
+        var router = row.router_id != null ? routerById(row.router_id) : null;
+        if (!router || router.site_key !== state.filterSite) return false;
+      }
+      return matchesSearch([row.full_name, row.account_number, row.router_name, row.plan_name, row.reason, row.kind].join(" "), state.search);
+    });
+  }
+  function filteredImprovements() {
+    return ((state.board && state.board.improvements) || []).filter(function (row) {
+      if (state.filterSite) {
+        var router = row.router_id != null ? routerById(row.router_id) : null;
+        if (!router || router.site_key !== state.filterSite) return false;
+      }
+      return matchesSearch([row.title, row.detail, row.action, row.router_name].join(" "), state.search);
+    });
+  }
+  function renderPerformance() {
+    var summary = (state.board && state.board.summary) || {};
+    setText("[data-perf-stat='score']", summary.performance_score == null ? "—" : (summary.performance_score + "%"));
+    setText("[data-perf-stat='label']", summary.performance_label || "No data");
+    setText("[data-perf-stat='sessions']", String(summary.sessions_active || 0));
+    setText("[data-perf-stat='under']", String(summary.clients_underperforming || 0));
+    setText("[data-perf-stat='idle']", String(summary.clients_idle || 0));
+    setText("[data-perf-stat='throughput']", formatMbps(summary.fleet_throughput_mbps || 0));
+
+    var routers = filteredPerfRouters();
+    var routerCount = root.querySelector("[data-perf-router-count]");
+    var routerTable = root.querySelector("[data-perf-router-table]");
+    if (routerCount) routerCount.textContent = String(routers.length);
+    if (routerTable) {
+      if (!routers.length) {
+        routerTable.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No routers</p><p class="noc-empty-copy">Clear filters or wait for usage samples.</p></div>';
+      } else {
+        routerTable.innerHTML =
+          '<table class="org-table noc-detail-table"><thead><tr><th>MikroTik</th><th>Health</th><th>Perf</th><th>Sessions</th><th>Throughput</th><th>Under / idle</th><th>Plan attain</th></tr></thead><tbody>' +
+          routers.map(function (row) {
+            var perf = row.performance || {};
+            var selected = String(state.selectedRouterId) === String(row.id) ? " is-selected" : "";
+            return '<tr class="tone-' + escapeHtml(perf.tone || "unknown") + selected + '" data-select-router="' + escapeHtml(row.id) + '">' +
+              '<td data-label="MikroTik"><strong>' + escapeHtml(row.name) + '</strong><div class="noc-muted">' + escapeHtml(row.site_label || "") + '</div></td>' +
+              '<td data-label="Health"><span class="noc-sev-tag">' + escapeHtml(titleCase(row.status)) + '</span>' + (row.score != null ? ' ' + escapeHtml(row.score) + '%' : '') + '</td>' +
+              '<td data-label="Perf"><strong>' + (perf.score != null ? escapeHtml(perf.score) + '%' : '—') + '</strong> <span class="noc-muted">' + escapeHtml(perf.label || "") + '</span></td>' +
+              '<td data-label="Sessions">' + escapeHtml(perf.sessions_active || 0) + '</td>' +
+              '<td data-label="Throughput">' + escapeHtml(formatMbps(perf.download_mbps || 0)) + '↓ / ' + escapeHtml(formatMbps(perf.upload_mbps || 0)) + '↑</td>' +
+              '<td data-label="Under / idle">' + escapeHtml(perf.underperforming_count || 0) + ' / ' + escapeHtml(perf.idle_count || 0) + '</td>' +
+              '<td data-label="Plan attain">' + (perf.avg_attainment_pct != null ? escapeHtml(perf.avg_attainment_pct) + '%' : '—') + '</td>' +
+              '</tr>';
+          }).join("") +
+          '</tbody></table>';
+      }
+    }
+
+    var improvements = filteredImprovements();
+    var improveCount = root.querySelector("[data-perf-improve-count]");
+    var improveList = root.querySelector("[data-perf-improve-list]");
+    if (improveCount) improveCount.textContent = String(improvements.length);
+    if (improveList) {
+      if (!improvements.length) {
+        improveList.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">Nothing urgent</p><p class="noc-empty-copy">No ranked improvements from current samples.</p></div>';
+      } else {
+        improveList.innerHTML = improvements.map(function (item) {
+          return '<article class="noc-improve sev-' + escapeHtml(item.severity || "info") + '">' +
+            '<div class="noc-improve-top"><span class="noc-sev-tag">' + escapeHtml(item.severity || "info") + '</span><span>' + escapeHtml(item.customers || 0) + ' clients</span></div>' +
+            '<h3>' + escapeHtml(item.title || "") + '</h3>' +
+            '<p>' + escapeHtml(item.detail || "") + '</p>' +
+            '<p class="noc-improve-action">' + escapeHtml(item.action || "") + '</p>' +
+            (item.href ? '<a class="btn btn-ghost btn-sm" href="' + escapeHtml(item.href) + '">Open</a>' : '') +
+            '</article>';
+        }).join("");
+      }
+    }
+
+    var clients = filteredPerfClients();
+    var clientCount = root.querySelector("[data-perf-client-count]");
+    var clientTable = root.querySelector("[data-perf-client-table]");
+    if (clientCount) clientCount.textContent = String(clients.length);
+    if (clientTable) {
+      if (!clients.length) {
+        clientTable.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No non-optimal clients</p><p class="noc-empty-copy">' +
+          (summary.has_usage_samples ? 'Dialed sessions are within expected plan range — or still warming up.' : 'Waiting for usage samples from the MikroTik sweep.') +
+          '</p></div>';
+      } else {
+        clientTable.innerHTML =
+          '<table class="org-table noc-detail-table"><thead><tr><th>Client</th><th>NAS</th><th>Issue</th><th>Peak / plan</th><th>Live</th><th>Why</th></tr></thead><tbody>' +
+          clients.map(function (row) {
+            var peak = formatMbps(row.peak_download_mbps) + ' Mbps';
+            var plan = row.plan_download_mbps != null ? (row.plan_download_mbps + ' Mbps') : '—';
+            var attain = row.attainment_pct != null ? (row.attainment_pct + '%') : '—';
+            return '<tr>' +
+              '<td data-label="Client">' + (row.url ? '<a href="' + escapeHtml(row.url) + '">' + escapeHtml(row.full_name) + '</a>' : escapeHtml(row.full_name)) + '</td>' +
+              '<td data-label="NAS">' + escapeHtml(row.router_name || '—') + '</td>' +
+              '<td data-label="Issue"><span class="noc-sev-tag">' + escapeHtml(kindLabel(row.kind)) + '</span></td>' +
+              '<td data-label="Peak / plan">' + escapeHtml(peak) + ' / ' + escapeHtml(plan) + ' <span class="noc-muted">(' + escapeHtml(attain) + ')</span></td>' +
+              '<td data-label="Live">' + escapeHtml(formatMbps(row.live_download_mbps)) + '↓</td>' +
+              '<td data-label="Why">' + escapeHtml(row.reason || '—') + '</td>' +
+              '</tr>';
+          }).join("") +
+          '</tbody></table>';
+      }
+    }
   }
 
   function renderAll() {
@@ -679,6 +908,8 @@
       renderOpsMatrix();
       renderOpsInspector();
       renderOpsTimeline();
+    } else if (mode === "performance") {
+      renderPerformance();
     } else if (mode === "down") {
       renderDown();
     } else if (mode === "impact") {
@@ -705,7 +936,7 @@
       }
       var board = await fetchJson(summaryUrl);
       if (board && board.ok) state.board = board;
-      if (mode === "impact" || mode === "ops") {
+      if (mode === "impact" || mode === "ops" || mode === "performance") {
         if (surfingUrl) {
           try {
             var surfing = await fetchJson(surfingUrl + (surfingUrl.indexOf("?") >= 0 ? "&" : "?") + "service=pppoe");
@@ -862,8 +1093,8 @@
   root.querySelectorAll("[data-noc-site]").forEach(function (select) {
     select.addEventListener("change", function () {
       var scope = select.getAttribute("data-scope") || mode;
-      if (scope !== mode && scope !== "ops" && scope !== "down") return;
-      if (mode !== "ops" && mode !== "down") return;
+      if (scope !== mode && !(mode === "ops" || mode === "down" || mode === "performance")) return;
+      if (mode !== "ops" && mode !== "down" && mode !== "performance") return;
       state.filterSite = select.value || "";
       renderAll();
     });
@@ -872,8 +1103,12 @@
   if (hideAcked) hideAcked.addEventListener("change", function () { state.hideAcked = !!hideAcked.checked; renderOpsAlarms(); });
   var downTone = root.querySelector("[data-down-tone]");
   if (downTone) downTone.addEventListener("change", function () { state.downTone = downTone.value || ""; renderDown(); });
+  var perfTone = root.querySelector("[data-perf-tone]");
+  if (perfTone) perfTone.addEventListener("change", function () { state.perfTone = perfTone.value || ""; renderPerformance(); });
   var impactNasSel = root.querySelector("[data-impact-nas]");
   if (impactNasSel) impactNasSel.addEventListener("change", function () { state.impactNas = impactNasSel.value || ""; renderImpact(); });
+  var impactKindSel = root.querySelector("[data-impact-kind]");
+  if (impactKindSel) impactKindSel.addEventListener("change", function () { state.impactKind = impactKindSel.value || ""; renderImpact(); });
   var impactReasonSel = root.querySelector("[data-impact-reason]");
   if (impactReasonSel) impactReasonSel.addEventListener("change", function () { state.impactReason = impactReasonSel.value || ""; renderImpact(); });
   var faultStatus = root.querySelector("[data-fault-status]");
