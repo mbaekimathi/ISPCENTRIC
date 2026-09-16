@@ -1142,6 +1142,20 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                 for p in payloads
                 if isinstance(p, dict) and p.get("hotspot_mac")
             ],
+            # Shortest active uptime = most recently started surfing session.
+            "uptime_seconds": min(
+                (
+                    parse_uptime_seconds(
+                        p.get("uptime_raw") or p.get("uptime") or ""
+                    )
+                    for p in payloads
+                    if isinstance(p, dict)
+                ),
+                default=parse_uptime_seconds(
+                    payload.get("uptime_raw") or payload.get("uptime") or ""
+                ),
+            ),
+            "uptime_raw": payload.get("uptime_raw") or payload.get("uptime") or "",
         }
 
     # Offline markers only for Hotspot clients assigned to a router we reached —

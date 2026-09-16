@@ -11905,9 +11905,14 @@ def my_clients(request):
             | Q(pppoe_username__icontains=clients_query)
         )
 
-    clients_sort = (request.GET.get("sort") or "used").strip().lower()
+    clients_sort_raw = (request.GET.get("sort") or "").strip().lower()
     valid_sorts = {"used", "used_asc", "ending", "newest", "name", "session"}
-    if clients_sort not in valid_sorts:
+    if clients_sort_raw in valid_sorts:
+        clients_sort = clients_sort_raw
+    elif tab == "hotspot" and not pending_view:
+        # Hotspot default: most recently started surfing session first.
+        clients_sort = "session"
+    else:
         clients_sort = "used"
     if clients_sort == "session" and tab != "hotspot":
         clients_sort = "used"
@@ -11919,7 +11924,7 @@ def my_clients(request):
         ("name", "Name A–Z"),
     ]
     if tab == "hotspot" and not pending_view:
-        clients_sort_choices.append(("session", "Live session"))
+        clients_sort_choices.insert(0, ("session", "Latest surfing"))
 
     # Attach package progress for the Used column, then sort before pagination
     # so the chosen order applies across the full filtered list.
@@ -15479,7 +15484,7 @@ def clients_surfing_status(request):
         else Customer.ServiceType.PPPOE
     )
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
-    cache_key = f"clients_surfing:{org.pk}:{service}:v6"
+    cache_key = f"clients_surfing:{org.pk}:{service}:v7"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -15534,6 +15539,7 @@ def clients_surfing_status(request):
     active_by_router: dict[int, set[str]] = {}
     connected_by_router: dict[int, set[str]] = {}
     nas_blocked_by_router: dict[int, set[str]] = {}
+    active_uptime_by_router: dict[int, dict[str, str]] = {}
     wifi_ssid_by_router: dict[int, str] = {
         rid: (getattr(router, "wifi_ssid", None) or "").strip()
         for rid, router in routers_by_id.items()
@@ -15541,19 +15547,20 @@ def clients_surfing_status(request):
     }
     router_errors: dict[int, str] = {}
 
-    def _probe_router(router) -> tuple[int, set[str], set[str], set[str], str, str]:
+    def _probe_router(router) -> tuple[int, set[str], set[str], set[str], dict[str, str], str, str]:
         from core.mikrotik_connect import is_mikrotik_host_cooling_down
 
         router_id = router.pk
         stored_ssid = (getattr(router, "wifi_ssid", None) or "").strip()
         if router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
-            return router_id, set(), set(), set(), "Router suspended", stored_ssid
+            return router_id, set(), set(), set(), {}, "Router suspended", stored_ssid
         if is_mikrotik_host_cooling_down(router.host):
             return (
                 router_id,
                 set(),
                 set(),
                 set(),
+                {},
                 "Router recently unreachable",
                 stored_ssid,
             )
@@ -15567,6 +15574,11 @@ def clients_surfing_status(request):
             active = set(result.get("active_macs") or [])
             connected = set(result.get("connected_macs") or [])
             nas_blocked: set[str] = set()
+            active_uptime = {
+                str(mac).upper(): str(uptime)
+                for mac, uptime in (result.get("active_uptime_by_mac") or {}).items()
+                if mac and uptime
+            }
             live_ssid = (result.get("wifi_ssid") or "").strip() or stored_ssid
         else:
             result = fetch_active_pppoe_usernames(
@@ -15578,14 +15590,16 @@ def clients_surfing_status(request):
             active = {name.lower() for name in (result.get("usernames") or [])}
             connected = set()
             nas_blocked = {name.lower() for name in (result.get("blocked") or [])}
+            active_uptime = {}
             live_ssid = stored_ssid
         if result.get("ok"):
-            return router_id, active, connected, nas_blocked, "", live_ssid
+            return router_id, active, connected, nas_blocked, active_uptime, "", live_ssid
         return (
             router_id,
             set(),
             set(),
             set(),
+            {},
             result.get("error") or "Could not reach router",
             live_ssid,
         )
@@ -15606,6 +15620,7 @@ def clients_surfing_status(request):
                         active,
                         connected,
                         nas_blocked,
+                        active_uptime,
                         error,
                         wifi_ssid,
                     ) = future.result(timeout=12.0)
@@ -15614,6 +15629,7 @@ def clients_surfing_status(request):
                 active_by_router[router_id] = active
                 connected_by_router[router_id] = connected
                 nas_blocked_by_router[router_id] = nas_blocked
+                active_uptime_by_router[router_id] = active_uptime or {}
                 if wifi_ssid:
                     wifi_ssid_by_router[router_id] = wifi_ssid
                 if error:
@@ -15630,6 +15646,7 @@ def clients_surfing_status(request):
     nas_blocked_any_router = (
         set().union(*nas_blocked_by_router.values()) if nas_blocked_by_router else set()
     )
+    from billing.usage_samples import parse_uptime_seconds as _parse_session_uptime
 
     def _period_blocked_reason(customer) -> str:
         if customer_subscription_expired(customer):
@@ -15952,6 +15969,33 @@ def clients_surfing_status(request):
         else:
             devices_connected = 0
 
+        session_uptime_seconds = None
+        if service == "hotspot" and surfing:
+            if use_live_snapshot and isinstance(entry, dict):
+                try:
+                    raw_up = int(entry.get("uptime_seconds") or 0)
+                except (TypeError, ValueError):
+                    raw_up = 0
+                if raw_up > 0:
+                    session_uptime_seconds = raw_up
+                else:
+                    parsed = _parse_session_uptime(entry.get("uptime_raw") or "")
+                    session_uptime_seconds = parsed if parsed > 0 else 0
+            else:
+                uptime_candidates: list[int] = []
+                for rid, uptime_map in active_uptime_by_router.items():
+                    for mac in hotspot_identities or ({identity} if identity else set()):
+                        raw = uptime_map.get(mac) or uptime_map.get(str(mac).upper())
+                        if not raw:
+                            continue
+                        secs = _parse_session_uptime(raw)
+                        if secs > 0:
+                            uptime_candidates.append(secs)
+                if uptime_candidates:
+                    session_uptime_seconds = min(uptime_candidates)
+                else:
+                    session_uptime_seconds = 0
+
         clients_payload.append(
             {
                 "id": customer.pk,
@@ -15978,6 +16022,7 @@ def clients_surfing_status(request):
                 "connected_wifi_ssid": connected_wifi_ssid,
                 "devices": devices_connected,
                 "gadgets": devices_connected,
+                "session_uptime_seconds": session_uptime_seconds,
             }
         )
 
@@ -15999,7 +16044,20 @@ def clients_surfing_status(request):
                 rank = 0
             elif rank == 3 and row.get("connected"):
                 rank = 1
-            return (rank, (row.get("full_name") or "").lower(), row.get("id") or 0)
+            # Among surfing clients, shortest session uptime = started most recently.
+            uptime = row.get("session_uptime_seconds")
+            try:
+                uptime_key = int(uptime) if uptime is not None else 10**12
+            except (TypeError, ValueError):
+                uptime_key = 10**12
+            if rank != 0:
+                uptime_key = 10**12
+            return (
+                rank,
+                uptime_key,
+                (row.get("full_name") or "").lower(),
+                row.get("id") or 0,
+            )
 
         clients_payload.sort(key=_hotspot_sort_key)
 

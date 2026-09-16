@@ -37,7 +37,7 @@
                 {{ package_edit_form.service_type }}
               </div>
               {% if package_edit_form.service_type.errors %}<div class="field-error">{{ package_edit_form.service_type.errors|striptags }}</div>{% endif %}
-              <p class="field-hint">Switch between PPPoE (home/office) and Hotspot (captive portal) packages.</p>
+              <p class="field-hint">PPPoE packages enforce CPE upload/download on the MikroTik; Hotspot packages only apply to captive portals. Do not mix them.</p>
             </div>
             <div class="field field-span-2">
               <label for="{{ package_edit_form.description.id_for_label }}">{{ package_edit_form.description.label }} <span class="pppoe-optional">optional</span></label>

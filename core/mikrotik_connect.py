@@ -9361,6 +9361,7 @@ def fetch_hotspot_client_macs(
             "ok": False,
             "active_macs": [],
             "connected_macs": [],
+            "active_uptime_by_mac": {},
             "wifi_ssid": "",
             "error": "Router host or username missing.",
         }
@@ -9369,6 +9370,7 @@ def fetch_hotspot_client_macs(
             "ok": False,
             "active_macs": [],
             "connected_macs": [],
+            "active_uptime_by_mac": {},
             "wifi_ssid": "",
             "error": "Router recently unreachable — cooling down.",
             "cooling_down": True,
@@ -9406,15 +9408,20 @@ def fetch_hotspot_client_macs(
 
     try:
         with _api_session(host, username, password, port=port, timeout=timeout) as sock:
-            active_macs = {
-                mac
-                for row in _print(
-                    sock,
-                    "/ip/hotspot/active",
-                    props="mac-address,user",
-                )
-                if (mac := _mac(row.get("mac-address") or row.get("user") or ""))
-            }
+            active_macs: set[str] = set()
+            active_uptime_by_mac: dict[str, str] = {}
+            for row in _print(
+                sock,
+                "/ip/hotspot/active",
+                props="mac-address,user,uptime",
+            ):
+                mac = _mac(row.get("mac-address") or row.get("user") or "")
+                if not mac:
+                    continue
+                active_macs.add(mac)
+                uptime = (row.get("uptime") or "").strip()
+                if uptime:
+                    active_uptime_by_mac[mac] = uptime
             connected_macs = {
                 mac
                 for row in _print(
@@ -9435,6 +9442,7 @@ def fetch_hotspot_client_macs(
                 "ok": True,
                 "active_macs": sorted(active_macs),
                 "connected_macs": sorted(connected_macs),
+                "active_uptime_by_mac": active_uptime_by_mac,
                 "wifi_ssid": wifi_ssid,
                 "error": "",
             }
@@ -9452,6 +9460,7 @@ def fetch_hotspot_client_macs(
         "ok": False,
         "active_macs": [],
         "connected_macs": [],
+        "active_uptime_by_mac": {},
         "wifi_ssid": "",
         "error": error,
     }
@@ -10868,6 +10877,45 @@ def _add_filter_rule(sock: socket.socket, rule: dict[str, str], *, place_before:
     return terminal
 
 
+def _disable_fasttrack_connection_rules(sock: socket.socket) -> list[str]:
+    """
+    Disable FastTrack so PPP/Hotspot simple queues can shape package Mbps.
+
+    MikroTik FastTrack bypasses simple queues — including the dynamic queues
+    created by PPP profile ``rate-limit``. Stock / QuickSet configs leave
+    FastTrack enabled, which makes package speeds appear to do nothing even
+    when profiles and ``ispcentric-rl-*`` queues look correct.
+    """
+    notes: list[str] = []
+    disabled = 0
+    for row in _print(
+        sock,
+        "/ip/firewall/filter",
+        props=".id,chain,action,disabled,comment",
+    ):
+        action = (row.get("action") or "").strip().lower()
+        if action != "fasttrack-connection":
+            continue
+        if (row.get("disabled") or "").strip().lower() in {"yes", "true"}:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        terminal = _set(sock, "/ip/firewall/filter", item_id, disabled="yes")
+        if terminal.get("_reply") == "!trap":
+            notes.append(
+                "could not disable FastTrack rule "
+                f"{item_id}: {_trap_message(terminal, 'trap')}"
+            )
+            continue
+        disabled += 1
+    if disabled:
+        notes.append(
+            f"disabled {disabled} FastTrack rule(s) so package speed queues apply"
+        )
+    return notes
+
+
 def _ensure_pppoe_nat(sock: socket.socket) -> None:
     """NAT for dialed PPPoE clients (pool subnet to WAN)."""
     for row in _print(
@@ -11242,6 +11290,8 @@ def _ensure_pppoe_stack(
         item_id = (row.get(".id") or "").strip()
         if item_id:
             _remove(sock, "/ip/firewall/filter", item_id)
+
+    notes.extend(_disable_fasttrack_connection_rules(sock))
 
     place_before_drop = _first_forward_drop_id(sock)
     billing_ip = _portal_target_ipv4(portal_url) if portal_url else ""
@@ -13474,18 +13524,10 @@ def _block_orphan_pppoe_secrets_on_socket(sock: socket.socket, router) -> list[s
     if not orphan_names:
         return notes
 
-    orphan_lower = {name.lower() for name in orphan_names}
-    kicked = 0
-    for row in _print(sock, "/ppp/active", props=".id,name"):
-        name = (row.get("name") or "").strip()
-        if name.lower() not in orphan_lower:
-            continue
-        item_id = (row.get(".id") or "").strip()
-        if not item_id:
-            continue
-        terminal = _remove(sock, "/ppp/active", item_id)
-        if terminal.get("_reply") != "!trap":
-            kicked += 1
+    # Use the shared disconnect path so tracked firewall connections for the
+    # orphan session IPs are killed too (plain /ppp/active remove can leave
+    # established sockets surfing briefly).
+    kicked = _disconnect_pppoe_sessions_many(sock, orphan_names)
     if kicked:
         notes.append(f"kicked {kicked} orphan PPPoE session(s)")
     return notes
@@ -13670,6 +13712,7 @@ def sync_pppoe_subscription_batch_on_router(
     hosts = _router_api_host_candidates(router, discover=False)
     last_error = ""
     kick_usernames: list[str] = []
+    block_kick_usernames: list[str] = []
     clear_usernames: list[str] = []
     renew_portal_customers: list = []
     blocked_identity_customers: list = []
@@ -13787,6 +13830,8 @@ def sync_pppoe_subscription_batch_on_router(
                         )
                         if needs_kick:
                             kick_usernames.append(username)
+                            if profile == PPPOE_BLOCKED_PROFILE_NAME:
+                                block_kick_usernames.append(username)
                         # Expired/paused: push CPE pay/pause Hotspot while the
                         # PPP session is still up. Without this, fleet kicks
                         # leave phones on "no internet" with no renew popup.
@@ -13843,6 +13888,36 @@ def sync_pppoe_subscription_batch_on_router(
                         kicked = _disconnect_pppoe_sessions_many(
                             kick_sock, kick_usernames
                         )
+                        # Post-block leak check: secret may already be on
+                        # ispcentric-blocked while the live session still
+                        # carries a paid address-list (first kick raced).
+                        leak_retry: list[str] = []
+                        if block_kick_usernames:
+                            live_after = _pppoe_live_state_maps(kick_sock)
+                            for uname in {
+                                (n or "").strip().lower()
+                                for n in block_kick_usernames
+                                if (n or "").strip()
+                            }:
+                                if not _pppoe_has_active_session(
+                                    kick_sock, uname, live=live_after
+                                ):
+                                    continue
+                                if _active_pppoe_session_is_blocked(
+                                    kick_sock, uname, live=live_after
+                                ):
+                                    continue
+                                leak_retry.append(uname)
+                        if leak_retry:
+                            re_kicked = _disconnect_pppoe_sessions_many(
+                                kick_sock, leak_retry
+                            )
+                            kicked += re_kicked
+                            notes.append(
+                                f"leak-retry kicked {re_kicked} unpaid "
+                                f"session(s) still surfing "
+                                f"({len(leak_retry)} account(s))"
+                            )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "PPPoE batch kick failed router=%s: %s",
@@ -14153,6 +14228,134 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
         f"Repaired {len(repair_targets)} paid PPPoE account(s) not surfing on "
         f"{getattr(router, 'name', None) or host}"
         + (f" (cleared {cleared} CPE renew Hotspot(s))" if cleared else "")
+    )
+    return result
+
+
+def repair_unpaid_pppoe_leaking_on_router(router) -> dict[str, Any]:
+    """
+    Stop unpaid/expired PPPoE clients that are still surfing on one NAS.
+
+    Billing denies WAN, but a live ``/ppp/active`` session can keep surfing when:
+      - the secret is already on ``ispcentric-blocked`` while the session still
+        carries a paid address-list (kick raced / failed), or
+      - the secret is still on a paid speed profile after expiry.
+
+    Mirrors ``repair_unpaid_hotspot_leaking_on_router`` for the PPPoE path.
+    Re-provisions via the batch block+kick path so CPE renew portals stay intact.
+    """
+    if router is None:
+        return {"ok": False, "skipped": True, "repaired": 0, "error": "No router."}
+
+    from core.models import MikroTikRouter
+
+    router_id = getattr(router, "pk", None)
+    host = (getattr(router, "host", None) or "").strip()
+    api_user = (getattr(router, "username", None) or "").strip()
+    api_password = getattr(router, "password", None) or ""
+    if getattr(router, "account_status", "") == MikroTikRouter.AccountStatus.SUSPENDED:
+        return {
+            "ok": True,
+            "skipped": True,
+            "repaired": 0,
+            "router_id": router_id,
+            "message": "Router suspended — PPPoE leak repair skipped.",
+        }
+    if not host or not api_user:
+        return {
+            "ok": False,
+            "repaired": 0,
+            "router_id": router_id,
+            "error": "Router host or API username is missing.",
+        }
+
+    unpaid = [
+        customer
+        for customer in _pppoe_customers_for_router(router)
+        if not _customer_internet_allowed(customer)
+    ]
+    if not unpaid:
+        return {
+            "ok": True,
+            "skipped": True,
+            "repaired": 0,
+            "router_id": router_id,
+            "message": "No unpaid PPPoE clients on this router.",
+        }
+
+    need_repair: list = []
+    last_error = ""
+    for candidate in _router_api_host_candidates(router, discover=False):
+        try:
+            with _api_session(candidate, api_user, api_password, timeout=15.0) as sock:
+                live = _pppoe_live_state_maps(sock)
+                for customer in unpaid:
+                    username = (customer.pppoe_username or "").strip()
+                    if not username:
+                        continue
+                    disabled = _customer_pppoe_secret_disabled(customer)
+                    expected = _ppp_secret_profile_for_customer(
+                        customer, disabled=disabled
+                    )
+                    current = _current_ppp_secret_profile(
+                        sock, username, live=live
+                    )
+                    active = _pppoe_has_active_session(sock, username, live=live)
+                    if not active and not disabled:
+                        # Secret on paid profile while billing denies surf —
+                        # still rewrite so the next dial is blocked.
+                        wrong_profile = bool(
+                            current
+                            and current != expected
+                            and expected == PPPOE_BLOCKED_PROFILE_NAME
+                        )
+                        if wrong_profile:
+                            need_repair.append(customer)
+                        continue
+                    if disabled and active:
+                        # Suspended secret should not stay dialed.
+                        need_repair.append(customer)
+                        continue
+                    if not active:
+                        continue
+                    blocked_session = _active_pppoe_session_is_blocked(
+                        sock, username, live=live
+                    )
+                    wrong_profile = bool(
+                        current
+                        and current != expected
+                        and expected == PPPOE_BLOCKED_PROFILE_NAME
+                    )
+                    # Primary leak: dialed and not on the blocked address-list.
+                    if (not blocked_session) or wrong_profile:
+                        need_repair.append(customer)
+                break
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            continue
+    else:
+        return {
+            "ok": False,
+            "repaired": 0,
+            "error": last_error or f"{host}: unreachable",
+            "router_id": router_id,
+        }
+
+    if not need_repair:
+        return {
+            "ok": True,
+            "skipped": True,
+            "repaired": 0,
+            "router_id": router_id,
+            "host": host,
+            "message": "No unpaid PPPoE leak on this router.",
+        }
+
+    result = sync_pppoe_subscription_batch_on_router(router, need_repair)
+    result["repaired"] = len(need_repair)
+    result["message"] = (
+        f"PPPoE leak repair: repaired={len(need_repair)} unpaid account(s) "
+        f"still surfing on {getattr(router, 'name', None) or host}"
     )
     return result
 
@@ -15007,10 +15210,33 @@ def provision_customer_pppoe(
                             )
                     session_active_after = _pppoe_has_active_session(sock, username)
                 elif profile == PPPOE_BLOCKED_PROFILE_NAME:
+                    # RouterOS applies profile address-list at dial time only.
+                    # If kick raced / failed, the live session still surfs on the
+                    # paid list — retry disconnect + connection kill once.
                     session_blocked_after = _active_pppoe_session_is_blocked(
                         sock, username
                     )
                     session_active_after = _pppoe_has_active_session(sock, username)
+                    if session_active_after and not session_blocked_after:
+                        re_kicked = _disconnect_pppoe_sessions(sock, username)
+                        kicked += re_kicked
+                        if re_kicked:
+                            notes.append(
+                                f"re-disconnected {re_kicked} session(s) still "
+                                "surfing after blocked-profile write (leak retry)"
+                            )
+                        session_blocked_after = _active_pppoe_session_is_blocked(
+                            sock, username
+                        )
+                        session_active_after = _pppoe_has_active_session(
+                            sock, username
+                        )
+                        if session_active_after and not session_blocked_after:
+                            notes.append(
+                                "WARNING: PPPoE still active without blocked "
+                                "address-list after block — unpaid client may "
+                                "still surf until next leak repair"
+                            )
             working_host = candidate
             break
         except TimeoutError:
@@ -15055,8 +15281,18 @@ def provision_customer_pppoe(
 
     verb = "created" if action == "created" else "updated"
     surfing_blocked = (not disabled) and profile == PPPOE_BLOCKED_PROFILE_NAME
+    leak_remaining = bool(
+        surfing_blocked
+        and session_active_after
+        and not session_blocked_after
+    )
     if disabled:
         access_note = " (dial-in disabled — account inactive)."
+    elif leak_remaining:
+        access_note = (
+            " (secret on blocked profile, but live session still surfing — "
+            "leak repair will retry)."
+        )
     elif surfing_blocked:
         access_note = (
             " (dial-in kept on, surfing blocked at NAS — outside subscription period)."
@@ -15082,6 +15318,7 @@ def provision_customer_pppoe(
         "kicked": kicked,
         "session_active": session_active_after,
         "session_blocked": bool(session_blocked_after),
+        "leak_remaining": leak_remaining,
         "notes": notes,
         "message": (
             f"PPPoE secret “{username}” {verb} on {router_name or working_host}"
@@ -20563,6 +20800,7 @@ def _ensure_isp_hotspot_stack(
       5. DHCP option 114 + bounce unauthorized clients for instant popup
     """
     notes: list[str] = []
+    notes.extend(_disable_fasttrack_connection_rules(sock))
 
     urls = _normalize_hotspot_portal_urls(
         pay_url=pay_url,

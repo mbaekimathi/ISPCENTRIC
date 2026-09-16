@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from accounts.models import Organization
 from billing.models import BillingPlan, Customer
+from core.models import MikroTikRouter
 from billing.services import (
     apply_subscription_renewal,
     compute_package_end,
@@ -687,6 +688,15 @@ class AccessAccountLoopTests(TestCase):
             duration=BillingPlan.Duration.DAILY,
             download_speed_mbps=10,
             upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Loop NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.9.0.60",
+            username="admin",
+            password="secret",
         )
         now = timezone.localtime()
         self.pppoe_active = Customer.objects.create(
@@ -699,6 +709,7 @@ class AccessAccountLoopTests(TestCase):
             pppoe_password="secret",
             status=Customer.Status.ACTIVE,
             plan=self.plan,
+            router=self.router,
             package_start=now - timedelta(hours=1),
             package_end=now + timedelta(days=1),
         )
@@ -712,6 +723,7 @@ class AccessAccountLoopTests(TestCase):
             pppoe_password="secret",
             status=Customer.Status.ACTIVE,
             plan=self.plan,
+            router=self.router,
             package_start=now - timedelta(days=3),
             package_end=now - timedelta(days=1),
         )
@@ -725,6 +737,7 @@ class AccessAccountLoopTests(TestCase):
             pppoe_password="secret",
             status=Customer.Status.QUEUED,
             plan=self.plan,
+            router=self.router,
         )
         self.hotspot_unpaid = Customer.objects.create(
             organization=self.org,
@@ -793,6 +806,45 @@ class AccessAccountLoopTests(TestCase):
         result = evaluate_nas_policy(self.pppoe_active, sync)
         self.assertFalse(result["policy_match"])
         self.assertEqual(result["details"].get("surf_gap"), "wrong_speed_profile")
+
+    def test_evaluate_pppoe_active_no_plan_fails(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        self.pppoe_active.plan = None
+        self.pppoe_active.save(update_fields=["plan"])
+        sync = {
+            "ok": True,
+            "allowed": True,
+            "provision": {
+                "ok": True,
+                "profile": "ispcentric-pppoe",
+                "disabled": False,
+            },
+            "portal": {"ok": True},
+        }
+        result = evaluate_nas_policy(self.pppoe_active, sync)
+        self.assertFalse(result["policy_match"])
+        self.assertEqual(result["details"].get("surf_gap"), "no_plan")
+
+    def test_evaluate_pppoe_active_no_router_fails(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        self.pppoe_active.router = None
+        self.pppoe_active.save(update_fields=["router"])
+        sync = {
+            "ok": True,
+            "allowed": True,
+            "provision": {
+                "ok": True,
+                "profile": "ispcentric-pppoe-5u-10d",
+                "rate_limit": "5M/10M",
+                "disabled": False,
+            },
+            "portal": {"ok": True},
+        }
+        result = evaluate_nas_policy(self.pppoe_active, sync)
+        self.assertFalse(result["policy_match"])
+        self.assertEqual(result["details"].get("surf_gap"), "no_router")
 
     def test_evaluate_pppoe_active_cpe_offline_nas_ready(self):
         from billing.access_verification import evaluate_nas_policy

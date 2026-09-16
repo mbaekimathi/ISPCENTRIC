@@ -3326,6 +3326,7 @@ class PppoeClientRegisterFormTests(TestCase):
         from django.contrib.auth.models import User
 
         from accounts.models import Organization
+        from billing.models import BillingPlan
 
         self.owner = User.objects.create_user("form-pppoe-owner", password="x")
         self.org = Organization.objects.create(
@@ -3341,27 +3342,50 @@ class PppoeClientRegisterFormTests(TestCase):
             username="admin",
             password="secret",
         )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="HOME 10",
+            price="1000.00",
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+
+    def _base_data(self, **overrides):
+        data = {
+            "full_name": "jane doe",
+            "phone": "0711223344",
+            "email": "Jane@Example.COM",
+            "router": str(self.router.pk),
+            "address": "ngong road",
+            "house_number": "a-14",
+            "plan": str(self.plan.pk),
+            "activate_account": "1",
+            "activation_date": "2026-09-04",
+            "pppoe_username": "",
+            "pppoe_password": "secret1",
+            "cpe_username": "admin",
+            "cpe_password": "",
+        }
+        data.update(overrides)
+        return data
+
+    def test_plan_is_required_for_speed_limits(self):
+        from billing.forms import PppoeClientRegisterForm
+
+        form = PppoeClientRegisterForm(
+            self._base_data(plan=""),
+            organization=self.org,
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("plan", form.errors)
 
     def test_uppercases_fields_autofills_username_and_saves_house_number(self):
         from billing.forms import PppoeClientRegisterForm
         from billing.models import Customer
 
         form = PppoeClientRegisterForm(
-            {
-                "full_name": "jane doe",
-                "phone": "0711223344",
-                "email": "Jane@Example.COM",
-                "router": str(self.router.pk),
-                "address": "ngong road",
-                "house_number": "a-14",
-                "plan": "",
-                "activate_account": "1",
-                "activation_date": "2026-09-04",
-                "pppoe_username": "",
-                "pppoe_password": "secret1",
-                "cpe_username": "admin",
-                "cpe_password": "",
-            },
+            self._base_data(),
             organization=self.org,
         )
         self.assertTrue(form.is_valid(), form.errors)
@@ -3373,6 +3397,7 @@ class PppoeClientRegisterFormTests(TestCase):
         self.assertEqual(customer.house_number, "A-14")
         self.assertEqual(customer.pppoe_username, "0711223344")
         self.assertEqual(customer.router_id, self.router.pk)
+        self.assertEqual(customer.plan_id, self.plan.pk)
         self.assertEqual(customer.service_type, Customer.ServiceType.PPPOE)
         self.assertEqual(customer.status, Customer.Status.QUEUED)
         self.assertIsNone(customer.package_start)
@@ -3382,21 +3407,15 @@ class PppoeClientRegisterFormTests(TestCase):
         from billing.models import Customer
 
         form = PppoeClientRegisterForm(
-            {
-                "full_name": "tech client",
-                "phone": "0711998877",
-                "email": "",
-                "router": str(self.router.pk),
-                "address": "",
-                "house_number": "",
-                "plan": "",
-                "activate_account": "0",
-                "activation_date": "",
-                "pppoe_username": "",
-                "pppoe_password": "secret1",
-                "cpe_username": "admin",
-                "cpe_password": "",
-            },
+            self._base_data(
+                full_name="tech client",
+                phone="0711998877",
+                email="",
+                address="",
+                house_number="",
+                activate_account="0",
+                activation_date="",
+            ),
             organization=self.org,
             default_activate=False,
         )
@@ -3410,21 +3429,15 @@ class PppoeClientRegisterFormTests(TestCase):
         from billing.forms import PppoeClientRegisterForm
 
         missing = PppoeClientRegisterForm(
-            {
-                "full_name": "tech client",
-                "phone": "0711665544",
-                "email": "",
-                "router": str(self.router.pk),
-                "address": "",
-                "house_number": "",
-                "plan": "",
-                "activate_account": "0",
-                "activation_date": "",
-                "pppoe_username": "",
-                "pppoe_password": "secret1",
-                "cpe_username": "admin",
-                "cpe_password": "",
-            },
+            self._base_data(
+                full_name="tech client",
+                phone="0711665544",
+                email="",
+                address="",
+                house_number="",
+                activate_account="0",
+                activation_date="",
+            ),
             organization=self.org,
             default_activate=False,
             allow_activate=False,
@@ -3434,22 +3447,16 @@ class PppoeClientRegisterFormTests(TestCase):
         self.assertIn("equipment_serials", missing.errors)
 
         form = PppoeClientRegisterForm(
-            {
-                "full_name": "tech client",
-                "phone": "0711665544",
-                "email": "",
-                "router": str(self.router.pk),
-                "address": "",
-                "house_number": "",
-                "plan": "",
-                "activate_account": "0",
-                "activation_date": "",
-                "pppoe_username": "",
-                "pppoe_password": "secret1",
-                "cpe_username": "admin",
-                "cpe_password": "",
-                "equipment_serial": [" sn-abc ", "SN-ABC", "sn-xyz"],
-            },
+            self._base_data(
+                full_name="tech client",
+                phone="0711665544",
+                email="",
+                address="",
+                house_number="",
+                activate_account="0",
+                activation_date="",
+                equipment_serial=[" sn-abc ", "SN-ABC", "sn-xyz"],
+            ),
             organization=self.org,
             default_activate=False,
             allow_activate=False,
@@ -3463,21 +3470,15 @@ class PppoeClientRegisterFormTests(TestCase):
         from billing.forms import PppoeClientRegisterForm
 
         form = PppoeClientRegisterForm(
-            {
-                "full_name": "isp client",
-                "phone": "0711778899",
-                "email": "",
-                "router": str(self.router.pk),
-                "address": "",
-                "house_number": "",
-                "plan": "",
-                "activate_account": "0",
-                "activation_date": "",
-                "pppoe_username": "",
-                "pppoe_password": "secret1",
-                "cpe_username": "admin",
-                "cpe_password": "",
-            },
+            self._base_data(
+                full_name="isp client",
+                phone="0711778899",
+                email="",
+                address="",
+                house_number="",
+                activate_account="0",
+                activation_date="",
+            ),
             organization=self.org,
             default_activate=False,
             require_serials=False,
@@ -3492,21 +3493,15 @@ class PppoeClientRegisterFormTests(TestCase):
         from billing.models import Customer
 
         form = PppoeClientRegisterForm(
-            {
-                "full_name": "forced pending",
-                "phone": "0711887766",
-                "email": "",
-                "router": str(self.router.pk),
-                "address": "",
-                "house_number": "",
-                "plan": "",
-                "activate_account": "1",
-                "activation_date": "2026-09-04",
-                "pppoe_username": "",
-                "pppoe_password": "secret1",
-                "cpe_username": "admin",
-                "cpe_password": "",
-            },
+            self._base_data(
+                full_name="forced pending",
+                phone="0711887766",
+                email="",
+                address="",
+                house_number="",
+                activate_account="1",
+                activation_date="2026-09-04",
+            ),
             organization=self.org,
             default_activate=False,
             allow_activate=False,
@@ -3529,21 +3524,18 @@ class PppoeClientRegisterFormTests(TestCase):
         )
 
         form = PppoeClientRegisterForm(
-            {
-                "full_name": "cpe client",
-                "phone": "0711556677",
-                "email": "",
-                "router": str(self.router.pk),
-                "address": "",
-                "house_number": "",
-                "plan": "",
-                "activate_account": "0",
-                "activation_date": "",
-                "pppoe_username": "",
-                "pppoe_password": "pppoe-only-secret",
-                "cpe_username": "",
-                "cpe_password": "",
-            },
+            self._base_data(
+                full_name="cpe client",
+                phone="0711556677",
+                email="",
+                address="",
+                house_number="",
+                activate_account="0",
+                activation_date="",
+                pppoe_password="pppoe-only-secret",
+                cpe_username="",
+                cpe_password="",
+            ),
             organization=self.org,
             default_activate=False,
             allow_activate=False,
@@ -3580,21 +3572,15 @@ class PppoeClientRegisterFormTests(TestCase):
         )
 
         missing_org = PppoeClientRegisterForm(
-            {
-                "full_name": "tech client",
-                "phone": "0711001122",
-                "email": "",
-                "router": str(self.router.pk),
-                "address": "",
-                "house_number": "",
-                "plan": "",
-                "activate_account": "0",
-                "activation_date": "",
-                "pppoe_username": "",
-                "pppoe_password": "secret1",
-                "cpe_username": "admin",
-                "cpe_password": "",
-            },
+            self._base_data(
+                full_name="tech client",
+                phone="0711001122",
+                email="",
+                address="",
+                house_number="",
+                activate_account="0",
+                activation_date="",
+            ),
             organizations=[self.org, other_org],
             default_activate=False,
             allow_activate=False,
@@ -3603,22 +3589,17 @@ class PppoeClientRegisterFormTests(TestCase):
         self.assertIn("organization", missing_org.errors)
 
         wrong_router = PppoeClientRegisterForm(
-            {
-                "organization": str(self.org.pk),
-                "full_name": "tech client",
-                "phone": "0711001122",
-                "email": "",
-                "router": str(other_router.pk),
-                "address": "",
-                "house_number": "",
-                "plan": "",
-                "activate_account": "0",
-                "activation_date": "",
-                "pppoe_username": "",
-                "pppoe_password": "secret1",
-                "cpe_username": "admin",
-                "cpe_password": "",
-            },
+            self._base_data(
+                organization=str(self.org.pk),
+                full_name="tech client",
+                phone="0711001122",
+                email="",
+                router=str(other_router.pk),
+                address="",
+                house_number="",
+                activate_account="0",
+                activation_date="",
+            ),
             organizations=[self.org, other_org],
             default_activate=False,
             allow_activate=False,
@@ -3627,22 +3608,16 @@ class PppoeClientRegisterFormTests(TestCase):
         self.assertIn("router", wrong_router.errors)
 
         form = PppoeClientRegisterForm(
-            {
-                "organization": str(self.org.pk),
-                "full_name": "tech client",
-                "phone": "0711001122",
-                "email": "",
-                "router": str(self.router.pk),
-                "address": "",
-                "house_number": "",
-                "plan": "",
-                "activate_account": "0",
-                "activation_date": "",
-                "pppoe_username": "",
-                "pppoe_password": "secret1",
-                "cpe_username": "admin",
-                "cpe_password": "",
-            },
+            self._base_data(
+                organization=str(self.org.pk),
+                full_name="tech client",
+                phone="0711001122",
+                email="",
+                address="",
+                house_number="",
+                activate_account="0",
+                activation_date="",
+            ),
             organizations=[self.org, other_org],
             default_activate=False,
             allow_activate=False,
@@ -3660,6 +3635,7 @@ class MyClientsRegisterViewTests(TestCase):
         from django.contrib.auth.models import User
 
         from accounts.models import Organization
+        from billing.models import BillingPlan
 
         self.owner = User.objects.create_user("clients-owner", password="x")
         self.org = Organization.objects.create(
@@ -3674,6 +3650,14 @@ class MyClientsRegisterViewTests(TestCase):
             host="10.9.0.10",
             username="admin",
             password="secret",
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="HOME 10",
+            price="1000.00",
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.PPPOE,
         )
         self.client.force_login(self.owner)
 
@@ -3690,7 +3674,7 @@ class MyClientsRegisterViewTests(TestCase):
                 "router": str(self.router.pk),
                 "address": "westlands",
                 "house_number": "12b",
-                "plan": "",
+                "plan": str(self.plan.pk),
                 "activate_account": "1",
                 "activation_date": "2026-09-04",
                 "pppoe_username": "",
@@ -3706,6 +3690,7 @@ class MyClientsRegisterViewTests(TestCase):
         self.assertEqual(customer.full_name, "JOHN SMITH")
         self.assertEqual(customer.house_number, "12B")
         self.assertEqual(customer.pppoe_username, "0722334455")
+        self.assertEqual(customer.plan_id, self.plan.pk)
         self.assertEqual(customer.status, Customer.Status.QUEUED)
         self.assertIsNone(customer.package_start)
         self.assertIsNone(customer.package_end)
@@ -6262,6 +6247,50 @@ class PackageSpeedLimitTests(SimpleTestCase):
                 _pppoe_speed_profile_name(8, 25),
             )
 
+    def test_disable_fasttrack_so_simple_queues_can_shape(self):
+        from core.mikrotik_connect import _disable_fasttrack_connection_rules
+
+        rows = [
+            {
+                ".id": "*1",
+                "action": "fasttrack-connection",
+                "disabled": "no",
+                "comment": "defconf: fasttrack",
+            },
+            {
+                ".id": "*2",
+                "action": "accept",
+                "disabled": "no",
+                "comment": "other",
+            },
+            {
+                ".id": "*3",
+                "action": "fasttrack-connection",
+                "disabled": "yes",
+                "comment": "already off",
+            },
+        ]
+        sets: list[dict] = []
+
+        def fake_print(sock, path, **kwargs):
+            self.assertEqual(path, "/ip/firewall/filter")
+            return list(rows)
+
+        def fake_set(sock, path, item_id, **props):
+            sets.append({"path": path, "id": item_id, **props})
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+        ):
+            notes = _disable_fasttrack_connection_rules(object())
+
+        self.assertEqual(len(sets), 1)
+        self.assertEqual(sets[0]["id"], "*1")
+        self.assertEqual(sets[0]["disabled"], "yes")
+        self.assertTrue(any("FastTrack" in n for n in notes))
+
     def test_blocked_clients_keep_blocked_profile_not_speed_profile(self):
         from core.mikrotik_connect import (
             PPPOE_BLOCKED_PROFILE_NAME,
@@ -7070,7 +7099,142 @@ class ExpiredCaptivePayTests(SimpleTestCase):
             result = provision_customer_pppoe(customer, ensure_stack=False)
 
         self.assertTrue(result.get("ok"))
-        self.assertEqual(disconnects, ["alice"])
+        # Stuck-session kick + post-block verify re-kick while mocks keep
+        # reporting active+unblocked (simulates a race until CPE drops).
+        self.assertEqual(disconnects, ["alice", "alice"])
+        self.assertTrue(
+            any("leak retry" in n for n in (result.get("notes") or [])),
+            msg=result.get("notes"),
+        )
+
+    def test_block_provision_retries_kick_when_session_still_surfing(self):
+        """
+        After writing ispcentric-blocked, if /ppp/active is still up without
+        the blocked address-list, provision must disconnect again (leak retry).
+        """
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            provision_customer_pppoe,
+        )
+
+        customer = SimpleNamespace(
+            pk=43,
+            router_id=1,
+            router=SimpleNamespace(
+                pk=1,
+                api_host="10.0.0.1",
+                username="admin",
+                password="x",
+                host="10.0.0.1",
+                name="NAS",
+            ),
+            organization=SimpleNamespace(pk=1, join_code="111111"),
+            organization_id=1,
+            pppoe_username="bob",
+            pppoe_password="secret",
+            plan=None,
+            account_number="PPP-43",
+            save=MagicMock(),
+        )
+        disconnects = []
+        # First active check (before): True; after first kick still True;
+        # after leak-retry kick: False. blocked stays False throughout.
+        active_calls = {"n": 0}
+
+        def fake_active(sock, username, live=None):
+            active_calls["n"] += 1
+            # before write, after write (stuck), after first kick check,
+            # after re-kick verify
+            return active_calls["n"] <= 3
+
+        class FakeSock:
+            pass
+
+        class FakeSession:
+            def __enter__(self):
+                return FakeSock()
+
+            def __exit__(self, *args):
+                return False
+
+        with (
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._customer_pppoe_secret_disabled",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._ppp_secret_profile_for_customer",
+                return_value=PPPOE_BLOCKED_PROFILE_NAME,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_rate_limit_for_customer",
+                return_value="",
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.0.0.1"],
+            ),
+            patch(
+                "core.mikrotik_connect.socket.create_connection",
+                return_value=MagicMock(
+                    __enter__=lambda *a, **k: MagicMock(),
+                    __exit__=lambda *a, **k: False,
+                ),
+            ),
+            patch("core.mikrotik_connect._api_session", return_value=FakeSession()),
+            patch(
+                "core.mikrotik_connect._current_ppp_secret_profile",
+                return_value=PPPOE_BLOCKED_PROFILE_NAME,
+            ),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_is_blocked",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_has_active_session",
+                side_effect=fake_active,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_expired_access",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_blocked_profile",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_ppp_secret",
+                return_value="updated",
+            ),
+            patch(
+                "core.mikrotik_connect._disconnect_pppoe_sessions",
+                side_effect=lambda sock, username: disconnects.append(username) or 1,
+            ),
+            patch(
+                "core.mikrotik_connect._billing_portal_base_url",
+                return_value="http://billing.example",
+            ),
+            patch(
+                "core.mikrotik_connect.cpe_renew_clear_is_pending",
+                return_value=False,
+            ),
+        ):
+            result = provision_customer_pppoe(customer, ensure_stack=False)
+
+        self.assertTrue(result.get("ok"))
+        # Initial stuck-session kick + post-block leak retry.
+        self.assertEqual(disconnects, ["bob", "bob"])
+        self.assertTrue(
+            any("leak retry" in n for n in (result.get("notes") or [])),
+            msg=result.get("notes"),
+        )
 
     def test_expired_access_repair_loop_reinstalls_missing_redirect(self):
         """When dst-nat vanishes, correction loop must put it back."""
@@ -8361,6 +8525,173 @@ class AccessFlowCorrectionLoopTests(TestCase):
         self.assertEqual(result.get("cpe_renew_cleared"), 1)
         self.assertTrue(batch.called)
         self.assertTrue(clear_follow.called)
+
+    def test_repair_unpaid_pppoe_leaking_kicks_unblocked_session(self):
+        """Expired client dialed without blocked address-list must be repaired."""
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            repair_unpaid_pppoe_leaking_on_router,
+        )
+
+        username = (self.pppoe.pppoe_username or "").strip().lower()
+        # Secret already blocked, but live session still on paid list (kick miss).
+        live = {
+            "secret_profiles": {username: PPPOE_BLOCKED_PROFILE_NAME},
+            "active_names": {username},
+            "active_addresses": {username: {"10.10.0.55"}},
+            "blocked_list_addresses": set(),
+            "arp_complete": {},
+        }
+        with (
+            patch(
+                "core.mikrotik_connect._pppoe_customers_for_router",
+                return_value=[self.pppoe],
+            ),
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._customer_pppoe_secret_disabled",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.0.0.1"],
+            ),
+            patch("core.mikrotik_connect._api_session") as session,
+            patch(
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value=live,
+            ),
+            patch(
+                "core.mikrotik_connect._ppp_secret_profile_for_customer",
+                return_value=PPPOE_BLOCKED_PROFILE_NAME,
+            ),
+            patch(
+                "core.mikrotik_connect.sync_pppoe_subscription_batch_on_router",
+                return_value={"ok": True, "kicked": 1},
+            ) as batch,
+        ):
+            session.return_value.__enter__.return_value = object()
+            result = repair_unpaid_pppoe_leaking_on_router(self.router)
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("repaired"), 1)
+        self.assertIn("PPPoE leak", result.get("message") or "")
+        self.assertTrue(batch.called)
+
+    def test_repair_unpaid_pppoe_skips_when_session_already_blocked(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            repair_unpaid_pppoe_leaking_on_router,
+        )
+
+        username = (self.pppoe.pppoe_username or "").strip().lower()
+        live = {
+            "secret_profiles": {username: PPPOE_BLOCKED_PROFILE_NAME},
+            "active_names": {username},
+            "active_addresses": {username: {"10.10.0.56"}},
+            "blocked_list_addresses": {"10.10.0.56"},
+            "arp_complete": {},
+        }
+        with (
+            patch(
+                "core.mikrotik_connect._pppoe_customers_for_router",
+                return_value=[self.pppoe],
+            ),
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._customer_pppoe_secret_disabled",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.0.0.1"],
+            ),
+            patch("core.mikrotik_connect._api_session") as session,
+            patch(
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value=live,
+            ),
+            patch(
+                "core.mikrotik_connect._ppp_secret_profile_for_customer",
+                return_value=PPPOE_BLOCKED_PROFILE_NAME,
+            ),
+            patch(
+                "core.mikrotik_connect.sync_pppoe_subscription_batch_on_router",
+                return_value={"ok": True, "kicked": 0},
+            ) as batch,
+        ):
+            session.return_value.__enter__.return_value = object()
+            result = repair_unpaid_pppoe_leaking_on_router(self.router)
+
+        self.assertTrue(result.get("ok"))
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result.get("repaired"), 0)
+        self.assertFalse(batch.called)
+
+    def test_repair_unpaid_pppoe_rewrites_paid_profile_secret(self):
+        """Expired client still on a speed profile must be moved to blocked."""
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            repair_unpaid_pppoe_leaking_on_router,
+        )
+
+        username = (self.pppoe.pppoe_username or "").strip().lower()
+        live = {
+            "secret_profiles": {username: "ispcentric-pppoe-5u-10d"},
+            "active_names": set(),
+            "active_addresses": {},
+            "blocked_list_addresses": set(),
+            "arp_complete": {},
+        }
+        with (
+            patch(
+                "core.mikrotik_connect._pppoe_customers_for_router",
+                return_value=[self.pppoe],
+            ),
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._customer_pppoe_secret_disabled",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.0.0.1"],
+            ),
+            patch("core.mikrotik_connect._api_session") as session,
+            patch(
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value=live,
+            ),
+            patch(
+                "core.mikrotik_connect._ppp_secret_profile_for_customer",
+                return_value=PPPOE_BLOCKED_PROFILE_NAME,
+            ),
+            patch(
+                "core.mikrotik_connect.sync_pppoe_subscription_batch_on_router",
+                return_value={"ok": True, "kicked": 0},
+            ) as batch,
+        ):
+            session.return_value.__enter__.return_value = object()
+            result = repair_unpaid_pppoe_leaking_on_router(self.router)
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("repaired"), 1)
+        self.assertTrue(batch.called)
 
     def test_ppp_profile_attempts_include_keepalive(self):
         from core.mikrotik_connect import (

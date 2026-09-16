@@ -127,6 +127,14 @@ def evaluate_nas_policy(
             }
         )
         if billing_ok:
+            if not getattr(customer, "plan_id", None):
+                details["surf_gap"] = "no_plan"
+                return {
+                    "billing_ok": billing_ok,
+                    "policy_match": False,
+                    "details": details,
+                    "sync_result": sync_result,
+                }
             # Paid Hotspot clients must land on the package Mbps profile — an
             # empty profile string is a mismatch, not a soft pass.
             speed_ok = bool(actual_profile) and actual_profile == expected_profile
@@ -218,6 +226,22 @@ def evaluate_nas_policy(
     )
 
     if billing_ok:
+        if not getattr(customer, "plan_id", None):
+            details["surf_gap"] = "no_plan"
+            return {
+                "billing_ok": billing_ok,
+                "policy_match": False,
+                "details": details,
+                "sync_result": sync_result,
+            }
+        if not getattr(customer, "router_id", None):
+            details["surf_gap"] = "no_router"
+            return {
+                "billing_ok": billing_ok,
+                "policy_match": False,
+                "details": details,
+                "sync_result": sync_result,
+            }
         nas_ready = bool(
             sync_result.get("allowed")
             and provision.get("ok")

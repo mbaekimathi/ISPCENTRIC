@@ -14,6 +14,7 @@
         <h2 class="packages-title">Packages</h2>
         <p class="packages-lead">
           {{ page_subtitle|default:"Manage internet packages for this organization." }}
+          PPPoE and Hotspot packages are separate — only PPPoE packages set CPE upload/download limits.
         </p>
       </div>
     </div>
@@ -75,11 +76,11 @@
           </span>
           <div class="packages-group-copy">
             <h2>PPPoE packages{% if pppoe_package_count %} <span class="packages-group-count">{{ pppoe_package_count }}</span>{% endif %}</h2>
-            <p class="panel-sub">Assigned to home and office PPPoE clients.</p>
+            <p class="panel-sub">Assigned to home and office PPPoE clients. Upload/download Mbps here are enforced on the MikroTik.</p>
           </div>
         </div>
       </header>
-      {% include "billing/includes/package_table.html" with packages=pppoe_packages empty_text="No PPPoE packages yet." empty_hint="Register a package to assign speeds and pricing to PPPoE clients." show_package_actions=1 hide_service_type=1 package_tone="pppoe" %}
+      {% include "billing/includes/package_table.html" with packages=pppoe_packages empty_text="No PPPoE packages yet." empty_hint="Register a PPPoE package (not Hotspot) to assign speeds and pricing. Hotspot packages do not limit PPPoE clients." show_package_actions=1 hide_service_type=1 package_tone="pppoe" %}
     </section>
 
     <section class="panel staff-panel staff-panel-solid packages-group tone-hotspot" id="packages-hotspot">

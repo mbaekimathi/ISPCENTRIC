@@ -305,14 +305,16 @@ def _run_subscription_sweep(*, label: str = "sweep") -> None:
 
 def _run_near_deadline_expiry_sync() -> None:
     """
-    Enforce wall-clock package deadlines and repair paid-but-not-surfing PPPoE.
+    Enforce wall-clock package deadlines and repair PPPoE / Hotspot access leaks.
 
     Syncs customers near the access cut-off (online or offline) and refreshes
     clock-time Hotspot ``limit-uptime`` from remaining wall-clock time so
     offline periods still consume the prepaid window on the NAS.
 
-    Also repairs unpaid Hotspot clients that still have WAN (ok-list / app leak)
-    and paid PPPoE clients dialed without surfing.
+    Also repairs:
+      - unpaid Hotspot clients that still have WAN (ok-list / app leak)
+      - unpaid PPPoE clients still surfing (blocked secret, unpaid live session)
+      - paid PPPoE clients dialed without surfing
 
     Shares the fleet sweep lock with ``sync_subscription_access`` / deploy NAS
     sync so MikroTik rewrites never overlap.
@@ -321,6 +323,7 @@ def _run_near_deadline_expiry_sync() -> None:
     from core.mikrotik_connect import (
         repair_paid_pppoe_not_surfing_on_router,
         repair_unpaid_hotspot_leaking_on_router,
+        repair_unpaid_pppoe_leaking_on_router,
         sync_customer_subscription_access,
     )
     from core.models import MikroTikRouter
@@ -377,6 +380,7 @@ def _run_near_deadline_expiry_sync() -> None:
 
         repaired = 0
         hotspot_repaired = 0
+        pppoe_leak_repaired = 0
         routers = list(
             MikroTikRouter.objects.filter(
                 account_status=MikroTikRouter.AccountStatus.ACTIVE,
@@ -395,6 +399,10 @@ def _run_near_deadline_expiry_sync() -> None:
                     for router in routers
                 ]
                 futures.extend(
+                    pool.submit(repair_unpaid_pppoe_leaking_on_router, router)
+                    for router in routers
+                )
+                futures.extend(
                     pool.submit(repair_unpaid_hotspot_leaking_on_router, router)
                     for router in routers
                 )
@@ -408,14 +416,22 @@ def _run_near_deadline_expiry_sync() -> None:
                     if not count:
                         continue
                     message = result.get("message") or count
-                    if "Hotspot leak" in str(message):
+                    msg_text = str(message)
+                    if "Hotspot leak" in msg_text:
                         hotspot_repaired += count
                         logger.info("unpaid-hotspot leak repair: %s", message)
+                    elif "PPPoE leak" in msg_text:
+                        pppoe_leak_repaired += count
+                        logger.info("unpaid-pppoe leak repair: %s", message)
                     else:
                         repaired += count
                         logger.info("paid-not-surfing repair: %s", message)
         if repaired:
             logger.info("paid-not-surfing repaired %s account(s)", repaired)
+        if pppoe_leak_repaired:
+            logger.info(
+                "unpaid-pppoe leak repaired %s account(s)", pppoe_leak_repaired
+            )
         if hotspot_repaired:
             logger.info(
                 "unpaid-hotspot leak repaired %s session(s)", hotspot_repaired

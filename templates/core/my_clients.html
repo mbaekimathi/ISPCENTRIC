@@ -177,7 +177,7 @@
         {% elif clients_sort == 'name' %}
           <p class="clients-status-hint">Ordered by client name A–Z.</p>
         {% elif clients_sort == 'session' %}
-          <p class="clients-status-hint">Ordered by live status: surfing, then connected (not surfing), then disconnected · refreshes every 10s.</p>
+          <p class="clients-status-hint">Ordered by latest surfing start — who began surfing most recently first · then connected · then disconnected · refreshes every 10s.</p>
         {% endif %}
       <div class="clients-search-meta" data-clients-search-meta {% if not clients_query and not clients_router_param %}hidden{% endif %}>
         <span class="clients-search-meta-ico" aria-hidden="true">
@@ -802,6 +802,10 @@
       var n = Number(raw);
       return Number.isFinite(n) ? n : null;
     }
+    function sessionUptime(item) {
+      var n = Number(item && item.session_uptime_seconds);
+      return Number.isFinite(n) && n >= 0 ? n : Number.MAX_SAFE_INTEGER;
+    }
     rows.sort(function (a, b) {
       if (clientsSort === "used" || clientsSort === "used_asc") {
         var aRatio = usedRatio(a);
@@ -822,6 +826,11 @@
       var aRank = hotspotSessionRank(aItem);
       var bRank = hotspotSessionRank(bItem);
       if (aRank !== bRank) return aRank - bRank;
+      if (clientsSort === "session" && aRank === 0) {
+        var aUp = sessionUptime(aItem);
+        var bUp = sessionUptime(bItem);
+        if (aUp !== bUp) return aUp - bUp;
+      }
       var aName = String(aItem.full_name || a.getAttribute("data-search") || "").toLowerCase();
       var bName = String(bItem.full_name || b.getAttribute("data-search") || "").toLowerCase();
       return aName.localeCompare(bName);

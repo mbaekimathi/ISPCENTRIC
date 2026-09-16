@@ -64,7 +64,7 @@
                 {{ package_form.service_type }}
               </div>
               {% if package_form.service_type.errors %}<div class="field-error">{{ package_form.service_type.errors|striptags }}</div>{% endif %}
-              <p class="field-hint">Hotspot packages appear on captive portals; PPPoE packages on home/office clients.</p>
+              <p class="field-hint">Choose carefully: Hotspot packages appear on captive portals only. PPPoE packages set home/office CPE upload and download Mbps on the MikroTik. They are not interchangeable.</p>
             </div>
             <div class="field field-span-2">
               <label for="{{ package_form.duration_value.id_for_label }}">{{ package_form.duration_value.label }}</label>

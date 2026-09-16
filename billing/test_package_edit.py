@@ -75,6 +75,7 @@ class PackageEditTests(TestCase):
         self.assertIn('value="pppoe"', html)
         self.assertIn('value="hotspot"', html)
         self.assertIn("package-service-type-toggle", html)
+        self.assertIn("not interchangeable", html)
         self.assertIn('data-package-service-type="pppoe"', html)
 
     def test_edit_package_updates_fields(self):

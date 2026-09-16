@@ -191,7 +191,8 @@ class PppoeClientRegisterForm(forms.ModelForm):
         self.fields["email"].required = False
         self.fields["address"].required = False
         self.fields["house_number"].required = False
-        self.fields["plan"].required = False
+        # Plan is required so package Mbps become MikroTik rate-limits.
+        self.fields["plan"].required = True
         self.fields["cpe_username"].required = False
         self.fields["cpe_password"].required = False
         self.fields["cpe_password"].help_text = (
@@ -201,8 +202,12 @@ class PppoeClientRegisterForm(forms.ModelForm):
         self.fields["pppoe_username"].required = False
         # Router is required so the PPPoE secret can be installed on the NAS.
         self.fields["router"].required = True
-        self.fields["plan"].empty_label = "No plan yet"
+        self.fields["plan"].empty_label = "Select a PPPoE package"
         self.fields["router"].empty_label = "Select MikroTik"
+        self.fields["plan"].help_text = (
+            "Download/upload limits on the MikroTik come from this package. "
+            "Hotspot packages cannot be used here."
+        )
         # Bound field used only for validation errors; inputs are rendered manually.
         self.fields["equipment_serials"] = forms.CharField(
             label="Equipment serials",
@@ -502,7 +507,12 @@ class PppoeClientRegisterForm(forms.ModelForm):
             self.add_error("phone", PHONE_ALREADY_REGISTERED)
         plan = cleaned.get("plan")
         router = cleaned.get("router")
-        if plan and plan.service_type != BillingPlan.ServiceType.PPPOE:
+        if not plan:
+            self.add_error(
+                "plan",
+                "Choose a PPPoE package — upload/download speeds come from the package.",
+            )
+        elif plan.service_type != BillingPlan.ServiceType.PPPOE:
             self.add_error("plan", "Choose a PPPoE package for this client.")
         if plan and router and not plan.is_available_on_router(router):
             self.add_error(
