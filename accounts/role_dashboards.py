@@ -2725,6 +2725,44 @@ def it_support_dashboard(request):
     return _role_dashboard(request, Employee.Role.IT_SUPPORT)
 
 
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_system_performance(request):
+    from django.urls import reverse
+
+    from accounts.system_performance import build_system_performance_board
+
+    _prepare_it_support_view(request)
+    board = build_system_performance_board()
+    return render(
+        request,
+        "accounts/it_support_system_performance.html",
+        {
+            "page_title": "System performance",
+            "page_kicker": "Platform",
+            "page_subtitle": (
+                "Live overview of onboarded MikroTiks, client connectivity, "
+                "and payments across all ISP accounts."
+            ),
+            "current_page": "system_performance",
+            "dashboard_url_name": "roles:it_support",
+            "board": board,
+            "summary_url": reverse("roles:it_support_system_performance_summary"),
+        },
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_system_performance_summary(request):
+    from django.http import JsonResponse
+
+    from accounts.system_performance import build_system_performance_board
+
+    _prepare_it_support_view(request)
+    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+    board = build_system_performance_board(force=force)
+    return JsonResponse(board)
+
+
 def _it_support_company_clients_context(**extra):
     return {
         "page_title": "Company clients",

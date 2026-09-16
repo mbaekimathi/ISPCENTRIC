@@ -82,6 +82,11 @@ ROLE_DASHBOARD_ONLY_NAV = {
             "label": "Company communications",
             "url_name": "roles:it_support_communications",
         },
+        {
+            "key": "system_performance",
+            "label": "System performance",
+            "url_name": "roles:it_support_system_performance",
+        },
         {"key": "hr", "label": "Human resource", "url_name": "roles:it_support_hr"},
     ],
     Employee.Role.SALES: [
@@ -329,6 +334,14 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
                 IT_SUPPORT_REGISTER_ISP_NAV,
             ]
         )
+    elif role == Employee.Role.IT_SUPPORT and current_page == "system_performance":
+        items.append(
+            {
+                "key": "system_performance",
+                "label": "System performance",
+                "url_name": "roles:it_support_system_performance",
+            }
+        )
     elif role == Employee.Role.IT_SUPPORT and current_page == "company_system_settings":
         items.extend(IT_SUPPORT_COMPANY_SYSTEM_SETTINGS_NAV)
     elif role == Employee.Role.IT_SUPPORT and current_page == "payment_gateway":
@@ -369,6 +382,8 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
 
 def page_key_from_path(path: str) -> str | None:
     path = (path or "").rstrip("/") + "/"
+    if "/system-performance/" in path:
+        return "system_performance"
     if "/company-clients/" in path:
         return "company_clients"
     if "/isp-clients/" in path:

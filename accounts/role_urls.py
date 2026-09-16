@@ -228,6 +228,16 @@ urlpatterns = [
         name="manager_allocate_employee",
     ),
     path("it-support/dashboard/", role_dashboards.it_support_dashboard, name="it_support"),
+    path(
+        "it-support/system-performance/",
+        role_dashboards.it_support_system_performance,
+        name="it_support_system_performance",
+    ),
+    path(
+        "it-support/system-performance/summary/",
+        role_dashboards.it_support_system_performance_summary,
+        name="it_support_system_performance_summary",
+    ),
     path("it-support/my-stock/", role_dashboards.my_stock, name="it_support_my_stock"),
     path(
         "it-support/my-stock/<int:pk>/",

@@ -176,6 +176,8 @@ class NocBoardTests(TestCase):
         self.assertContains(page, "noc-display-toggle")
         self.assertContains(page, 'data-noc-panel="visual"')
         self.assertContains(page, 'data-noc-chart="ops-severity"')
+        self.assertContains(page, 'data-noc-chart="ops-trend"')
+        self.assertContains(page, 'data-viz-clients="ops"')
         self.assertNotContains(page, "workspace-dash-kpi")
 
         performance = self.client.get(reverse("core:noc") + "?focus=performance")
@@ -226,3 +228,19 @@ class NocBoardTests(TestCase):
         self.assertEqual(mikrotik.status_code, 200)
         self.assertContains(mikrotik, reverse("core:noc"))
         self.assertContains(mikrotik, ">NOC<")
+
+        clients = self.client.get(reverse("core:my_clients"))
+        self.assertEqual(clients.status_code, 200)
+        self.assertNotContains(clients, "NOC client quality")
+        self.assertNotContains(clients, "NOC performance")
+        self.assertNotContains(clients, "Ops board")
+        self.assertNotContains(clients, "Down routers")
+        self.assertNotContains(clients, "Open faults")
+
+        noc = self.client.get(reverse("core:noc"))
+        self.assertEqual(noc.status_code, 200)
+        self.assertContains(noc, "Ops board")
+        self.assertContains(noc, "Performance")
+        self.assertContains(noc, "Down routers")
+        self.assertContains(noc, "Client quality")
+        self.assertContains(noc, "Open faults")

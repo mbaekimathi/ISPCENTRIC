@@ -62,10 +62,30 @@
       </div>
     </div>
     <div class="noc-visual-panel" data-noc-panel="visual">
-      <div class="noc-chart-grid">
-        <article class="noc-chart-card"><h3>Alarms by severity</h3><p class="noc-chart-hint">Open alarms grouped by urgency</p><div class="noc-chart-wrap"><canvas data-noc-chart="ops-severity" aria-label="Alarms by severity"></canvas></div></article>
-        <article class="noc-chart-card"><h3>Fleet health</h3><p class="noc-chart-hint">Routers online, degraded, or down</p><div class="noc-chart-wrap"><canvas data-noc-chart="ops-fleet" aria-label="Fleet health"></canvas></div></article>
-        <article class="noc-chart-card noc-chart-card-wide"><h3>Sites with most clients at risk</h3><p class="noc-chart-hint">Locations needing attention first</p><div class="noc-chart-wrap noc-chart-wrap-bar"><canvas data-noc-chart="ops-sites" aria-label="Sites by clients at risk"></canvas></div></article>
+      <div class="noc-viz">
+        <article class="noc-chart-card noc-chart-card-trend">
+          <header class="noc-chart-head"><h3>Fleet health trend</h3><span class="noc-chart-tag">24h</span></header>
+          <p class="noc-chart-hint">Average router score over recent samples</p>
+          <div class="noc-chart-wrap noc-chart-wrap-trend"><canvas data-noc-chart="ops-trend" aria-label="Fleet health trend"></canvas></div>
+        </article>
+        <div class="noc-viz-side">
+          <article class="noc-chart-card noc-chart-card-sm">
+            <header class="noc-chart-head"><h3>Alarms</h3></header>
+            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="ops-severity" aria-label="Alarms by severity"></canvas></div>
+          </article>
+          <article class="noc-chart-card noc-chart-card-sm">
+            <header class="noc-chart-head"><h3>Fleet status</h3></header>
+            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="ops-fleet" aria-label="Fleet status"></canvas></div>
+          </article>
+        </div>
+        <article class="noc-chart-card">
+          <header class="noc-chart-head"><h3>Clients at risk by site</h3></header>
+          <div class="noc-chart-wrap noc-chart-wrap-bar-sm"><canvas data-noc-chart="ops-sites" aria-label="Clients at risk by site"></canvas></div>
+        </article>
+        <article class="noc-chart-card">
+          <header class="noc-chart-head"><h3>Clients needing attention</h3><span class="noc-chart-tag" data-viz-count="ops-clients">0</span></header>
+          <div class="noc-client-list" data-viz-clients="ops"></div>
+        </article>
       </div>
     </div>
     <div class="noc-data-panel" data-noc-panel="data" hidden>
@@ -113,10 +133,30 @@
       </div>
     </div>
     <div class="noc-visual-panel" data-noc-panel="visual">
-      <div class="noc-chart-grid">
-        <article class="noc-chart-card"><h3>Client session quality</h3><p class="noc-chart-hint">Under plan, idle, or healthy sessions</p><div class="noc-chart-wrap"><canvas data-noc-chart="perf-clients" aria-label="Client session quality"></canvas></div></article>
-        <article class="noc-chart-card"><h3>Router performance</h3><p class="noc-chart-hint">Score distribution across MikroTiks</p><div class="noc-chart-wrap"><canvas data-noc-chart="perf-tones" aria-label="Router performance distribution"></canvas></div></article>
-        <article class="noc-chart-card noc-chart-card-wide"><h3>Lowest scoring routers</h3><p class="noc-chart-hint">Focus improvement here first</p><div class="noc-chart-wrap noc-chart-wrap-bar"><canvas data-noc-chart="perf-routers" aria-label="Lowest scoring routers"></canvas></div></article>
+      <div class="noc-viz">
+        <article class="noc-chart-card noc-chart-card-trend">
+          <header class="noc-chart-head"><h3>Client speed vs plan</h3><span class="noc-chart-tag">Top clients</span></header>
+          <p class="noc-chart-hint">Peak download as % of package — lower is worse</p>
+          <div class="noc-chart-wrap noc-chart-wrap-trend"><canvas data-noc-chart="perf-client-bars" aria-label="Client speed versus plan"></canvas></div>
+        </article>
+        <div class="noc-viz-side">
+          <article class="noc-chart-card noc-chart-card-sm">
+            <header class="noc-chart-head"><h3>Sessions</h3></header>
+            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="perf-clients" aria-label="Session quality"></canvas></div>
+          </article>
+          <article class="noc-chart-card noc-chart-card-sm">
+            <header class="noc-chart-head"><h3>Routers</h3></header>
+            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="perf-tones" aria-label="Router performance"></canvas></div>
+          </article>
+        </div>
+        <article class="noc-chart-card">
+          <header class="noc-chart-head"><h3>Router score trend</h3><span class="noc-chart-tag">24h</span></header>
+          <div class="noc-chart-wrap noc-chart-wrap-bar-sm"><canvas data-noc-chart="perf-trend" aria-label="Router health trend"></canvas></div>
+        </article>
+        <article class="noc-chart-card">
+          <header class="noc-chart-head"><h3>Clients below plan</h3><span class="noc-chart-tag" data-viz-count="perf-clients">0</span></header>
+          <div class="noc-client-list" data-viz-clients="perf"></div>
+        </article>
       </div>
     </div>
     <div class="noc-data-panel" data-noc-panel="data" hidden>
@@ -156,10 +196,27 @@
       </div>
     </div>
     <div class="noc-visual-panel" data-noc-panel="visual">
-      <div class="noc-chart-grid">
-        <article class="noc-chart-card"><h3>Problem breakdown</h3><p class="noc-chart-hint">Down vs degraded routers</p><div class="noc-chart-wrap"><canvas data-noc-chart="down-status" aria-label="Problem router breakdown"></canvas></div></article>
-        <article class="noc-chart-card"><h3>Clients affected</h3><p class="noc-chart-hint">Subscribers on down or degraded NAS</p><div class="noc-chart-wrap"><canvas data-noc-chart="down-clients" aria-label="Clients affected by outages"></canvas></div></article>
-        <article class="noc-chart-card noc-chart-card-wide"><h3>Clients per problem router</h3><p class="noc-chart-hint">Impact size by router</p><div class="noc-chart-wrap noc-chart-wrap-bar"><canvas data-noc-chart="down-impact" aria-label="Clients per problem router"></canvas></div></article>
+      <div class="noc-viz">
+        <article class="noc-chart-card noc-chart-card-trend">
+          <header class="noc-chart-head"><h3>Outage impact trend</h3><span class="noc-chart-tag">24h</span></header>
+          <p class="noc-chart-hint">Health score on problem routers over time</p>
+          <div class="noc-chart-wrap noc-chart-wrap-trend"><canvas data-noc-chart="down-trend" aria-label="Outage impact trend"></canvas></div>
+        </article>
+        <div class="noc-viz-side">
+          <article class="noc-chart-card noc-chart-card-sm">
+            <header class="noc-chart-head"><h3>Routers</h3></header>
+            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="down-status" aria-label="Problem routers"></canvas></div>
+          </article>
+          <article class="noc-chart-card noc-chart-card-sm">
+            <header class="noc-chart-head"><h3>Clients hit</h3></header>
+            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="down-clients" aria-label="Clients affected"></canvas></div>
+          </article>
+        </div>
+        <article class="noc-chart-card noc-chart-card-span">
+          <header class="noc-chart-head"><h3>Clients exposed by router</h3><span class="noc-chart-tag" data-viz-count="down-clients">0</span></header>
+          <div class="noc-chart-wrap noc-chart-wrap-bar-sm"><canvas data-noc-chart="down-impact" aria-label="Clients per problem router"></canvas></div>
+          <div class="noc-client-list noc-client-list-inline" data-viz-clients="down"></div>
+        </article>
       </div>
     </div>
     <div class="noc-data-panel" data-noc-panel="data" hidden>
@@ -197,10 +254,30 @@
       </div>
     </div>
     <div class="noc-visual-panel" data-noc-panel="visual">
-      <div class="noc-chart-grid">
-        <article class="noc-chart-card"><h3>Issue types</h3><p class="noc-chart-hint">Stuck, under plan, or idle sessions</p><div class="noc-chart-wrap"><canvas data-noc-chart="impact-kinds" aria-label="Client quality issue types"></canvas></div></article>
-        <article class="noc-chart-card"><h3>Surfing vs stuck</h3><p class="noc-chart-hint">Clients online now vs not surfing</p><div class="noc-chart-wrap"><canvas data-noc-chart="impact-surfing" aria-label="Surfing versus stuck clients"></canvas></div></article>
-        <article class="noc-chart-card noc-chart-card-wide"><h3>Issues by NAS</h3><p class="noc-chart-hint">Which routers host the most problems</p><div class="noc-chart-wrap noc-chart-wrap-bar"><canvas data-noc-chart="impact-nas" aria-label="Quality issues by NAS"></canvas></div></article>
+      <div class="noc-viz">
+        <article class="noc-chart-card noc-chart-card-trend">
+          <header class="noc-chart-head"><h3>Client attainment</h3><span class="noc-chart-tag">Live</span></header>
+          <p class="noc-chart-hint">How close each client is to package speed</p>
+          <div class="noc-chart-wrap noc-chart-wrap-trend"><canvas data-noc-chart="impact-attain" aria-label="Client plan attainment"></canvas></div>
+        </article>
+        <div class="noc-viz-side">
+          <article class="noc-chart-card noc-chart-card-sm">
+            <header class="noc-chart-head"><h3>Issue mix</h3></header>
+            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="impact-kinds" aria-label="Issue types"></canvas></div>
+          </article>
+          <article class="noc-chart-card noc-chart-card-sm">
+            <header class="noc-chart-head"><h3>Access</h3></header>
+            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="impact-surfing" aria-label="Surfing versus stuck"></canvas></div>
+          </article>
+        </div>
+        <article class="noc-chart-card">
+          <header class="noc-chart-head"><h3>Issues by NAS</h3></header>
+          <div class="noc-chart-wrap noc-chart-wrap-bar-sm"><canvas data-noc-chart="impact-nas" aria-label="Issues by NAS"></canvas></div>
+        </article>
+        <article class="noc-chart-card">
+          <header class="noc-chart-head"><h3>Affected clients</h3><span class="noc-chart-tag" data-viz-count="impact-clients">0</span></header>
+          <div class="noc-client-list" data-viz-clients="impact"></div>
+        </article>
       </div>
     </div>
     <div class="noc-data-panel" data-noc-panel="data" hidden>
@@ -233,10 +310,30 @@
       </div>
     </div>
     <div class="noc-visual-panel" data-noc-panel="visual">
-      <div class="noc-chart-grid">
-        <article class="noc-chart-card"><h3>Ticket status</h3><p class="noc-chart-hint">Open, assigned, or in progress</p><div class="noc-chart-wrap"><canvas data-noc-chart="fault-status" aria-label="Fault ticket status"></canvas></div></article>
-        <article class="noc-chart-card"><h3>Assignment</h3><p class="noc-chart-hint">Tickets with or without a technician</p><div class="noc-chart-wrap"><canvas data-noc-chart="fault-assign" aria-label="Fault ticket assignment"></canvas></div></article>
-        <article class="noc-chart-card noc-chart-card-wide"><h3>Issues reported</h3><p class="noc-chart-hint">Most common fault categories</p><div class="noc-chart-wrap noc-chart-wrap-bar"><canvas data-noc-chart="fault-issues" aria-label="Fault issues reported"></canvas></div></article>
+      <div class="noc-viz">
+        <article class="noc-chart-card noc-chart-card-trend">
+          <header class="noc-chart-head"><h3>Tickets raised</h3><span class="noc-chart-tag">Timeline</span></header>
+          <p class="noc-chart-hint">Open faults by when they were raised</p>
+          <div class="noc-chart-wrap noc-chart-wrap-trend"><canvas data-noc-chart="fault-trend" aria-label="Faults raised over time"></canvas></div>
+        </article>
+        <div class="noc-viz-side">
+          <article class="noc-chart-card noc-chart-card-sm">
+            <header class="noc-chart-head"><h3>Status</h3></header>
+            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="fault-status" aria-label="Ticket status"></canvas></div>
+          </article>
+          <article class="noc-chart-card noc-chart-card-sm">
+            <header class="noc-chart-head"><h3>Assignment</h3></header>
+            <div class="noc-chart-wrap noc-chart-wrap-sm"><canvas data-noc-chart="fault-assign" aria-label="Assignment"></canvas></div>
+          </article>
+        </div>
+        <article class="noc-chart-card">
+          <header class="noc-chart-head"><h3>Issue types</h3></header>
+          <div class="noc-chart-wrap noc-chart-wrap-bar-sm"><canvas data-noc-chart="fault-issues" aria-label="Issue types"></canvas></div>
+        </article>
+        <article class="noc-chart-card">
+          <header class="noc-chart-head"><h3>Clients with open faults</h3><span class="noc-chart-tag" data-viz-count="fault-clients">0</span></header>
+          <div class="noc-client-list" data-viz-clients="faults"></div>
+        </article>
       </div>
     </div>
     <div class="noc-data-panel" data-noc-panel="data" hidden>
@@ -337,8 +434,11 @@
   function chartTheme() {
     var dark = document.documentElement.getAttribute("data-theme") === "dark";
     return {
-      text: dark ? "#cbd5e1" : "#3d5a66",
-      grid: dark ? "rgba(148,163,184,0.18)" : "rgba(7,24,32,0.08)",
+      text: dark ? "#94a3b8" : "#5a7380",
+      ink: dark ? "#e2e8f0" : "#071820",
+      grid: dark ? "rgba(148,163,184,0.12)" : "rgba(7,24,32,0.06)",
+      sea: "#0c7a84",
+      seaSoft: dark ? "rgba(12,122,132,0.28)" : "rgba(12,122,132,0.14)",
     };
   }
   function destroyChart(key) {
@@ -353,61 +453,19 @@
   function hasChartLib() {
     return typeof Chart !== "undefined";
   }
-  function doughnutChart(key, labels, values, colors) {
-    var canvas = chartCanvas(key);
-    if (!canvas || !hasChartLib()) return;
-    showChartCanvas(key);
-    destroyChart(key);
-    var theme = chartTheme();
-    charts[key] = new Chart(canvas, {
-      type: "doughnut",
-      data: {
-        labels: labels,
-        datasets: [{ data: values, backgroundColor: colors, borderWidth: 0, hoverOffset: 4 }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        cutout: "62%",
-        plugins: {
-          legend: {
-            position: "bottom",
-            labels: { color: theme.text, boxWidth: 12, padding: 12, font: { size: 11, weight: "600" } },
-          },
-        },
-      },
-    });
+  function truncateLabel(text, max) {
+    var s = String(text || "");
+    return s.length > (max || 18) ? s.slice(0, (max || 18) - 1) + "…" : s;
   }
-  function horizontalBarChart(key, labels, values, colors) {
+  function showChartCanvas(key) {
     var canvas = chartCanvas(key);
-    if (!canvas || !hasChartLib()) return;
-    showChartCanvas(key);
-    destroyChart(key);
-    var theme = chartTheme();
-    charts[key] = new Chart(canvas, {
-      type: "bar",
-      data: {
-        labels: labels,
-        datasets: [{ data: values, backgroundColor: colors, borderRadius: 6, maxBarThickness: 22 }],
-      },
-      options: {
-        indexAxis: "y",
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: {
-            beginAtZero: true,
-            ticks: { color: theme.text, precision: 0 },
-            grid: { color: theme.grid },
-          },
-          y: {
-            ticks: { color: theme.text, font: { size: 11, weight: "600" } },
-            grid: { display: false },
-          },
-        },
-      },
-    });
+    if (!canvas) return;
+    canvas.hidden = false;
+    var wrap = canvas.closest(".noc-chart-wrap");
+    if (wrap) {
+      var note = wrap.querySelector(".noc-chart-empty");
+      if (note) note.remove();
+    }
   }
   function emptyChartMessage(key, message) {
     var canvas = chartCanvas(key);
@@ -425,15 +483,216 @@
     }
     canvas.hidden = true;
   }
-  function showChartCanvas(key) {
+  function doughnutChart(key, labels, values, colors) {
     var canvas = chartCanvas(key);
-    if (!canvas) return;
-    canvas.hidden = false;
-    var wrap = canvas.closest(".noc-chart-wrap");
-    if (wrap) {
-      var note = wrap.querySelector(".noc-chart-empty");
-      if (note) note.remove();
+    if (!canvas || !hasChartLib()) return;
+    showChartCanvas(key);
+    destroyChart(key);
+    var theme = chartTheme();
+    var total = values.reduce(function (a, b) { return a + (Number(b) || 0); }, 0);
+    charts[key] = new Chart(canvas, {
+      type: "doughnut",
+      data: {
+        labels: labels,
+        datasets: [{
+          data: total ? values : [1],
+          backgroundColor: total ? colors : [theme.grid],
+          borderWidth: 0,
+          hoverOffset: 3,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: "68%",
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: {
+              color: theme.text,
+              boxWidth: 8,
+              boxHeight: 8,
+              padding: 8,
+              font: { size: 10, weight: "600" },
+              generateLabels: function (chart) {
+                var data = chart.data;
+                if (!data.labels || !data.labels.length) return [];
+                return data.labels.map(function (label, i) {
+                  var value = total ? (data.datasets[0].data[i] || 0) : 0;
+                  return {
+                    text: label + " · " + value,
+                    fillStyle: data.datasets[0].backgroundColor[i],
+                    strokeStyle: "transparent",
+                    hidden: false,
+                    index: i,
+                  };
+                });
+              },
+            },
+          },
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                return " " + ctx.label + ": " + (total ? ctx.raw : 0);
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+  function horizontalBarChart(key, labels, values, colors, opts) {
+    var canvas = chartCanvas(key);
+    if (!canvas || !hasChartLib()) return;
+    showChartCanvas(key);
+    destroyChart(key);
+    var theme = chartTheme();
+    opts = opts || {};
+    charts[key] = new Chart(canvas, {
+      type: "bar",
+      data: {
+        labels: labels,
+        datasets: [{
+          data: values,
+          backgroundColor: colors,
+          borderRadius: 5,
+          maxBarThickness: opts.thick || 14,
+          barPercentage: 0.72,
+        }],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: function (items) {
+                return (opts.fullLabels && items[0]) ? (opts.fullLabels[items[0].dataIndex] || items[0].label) : items[0].label;
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            beginAtZero: true,
+            suggestedMax: opts.max || undefined,
+            ticks: { color: theme.text, precision: 0, font: { size: 10 } },
+            grid: { color: theme.grid, drawBorder: false },
+            border: { display: false },
+          },
+          y: {
+            ticks: { color: theme.ink, font: { size: 10, weight: "600" } },
+            grid: { display: false },
+            border: { display: false },
+          },
+        },
+      },
+    });
+  }
+  function lineChart(key, labels, datasets) {
+    var canvas = chartCanvas(key);
+    if (!canvas || !hasChartLib()) return;
+    showChartCanvas(key);
+    destroyChart(key);
+    var theme = chartTheme();
+    charts[key] = new Chart(canvas, {
+      type: "line",
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: {
+            display: datasets.length > 1,
+            position: "top",
+            align: "end",
+            labels: { color: theme.text, boxWidth: 10, boxHeight: 2, padding: 10, font: { size: 10, weight: "600" } },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: theme.text, maxRotation: 0, autoSkip: true, maxTicksLimit: 8, font: { size: 9 } },
+            grid: { display: false },
+            border: { display: false },
+          },
+          y: {
+            beginAtZero: true,
+            ticks: { color: theme.text, precision: 0, font: { size: 10 } },
+            grid: { color: theme.grid, drawBorder: false },
+            border: { display: false },
+          },
+        },
+        elements: {
+          line: { tension: 0.35, borderWidth: 2 },
+          point: { radius: 0, hitRadius: 8, hoverRadius: 3 },
+        },
+      },
+    });
+  }
+  function fleetHealthSeries() {
+    var routers = ((state.board && state.board.routers) || []).filter(function (row) {
+      return Array.isArray(row.sparkline) && row.sparkline.length;
+    });
+    if (!routers.length) return null;
+    var best = routers.slice().sort(function (a, b) {
+      return (b.sparkline.length || 0) - (a.sparkline.length || 0);
+    })[0];
+    var len = Math.min(24, best.sparkline.length);
+    var labels = (best.sparkline_labels || []).slice(-len);
+    if (labels.length < len) {
+      labels = [];
+      for (var i = 0; i < len; i++) labels.push(String(i + 1));
     }
+    var averages = [];
+    for (var idx = 0; idx < len; idx++) {
+      var sum = 0;
+      var n = 0;
+      routers.forEach(function (row) {
+        var spark = row.sparkline || [];
+        var offset = spark.length - len;
+        if (offset < 0) return;
+        var val = spark[offset + idx];
+        if (val == null) return;
+        sum += Number(val) || 0;
+        n += 1;
+      });
+      averages.push(n ? Math.round(sum / n) : null);
+    }
+    return { labels: labels, averages: averages };
+  }
+  function renderClientList(scope, rows) {
+    var body = root.querySelector('[data-viz-clients="' + scope + '"]');
+    var countEl = root.querySelector('[data-viz-count="' + scope + '-clients"], [data-viz-count="' + scope + '"]');
+    if (countEl) countEl.textContent = String(rows.length);
+    if (!body) return;
+    if (!rows.length) {
+      body.innerHTML = '<p class="noc-chart-empty noc-chart-empty-sm">No clients to show.</p>';
+      return;
+    }
+    body.innerHTML = rows.slice(0, 8).map(function (row) {
+      var tone = row.tone || "warn";
+      var meta = row.meta || "";
+      var name = row.name || "Client";
+      var href = row.url || "";
+      var nameHtml = href
+        ? '<a href="' + escapeHtml(href) + '">' + escapeHtml(name) + "</a>"
+        : "<strong>" + escapeHtml(name) + "</strong>";
+      var bar = row.pct != null
+        ? '<span class="noc-client-bar" aria-hidden="true"><span style="width:' + Math.max(4, Math.min(100, Number(row.pct) || 0)) + '%"></span></span>'
+        : "";
+      return (
+        '<div class="noc-client-row tone-' + escapeHtml(tone) + '">' +
+        '<div class="noc-client-main">' + nameHtml +
+        (meta ? '<span class="noc-client-meta">' + escapeHtml(meta) + "</span>" : "") +
+        "</div>" +
+        (row.badge ? '<span class="noc-client-badge">' + escapeHtml(row.badge) + "</span>" : "") +
+        bar +
+        "</div>"
+      );
+    }).join("");
   }
   function applyDisplayMode() {
     var view = root.querySelector('[data-noc-view="' + mode + '"]');
@@ -451,43 +710,80 @@
   }
   function renderVisualOps() {
     var summary = (state.board && state.board.summary) || {};
+    var theme = chartTheme();
+    var series = fleetHealthSeries();
+    if (series && series.averages.some(function (v) { return v != null; })) {
+      lineChart("ops-trend", series.labels, [{
+        label: "Fleet score %",
+        data: series.averages,
+        borderColor: theme.sea,
+        backgroundColor: theme.seaSoft,
+        fill: true,
+      }]);
+      if (charts["ops-trend"] && charts["ops-trend"].options.scales.y) {
+        charts["ops-trend"].options.scales.y.max = 100;
+        charts["ops-trend"].update("none");
+      }
+    } else {
+      emptyChartMessage("ops-trend", "Waiting for health samples…");
+    }
     doughnutChart(
       "ops-severity",
       ["Critical", "Major", "Minor"],
       [summary.alarms_critical || 0, summary.alarms_major || 0, summary.alarms_minor || 0],
       [NOC_PALETTE.critical, NOC_PALETTE.major, NOC_PALETTE.minor]
     );
-    var online = summary.routers_online || 0;
-    var degraded = summary.routers_degraded || 0;
-    var down = summary.routers_down || 0;
     doughnutChart(
       "ops-fleet",
       ["Online", "Degraded", "Down"],
-      [online, degraded, down],
+      [summary.routers_online || 0, summary.routers_degraded || 0, summary.routers_down || 0],
       [NOC_PALETTE.online, NOC_PALETTE.degraded, NOC_PALETTE.down]
     );
     var sites = ((state.board && state.board.sites) || [])
       .slice()
       .sort(function (a, b) { return (b.customers_at_risk || 0) - (a.customers_at_risk || 0); })
       .filter(function (site) { return (site.customers_at_risk || 0) > 0; })
-      .slice(0, 8);
-    if (!sites.length) {
-      emptyChartMessage("ops-sites", "No sites with clients at risk right now.");
-      return;
+      .slice(0, 6);
+    if (sites.length) {
+      horizontalBarChart(
+        "ops-sites",
+        sites.map(function (site) { return truncateLabel(site.label, 16); }),
+        sites.map(function (site) { return site.customers_at_risk || 0; }),
+        sites.map(function (site) { return NOC_PALETTE[site.worst_severity] || NOC_PALETTE.healthy; }),
+        { fullLabels: sites.map(function (site) { return site.label + " · " + (site.customers_at_risk || 0) + " clients"; }) }
+      );
+    } else {
+      emptyChartMessage("ops-sites", "No clients currently at risk.");
     }
-    showChartCanvas("ops-sites");
-    horizontalBarChart(
-      "ops-sites",
-      sites.map(function (site) { return site.label; }),
-      sites.map(function (site) { return site.customers_at_risk || 0; }),
-      sites.map(function (site) {
-        var sev = site.worst_severity || "ok";
-        return NOC_PALETTE[sev] || NOC_PALETTE.healthy;
-      })
-    );
+    var clientRows = ((state.board && state.board.non_optimal_clients) || []).slice(0, 8).map(function (row) {
+      return {
+        name: row.full_name,
+        url: row.url,
+        meta: (row.router_name || "—") + (row.plan_name ? " · " + row.plan_name : ""),
+        badge: kindLabel(row.kind),
+        tone: row.kind === "underperforming" ? "bad" : "warn",
+        pct: row.attainment_pct,
+      };
+    });
+    if (!clientRows.length) {
+      var riskRouters = ((state.board && state.board.routers) || [])
+        .filter(function (row) { return row.severity !== "ok" && (row.customer_count || 0) > 0; })
+        .slice(0, 8);
+      clientRows = riskRouters.map(function (row) {
+        return {
+          name: row.name,
+          url: row.clients_url || row.detail_url,
+          meta: (row.customer_count || 0) + " clients · " + titleCase(row.status),
+          badge: row.severity,
+          tone: row.tone === "down" ? "bad" : "warn",
+        };
+      });
+    }
+    renderClientList("ops", clientRows);
   }
   function renderVisualPerformance() {
     var summary = (state.board && state.board.summary) || {};
+    var theme = chartTheme();
     var sessions = summary.sessions_active || 0;
     var under = summary.clients_underperforming || 0;
     var idle = summary.clients_idle || 0;
@@ -508,37 +804,60 @@
     });
     doughnutChart(
       "perf-tones",
-      ["Good", "Fair", "Needs attention"],
+      ["Good", "Fair", "Attention"],
       [tones.good, tones.fair, tones.bad],
       [NOC_PALETTE.ok, NOC_PALETTE.major, NOC_PALETTE.critical]
     );
-    var worst = routers.slice().sort(function (a, b) {
-      var pa = (a.performance && a.performance.score != null) ? a.performance.score : 999;
-      var pb = (b.performance && b.performance.score != null) ? b.performance.score : 999;
-      return pa - pb;
-    }).slice(0, 8);
-    if (!worst.length) {
-      emptyChartMessage("perf-routers", "No router performance samples yet.");
-      return;
+    var clients = filteredPerfClients().slice(0, 8);
+    if (clients.length) {
+      horizontalBarChart(
+        "perf-client-bars",
+        clients.map(function (row) { return truncateLabel(row.full_name, 14); }),
+        clients.map(function (row) { return row.attainment_pct != null ? row.attainment_pct : 0; }),
+        clients.map(function (row) {
+          return row.kind === "underperforming" ? NOC_PALETTE.under : NOC_PALETTE.idle;
+        }),
+        {
+          max: 100,
+          fullLabels: clients.map(function (row) {
+            return row.full_name + " · " + kindLabel(row.kind) + (row.attainment_pct != null ? " · " + row.attainment_pct + "%" : "");
+          }),
+        }
+      );
+    } else {
+      emptyChartMessage("perf-client-bars", "All dialed clients look healthy.");
     }
-    showChartCanvas("perf-routers");
-    horizontalBarChart(
-      "perf-routers",
-      worst.map(function (row) { return row.name; }),
-      worst.map(function (row) {
-        var perf = row.performance || {};
-        return perf.score != null ? perf.score : 0;
-      }),
-      worst.map(function (row) {
-        var tone = (row.performance && row.performance.tone) || "unknown";
-        if (tone === "ok") return NOC_PALETTE.ok;
-        if (tone === "warn") return NOC_PALETTE.major;
-        return NOC_PALETTE.critical;
-      })
-    );
+    var series = fleetHealthSeries();
+    if (series && series.averages.some(function (v) { return v != null; })) {
+      lineChart("perf-trend", series.labels, [{
+        label: "Fleet health %",
+        data: series.averages,
+        borderColor: theme.sea,
+        backgroundColor: theme.seaSoft,
+        fill: true,
+      }]);
+      if (charts["perf-trend"] && charts["perf-trend"].options.scales.y) {
+        charts["perf-trend"].options.scales.y.max = 100;
+        charts["perf-trend"].update("none");
+      }
+    } else {
+      emptyChartMessage("perf-trend", "Waiting for health samples…");
+    }
+    renderClientList("perf", clients.map(function (row) {
+      return {
+        name: row.full_name,
+        url: row.url,
+        meta: (row.router_name || "—") + (row.plan_download_mbps != null ? " · " + row.plan_download_mbps + " Mbps plan" : ""),
+        badge: row.attainment_pct != null ? row.attainment_pct + "%" : kindLabel(row.kind),
+        tone: row.kind === "underperforming" ? "bad" : "warn",
+        pct: row.attainment_pct,
+      };
+    }));
   }
   function renderVisualDown() {
     var summary = (state.board && state.board.summary) || {};
+    var theme = chartTheme();
+    var list = problemRouters();
     doughnutChart(
       "down-status",
       ["Down", "Degraded"],
@@ -547,27 +866,70 @@
     );
     doughnutChart(
       "down-clients",
-      ["On down NAS", "On degraded NAS"],
+      ["On down", "On degraded"],
       [summary.customers_on_down || 0, summary.customers_on_degraded || 0],
       [NOC_PALETTE.critical, NOC_PALETTE.major]
     );
-    var list = problemRouters().slice().sort(function (a, b) {
-      return (b.customer_count || 0) - (a.customer_count || 0);
-    }).slice(0, 8);
-    if (!list.length) {
-      emptyChartMessage("down-impact", "No problem routers for the current filters.");
-      return;
+    var seriesRouters = list.filter(function (row) {
+      return Array.isArray(row.sparkline) && row.sparkline.length;
+    });
+    if (seriesRouters.length) {
+      var best = seriesRouters.slice().sort(function (a, b) {
+        return (b.sparkline.length || 0) - (a.sparkline.length || 0);
+      })[0];
+      var len = Math.min(24, best.sparkline.length);
+      var labels = (best.sparkline_labels || []).slice(-len);
+      if (labels.length < len) {
+        labels = [];
+        for (var i = 0; i < len; i++) labels.push(String(i + 1));
+      }
+      var datasets = seriesRouters.slice(0, 4).map(function (row, idx) {
+        var spark = (row.sparkline || []).slice(-len);
+        while (spark.length < len) spark.unshift(null);
+        var colors = [theme.sea, NOC_PALETTE.major, NOC_PALETTE.critical, NOC_PALETTE.minor];
+        return {
+          label: truncateLabel(row.name, 12),
+          data: spark,
+          borderColor: colors[idx % colors.length],
+          backgroundColor: "transparent",
+          fill: false,
+        };
+      });
+      lineChart("down-trend", labels, datasets);
+      if (charts["down-trend"] && charts["down-trend"].options.scales.y) {
+        charts["down-trend"].options.scales.y.max = 100;
+        charts["down-trend"].update("none");
+      }
+    } else {
+      emptyChartMessage("down-trend", "No problem-router history yet.");
     }
-    showChartCanvas("down-impact");
-    horizontalBarChart(
-      "down-impact",
-      list.map(function (row) { return row.name; }),
-      list.map(function (row) { return row.customer_count || 0; }),
-      list.map(function (row) { return row.tone === "down" ? NOC_PALETTE.down : NOC_PALETTE.degraded; })
-    );
+    var impact = list.slice().sort(function (a, b) {
+      return (b.customer_count || 0) - (a.customer_count || 0);
+    }).slice(0, 6);
+    if (impact.length) {
+      horizontalBarChart(
+        "down-impact",
+        impact.map(function (row) { return truncateLabel(row.name, 16); }),
+        impact.map(function (row) { return row.customer_count || 0; }),
+        impact.map(function (row) { return row.tone === "down" ? NOC_PALETTE.down : NOC_PALETTE.degraded; }),
+        { fullLabels: impact.map(function (row) { return row.name + " · " + (row.customer_count || 0) + " clients"; }) }
+      );
+    } else {
+      emptyChartMessage("down-impact", "No problem routers for these filters.");
+    }
+    renderClientList("down", impact.map(function (row) {
+      return {
+        name: row.name,
+        url: row.clients_url || row.detail_url,
+        meta: (row.customer_count || 0) + " clients · " + (row.site_label || "—"),
+        badge: titleCase(row.status),
+        tone: row.tone === "down" ? "bad" : "warn",
+      };
+    }));
   }
   function renderVisualImpact() {
     var allQuality = qualityClientsAll();
+    var clients = impactClients();
     var kinds = { stuck: 0, underperforming: 0, idle: 0 };
     allQuality.forEach(function (row) {
       var kind = row.kind || "idle";
@@ -579,37 +941,77 @@
       [kinds.stuck, kinds.underperforming, kinds.idle],
       [NOC_PALETTE.stuck, NOC_PALETTE.under, NOC_PALETTE.idle]
     );
-    var surfing = (state.surfing && state.surfing.surfing_count) || 0;
-    var stuck = stuckClientsRaw().length;
     doughnutChart(
       "impact-surfing",
       ["Surfing", "Stuck"],
-      [surfing, stuck],
+      [(state.surfing && state.surfing.surfing_count) || 0, stuckClientsRaw().length],
       [NOC_PALETTE.surfing, NOC_PALETTE.stuck]
     );
+    var attainClients = clients.filter(function (row) {
+      return row.kind !== "stuck" && row.attainment_pct != null;
+    }).slice(0, 8);
+    if (!attainClients.length) {
+      attainClients = clients.slice(0, 8);
+    }
+    if (attainClients.length) {
+      horizontalBarChart(
+        "impact-attain",
+        attainClients.map(function (row) { return truncateLabel(row.full_name, 14); }),
+        attainClients.map(function (row) {
+          if (row.kind === "stuck") return 0;
+          return row.attainment_pct != null ? row.attainment_pct : 0;
+        }),
+        attainClients.map(function (row) {
+          if (row.kind === "stuck") return NOC_PALETTE.stuck;
+          if (row.kind === "underperforming") return NOC_PALETTE.under;
+          return NOC_PALETTE.idle;
+        }),
+        {
+          max: 100,
+          fullLabels: attainClients.map(function (row) {
+            return row.full_name + " · " + kindLabel(row.kind) +
+              (row.attainment_pct != null ? " · " + row.attainment_pct + "%" : "");
+          }),
+        }
+      );
+    } else {
+      emptyChartMessage("impact-attain", "No quality issues match these filters.");
+    }
     var byNas = {};
-    impactClients().forEach(function (row) {
+    clients.forEach(function (row) {
       var rid = row.router_id != null ? String(row.router_id) : "none";
       byNas[rid] = (byNas[rid] || 0) + 1;
     });
     var nasRows = Object.keys(byNas).map(function (rid) {
       var router = rid !== "none" ? routerById(rid) : null;
       return { label: router ? router.name : "Unassigned", count: byNas[rid] };
-    }).sort(function (a, b) { return b.count - a.count; }).slice(0, 8);
-    if (!nasRows.length) {
-      emptyChartMessage("impact-nas", "No quality issues match the current filters.");
-      return;
+    }).sort(function (a, b) { return b.count - a.count; }).slice(0, 6);
+    if (nasRows.length) {
+      horizontalBarChart(
+        "impact-nas",
+        nasRows.map(function (row) { return truncateLabel(row.label, 16); }),
+        nasRows.map(function (row) { return row.count; }),
+        nasRows.map(function () { return NOC_PALETTE.healthy; }),
+        { fullLabels: nasRows.map(function (row) { return row.label + " · " + row.count + " clients"; }) }
+      );
+    } else {
+      emptyChartMessage("impact-nas", "No NAS groups for these filters.");
     }
-    showChartCanvas("impact-nas");
-    horizontalBarChart(
-      "impact-nas",
-      nasRows.map(function (row) { return row.label; }),
-      nasRows.map(function (row) { return row.count; }),
-      nasRows.map(function () { return NOC_PALETTE.healthy; })
-    );
+    renderClientList("impact", clients.slice(0, 8).map(function (row) {
+      return {
+        name: row.full_name || row.account_number,
+        url: row.url,
+        meta: (row.router_name || "—") + (row.plan_name ? " · " + row.plan_name : ""),
+        badge: kindLabel(row.kind),
+        tone: row.kind === "stuck" || row.kind === "underperforming" ? "bad" : "warn",
+        pct: row.attainment_pct,
+      };
+    }));
   }
   function renderVisualFaults() {
     var summary = (state.board && state.board.summary) || {};
+    var theme = chartTheme();
+    var list = filteredFaults();
     doughnutChart(
       "fault-status",
       ["Open", "Assigned", "In progress"],
@@ -617,32 +1019,57 @@
       [NOC_PALETTE.open, NOC_PALETTE.assigned, NOC_PALETTE.progress]
     );
     var unassigned = summary.faults_unassigned || 0;
-    var assigned = Math.max(0, (summary.faults_open || 0) - unassigned);
     doughnutChart(
       "fault-assign",
-      ["Unassigned", "With technician"],
-      [unassigned, assigned],
+      ["Unassigned", "Assigned"],
+      [unassigned, Math.max(0, (summary.faults_open || 0) - unassigned)],
       [NOC_PALETTE.unassigned, NOC_PALETTE.assigned]
     );
+    var buckets = {};
+    list.slice().reverse().forEach(function (fault) {
+      var stamp = fault.created_at || "Unknown";
+      buckets[stamp] = (buckets[stamp] || 0) + 1;
+    });
+    var trendLabels = Object.keys(buckets).slice(-10);
+    if (trendLabels.length) {
+      lineChart("fault-trend", trendLabels, [{
+        label: "Tickets",
+        data: trendLabels.map(function (label) { return buckets[label]; }),
+        borderColor: NOC_PALETTE.major,
+        backgroundColor: "rgba(180,83,9,0.16)",
+        fill: true,
+      }]);
+    } else {
+      emptyChartMessage("fault-trend", "No open faults to chart.");
+    }
     var issues = {};
-    filteredFaults().forEach(function (fault) {
+    list.forEach(function (fault) {
       var label = fault.issue_label || fault.issue || "Other";
       issues[label] = (issues[label] || 0) + 1;
     });
     var issueRows = Object.keys(issues).map(function (label) {
       return { label: label, count: issues[label] };
-    }).sort(function (a, b) { return b.count - a.count; }).slice(0, 8);
-    if (!issueRows.length) {
-      emptyChartMessage("fault-issues", "No open faults match the current filters.");
-      return;
+    }).sort(function (a, b) { return b.count - a.count; }).slice(0, 6);
+    if (issueRows.length) {
+      horizontalBarChart(
+        "fault-issues",
+        issueRows.map(function (row) { return truncateLabel(row.label, 18); }),
+        issueRows.map(function (row) { return row.count; }),
+        issueRows.map(function () { return theme.sea; }),
+        { fullLabels: issueRows.map(function (row) { return row.label; }) }
+      );
+    } else {
+      emptyChartMessage("fault-issues", "No issue categories yet.");
     }
-    showChartCanvas("fault-issues");
-    horizontalBarChart(
-      "fault-issues",
-      issueRows.map(function (row) { return row.label; }),
-      issueRows.map(function (row) { return row.count; }),
-      issueRows.map(function () { return NOC_PALETTE.major; })
-    );
+    renderClientList("faults", list.slice(0, 8).map(function (fault) {
+      return {
+        name: fault.customer_name,
+        url: fault.customer_url,
+        meta: (fault.ticket_number || "") + " · " + (fault.issue_label || ""),
+        badge: fault.status_label,
+        tone: (fault.technician || "Unassigned") === "Unassigned" ? "bad" : "warn",
+      };
+    }));
   }
   function renderVisuals() {
     if (state.displayMode !== "visual" || !hasChartLib()) return;

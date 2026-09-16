@@ -332,18 +332,6 @@ CLIENT_SIDEBARS = {
                 "url_name": "core:clients_general_usage",
             },
             {
-                "key": "noc_impact",
-                "label": "NOC client quality",
-                "url_name": "core:noc",
-                "query": "focus=impact",
-            },
-            {
-                "key": "noc_performance",
-                "label": "NOC performance",
-                "url_name": "core:noc",
-                "query": "focus=performance",
-            },
-            {
                 "key": "clients_pppoe",
                 "label": "View PPPoE clients",
                 "url_name": "core:my_clients",
