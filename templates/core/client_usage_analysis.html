@@ -44,6 +44,11 @@
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-2.6-6.3M21 3v6h-6"/></svg>
           Refresh
         </button>
+        {% if can_live_usage and trends_url %}
+        <a class="btn btn-ghost btn-sm clients-usage-hero-btn" href="{{ trends_url }}?{% if usage_filter_qs %}{{ usage_filter_qs }}&{% endif %}export=1" target="_blank" rel="noopener">
+          Export samples
+        </a>
+        {% endif %}
       </div>
     </header>
 
@@ -98,6 +103,10 @@
         <div class="client-kv client-usage-stat" data-ico="uptime">
           <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online time</dt>
           <dd><strong data-sum="online-time">{{ trends.summary.online_time_label|default:"—" }}</strong><span data-sum="online-meta">{% if trends.summary.online_ratio != None %}{{ trends.summary.online_ratio }}% of readings online{% else %}Share of this period{% endif %}</span></dd>
+        </div>
+        <div class="client-kv client-usage-stat" data-ico="track">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5h-2v5l4 2.4 1-1.7-3-1.7Z"/></svg></span>Baseline</dt>
+          <dd><strong data-sum="track-label">{% if trends.summary.usage_tracking_label %}{{ trends.summary.usage_tracking_label }}{% else %}Full window{% endif %}</strong><span data-sum="track-hint">Data used starts after renew/reset</span></dd>
         </div>
         <div class="client-kv client-usage-stat" data-ico="devices">
           <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 6h16v12H4Zm2 2v8h12V8Zm3 10h6v2H9Z"/></svg></span>Devices</dt>
@@ -584,11 +593,25 @@
         (latest ? "Connected with internet" : "Not connected")
     );
     setSum("data", fmtBytes(summary.data_used_bytes));
+    var dataHintBits = [];
+    if (summary.usage_tracking_label) {
+      dataHintBits.push("After " + summary.usage_tracking_label);
+    } else {
+      dataHintBits.push("In this period");
+    }
+    if (summary.current_session_bytes && latest) {
+      dataHintBits.push("session " + fmtBytes(summary.current_session_bytes));
+    }
+    if (summary.sampling_gaps) {
+      dataHintBits.push(summary.sampling_gaps + " sampling gap" + (summary.sampling_gaps === 1 ? "" : "s"));
+    }
+    setSum("data-hint", dataHintBits.join(" · "));
+    setSum("track-label", summary.usage_tracking_label || "Full window");
     setSum(
-      "data-hint",
-      summary.current_session_bytes && latest
-        ? ("This session " + fmtBytes(summary.current_session_bytes))
-        : "In this period"
+      "track-hint",
+      summary.usage_tracking_label
+        ? "Data used ignores traffic before this baseline"
+        : "No renew/reset baseline — full selected window"
     );
     setSum("prime", prime ? fmtBps(prime.download_bps || prime.combined_bps) : "—");
     setSum("prime-at", prime ? ("Around " + prime.at_label) : "No peak yet");

@@ -124,7 +124,7 @@ class HotspotDeviceLimitTests(TestCase):
         found = find_hotspot_customer_for_mac(self.org, "AA:BB:CC:DD:EE:02")
         self.assertEqual(found.pk, self.customer.pk)
 
-    def test_hotspot_macs_include_redeemed_voucher_mac(self):
+    def test_hotspot_macs_do_not_include_historical_voucher_mac(self):
         from billing.models import AccessVoucher
 
         AccessVoucher.objects.create(
@@ -135,7 +135,7 @@ class HotspotDeviceLimitTests(TestCase):
             status=AccessVoucher.Status.INVALID,
             redeemed_mac="AA:BB:CC:DD:EE:77",
         )
-        self.assertIn(
+        self.assertNotIn(
             "AA:BB:CC:DD:EE:77",
             hotspot_macs_for_customer(self.customer),
         )
@@ -173,7 +173,7 @@ class HotspotDeviceLimitTests(TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("another account", result["error"])
 
-    def test_phone_lookup_attaches_new_mac_without_new_customer(self):
+    def test_phone_lookup_does_not_free_attach_on_paid_capped_plan(self):
         apply_subscription_renewal(self.customer, plan=self.plan)
         resolved = resolve_or_create_hotspot_customer(
             self.org,
@@ -183,10 +183,15 @@ class HotspotDeviceLimitTests(TestCase):
         )
         self.assertTrue(resolved["ok"])
         self.assertFalse(resolved["created"])
-        self.assertTrue(resolved["attached"])
+        self.assertFalse(resolved["attached"])
         self.assertTrue(resolved["already_paid"])
         self.assertEqual(resolved["customer"].pk, self.customer.pk)
         self.assertEqual(Customer.objects.filter(organization=self.org).count(), 1)
+        self.assertFalse(
+            CustomerDevice.objects.filter(
+                customer=self.customer, mac="AA:BB:CC:DD:EE:02"
+            ).exists()
+        )
 
     def test_phone_lookup_requires_voucher_when_unused_codes_remain(self):
         from billing.models import AccessVoucher
@@ -262,7 +267,7 @@ class HotspotDeviceLimitTests(TestCase):
         self.assertEqual(orphan.phone, "0722334455")
 
     def test_unpaid_orphan_merges_into_phone_account(self):
-        apply_subscription_renewal(self.customer, plan=self.plan)
+        """Unpaid orphan folds into the phone account when that account is unpaid."""
         orphan = Customer.objects.create(
             organization=self.org,
             full_name="Hotspot device EE:77",
@@ -282,7 +287,7 @@ class HotspotDeviceLimitTests(TestCase):
         self.assertTrue(resolved["ok"])
         self.assertEqual(resolved["customer"].pk, self.customer.pk)
         self.assertTrue(resolved["attached"])
-        self.assertTrue(resolved["already_paid"])
+        self.assertFalse(resolved["already_paid"])
         self.assertIn(
             "AA:BB:CC:DD:EE:77",
             hotspot_macs_for_customer(self.customer),
@@ -291,6 +296,43 @@ class HotspotDeviceLimitTests(TestCase):
         self.assertNotEqual(
             (orphan.hotspot_mac or "").upper(),
             "AA:BB:CC:DD:EE:77",
+        )
+
+    def test_unpaid_orphan_on_paid_account_requires_voucher(self):
+        from billing.models import AccessVoucher
+
+        apply_subscription_renewal(self.customer, plan=self.plan)
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="ORPHANV1",
+            status=AccessVoucher.Status.VALID,
+        )
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot device EE:77",
+            phone="",
+            account_number="HOT-ORPHAN-77",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:77",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        resolved = resolve_or_create_hotspot_customer(
+            self.org,
+            mac="AA:BB:CC:DD:EE:77",
+            phone="0700000100",
+            plan=self.plan,
+        )
+        self.assertTrue(resolved["ok"])
+        self.assertEqual(resolved["customer"].pk, self.customer.pk)
+        self.assertFalse(resolved["attached"])
+        self.assertTrue(resolved["needs_voucher"])
+        self.assertFalse(
+            CustomerDevice.objects.filter(
+                customer=self.customer, mac="AA:BB:CC:DD:EE:77"
+            ).exists()
         )
 
 
@@ -375,7 +417,8 @@ class HotspotPaymentStartDeviceTests(TestCase):
             ).exists()
         )
 
-    def test_second_device_same_phone_attaches_without_stk(self):
+    def test_second_device_same_phone_must_pay_when_no_vouchers(self):
+        """Capped plans never free-attach a sibling once vouchers are exhausted."""
         url = reverse("core:hotspot_payment_start", kwargs={"join_code": self.org.join_code})
         with (
             patch(
@@ -387,11 +430,14 @@ class HotspotPaymentStartDeviceTests(TestCase):
                 return_value="11:22:33:44:55:02",
             ),
             patch(
-                "core.subscription_sync.enqueue_customer_subscription_sync",
-                return_value={"ok": True, "allowed": True},
-            ) as sync,
-            patch("billing.stk.start_subscription_stk_payment") as stk,
+                "billing.stk.start_subscription_stk_payment",
+            ) as stk_start,
         ):
+            stk_start.return_value = {
+                "ok": True,
+                "stk_id": 99,
+                "message": "STK sent",
+            }
             response = self.client.post(
                 url,
                 {"plan_id": str(self.plan.pk), "phone": "0700000200", "mac": "11:22:33:44:55:02"},
@@ -399,12 +445,9 @@ class HotspotPaymentStartDeviceTests(TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["ok"])
-        self.assertTrue(data["already_paid"])
-        self.assertTrue(data["attached"])
-        stk.assert_not_called()
-        sync.assert_called_once()
-        self.assertEqual(Customer.objects.filter(organization=self.org).count(), 1)
-        self.assertTrue(
+        self.assertEqual(data.get("stk_id"), 99)
+        stk_start.assert_called_once()
+        self.assertFalse(
             CustomerDevice.objects.filter(
                 customer=self.customer, mac="11:22:33:44:55:02"
             ).exists()
@@ -467,9 +510,25 @@ class HotspotNasMultiMacTests(TestCase):
         )
         attach_hotspot_device(self.customer, "AA:AA:AA:AA:AA:02")
 
+    def _redeem_period_macs(self, *macs: str) -> None:
+        from billing.models import AccessVoucher
+
+        for mac in macs:
+            AccessVoucher.objects.create(
+                organization=self.org,
+                customer=self.customer,
+                plan=self.plan,
+                code=f"{mac[-2:]}VCH",
+                status=AccessVoucher.Status.INVALID,
+                redeemed_mac=mac,
+                redeemed_at=timezone.now(),
+                subscription_applied=True,
+            )
+
     def test_apply_writes_both_mac_users(self):
         from core.mikrotik_connect import _apply_hotspot_customer_on_socket
 
+        self._redeem_period_macs("AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02")
         users = []
 
         def fake_ensure(sock, **kwargs):
@@ -482,17 +541,80 @@ class HotspotNasMultiMacTests(TestCase):
             patch("core.mikrotik_connect._ensure_hotspot_user", side_effect=fake_ensure),
             patch("core.mikrotik_connect._expire_hotspot_mac_sessions"),
             patch("core.mikrotik_connect._purge_hotspot_ok_list_for_mac", return_value=0),
+            patch("core.mikrotik_connect._remove_hotspot_simple_queue"),
+            patch("core.mikrotik_connect._ensure_hotspot_simple_queue"),
         ):
             applied = _apply_hotspot_customer_on_socket(object(), self.customer)
 
         self.assertTrue(applied.get("ok"))
-        names = [row["username"] for row in users]
-        self.assertEqual(names, ["AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02"])
-        self.assertTrue(all(not row["disabled"] for row in users))
+        enabled = [row["username"] for row in users if not row["disabled"]]
+        self.assertEqual(enabled, ["AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02"])
+
+    def test_apply_enables_only_voucher_redeemed_mac(self):
+        """Linked peer without a voucher this period stays disabled on NAS."""
+        from core.mikrotik_connect import _apply_hotspot_customer_on_socket
+
+        self._redeem_period_macs("AA:AA:AA:AA:AA:02")
+        users = []
+
+        def fake_ensure(sock, **kwargs):
+            users.append(kwargs)
+            return "created"
+
+        with (
+            patch("core.mikrotik_connect._remove_lan_wide_hotspot_bypasses"),
+            patch("core.mikrotik_connect._ensure_hotspot_rate_profile", return_value="hs-profile"),
+            patch("core.mikrotik_connect._ensure_hotspot_user", side_effect=fake_ensure),
+            patch("core.mikrotik_connect._expire_hotspot_mac_sessions"),
+            patch("core.mikrotik_connect._purge_hotspot_ok_list_for_mac", return_value=0),
+            patch("core.mikrotik_connect._remove_hotspot_simple_queue"),
+            patch("core.mikrotik_connect._ensure_hotspot_simple_queue"),
+        ):
+            applied = _apply_hotspot_customer_on_socket(object(), self.customer)
+
+        self.assertTrue(applied.get("ok"))
+        self.assertEqual(applied.get("allowed_count"), 1)
+        enabled = [row["username"] for row in users if not row["disabled"]]
+        disabled = [row["username"] for row in users if row["disabled"]]
+        self.assertEqual(enabled, ["AA:AA:AA:AA:AA:02"])
+        self.assertIn("AA:AA:AA:AA:AA:01", disabled)
+
+    def test_apply_keeps_primary_when_no_voucher_claims_yet(self):
+        """Deploy sweep must not kick the paying phone before any redeem/claim."""
+        from billing.devices import authorized_hotspot_macs_for_customer
+        from core.mikrotik_connect import _apply_hotspot_customer_on_socket
+
+        self.assertEqual(
+            authorized_hotspot_macs_for_customer(self.customer),
+            ["AA:AA:AA:AA:AA:01"],
+        )
+        users = []
+
+        def fake_ensure(sock, **kwargs):
+            users.append(kwargs)
+            return "created"
+
+        with (
+            patch("core.mikrotik_connect._remove_lan_wide_hotspot_bypasses"),
+            patch("core.mikrotik_connect._ensure_hotspot_rate_profile", return_value="hs-profile"),
+            patch("core.mikrotik_connect._ensure_hotspot_user", side_effect=fake_ensure),
+            patch("core.mikrotik_connect._expire_hotspot_mac_sessions"),
+            patch("core.mikrotik_connect._purge_hotspot_ok_list_for_mac", return_value=0),
+            patch("core.mikrotik_connect._remove_hotspot_simple_queue"),
+            patch("core.mikrotik_connect._ensure_hotspot_simple_queue"),
+        ):
+            applied = _apply_hotspot_customer_on_socket(object(), self.customer)
+
+        self.assertTrue(applied.get("ok"))
+        enabled = [row["username"] for row in users if not row["disabled"]]
+        disabled = [row["username"] for row in users if row["disabled"]]
+        self.assertEqual(enabled, ["AA:AA:AA:AA:AA:01"])
+        self.assertIn("AA:AA:AA:AA:AA:02", disabled)
 
     def test_apply_disables_all_macs_when_package_expired(self):
         from core.mikrotik_connect import _apply_hotspot_customer_on_socket
 
+        self._redeem_period_macs("AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02")
         self.customer.package_end = timezone.now() - timedelta(days=1)
         self.customer.save(update_fields=["package_end"])
 
@@ -512,18 +634,20 @@ class HotspotNasMultiMacTests(TestCase):
             patch("core.mikrotik_connect._ensure_hotspot_user", side_effect=fake_ensure),
             patch("core.mikrotik_connect._expire_hotspot_mac_sessions", side_effect=fake_expire),
             patch("core.mikrotik_connect._purge_hotspot_ok_list_for_mac", return_value=1),
+            patch("core.mikrotik_connect._remove_hotspot_simple_queue"),
+            patch("core.mikrotik_connect._ensure_hotspot_simple_queue"),
         ):
             applied = _apply_hotspot_customer_on_socket(object(), self.customer)
 
         self.assertTrue(applied.get("ok"))
         self.assertEqual(
-            [row["username"] for row in users],
+            sorted(row["username"] for row in users),
             ["AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02"],
         )
         self.assertTrue(all(row["disabled"] for row in users))
         self.assertEqual(all(row["limit_uptime"] == "0s" for row in users), True)
         self.assertEqual(
-            [mac for mac, disabled, _kick in expired],
+            sorted(mac for mac, disabled, _kick in expired),
             ["AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02"],
         )
         self.assertTrue(all(disabled for _mac, disabled, _kick in expired))
@@ -536,6 +660,9 @@ class HotspotNasMultiMacTests(TestCase):
         from billing.devices import ensure_customer_device
 
         ensure_customer_device(self.customer, "AA:AA:AA:AA:AA:03")
+        self._redeem_period_macs(
+            "AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02", "AA:AA:AA:AA:AA:03"
+        )
         users = []
 
         def fake_ensure(sock, **kwargs):
@@ -548,16 +675,17 @@ class HotspotNasMultiMacTests(TestCase):
             patch("core.mikrotik_connect._ensure_hotspot_user", side_effect=fake_ensure),
             patch("core.mikrotik_connect._expire_hotspot_mac_sessions"),
             patch("core.mikrotik_connect._purge_hotspot_ok_list_for_mac", return_value=1),
+            patch("core.mikrotik_connect._remove_hotspot_simple_queue"),
+            patch("core.mikrotik_connect._ensure_hotspot_simple_queue"),
         ):
             applied = _apply_hotspot_customer_on_socket(object(), self.customer)
 
         self.assertTrue(applied.get("ok"))
         self.assertEqual(applied.get("max_devices"), 2)
         self.assertEqual(applied.get("allowed_count"), 2)
-        # Prune removes the third CustomerDevice before NAS write.
-        self.assertEqual(applied.get("over_cap_count"), 0)
+        # Prune removes the third CustomerDevice; redeemed_mac history may still
+        # list it as known so it is treated as over-cap and disabled on NAS.
         self.assertIn("AA:AA:AA:AA:AA:03", applied.get("pruned_macs") or [])
-        # Pruned MAC must still be disabled+kicked on MikroTik or it keeps surfing.
         self.assertEqual(applied.get("disabled_over_cap_count"), 1)
         self.assertIn(
             "AA:AA:AA:AA:AA:03", applied.get("disabled_over_cap_macs") or []

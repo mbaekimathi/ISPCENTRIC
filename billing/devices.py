@@ -173,7 +173,13 @@ def normalize_device_mac(mac: str) -> str:
 
 
 def hotspot_macs_for_customer(customer) -> list[str]:
-    """Primary MAC first, then extra CustomerDevice rows, then voucher MACs."""
+    """Primary MAC first, then extra CustomerDevice rows.
+
+    Historical voucher ``redeemed_mac`` values are not treated as linked —
+    they only authorize via ``authorized_hotspot_macs_for_customer`` for the
+    current paid period. Including them here inflated device caps and kept
+    unlimited plans surfing after unlink.
+    """
     if customer is None:
         return []
     seen: list[str] = []
@@ -197,21 +203,6 @@ def hotspot_macs_for_customer(customer) -> list[str]:
             rows = []
     for row in rows:
         _add(getattr(row, "mac", "") or "")
-    if "access_vouchers" in prefetched:
-        for voucher in prefetched["access_vouchers"]:
-            _add(getattr(voucher, "redeemed_mac", "") or "")
-    elif getattr(customer, "pk", None):
-        try:
-            from billing.models import AccessVoucher
-
-            for mac in (
-                AccessVoucher.objects.filter(customer_id=customer.pk)
-                .exclude(redeemed_mac="")
-                .values_list("redeemed_mac", flat=True)
-            ):
-                _add(mac)
-        except Exception:
-            pass
     return seen
 
 
@@ -219,7 +210,11 @@ def customer_owns_hotspot_mac(customer, mac: str) -> bool:
     mac = normalize_device_mac(mac)
     if not mac or customer is None:
         return False
-    return mac in {m.upper() for m in hotspot_macs_for_customer(customer)}
+    if mac in {m.upper() for m in hotspot_macs_for_customer(customer)}:
+        return True
+    # Allow ownership for a MAC claimed/redeemed on the current period so
+    # payment-status tokens still work before CustomerDevice is written.
+    return mac in {m.upper() for m in authorized_hotspot_macs_for_customer(customer)}
 
 
 def find_hotspot_customer_for_mac(org, mac: str, *, active_only: bool = True):
@@ -309,6 +304,131 @@ def _ensure_primary_mac(customer, mac: str) -> None:
         return
     customer.hotspot_mac = mac
     customer.save(update_fields=["hotspot_mac"])
+
+
+def set_primary_hotspot_mac(customer, mac: str) -> None:
+    """Force the primary Hotspot MAC to the paying / redeemed device."""
+    mac = normalize_device_mac(mac)
+    if not mac or customer is None:
+        return
+    if (getattr(customer, "hotspot_mac", None) or "").strip().upper() == mac:
+        return
+    customer.hotspot_mac = mac
+    customer.save(update_fields=["hotspot_mac"])
+
+
+def unlink_hotspot_devices(customer, *, keep_macs: list[str] | None = None) -> list[str]:
+    """
+    Drop shared gadget links so devices must redeem a voucher again.
+
+    Keeps optional MAC(s) (e.g. the device that just paid). Clears primary
+    ``hotspot_mac`` when it is not kept, then reseeds primary from keep.
+    Returns removed MAC list.
+    """
+    from billing.models import CustomerDevice
+
+    if customer is None or not getattr(customer, "pk", None):
+        return []
+
+    keep_ordered: list[str] = []
+    keep: set[str] = set()
+    for raw in keep_macs or []:
+        mac = normalize_device_mac(raw)
+        if not mac or mac in keep:
+            continue
+        keep.add(mac)
+        keep_ordered.append(mac)
+
+    removed: list[str] = []
+    for row in CustomerDevice.objects.filter(customer_id=customer.pk):
+        mac = normalize_device_mac(getattr(row, "mac", "") or "")
+        if mac and mac in keep:
+            continue
+        if mac:
+            removed.append(mac)
+        row.delete()
+
+    primary = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
+    if primary and primary not in keep:
+        customer.hotspot_mac = None
+        customer.save(update_fields=["hotspot_mac"])
+        if primary not in removed:
+            removed.append(primary)
+    if keep_ordered:
+        set_primary_hotspot_mac(customer, keep_ordered[0])
+        for mac in keep_ordered:
+            ensure_customer_device(customer, mac)
+
+    return removed
+
+
+def current_period_voucher_macs(customer) -> list[str]:
+    """
+    MACs that redeemed (or claimed) a voucher for the current paid package window.
+
+    Includes INVALID used vouchers and VALID vouchers that already have
+    ``redeemed_mac`` set (claimed for NAS authorize before final burn).
+    Historical redeemed MACs from earlier periods are ignored.
+    """
+    from datetime import timedelta
+
+    from django.db.models import Q
+
+    from billing.models import AccessVoucher
+
+    if customer is None or not getattr(customer, "pk", None):
+        return []
+
+    qs = (
+        AccessVoucher.objects.filter(customer_id=customer.pk)
+        .exclude(redeemed_mac="")
+        .filter(
+            Q(status=AccessVoucher.Status.INVALID)
+            | Q(status=AccessVoucher.Status.VALID)
+        )
+    )
+
+    start = getattr(customer, "package_start", None)
+    if start is not None:
+        # Small slack covers apply→redeem races around package_start.
+        slack = start - timedelta(minutes=2)
+        qs = qs.filter(Q(redeemed_at__gte=slack) | Q(created_at__gte=slack))
+
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    for mac in qs.values_list("redeemed_mac", flat=True):
+        norm = normalize_device_mac(mac)
+        if not norm or norm in seen_set:
+            continue
+        seen_set.add(norm)
+        seen.append(norm)
+    return seen
+
+
+def authorized_hotspot_macs_for_customer(customer) -> list[str]:
+    """
+    MACs allowed to have enabled Hotspot users while the package is live.
+
+    Voucher-capped packages: devices that claimed/redeemed a voucher this
+    period. If the package is paid but no claims exist yet (legacy STK /
+    staff renew / pre-voucher-gate installs), keep only the primary MAC so
+    a deploy sweep does not kick the paying phone — siblings still need a
+    voucher and must not free-ride from CustomerDevice links alone.
+    Unlimited packages: all linked MACs (attach-without-voucher path).
+    """
+    if customer is None:
+        return []
+    if customer_devices_unlimited(customer):
+        return hotspot_macs_for_customer(customer)
+    claimed = current_period_voucher_macs(customer)
+    if claimed:
+        return claimed
+    from billing.services import customer_can_surf_via_hotspot
+
+    if not customer_can_surf_via_hotspot(customer):
+        return []
+    primary = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
+    return [primary] if primary else []
 
 
 def reassign_unpaid_hotspot_mac(customer, mac: str) -> dict:
@@ -564,6 +684,32 @@ def resolve_or_create_hotspot_customer(
                         ),
                         "status": 403,
                     }
+                already_paid = customer_can_surf_via_hotspot(by_phone)
+                if already_paid and not customer_devices_unlimited(by_phone):
+                    from billing.vouchers import customer_unused_voucher_count
+
+                    unused = customer_unused_voucher_count(by_phone)
+                    if plan is not None and by_phone.plan_id is None:
+                        by_phone.plan = plan
+                        by_phone.save(update_fields=["plan"])
+                    if unused > 0:
+                        # Do not consume a device slot without burning a voucher.
+                        return {
+                            "ok": True,
+                            "customer": by_phone,
+                            "created": False,
+                            "attached": False,
+                            "already_paid": True,
+                            "needs_voucher": True,
+                        }
+                    # No sibling codes left — pay for a new batch; do not free-attach.
+                    return {
+                        "ok": True,
+                        "customer": by_phone,
+                        "created": False,
+                        "attached": False,
+                        "already_paid": True,
+                    }
                 moved = reassign_unpaid_hotspot_mac(by_phone, mac)
                 if not moved.get("ok"):
                     return {
@@ -583,7 +729,7 @@ def resolve_or_create_hotspot_customer(
                     "customer": by_phone,
                     "created": False,
                     "attached": True,
-                    "already_paid": customer_can_surf_via_hotspot(by_phone),
+                    "already_paid": already_paid,
                 }
             maybe_set_customer_phone(existing, phone)
             if router is not None and existing.router_id != router_id:
@@ -625,7 +771,8 @@ def resolve_or_create_hotspot_customer(
             if already_paid and not customer_devices_unlimited(by_phone):
                 from billing.vouchers import customer_unused_voucher_count
 
-                if customer_unused_voucher_count(by_phone) > 0:
+                unused = customer_unused_voucher_count(by_phone)
+                if unused > 0:
                     return {
                         "ok": True,
                         "customer": by_phone,
@@ -634,6 +781,32 @@ def resolve_or_create_hotspot_customer(
                         "already_paid": True,
                         "needs_voucher": True,
                     }
+                # Live capped package with no remaining codes: only reject when
+                # this MAC would exceed max_devices. Otherwise start a new pay.
+                current = hotspot_macs_for_customer(by_phone)
+                cap = customer_max_devices(by_phone)
+                if (
+                    cap > 0
+                    and mac not in current
+                    and len(current) >= cap
+                ):
+                    label = "1 device" if cap == 1 else f"{cap} devices"
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"This package allows {label}. "
+                            "Remove a device or choose a package with a higher device limit."
+                        ),
+                        "status": 400,
+                        "at_cap": True,
+                    }
+                return {
+                    "ok": True,
+                    "customer": by_phone,
+                    "created": False,
+                    "attached": False,
+                    "already_paid": True,
+                }
             attach = attach_hotspot_device(by_phone, mac, enforce_cap=True)
             if not attach.get("ok"):
                 return {

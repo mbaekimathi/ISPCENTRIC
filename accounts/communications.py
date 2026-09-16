@@ -1516,7 +1516,8 @@ def maybe_notify_mikrotik_health_low(
     Notify once per episode when a MikroTik is offline or health < 70%.
 
     Offline → ``isp_mikrotik_off``. Reachable but score < 70 → ``isp_mikrotik_health_low``.
-    Clears episode flags when the router recovers.
+    Clears episode flags when the router recovers. Callers should invoke this on
+    the first failed live probe — do not wait for chart outage confirmation.
     """
     from django.core.cache import cache
 
@@ -1544,12 +1545,21 @@ def maybe_notify_mikrotik_health_low(
         cache.delete(off_key)
         return {"ok": False, "skipped": True, "reason": "healthy"}
 
-    # Combining links briefly flaps API while WireGuard stays warm — don't alert yet.
+    # Combining links briefly flaps API while WireGuard stays warm — suppress
+    # soft flaps only. Hard offline / auth / wrong-host still alert immediately.
     try:
         from core.mikrotik_status_samples import is_mikrotik_post_uplink_grace
 
         if is_mikrotik_post_uplink_grace(int(router_id)):
-            return {"ok": False, "skipped": True, "reason": "uplink_grace"}
+            soft_flap = status_key in {
+                "disconnected",
+                "reachable",
+                "limited",
+                "unreachable",
+                "offline",
+            }
+            if soft_flap or is_low:
+                return {"ok": False, "skipped": True, "reason": "uplink_grace"}
     except Exception:
         pass
 

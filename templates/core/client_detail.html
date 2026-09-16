@@ -983,24 +983,25 @@
     <div class="pppoe-body">
       <p class="org-delete-warn cc-delete-banner" role="alert">
         <strong>This cannot be undone.</strong>
-        Billing history, vouchers, and related records for this client will be removed permanently.
+        The client record is removed. Billing history stays — invoices, payments,
+        and vouchers below are kept and unlinked from this client.
       </p>
       <ul class="cc-delete-list">
         <li class="cc-delete-item">
           <div class="cc-delete-item-head">
-            <span>Invoices</span>
+            <span>Invoices kept</span>
             <strong>{{ invoice_count }}</strong>
           </div>
         </li>
         <li class="cc-delete-item">
           <div class="cc-delete-item-head">
-            <span>Payments</span>
+            <span>Payments kept</span>
             <strong>{{ payment_count }}</strong>
           </div>
         </li>
         <li class="cc-delete-item">
           <div class="cc-delete-item-head">
-            <span>Access vouchers</span>
+            <span>Access vouchers kept</span>
             <strong>{{ voucher_count }}</strong>
           </div>
         </li>

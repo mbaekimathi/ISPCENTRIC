@@ -745,12 +745,15 @@ def subscription_stk_pay(request, customer_id: int):
         organization=org,
     )
     phone = (request.POST.get("phone") or "").strip()
+    # Staff renew has no captive MAC; persist primary so activate keeps/claims it
+    # instead of wiping all Hotspot devices on a fresh period.
     result = start_subscription_stk_payment(
         organization=org,
         customer=customer,
         phone=phone,
         user=request.user,
         request=request,
+        mac=(getattr(customer, "hotspot_mac", None) or ""),
     )
     status = 200 if result.get("ok") else 400
     return JsonResponse(result, status=status)

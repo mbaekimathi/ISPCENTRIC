@@ -39,7 +39,32 @@ _STK_RAW_PRESERVE_KEYS = (
     "callback_receipt",
     "awaiting_daraja_confirm",
     "query",
+    "hotspot_mac",
 )
+
+
+def stk_hotspot_mac(stk: StkPushRequest) -> str:
+    """MAC of the captive device that started this subscription payment."""
+    from billing.devices import normalize_device_mac
+
+    raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+    return normalize_device_mac(raw.get("hotspot_mac") or "")
+
+
+def store_stk_hotspot_mac(stk: StkPushRequest, mac: str) -> str:
+    """Persist the paying Hotspot MAC on the STK row (survives Daraja merges)."""
+    from billing.devices import normalize_device_mac
+
+    mac = normalize_device_mac(mac)
+    if not mac or stk is None:
+        return ""
+    raw = dict(stk.raw_callback) if isinstance(stk.raw_callback, dict) else {}
+    if (raw.get("hotspot_mac") or "").strip().upper() == mac:
+        return mac
+    raw["hotspot_mac"] = mac
+    stk.raw_callback = raw
+    stk.save(update_fields=["raw_callback"])
+    return mac
 
 
 def resolve_stk_daraja_credentials(stk: StkPushRequest) -> dict:
@@ -625,6 +650,7 @@ def start_subscription_stk_payment(
     plan=None,
     user=None,
     request=None,
+    mac: str = "",
 ) -> dict:
     """Validate and initiate STK Push for a customer's plan price."""
     if customer.organization_id != organization.pk:
@@ -655,9 +681,10 @@ def start_subscription_stk_payment(
         }
 
     # Persist the M-Pesa number on the client as soon as STK is valid and unique.
-    from billing.devices import maybe_set_customer_phone
+    from billing.devices import maybe_set_customer_phone, normalize_device_mac
 
     maybe_set_customer_phone(customer, phone or msisdn)
+    paying_mac = normalize_device_mac(mac)
 
     account_ref = PaymentGateway.account_reference_for_client(customer) or customer.account_number
     environment = (
@@ -673,6 +700,7 @@ def start_subscription_stk_payment(
         account_reference=account_ref[:64],
         initiated_by=user if getattr(user, "is_authenticated", False) else None,
         status=StkPushRequest.Status.PENDING,
+        raw_callback={"hotspot_mac": paying_mac} if paying_mac else {},
     )
 
     def _send(env: str) -> dict:
@@ -729,6 +757,7 @@ def start_subscription_stk_payment(
             "initiate_error": result,
             "environment": used_env,
             **_credential_meta_from_creds(creds),
+            **({"hotspot_mac": paying_mac} if paying_mac else {}),
         }
         stk.save(
             update_fields=["status", "result_desc", "completed_at", "raw_callback"]
@@ -764,6 +793,7 @@ def start_subscription_stk_payment(
         "initiate": result.get("data") or {},
         "environment": used_env,
         **_credential_meta_from_creds(creds),
+        **({"hotspot_mac": paying_mac} if paying_mac else {}),
     }
     stk.save(
         update_fields=[
@@ -1995,7 +2025,9 @@ def process_stk_callback_payload(payload: dict) -> dict:
                 from billing.vouchers import activate_paid_subscription_stk
 
                 # Do not block Daraja's HTTP ack on MikroTik — apply in the background.
-                activate_paid_subscription_stk(stk, background=True)
+                activate_paid_subscription_stk(
+                    stk, mac=stk_hotspot_mac(stk), background=True
+                )
         return result
 
     cancelled = result_code == 1032
@@ -2115,6 +2147,7 @@ def _apply_paid_subscription_to_status(
     if not stk.subscription_applied or wait_for_nas:
         activation = activate_paid_subscription_stk(
             stk,
+            mac=stk_hotspot_mac(stk),
             wait_first=wait_for_nas,
             quick=True,
         )

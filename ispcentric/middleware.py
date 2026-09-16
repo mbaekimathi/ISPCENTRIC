@@ -308,6 +308,20 @@ class HotspotCaptiveProbeMiddleware:
         # Prefer the NAS/org that currently owns this client IP so multi-tenant
         # deployments do not send users to the wrong payment join_code.
         org = resolve_captive_organization(remote)
+        if org is None and (renew_or_pppoe_pool or hotspot_client or probe_host):
+            # Pool / probe clients must never fall through to a normal 200/404 —
+            # that is the "other phones redirect, this one does not" report.
+            # resolve_captive_organization already handles single-tenant and
+            # service-scoped pool fallbacks; last resort is a global fallback
+            # only when exactly one captive org exists in the fleet.
+            try:
+                from core.mikrotik_connect import _captive_org_candidates
+
+                candidates = _captive_org_candidates()
+                if len(candidates) == 1:
+                    org = candidates[0]
+            except Exception:
+                org = None
         if org is None:
             return self.get_response(request)
 
@@ -449,10 +463,14 @@ class HotspotCaptiveProbeMiddleware:
             try:
                 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
-                from core.mikrotik_connect import find_hotspot_mac_for_ip
+                from core.mikrotik_connect import (
+                    find_hotspot_mac_for_ip,
+                    remember_hotspot_mac_for_ip,
+                )
 
                 mac = find_hotspot_mac_for_ip(org, remote)
                 if mac:
+                    remember_hotspot_mac_for_ip(org, remote, mac)
                     parts = urlsplit(target)
                     q = parse_qs(parts.query, keep_blank_values=True)
                     if not q.get("mac"):

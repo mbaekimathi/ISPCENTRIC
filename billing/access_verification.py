@@ -130,6 +130,22 @@ def evaluate_nas_policy(
             # Paid Hotspot clients must land on the package Mbps profile — an
             # empty profile string is a mismatch, not a soft pass.
             speed_ok = bool(actual_profile) and actual_profile == expected_profile
+            expected_rate = ""
+            rate_match = None
+            try:
+                from core.mikrotik_connect import (
+                    _hotspot_rate_limit_for_customer,
+                    _rate_limits_match,
+                )
+
+                expected_rate = _hotspot_rate_limit_for_customer(customer)
+                rate_match = _rate_limits_match
+            except Exception:
+                expected_rate = ""
+            details["expected_rate_limit"] = expected_rate
+            provision_rate = (provision.get("rate_limit") or "").strip()
+            if speed_ok and expected_rate and provision_rate and rate_match:
+                speed_ok = rate_match(expected_rate, provision_rate)
             if not speed_ok:
                 details["surf_gap"] = "wrong_speed_profile"
             # Cap: NAS must authorize at most N MACs; extras / pruned must be

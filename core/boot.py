@@ -305,14 +305,22 @@ def _run_subscription_sweep(*, label: str = "sweep") -> None:
 
 def _run_near_deadline_expiry_sync() -> None:
     """
-    Block customers near package deadline and repair paid-but-not-surfing PPPoE.
+    Enforce wall-clock package deadlines and repair paid-but-not-surfing PPPoE.
+
+    Syncs customers near the access cut-off (online or offline) and refreshes
+    clock-time Hotspot ``limit-uptime`` from remaining wall-clock time so
+    offline periods still consume the prepaid window on the NAS.
+
+    Also repairs unpaid Hotspot clients that still have WAN (ok-list / app leak)
+    and paid PPPoE clients dialed without surfing.
 
     Shares the fleet sweep lock with ``sync_subscription_access`` / deploy NAS
     sync so MikroTik rewrites never overlap.
     """
-    from billing.services import customers_near_access_deadline
+    from billing.services import customers_for_subscription_enforcement_watch
     from core.mikrotik_connect import (
         repair_paid_pppoe_not_surfing_on_router,
+        repair_unpaid_hotspot_leaking_on_router,
         sync_customer_subscription_access,
     )
     from core.models import MikroTikRouter
@@ -327,11 +335,36 @@ def _run_near_deadline_expiry_sync() -> None:
         return
 
     try:
-        near = list(customers_near_access_deadline(past_seconds=90, future_seconds=45))
+        # past_seconds is wide so a missed tick / lock contention cannot leave
+        # an expired client surfing until the next full sweep.
+        near = list(
+            customers_for_subscription_enforcement_watch(
+                past_seconds=600, future_seconds=45
+            )
+        )
         synced = 0
         for customer in near:
             try:
-                result = sync_customer_subscription_access(customer, provision=True)
+                # Force session kicks when access must stop — soft sweeps
+                # (reauthenticate=False) are for paid limit-uptime refresh only.
+                from billing.services import (
+                    customer_can_surf_via_hotspot,
+                    customer_can_surf_via_pppoe,
+                )
+                from billing.models import Customer as BillingCustomer
+
+                service = getattr(customer, "service_type", "")
+                if service == BillingCustomer.ServiceType.HOTSPOT:
+                    must_block = not customer_can_surf_via_hotspot(customer)
+                elif service == BillingCustomer.ServiceType.PPPOE:
+                    must_block = not customer_can_surf_via_pppoe(customer)
+                else:
+                    must_block = False
+                result = sync_customer_subscription_access(
+                    customer,
+                    provision=True,
+                    reauthenticate=must_block,
+                )
                 if result.get("ok") or result.get("allowed") is False:
                     synced += 1
             except Exception:
@@ -343,6 +376,7 @@ def _run_near_deadline_expiry_sync() -> None:
             logger.info("near-deadline expiry synced %s customer(s)", synced)
 
         repaired = 0
+        hotspot_repaired = 0
         routers = list(
             MikroTikRouter.objects.filter(
                 account_status=MikroTikRouter.AccountStatus.ACTIVE,
@@ -360,21 +394,32 @@ def _run_near_deadline_expiry_sync() -> None:
                     pool.submit(repair_paid_pppoe_not_surfing_on_router, router)
                     for router in routers
                 ]
+                futures.extend(
+                    pool.submit(repair_unpaid_hotspot_leaking_on_router, router)
+                    for router in routers
+                )
                 for future in as_completed(futures):
                     try:
                         result = future.result()
                     except Exception:
-                        logger.exception("paid-not-surfing repair failed")
+                        logger.exception("access repair failed")
                         continue
                     count = int(result.get("repaired") or 0)
-                    if count:
+                    if not count:
+                        continue
+                    message = result.get("message") or count
+                    if "Hotspot leak" in str(message):
+                        hotspot_repaired += count
+                        logger.info("unpaid-hotspot leak repair: %s", message)
+                    else:
                         repaired += count
-                        logger.info(
-                            "paid-not-surfing repair: %s",
-                            result.get("message") or count,
-                        )
+                        logger.info("paid-not-surfing repair: %s", message)
         if repaired:
             logger.info("paid-not-surfing repaired %s account(s)", repaired)
+        if hotspot_repaired:
+            logger.info(
+                "unpaid-hotspot leak repaired %s session(s)", hotspot_repaired
+            )
     finally:
         release_expiry_watch_lock()
 

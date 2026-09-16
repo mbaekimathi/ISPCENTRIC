@@ -1788,6 +1788,27 @@ class CaptiveOrganizationResolutionTests(TestCase):
         self.assertIsNone(resolve_captive_organization("192.168.88.50"))
         self.assertIsNone(resolve_captive_organization(""))
 
+    def test_hotspot_pool_falls_back_when_only_one_hotspot_org(self):
+        """Unmatched 10.50.50.x still redirects when a single Hotspot ISP exists."""
+        from core.mikrotik_connect import resolve_captive_organization
+
+        org = resolve_captive_organization("10.50.50.44")
+        self.assertEqual(org.pk, self.org_hotspot.pk)
+
+    def test_hotspot_pool_does_not_guess_among_two_hotspot_orgs(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+        from core.mikrotik_connect import resolve_captive_organization
+
+        Organization.objects.create(
+            name="Second Hotspot ISP",
+            owner=User.objects.create_user("owner-hs-2", password="x"),
+            join_code="hs2org",
+            hotspot_enabled=True,
+        )
+        self.assertIsNone(resolve_captive_organization("10.50.50.44"))
+
 
 class CaptiveRedirectCacheTests(SimpleTestCase):
     def test_invalidate_bumps_redirect_generation(self):
@@ -2549,7 +2570,7 @@ class HotspotAuthorizeFastPathTests(TestCase):
         )
         order = []
 
-        def portal_side_effect(customer, *, enabled, portal_url=""):
+        def portal_side_effect(customer, *, enabled, portal_url="", timeout=8.0, **_kwargs):
             order.append(("portal", enabled))
             return {"ok": True, "enabled": enabled}
 
@@ -2566,6 +2587,10 @@ class HotspotAuthorizeFastPathTests(TestCase):
                 "core.mikrotik_connect.provision_customer_pppoe",
                 side_effect=provision_side_effect,
             ),
+            patch(
+                "core.mikrotik_connect._pppoe_pay_portal_url",
+                return_value="http://billing.example/pppoe/1/pay/?t=x",
+            ),
         ):
             result = sync_customer_subscription_access(pppoe, provision=True)
 
@@ -2573,6 +2598,105 @@ class HotspotAuthorizeFastPathTests(TestCase):
         self.assertEqual(order[0], ("portal", True))
         self.assertEqual(order[1], ("provision", False))
         self.assertTrue(result.get("portal", {}).get("ok"))
+
+    def test_batch_expiry_enables_cpe_renew_before_kick(self):
+        """Fleet sweep must push pay Hotspot before disconnecting expired PPPoE."""
+        from datetime import timedelta
+        from unittest.mock import MagicMock, patch
+
+        from django.utils import timezone
+
+        from billing.models import Customer
+        from core.mikrotik_connect import sync_pppoe_subscription_batch_on_router
+
+        pppoe = Customer.objects.create(
+            organization=self.org,
+            full_name="Batch Expired",
+            phone="0700000099",
+            account_number="PPP-BATCH-EXP",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="batch-exp",
+            pppoe_password="pass1",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            package_start=timezone.now() - timedelta(days=3),
+            package_end=timezone.now() - timedelta(days=1),
+        )
+        order = []
+        username = "batch-exp"
+
+        def portal_side_effect(customer, *, enabled, portal_url="", timeout=8.0):
+            order.append(("portal", enabled))
+            return {"ok": True, "enabled": enabled}
+
+        def disconnect_side_effect(sock, usernames):
+            order.append(("kick", sorted(set(usernames or []))))
+            return len(set(usernames or []))
+
+        live = {
+            "secret_profiles": {username: "ispcentric-pppoe-5u-10d"},
+            "active_names": {username},
+            "active_addresses": {username: {"10.10.0.55"}},
+            "blocked_list_addresses": set(),
+            "arp_complete": {"10.10.0.55": True},
+        }
+        sock = MagicMock()
+
+        with (
+            patch("socket.create_connection"),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.0.0.1"],
+            ),
+            patch("core.mikrotik_connect._api_session") as session,
+            patch(
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value=live,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_ppp_secret",
+                return_value="updated",
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_expired_access",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_blocked_profile",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_pay_portal_url",
+                return_value="http://billing.example/pppoe/1/pay/?t=x",
+            ),
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                side_effect=portal_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect._disconnect_pppoe_sessions_many",
+                side_effect=disconnect_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect._remember_blocked_pppoe_captive_identity"
+            ),
+            patch(
+                "core.mikrotik_connect._follow_up_pending_cpe_renew_clears",
+                return_value=0,
+            ),
+            patch(
+                "core.mikrotik_connect._follow_up_pending_cpe_renew_enables",
+                return_value=0,
+            ),
+        ):
+            session.return_value.__enter__.return_value = sock
+            result = sync_pppoe_subscription_batch_on_router(self.router, [pppoe])
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("blocked"), 1)
+        self.assertEqual(order[0], ("portal", True))
+        self.assertEqual(order[1], ("kick", [username]))
+        self.assertGreaterEqual(int(result.get("cpe_renew_enabled") or 0), 1)
 
     def test_restore_clears_cpe_renew_portal_before_provision(self):
         """Paid period restore must remove the CPE WAN-block while PPP is still up."""
@@ -2736,6 +2860,94 @@ class HotspotDisconnectOnDeleteTests(TestCase):
         disconnect.assert_called_once()
         self.assertEqual(order, [("disconnect", self.customer.pk)])
         self.assertFalse(Customer.objects.filter(pk=self.customer.pk).exists())
+
+    def test_client_delete_keeps_billing_history(self):
+        from datetime import date
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from django.utils import timezone
+
+        from billing.models import (
+            AccessVoucher,
+            BillingPlan,
+            Customer,
+            Invoice,
+            Payment,
+            StkPushRequest,
+        )
+
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Keep Billing Plan",
+            price=Decimal("500.00"),
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+        )
+        invoice = Invoice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            invoice_number="INV-KEEP-1",
+            amount=Decimal("500.00"),
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+            paid_at=timezone.now(),
+        )
+        payment = Payment.objects.create(
+            organization=self.org,
+            invoice=invoice,
+            amount=Decimal("500.00"),
+            method=Payment.Method.MPESA,
+            reference="MPESA-KEEP-1",
+        )
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=plan,
+            amount=Decimal("500.00"),
+            phone="254700111222",
+            account_reference=self.customer.account_number,
+            status=StkPushRequest.Status.SUCCESS,
+            invoice=invoice,
+            payment=payment,
+        )
+        voucher = AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=plan,
+            code="KEEPVOUCHER1",
+            status=AccessVoucher.Status.VALID,
+            payment=payment,
+            stk_request=stk,
+        )
+        customer_id = self.customer.pk
+        invoice_id = invoice.pk
+        payment_id = payment.pk
+        stk_id = stk.pk
+        voucher_id = voucher.pk
+
+        with patch(
+            "core.views.disconnect_hotspot_customer",
+            return_value={"ok": True},
+        ):
+            response = self.client.post(
+                f"/app/clients/{customer_id}/delete/"
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Customer.objects.filter(pk=customer_id).exists())
+
+        invoice = Invoice.objects.get(pk=invoice_id)
+        payment = Payment.objects.get(pk=payment_id)
+        stk = StkPushRequest.objects.get(pk=stk_id)
+        voucher = AccessVoucher.objects.get(pk=voucher_id)
+        self.assertIsNone(invoice.customer_id)
+        self.assertEqual(payment.invoice_id, invoice_id)
+        self.assertIsNone(stk.customer_id)
+        self.assertIsNone(voucher.customer_id)
+        self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
+        self.assertIsNotNone(voucher.invalidated_at)
 
 
 class CaptiveGatewayHostTests(TestCase):
@@ -6366,6 +6578,109 @@ class PackageSpeedLimitTests(SimpleTestCase):
         self.assertEqual(sets[0]["shared-users"], "1")
         self.assertEqual(state["/ip/hotspot/user/profile"][0]["shared-users"], "1")
 
+    def test_ensure_hotspot_simple_queue_shapes_active_session(self):
+        from core.mikrotik_connect import (
+            _ensure_hotspot_simple_queue,
+            _hotspot_simple_queue_name,
+        )
+
+        mac = "AA:BB:CC:DD:EE:FF"
+        state = {
+            "/ip/hotspot/active": [
+                {"mac-address": mac, "address": "10.50.50.44"},
+            ],
+            "/queue/simple": [],
+        }
+        adds: list[dict] = []
+
+        def fake_add(sock, path, **props):
+            adds.append({"path": path, **props})
+            row = {".id": f"*{len(adds)}", **props}
+            state.setdefault(path, []).append(row)
+            return {"_reply": "!done", "ret": row[".id"]}
+
+        with (
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=lambda sock, path, **kw: list(state.get(path, [])),
+            ),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+            patch("core.mikrotik_connect._set", return_value={"_reply": "!trap"}),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+        ):
+            _ensure_hotspot_simple_queue(
+                object(), mac=mac, rate_limit="5M/10M"
+            )
+
+        self.assertEqual(len(adds), 1)
+        self.assertEqual(adds[0]["path"], "/queue/simple")
+        self.assertEqual(adds[0]["name"], _hotspot_simple_queue_name(mac))
+        self.assertEqual(adds[0]["target"], "10.50.50.44")
+        self.assertEqual(adds[0]["max-limit"], "5M/10M")
+
+    def test_expire_hotspot_reauthenticate_kicks_active_session(self):
+        from core.mikrotik_connect import _expire_hotspot_mac_sessions
+
+        mac = "AA:BB:CC:DD:EE:01"
+        removed: list[tuple] = []
+        active = [
+            {".id": "*a1", "mac-address": mac, "authorized": "true"},
+        ]
+        hosts = [
+            {".id": "*h1", "mac-address": mac, "authorized": "true"},
+            {".id": "*h2", "mac-address": mac, "authorized": "false"},
+        ]
+
+        def fake_remove(sock, path, item_id):
+            removed.append((path, item_id))
+            return {"_reply": "!done"}
+
+        with patch("core.mikrotik_connect._remove", side_effect=fake_remove):
+            _expire_hotspot_mac_sessions(
+                object(),
+                mac,
+                disabled=False,
+                reauthenticate=True,
+                active_rows=active,
+                host_rows=hosts,
+            )
+
+        self.assertIn(("/ip/hotspot/active", "*a1"), removed)
+        self.assertIn(("/ip/hotspot/host", "*h2"), removed)
+        self.assertNotIn(("/ip/hotspot/host", "*h1"), removed)
+
+    def test_ensure_hotspot_user_writes_package_rate_limit(self):
+        from core.mikrotik_connect import _ensure_hotspot_user
+
+        attempts_seen: list[list] = []
+
+        def fake_add_or_set(sock, path, item_id, attempts):
+            attempts_seen.append(attempts)
+            return {"_reply": "!done"}, "*1"
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add_or_set_attempts",
+                side_effect=fake_add_or_set,
+            ),
+        ):
+            action = _ensure_hotspot_user(
+                object(),
+                username="AA:BB:CC:DD:EE:22",
+                password="",
+                comment="ispcentric-hotspot",
+                disabled=False,
+                limit_uptime="3600s",
+                profile="ispcentric-hs-5u-10d",
+                rate_limit="5M/10M",
+            )
+
+        self.assertEqual(action, "created")
+        self.assertTrue(attempts_seen)
+        self.assertEqual(attempts_seen[0][0].get("rate-limit"), "5M/10M")
+        self.assertEqual(attempts_seen[0][0].get("profile"), "ispcentric-hs-5u-10d")
+
     def test_bulk_sync_assigns_speed_profile_for_paid_plan(self):
         from core.mikrotik_connect import (
             PPPOE_BLOCKED_PROFILE_NAME,
@@ -7324,6 +7639,10 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 side_effect=track_dhcp,
             ),
             patch(
+                "core.mikrotik_connect._ensure_hotspot_pool_wan_guard",
+                return_value=["Hotspot pool WAN guard"],
+            ),
+            patch(
                 "core.mikrotik_connect._bounce_isp_hotspot_clients",
                 side_effect=track_bounce,
             ),
@@ -7342,6 +7661,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         )
         self.assertTrue(any("option 114" in n for n in notes))
         self.assertTrue(any("Hotspot pay popup" in n for n in notes))
+        self.assertTrue(any("pool WAN guard" in n for n in notes))
         # Dedicated 10.50.50 setup must prefer the identifiable Hotspot pool.
         self.assertEqual(server_attempts_seen[0].get("address-pool"), ISP_HOTSPOT_POOL)
 
@@ -7428,6 +7748,10 @@ class IspHotspotInstantPayTests(SimpleTestCase):
             ),
             patch(
                 "core.mikrotik_connect._ensure_captive_portal_dhcp_option",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_pool_wan_guard",
                 return_value=[],
             ),
             patch(
@@ -8267,6 +8591,207 @@ class AccessFlowCorrectionLoopTests(TestCase):
         self.assertIn(("/ip/hotspot/host", "*h1"), removed)
         self.assertNotIn(("/ip/hotspot/active", "*a1"), removed)
         self.assertTrue(any("cookie" in n for n in notes))
+
+    def test_hotspot_pool_wan_guard_installs_reject_and_drop(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import (
+            ISP_HOTSPOT_OK_LIST,
+            ISP_HOTSPOT_POOL_NETWORK,
+            ISP_HOTSPOT_TAG,
+            _ensure_hotspot_pool_wan_guard,
+        )
+
+        adds: list[dict] = []
+
+        def fake_add_filter(sock, rule, place_before=""):
+            adds.append(dict(rule))
+            return {"_reply": "!done", "ret": f"*r{len(adds)}"}
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._add_filter_rule",
+                side_effect=fake_add_filter,
+            ),
+            patch("core.mikrotik_connect._first_forward_drop_id", return_value="*drop"),
+            patch(
+                "core.mikrotik_connect._billing_portal_base_url",
+                return_value="http://billing.example:8000",
+            ),
+            patch(
+                "core.mikrotik_connect._portal_target_ipv4",
+                return_value="203.0.113.10",
+            ),
+        ):
+            notes = _ensure_hotspot_pool_wan_guard(MagicMock())
+
+        self.assertTrue(any("pool WAN guard" in n for n in notes))
+        actions = {(r.get("action"), r.get("protocol"), r.get("dst-port")) for r in adds}
+        self.assertIn(("accept", None, None), actions)
+        self.assertTrue(
+            any(
+                r.get("src-address-list") == ISP_HOTSPOT_OK_LIST
+                and r.get("action") == "accept"
+                for r in adds
+            )
+        )
+        self.assertTrue(
+            any(
+                r.get("src-address") == ISP_HOTSPOT_POOL_NETWORK
+                and r.get("action") == "reject"
+                and r.get("protocol") == "tcp"
+                and ISP_HOTSPOT_TAG in (r.get("comment") or "")
+                for r in adds
+            )
+        )
+        self.assertTrue(
+            any(
+                r.get("protocol") == "udp"
+                and r.get("dst-port") == "443"
+                and r.get("action") == "drop"
+                for r in adds
+            )
+        )
+
+    def test_kill_firewall_connections_for_blocked_ips(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import _kill_firewall_connections_for_addresses
+
+        removed = []
+
+        def fake_print(sock, path, **kwargs):
+            self.assertEqual(path, "/ip/firewall/connection")
+            return [
+                {".id": "*1", "src-address": "10.50.50.40/50001"},
+                {".id": "*2", "src-address": "10.50.50.99/443"},
+                {".id": "*3", "src-address": "10.20.0.5/443"},
+            ]
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch(
+                "core.mikrotik_connect._remove",
+                side_effect=lambda sock, path, item_id: (
+                    removed.append(item_id) or {"_reply": "!done"}
+                ),
+            ),
+        ):
+            killed = _kill_firewall_connections_for_addresses(
+                MagicMock(), {"10.50.50.40", "10.50.50.99"}
+            )
+
+        self.assertEqual(killed, 2)
+        self.assertEqual(set(removed), {"*1", "*2"})
+
+    def test_pppoe_fast_captive_reject_includes_quic_drop(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_ADDRESS_LIST,
+            _ensure_pppoe_fast_captive_reject,
+        )
+
+        adds: list[dict] = []
+
+        def fake_add_filter(sock, rule, place_before=""):
+            adds.append(dict(rule))
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add_filter_rule",
+                side_effect=fake_add_filter,
+            ),
+            patch("core.mikrotik_connect._first_forward_drop_id", return_value="*drop"),
+        ):
+            notes = _ensure_pppoe_fast_captive_reject(MagicMock())
+
+        self.assertTrue(any("QUIC" in n or "quic" in n.lower() for n in notes))
+        self.assertTrue(
+            any(
+                r.get("protocol") == "udp"
+                and r.get("dst-port") == "443"
+                and r.get("src-address-list") == PPPOE_BLOCKED_ADDRESS_LIST
+                for r in adds
+            )
+        )
+
+    def test_orphan_hotspot_purges_stale_ok_list_without_active_session(self):
+        """Stale ok-list rows (no live unpaid active) must still be purged."""
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import (
+            ISP_HOTSPOT_OK_LIST,
+            _block_orphan_hotspot_users_on_socket,
+        )
+
+        router = MagicMock()
+        router.organization = MagicMock()
+        removed_lists = []
+
+        def fake_print(sock, path, **kwargs):
+            if path == "/ip/hotspot/active":
+                return []
+            if path == "/ip/hotspot/host":
+                return []
+            if path == "/ip/hotspot/user":
+                return [
+                    {
+                        ".id": "*u1",
+                        "name": "AA:BB:CC:00:11:22",
+                        "disabled": "false",
+                        "comment": "ispcentric-hotspot unpaid",
+                    }
+                ]
+            if path == "/ip/firewall/address-list":
+                return [
+                    {
+                        ".id": "*l1",
+                        "list": ISP_HOTSPOT_OK_LIST,
+                        "address": "10.50.50.77",
+                        "comment": "",
+                    }
+                ]
+            return []
+
+        with (
+            patch(
+                "core.mikrotik_connect._paid_hotspot_mac_set",
+                return_value=set(),
+            ),
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_user",
+                return_value=None,
+            ),
+            patch(
+                "core.mikrotik_connect._expire_hotspot_mac_sessions",
+                return_value=None,
+            ),
+            patch(
+                "core.mikrotik_connect._purge_hotspot_ok_list_for_mac",
+                return_value=0,
+            ),
+            patch(
+                "core.mikrotik_connect._remove",
+                side_effect=lambda sock, path, item_id: (
+                    removed_lists.append((path, item_id)) or {"_reply": "!done"}
+                ),
+            ),
+            patch(
+                "core.mikrotik_connect._kill_firewall_connections_for_addresses",
+                return_value=1,
+            ) as kill,
+        ):
+            notes = _block_orphan_hotspot_users_on_socket(MagicMock(), router)
+
+        self.assertIn(("/ip/firewall/address-list", "*l1"), removed_lists)
+        self.assertTrue(any("purged" in n for n in notes))
+        kill.assert_called()
 
     def test_repair_hotspot_captive_retries_until_ok(self):
         from core.mikrotik_connect import repair_hotspot_captive_portal
@@ -9357,6 +9882,40 @@ class LayeredRouterHealthLoopTests(TestCase):
         self.assertEqual(sample.status, "limited")
         self.assertEqual(sample.score, 55)
         self.assertIn("8728", sample.error)
+
+    def test_outage_alert_fires_on_first_fail_before_sample(self):
+        from django.core.cache import cache
+        from unittest.mock import patch
+
+        from core.mikrotik_status_samples import (
+            _last_status_cache_key,
+            record_mikrotik_status_samples,
+        )
+        from core.models import MikroTikStatusSample
+
+        cache.clear()
+        org_id = self.org.pk
+        rid = self.router.pk
+        cache.set(_last_status_cache_key(org_id, rid), "connected", 3600)
+        row = {
+            "id": rid,
+            "name": self.router.name,
+            "status": "disconnected",
+            "online": False,
+            "error": "Unreachable",
+        }
+        with patch(
+            "accounts.communications.maybe_notify_mikrotik_health_low"
+        ) as mock_notify:
+            mock_notify.return_value = {"ok": True, "sent": 1}
+            written = record_mikrotik_status_samples(self.org, [row])
+        self.assertEqual(written, 0)
+        self.assertEqual(MikroTikStatusSample.objects.filter(router=self.router).count(), 0)
+        mock_notify.assert_called_once()
+        kwargs = mock_notify.call_args.kwargs
+        self.assertEqual(kwargs.get("router_id"), rid)
+        self.assertEqual(kwargs.get("status"), "disconnected")
+        self.assertEqual(kwargs.get("score"), 0)
 
     def test_ping_probe_confirms_api_before_limited(self):
         from core.mikrotik_connect import check_mikrotik_reachable

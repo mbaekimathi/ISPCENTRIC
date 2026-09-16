@@ -181,13 +181,26 @@ def create_vouchers_for_cash_recharge(
     """
     Issue a fresh Hotspot voucher batch after staff cash recharge.
 
-    Marks older unused vouchers invalid, then creates one code per device slot.
+    Marks older unused vouchers invalid, clears prior redeemed MAC bindings so
+    no gadget stays authorized until it redeems a new code, then creates one
+    code per device slot. Device rows are left linked briefly so the caller can
+    NAS-disable them; unlink after that sync.
     Package is already extended by the recharge, so vouchers are marked applied.
     """
     if customer is None or plan is None:
         raise ValueError("Voucher requires a customer and plan.")
     needed = voucher_count_for_plan(plan)
     invalidate_unused_customer_vouchers(customer)
+    from billing.models import BillingPlan
+
+    if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT or getattr(
+        plan, "service_type", ""
+    ) == BillingPlan.ServiceType.HOTSPOT:
+        # Drop prior-period MAC claims so authorized_hotspot_macs is empty
+        # until a fresh code is redeemed (covers stacked cash renewals).
+        AccessVoucher.objects.filter(customer_id=customer.pk).exclude(
+            redeemed_mac=""
+        ).update(redeemed_mac="")
     created: list[AccessVoucher] = []
     for _ in range(needed):
         created.append(
@@ -287,6 +300,33 @@ def _mark_voucher_used(voucher: AccessVoucher, *, mac: str = "") -> AccessVouche
     if mac:
         voucher.redeemed_mac = normalize_device_mac(mac)[:17]
     voucher.save(update_fields=["status", "redeemed_at", "invalidated_at", "redeemed_mac"])
+    return voucher
+
+
+def _claim_voucher_mac(voucher: AccessVoucher, mac: str) -> AccessVoucher:
+    """
+    Bind a VALID voucher to a device before NAS authorize.
+
+    Keeps status VALID so offline authorize can retry without losing the MAC
+    claim; ``authorized_hotspot_macs_for_customer`` treats claimed MACs as live.
+    Refuses to steal a claim already bound to a different MAC.
+    """
+    from billing.devices import normalize_device_mac
+
+    mac = normalize_device_mac(mac)
+    if not mac or voucher is None:
+        return voucher
+    if voucher.status != AccessVoucher.Status.VALID:
+        return voucher
+    existing = (voucher.redeemed_mac or "").strip().upper()
+    if existing and existing != mac:
+        raise ValueError(
+            "This voucher is already reserved for another device."
+        )
+    if existing == mac:
+        return voucher
+    voucher.redeemed_mac = mac[:17]
+    voucher.save(update_fields=["redeemed_mac"])
     return voucher
 
 
@@ -425,6 +465,13 @@ def redeem_access_voucher(
         stk.save(update_fields=["subscription_applied"])
         AccessVoucher.objects.filter(stk_request=stk).update(subscription_applied=True)
 
+    # Claim this device on the voucher before NAS sync so only this MAC is enabled.
+    if mac:
+        try:
+            _claim_voucher_mac(voucher, mac)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
     nas = {"ok": False, "allowed": False}
     if provision:
         try:
@@ -547,7 +594,21 @@ def activate_paid_subscription_stk(
     if customer is None:
         return {"ok": False, "error": "No customer on this payment."}
 
-    device_mac = (mac or getattr(customer, "hotspot_mac", None) or "").strip()
+    from billing.devices import (
+        attach_hotspot_device,
+        normalize_device_mac,
+        set_primary_hotspot_mac,
+        unlink_hotspot_devices,
+    )
+
+    # Prefer the MAC that started this payment (captive). Do not use primary for
+    # captive identity — that activates the wrong shared gadget. Staff renews
+    # often omit MAC; then keep/claim primary so empty keep_macs cannot wipe all
+    # devices and leave a paid package with nobody authorized.
+    raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+    paying_mac = normalize_device_mac(mac or raw.get("hotspot_mac") or "")
+    primary_mac = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
+    device_mac = paying_mac or primary_mac
     try:
         vouchers = create_vouchers_for_stk(stk)
     except Exception:  # noqa: BLE001
@@ -576,12 +637,14 @@ def activate_paid_subscription_stk(
         stk.subscription_applied = True
         stk.save(update_fields=["subscription_applied"])
         AccessVoucher.objects.filter(stk_request=stk).update(subscription_applied=True)
-        if device_mac:
-            from billing.devices import attach_hotspot_device, normalize_device_mac
-
-            attach_hotspot_device(
-                customer, normalize_device_mac(device_mac), enforce_cap=True
-            )
+        if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+            if not stacked and device_mac:
+                # Fresh period: drop previous shared gadgets; only the payer
+                # (or staff-kept primary) stays. Never unlink with empty keep.
+                unlink_hotspot_devices(customer, keep_macs=[device_mac])
+            if device_mac:
+                set_primary_hotspot_mac(customer, device_mac)
+                attach_hotspot_device(customer, device_mac, enforce_cap=True)
         customer.refresh_from_db()
         if stacked:
             notify_org_event(
@@ -597,6 +660,22 @@ def activate_paid_subscription_stk(
                 },
                 subject="Subscription extended",
             )
+
+    # Claim device MAC on a VALID voucher before NAS sync so voucher-scoped
+    # authorize enables this gadget (and not a stale shared peer).
+    if (
+        device_mac
+        and voucher is not None
+        and voucher.status == AccessVoucher.Status.VALID
+    ):
+        if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+            set_primary_hotspot_mac(customer, device_mac)
+            attach_hotspot_device(customer, device_mac, enforce_cap=True)
+        try:
+            _claim_voucher_mac(voucher, device_mac)
+        except ValueError:
+            # Another device already claimed this code — leave VALID for manual entry.
+            pass
 
     nas = {"ok": False, "allowed": False}
     try:
@@ -623,7 +702,8 @@ def activate_paid_subscription_stk(
     authorized = nas_access_ready(nas)
     if authorized and voucher is not None and voucher.status == AccessVoucher.Status.VALID:
         # Consume only this device’s voucher; sibling device codes stay valid.
-        _mark_voucher_used(voucher, mac=device_mac)
+        if device_mac or (voucher.redeemed_mac or "").strip():
+            _mark_voucher_used(voucher, mac=device_mac or voucher.redeemed_mac)
     if authorized:
         from billing.services import notify_client_internet_reconnected
 
@@ -695,8 +775,10 @@ def invalidate_unused_vouchers_for_expired_customers(
     Burn leftover VALID device vouchers once the paid period has ended.
 
     Extra phones must not reconnect after the package clock runs out.
-    Already-used (INVALID) rows stay as history.
+    Already-used (INVALID) rows stay as history. Shared gadget links are
+    cleared so the next payment must re-bind devices via vouchers.
     """
+    from billing.devices import unlink_hotspot_devices
     from billing.services import (
         customer_can_surf_via_hotspot,
         customer_receives_internet,
@@ -725,6 +807,8 @@ def invalidate_unused_vouchers_for_expired_customers(
                 voucher.invalidated_at = now
                 voucher.save(update_fields=["status", "invalidated_at"])
                 updated += 1
+            if service == Customer.ServiceType.HOTSPOT:
+                unlink_hotspot_devices(customer)
     return updated
 
 
@@ -732,14 +816,15 @@ def invalidate_vouchers_for_surfing_customers(customers: Iterable[Customer]) -> 
     """
     Burn vouchers once the client is surfing.
 
-    Hotspot: only the voucher for a device that is actually online. Unused
+    Hotspot: only the voucher for a device that already claimed/redeemed this
+    period, or the primary device when none have been claimed yet. Unused
     sibling device vouchers stay VALID so other phones can still connect.
     PPPoE: burn the single line voucher.
 
     - VALID → INVALID: also apply the paid package so money is not lost
     - EXPIRED → INVALID: session confirmed in use after redeem
     """
-    from billing.devices import hotspot_macs_for_customer, normalize_device_mac
+    from billing.devices import normalize_device_mac
 
     rows = [c for c in customers if getattr(c, "pk", None)]
     if not rows:
@@ -780,26 +865,49 @@ def invalidate_vouchers_for_surfing_customers(customers: Iterable[Customer]) -> 
                     updated += 1
                 continue
 
-            used_macs = {
-                normalize_device_mac(mac)
-                for mac in AccessVoucher.objects.filter(
-                    customer_id=customer.pk,
-                    status=AccessVoucher.Status.INVALID,
-                )
-                .exclude(redeemed_mac="")
-                .values_list("redeemed_mac", flat=True)
-            }
-            surfing_macs = hotspot_macs_for_customer(customer) or [
-                normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
+            # Prefer finishing claim→burn for MACs already bound this period.
+            # Do not auto-burn unused sibling codes for every linked gadget.
+            claimed = [
+                v
+                for v in valid
+                if normalize_device_mac(getattr(v, "redeemed_mac", "") or "")
             ]
-            for mac in surfing_macs:
-                if not mac or mac in used_macs or not valid:
-                    continue
-                voucher = valid.pop(0)
-                _apply_package_while_burning(voucher)
-                _mark_voucher_used(voucher, mac=mac)
-                used_macs.add(mac)
-                updated += 1
+            if claimed:
+                for voucher in claimed:
+                    mac = normalize_device_mac(voucher.redeemed_mac)
+                    _apply_package_while_burning(voucher)
+                    _mark_voucher_used(voucher, mac=mac)
+                    updated += 1
+                continue
+
+            # Safety net: package surfing with no claim yet — burn one code for
+            # the paying device (STK hotspot_mac) or primary, never every linked MAC.
+            pay_mac = ""
+            latest_stk = (
+                StkPushRequest.objects.filter(
+                    customer_id=customer.pk,
+                    status=StkPushRequest.Status.SUCCESS,
+                    purpose=StkPushRequest.Purpose.SUBSCRIPTION,
+                )
+                .order_by("-id")
+                .first()
+            )
+            if latest_stk is not None:
+                raw = (
+                    latest_stk.raw_callback
+                    if isinstance(latest_stk.raw_callback, dict)
+                    else {}
+                )
+                pay_mac = normalize_device_mac(raw.get("hotspot_mac") or "")
+            target_mac = pay_mac or normalize_device_mac(
+                getattr(customer, "hotspot_mac", "") or ""
+            )
+            if not target_mac:
+                continue
+            voucher = valid[0]
+            _apply_package_while_burning(voucher)
+            _mark_voucher_used(voucher, mac=target_mac)
+            updated += 1
     return updated
 
 

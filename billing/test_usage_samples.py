@@ -1176,6 +1176,45 @@ class HotspotMergeTests(TestCase):
         # Fresh live map with only this customer online keeps them online.
         self.assertTrue(offline["top_users"][0]["live_active"])
 
+        cache.set(
+            _org_live_usage_cache_key(self.org.pk),
+            {
+                "ok": True,
+                "at": timezone.now().isoformat(),
+                "pppoe": {},
+                "hotspot": {
+                    self.customer.pk: {
+                        "session_active": False,
+                        "download_bps": 0,
+                        "upload_bps": 0,
+                        "gadgets": 0,
+                    }
+                },
+            },
+            60,
+        )
+        cleared = apply_live_usage_overlay(
+            {
+                "ok": True,
+                "service": "hotspot",
+                "top_users": [
+                    {
+                        "customer_id": self.customer.pk,
+                        "latest_active": True,
+                        "gadgets_connected": 3,
+                        "devices_connected": 3,
+                    }
+                ],
+                "summary": {"clients_online": 1, "gadgets_online": 3},
+            },
+            self.org,
+            service="hotspot",
+        )
+        self.assertFalse(cleared["top_users"][0]["live_active"])
+        self.assertEqual(cleared["top_users"][0]["gadgets_connected"], 0)
+        self.assertEqual(cleared["top_users"][0]["devices_connected"], 0)
+        self.assertEqual(cleared["summary"]["gadgets_online"], 0)
+
     def test_stale_sample_detection(self):
         from billing.usage_samples import client_usage_sample_is_stale
 
@@ -1269,6 +1308,63 @@ class OrgUsageDevicesConnectedTests(TestCase):
         # Plan bandwidth must not appear in the CLIENT meta column markup.
         self.assertNotIn("clients-usage-user-plan", html)
         self.assertNotIn(">15 MBPS<", html)
+
+    def test_month_range_does_not_inflate_device_chip_from_old_last_seen(self):
+        from billing.models import CustomerDevice
+
+        CustomerDevice.objects.filter(customer=self.customer).update(
+            last_seen_at=timezone.now() - timezone.timedelta(days=10)
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=timezone.now() - timezone.timedelta(minutes=2),
+            session_active=False,
+            bytes_in=0,
+            bytes_out=0,
+        )
+        since = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        until = since + timezone.timedelta(days=32)
+        payload = org_usage_payload(
+            self.org,
+            hours=720,
+            since=since,
+            until=until,
+            range_label="September 2026",
+            relative=False,
+            service="hotspot",
+            top_n=0,
+            use_cache=False,
+            auto_widen=False,
+        )
+        row = next(
+            u for u in payload["top_users"] if u["customer_id"] == self.customer.pk
+        )
+        self.assertEqual(row["devices_connected"], 0)
+        self.assertEqual(row["gadgets_connected"], 0)
+
+    def test_offline_sample_clears_recent_last_seen_device_chip(self):
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=timezone.now() - timezone.timedelta(minutes=1),
+            session_active=False,
+            bytes_in=0,
+            bytes_out=0,
+        )
+        payload = org_usage_payload(
+            self.org,
+            hours=6,
+            service="hotspot",
+            top_n=0,
+            use_cache=False,
+            auto_widen=False,
+        )
+        row = next(
+            u for u in payload["top_users"] if u["customer_id"] == self.customer.pk
+        )
+        self.assertFalse(row["latest_active"])
+        self.assertEqual(row["devices_connected"], 0)
 
 
 class UsageRouterResolutionAndSimulationTests(TestCase):
@@ -1506,3 +1602,192 @@ class UsageRouterResolutionAndSimulationTests(TestCase):
         self.assertIsNotNone(sample)
         self.assertEqual(sample.bytes_in, 100)
         self.assertEqual(sample.bytes_out, 200)
+
+
+class UsageAccuracyHardeningTests(TestCase):
+    def setUp(self):
+        owner = User.objects.create_user("usage-acc-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Usage Acc Org", owner=owner, join_code="UACC01"
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Accuracy Client",
+            phone="0700003001",
+            account_number="PPP-ACC-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="acc1",
+        )
+
+    def test_counter_reset_then_growth_counts(self):
+        now = timezone.now()
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=5),
+            session_active=True,
+            bytes_in=10_000,
+            bytes_out=5_000,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=3),
+            session_active=True,
+            bytes_in=200,
+            bytes_out=100,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=1),
+            session_active=True,
+            bytes_in=1_200,
+            bytes_out=400,
+        )
+        payload = usage_trend_payload(self.customer, hours=24, use_cache=False)
+        # Reset contributes 0; post-reset growth 1000+300 counts.
+        self.assertEqual(payload["summary"]["data_used_bytes"], 1_300)
+        self.assertEqual(payload["summary"]["counter_resets"], 1)
+
+    def test_downsample_preserves_reset_growth(self):
+        from billing.usage_samples import _downsample_rows
+
+        rows = []
+        # Rising counters, then reset, then growth — evenly spaced keep would
+        # jump from high→late and drop post-reset growth without must-keep.
+        for i in range(20):
+            rows.append(
+                {
+                    "session_active": True,
+                    "bytes_in": 1000 + i * 100,
+                    "bytes_out": 500 + i * 50,
+                }
+            )
+        rows.append({"session_active": True, "bytes_in": 50, "bytes_out": 20})
+        rows.append({"session_active": True, "bytes_in": 350, "bytes_out": 120})
+        kept = _downsample_rows(rows, 8)
+        totals = [
+            int(r["bytes_in"]) + int(r["bytes_out"]) for r in kept
+        ]
+        self.assertIn(70, totals)  # reset point
+        self.assertIn(470, totals)  # post-reset growth point
+
+    def test_org_top_chart_ignores_peak_session_bytes(self):
+        now = timezone.now()
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=2),
+            session_active=True,
+            bytes_in=5_000_000,
+            bytes_out=2_000_000,
+            download_bps=1000,
+            upload_bps=500,
+        )
+        payload = org_usage_payload(
+            self.org, hours=24, service="pppoe", top_n=0, use_cache=False, auto_widen=False
+        )
+        user = next(u for u in payload["top_users"] if u["customer_id"] == self.customer.pk)
+        self.assertEqual(user["data_used_bytes"], 0)
+        self.assertGreater(user["peak_session_bytes"], 0)
+        self.assertEqual(payload["summary"]["top_user_bytes"], 0)
+        self.assertEqual(payload["top_chart"]["data_used_mb"][0], 0.0)
+
+    def test_hotspot_synth_reseeds_from_db_after_cache_clear(self):
+        from django.core.cache import cache
+
+        from billing.usage_samples import merge_hotspot_session_payloads
+
+        hotspot = Customer.objects.create(
+            organization=self.org,
+            full_name="HS Acc",
+            phone="0700003002",
+            account_number="HS-ACC-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:11",
+        )
+        CustomerUsageSample.objects.create(
+            customer=hotspot,
+            organization=self.org,
+            sampled_at=timezone.now() - timezone.timedelta(hours=1),
+            session_active=True,
+            bytes_in=8_000,
+            bytes_out=12_000,
+        )
+        cache.clear()
+        merged = merge_hotspot_session_payloads(
+            hotspot.pk,
+            [
+                {
+                    "ok": True,
+                    "session_active": True,
+                    "hotspot_mac": "AABBCCDDEE11",
+                    "bytes_in": 100,
+                    "bytes_out": 200,
+                    "download_bps": 1000,
+                    "upload_bps": 200,
+                }
+            ],
+        )
+        # Must keep DB synth baseline, not replace with busiest absolute (100/200).
+        self.assertEqual(merged["bytes_in"], 8_000)
+        self.assertEqual(merged["bytes_out"], 12_000)
+
+        second = merge_hotspot_session_payloads(
+            hotspot.pk,
+            [
+                {
+                    "ok": True,
+                    "session_active": True,
+                    "hotspot_mac": "AABBCCDDEE11",
+                    "bytes_in": 400,
+                    "bytes_out": 700,
+                    "download_bps": 1000,
+                    "upload_bps": 200,
+                }
+            ],
+        )
+        self.assertEqual(second["bytes_in"], 8_300)
+        self.assertEqual(second["bytes_out"], 12_500)
+
+    def test_month_window_boundaries(self):
+        filt = parse_usage_filter(
+            type("R", (), {"GET": {"range": "month", "month": "2026-09"}})(),
+            default_time="6",
+        )
+        self.assertEqual(filt["label"], "September 2026")
+        self.assertEqual(
+            timezone.localtime(filt["since"]).strftime("%Y-%m-%d %H:%M"),
+            "2026-09-01 00:00",
+        )
+        self.assertEqual(
+            timezone.localtime(filt["until"]).strftime("%Y-%m-%d %H:%M"),
+            "2026-10-01 00:00",
+        )
+
+    def test_samples_export_matches_trend_total(self):
+        from billing.usage_samples import client_usage_samples_export
+
+        now = timezone.now()
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=4),
+            session_active=True,
+            bytes_in=1000,
+            bytes_out=500,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=2),
+            session_active=True,
+            bytes_in=2500,
+            bytes_out=900,
+        )
+        trend = usage_trend_payload(self.customer, hours=24, use_cache=False)
+        exported = client_usage_samples_export(self.customer, hours=24)
+        self.assertEqual(exported["data_used_bytes"], trend["summary"]["data_used_bytes"])
+        self.assertEqual(exported["data_used_bytes"], 1900)
+        self.assertEqual(len(exported["samples"]), 2)

@@ -139,6 +139,9 @@ def subscription_access_deadline(customer) -> datetime | None:
     """
     Instant when prepaid access must stop (exclusive).
 
+    This is **wall-clock** time: the period advances whether the client is
+    online or offline. Only an explicit package pause freezes the clock.
+
     Clock-time packages (hourly / 6 hours) end at ``package_end`` exactly.
     Daily / weekly / monthly (and other calendar packages) keep the end
     calendar day inclusive and disconnect at local **00:00** the following
@@ -254,6 +257,67 @@ def customers_near_access_deadline(
         delta = (deadline - stamp).total_seconds()
         if -float(past_seconds) <= delta <= float(future_seconds):
             yield customer
+
+
+def customers_for_subscription_enforcement_watch(
+    *,
+    past_seconds: float = 600,
+    future_seconds: float = 45,
+    now: datetime | None = None,
+):
+    """
+    Customers the background expiry watch must sync on every tick.
+
+    Includes:
+    - anyone near / just past the wall-clock access deadline (block on time,
+      whether the CPE/session is online or offline)
+    - active clock-time Hotspot packages, so RouterOS ``limit-uptime`` is
+      rewritten from remaining wall-clock time even while the phone is offline
+      (RouterOS only burns limit-uptime during sessions)
+    """
+    from billing.models import Customer
+
+    stamp = now or timezone.now()
+    if timezone.is_naive(stamp):
+        stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+    else:
+        stamp = timezone.localtime(stamp)
+
+    seen: set[int] = set()
+    for customer in customers_near_access_deadline(
+        past_seconds=past_seconds,
+        future_seconds=future_seconds,
+        now=stamp,
+    ):
+        pk = getattr(customer, "pk", None)
+        if pk is not None:
+            seen.add(int(pk))
+        yield customer
+
+    qs = (
+        Customer.objects.filter(
+            status=Customer.Status.ACTIVE,
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac__gt="",
+            package_paused_at__isnull=True,
+        )
+        .exclude(package_end=None)
+        .select_related("plan", "organization", "router")
+        .order_by("id")
+    )
+    for customer in qs.iterator(chunk_size=200):
+        pk = getattr(customer, "pk", None)
+        if pk is not None and int(pk) in seen:
+            continue
+        if not plan_uses_clock_time(getattr(customer, "plan", None)):
+            continue
+        if subscription_access_deadline(customer) is None:
+            continue
+        # Refresh while still paid, and also after expiry so a missed
+        # near-deadline tick cannot leave a Hotspot MAC enabled offline.
+        if pk is not None:
+            seen.add(int(pk))
+        yield customer
 
 
 def subscription_period_allows(customer, *, today: date | None = None) -> bool:
@@ -429,10 +493,11 @@ def customer_package_is_paused(customer) -> bool:
 
 def package_remaining_seconds(customer, *, now: datetime | None = None) -> int | None:
     """
-    Seconds left in the current package window.
+    Seconds left in the current package window (wall-clock).
 
-    While paused, the clock freezes at ``package_paused_at`` so remaining time
-    does not shrink until the package is resumed.
+    Remaining time shrinks while the client is offline the same as while
+    online. While paused, the clock freezes at ``package_paused_at`` so
+    remaining time does not shrink until the package is resumed.
     """
     deadline = subscription_access_deadline(customer)
     if deadline is None:
@@ -1207,21 +1272,71 @@ def set_customer_package_renewed(customer, *, renewed_at, plan=None):
     return customer
 
 
+def _is_mpesa_checkout_placeholder(value: str) -> bool:
+    """Safaricom CheckoutRequestID values are not the SMS receipt code."""
+    ref = (value or "").strip()
+    if not ref:
+        return False
+    return ref.startswith("ws_CO_") or ref.startswith("ws_CO")
+
+
+def _receipt_from_stk_row(stk) -> str:
+    """M-Pesa SMS receipt from an STK row (model field or buried raw callback)."""
+    receipt = (getattr(stk, "mpesa_receipt", None) or "").strip()
+    if receipt:
+        return receipt
+    raw = stk.raw_callback if isinstance(getattr(stk, "raw_callback", None), dict) else {}
+    if not raw:
+        return ""
+    from billing.stk import extract_mpesa_receipt_from_raw
+
+    return (extract_mpesa_receipt_from_raw(raw) or "").strip()
+
+
+def payment_stk_candidates(payment):
+    """
+    STK rows that may hold the M-Pesa SMS receipt for a payment.
+
+    Prefer the reverse FK, then invoice-linked STKs (payment FK missing), then
+    a CheckoutRequestID stored on payment.reference.
+    """
+    from billing.models import StkPushRequest
+
+    seen: set[int] = set()
+
+    def _yield(qs_or_iterable):
+        for stk in qs_or_iterable:
+            pk = getattr(stk, "pk", None)
+            if pk is None or pk in seen:
+                continue
+            seen.add(pk)
+            yield stk
+
+    # 1) Direct payment link (prefetch-friendly).
+    yield from _yield(payment.stk_push_requests.all())
+
+    # 2) Same invoice, even when STK.payment was never set / cleared.
+    invoice_id = getattr(payment, "invoice_id", None)
+    if invoice_id:
+        yield from _yield(
+            StkPushRequest.objects.filter(invoice_id=invoice_id).order_by("-id")
+        )
+
+    # 3) Payment.reference still holds the CheckoutRequestID placeholder.
+    ref = (payment.reference or "").strip()
+    if ref and _is_mpesa_checkout_placeholder(ref):
+        yield from _yield(
+            StkPushRequest.objects.filter(checkout_request_id=ref).order_by("-id")
+        )
+
+
 def payment_mpesa_reference(payment) -> str:
     """Prefer the real M-Pesa receipt over Safaricom CheckoutRequestID placeholders."""
     checkout_ids: set[str] = set()
-    for stk in payment.stk_push_requests.all():
-        receipt = (stk.mpesa_receipt or "").strip()
+    for stk in payment_stk_candidates(payment):
+        receipt = _receipt_from_stk_row(stk)
         if receipt:
             return receipt
-        # Recover from raw_callback when the model field was never copied.
-        raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
-        if raw:
-            from billing.stk import extract_mpesa_receipt_from_raw
-
-            buried = extract_mpesa_receipt_from_raw(raw)
-            if buried:
-                return buried
         checkout_id = (stk.checkout_request_id or "").strip()
         if checkout_id:
             checkout_ids.add(checkout_id)
@@ -1229,7 +1344,7 @@ def payment_mpesa_reference(payment) -> str:
     if not ref:
         return ""
     # Checkout IDs look like ws_CO_… and are not the SMS receipt number.
-    if ref in checkout_ids or ref.startswith("ws_CO_"):
+    if ref in checkout_ids or _is_mpesa_checkout_placeholder(ref):
         return ""
     return ref
 
@@ -1242,30 +1357,53 @@ def heal_payment_mpesa_reference(payment) -> str:
     Works for payments collected via Company Payment Gateway or an ISP's own
     Payment Gateway — credential source does not affect receipt persistence.
     """
-    display_ref = payment_mpesa_reference(payment)
+    candidates = list(payment_stk_candidates(payment))
+    display_ref = ""
+    checkout_ids: set[str] = set()
+    for stk in candidates:
+        receipt = _receipt_from_stk_row(stk)
+        if receipt and not display_ref:
+            display_ref = receipt
+        checkout_id = (stk.checkout_request_id or "").strip()
+        if checkout_id:
+            checkout_ids.add(checkout_id)
     if not display_ref:
+        current = (payment.reference or "").strip()
+        if current and current not in checkout_ids and not _is_mpesa_checkout_placeholder(
+            current
+        ):
+            return current
         return ""
+
     current = (payment.reference or "").strip()
-    linked_checkouts = {
-        (stk.checkout_request_id or "").strip()
-        for stk in payment.stk_push_requests.all()
-        if (stk.checkout_request_id or "").strip()
-    }
     if (
         not current
-        or current in linked_checkouts
-        or current.startswith("ws_CO_")
+        or current in checkout_ids
+        or _is_mpesa_checkout_placeholder(current)
     ) and current != display_ref:
         payment.reference = display_ref[:100]
         payment.save(update_fields=["reference"])
-    # Keep STK.mpesa_receipt in sync when recovery came from raw_callback only.
-    for stk in payment.stk_push_requests.all():
-        if (stk.mpesa_receipt or "").strip() == display_ref:
-            continue
-        from billing.stk import ensure_stk_payment_receipt
 
-        ensure_stk_payment_receipt(stk, receipt=display_ref)
-        break
+    # Prefer the STK that already carries the receipt, then re-attach orphans.
+    from billing.stk import ensure_stk_payment_receipt
+
+    preferred = next(
+        (stk for stk in candidates if _receipt_from_stk_row(stk) == display_ref),
+        candidates[0] if candidates else None,
+    )
+    if preferred is not None:
+        update_fields: list[str] = []
+        if not preferred.payment_id:
+            preferred.payment = payment
+            update_fields.append("payment")
+        invoice_id = getattr(payment, "invoice_id", None)
+        if invoice_id and not preferred.invoice_id:
+            preferred.invoice_id = invoice_id
+            update_fields.append("invoice")
+        if update_fields:
+            preferred.save(update_fields=update_fields)
+        if (preferred.mpesa_receipt or "").strip() != display_ref:
+            ensure_stk_payment_receipt(preferred, receipt=display_ref)
     return display_ref
 
 
@@ -1283,7 +1421,7 @@ def heal_payment_mpesa_phone(payment) -> str:
         return current[:30]
 
     found = ""
-    for stk in payment.stk_push_requests.all():
+    for stk in payment_stk_candidates(payment):
         found = resolve_stk_mpesa_phone(stk)
         if found:
             break
@@ -1345,6 +1483,12 @@ def create_renewal_invoice_and_payment(
 
 def customer_needs_nas_provision(customer) -> bool:
     """Whether recharge / pause / resume should push MikroTik immediately."""
+    from billing.models import Customer
+
+    if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+        # After cash unlink primary may be empty; still push so prior MACs
+        # are disabled until they redeem a fresh voucher.
+        return True
     mac = (getattr(customer, "hotspot_mac", None) or "").strip()
     if mac:
         return True
@@ -1488,6 +1632,7 @@ def recharge_customer_cash(
         "vouchers": vouchers,
         "voucher_codes": voucher_codes,
         "kick_sessions": bool(vouchers),
+        "unlink_hotspot_after_sync": bool(vouchers),
         "stacked": stacked,
     }
 

@@ -93,18 +93,18 @@
         <input type="hidden" name="tab" value="{{ active_tab }}">
         {% if pending_view %}<input type="hidden" name="view" value="pending">{% endif %}
         {% if clients_query %}<input type="hidden" name="q" value="{{ clients_query }}">{% endif %}
-        <label class="clients-router-filter-label" for="clients-router-filter">Router</label>
+        <label class="clients-router-filter-label" for="clients-router-filter">MikroTik</label>
         <div class="clients-router-select">
           <select
             id="clients-router-filter"
             name="router"
             class="clients-router-filter-select"
             data-clients-router-filter
-            aria-label="Filter clients by router"
+            aria-label="Filter clients by MikroTik"
             onchange="this.form.submit()"
           >
-            <option value="" {% if not clients_router_param %}selected{% endif %}>All routers</option>
-            <option value="none" {% if clients_router_param == "none" %}selected{% endif %}>No router assigned</option>
+            <option value="" {% if not clients_router_param %}selected{% endif %}>All MikroTiks</option>
+            <option value="none" {% if clients_router_param == "none" %}selected{% endif %}>No MikroTik assigned</option>
             {% for router in client_routers %}
               <option value="{{ router.id }}" {% if clients_router_id == router.id %}selected{% endif %}>
                 {{ router.name }}{% if router.host %} · {{ router.host }}{% endif %}
@@ -486,12 +486,23 @@
   var timer = null;
   var started = false;
 
-  function setStatus(el, online) {
+  function setStatus(el, online, status) {
     if (!el) return;
-    el.classList.remove("is-checking", "is-connected", "is-disconnected");
-    el.classList.add(online ? "is-connected" : "is-disconnected");
+    el.classList.remove(
+      "is-checking",
+      "is-connected",
+      "is-disconnected",
+      "is-limited",
+      "is-auth-failed",
+      "is-reachable"
+    );
+    var connected = status === "connected" || (!status && !!online);
+    el.classList.add(connected ? "is-connected" : "is-disconnected");
     var label = el.querySelector(".mikrotik-link-label");
-    if (label) label.textContent = online ? "Connected" : "Disconnected";
+    if (label) label.textContent = connected ? "Connected" : "Disconnected";
+    el.title = connected
+      ? "System can reach this MikroTik remotely"
+      : "System cannot reach this MikroTik remotely";
   }
 
   function refreshStatus(force) {
@@ -507,7 +518,7 @@
         if (!data || !data.ok || !data.routers) return;
         data.routers.forEach(function (item) {
           document.querySelectorAll('[data-router-status="' + item.id + '"]').forEach(function (el) {
-            setStatus(el, !!item.online);
+            setStatus(el, !!item.online, item.status || "");
           });
         });
       })
@@ -521,7 +532,7 @@
   function startPolling() {
     if (started) return;
     started = true;
-    # Soft first paint from cache; avoid an immediate forced NAS probe.
+    // Soft first paint from cache; avoid an immediate forced NAS probe.
     refreshStatus(false);
     timer = setInterval(function () { refreshStatus(false); }, 45000);
   }

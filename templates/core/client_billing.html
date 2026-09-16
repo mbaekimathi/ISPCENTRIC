@@ -190,7 +190,10 @@
           Collections
         </p>
         <h2 class="client-billing-section-title">Successful payments</h2>
-        <p class="client-billing-section-meta">M-Pesa and other collections recorded for this subscriber.</p>
+        <p class="client-billing-section-meta">
+          M-Pesa SMS receipt codes and other collection references for this subscriber —
+          same recovery used on the billing dashboard.
+        </p>
       </div>
       <div class="client-billing-section-badges">
         <span class="org-status org-status-active">{{ payments|length }} listed</span>
@@ -207,7 +210,7 @@
               <th>Amount</th>
               <th>Method</th>
               <th>Paid from</th>
-              <th>M-Pesa / Ref</th>
+              <th>M-Pesa message ref</th>
               <th>Invoice</th>
             </tr>
           </thead>
@@ -222,7 +225,12 @@
                 </td>
                 <td data-label="Amount"><strong class="client-billing-amount">KES {{ pay.amount }}</strong></td>
                 <td data-label="Method">
-                  <span class="client-billing-method">{{ pay.get_method_display }}</span>
+                  <div class="client-billing-stack">
+                    <span class="client-billing-method">{{ pay.get_method_display }}</span>
+                    {% if pay.method == "cash" and pay.recorder_label %}
+                      <small>by {{ pay.recorder_label }}</small>
+                    {% endif %}
+                  </div>
                 </td>
                 <td data-label="Paid from">
                   {% if pay.method == "mpesa" and pay.display_phone %}
@@ -231,7 +239,28 @@
                     —
                   {% endif %}
                 </td>
-                <td data-label="M-Pesa / Ref"><span class="org-code">{{ pay.display_reference|default:"—" }}</span></td>
+                <td data-label="M-Pesa message ref" class="client-billing-ref-cell">
+                  {% if pay.method == "cash" %}
+                    {% if pay.reference %}
+                      <span class="org-code client-billing-ref">{{ pay.reference }}</span>
+                    {% else %}
+                      <span class="client-billing-ref-empty">Cash</span>
+                    {% endif %}
+                  {% elif pay.display_reference %}
+                    <div class="client-billing-ref-row" data-mpesa-ref-row>
+                      <span class="org-code client-billing-ref" data-mpesa-ref>{{ pay.display_reference }}</span>
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-ghost client-billing-ref-copy"
+                        data-copy-voucher
+                        data-copy-text="{{ pay.display_reference }}"
+                        title="Copy M-Pesa message reference"
+                      >Copy</button>
+                    </div>
+                  {% else %}
+                    <span class="client-billing-ref-empty">—</span>
+                  {% endif %}
+                </td>
                 <td data-label="Invoice">
                   {% if pay.invoice %}
                     <span class="org-code">{{ pay.invoice.invoice_number }}</span>

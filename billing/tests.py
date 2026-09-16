@@ -385,6 +385,95 @@ class PrepaidAccessPolicyTests(TestCase):
         ):
             self.assertFalse(subscription_period_allows(customer))
 
+    def test_package_remaining_shrinks_while_offline_wall_clock(self):
+        """Prepaid time is wall-clock — offline periods still consume the window."""
+        now = timezone.localtime()
+        hourly = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly Wall",
+            price="50.00",
+            duration=BillingPlan.Duration.HOURLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        customer = self._hotspot(
+            account_number="HOT-WALL",
+            phone="254700000077",
+            hotspot_mac="AA:BB:CC:DD:00:11",
+            plan=hourly,
+            package_start=now - timedelta(minutes=10),
+            package_end=now + timedelta(minutes=50),
+        )
+        remaining_at_start = package_remaining_seconds(customer, now=now)
+        offline_later = now + timedelta(minutes=20)
+        remaining_after_offline = package_remaining_seconds(
+            customer, now=offline_later
+        )
+        self.assertIsNotNone(remaining_at_start)
+        self.assertIsNotNone(remaining_after_offline)
+        self.assertAlmostEqual(
+            remaining_at_start - remaining_after_offline,
+            20 * 60,
+            delta=2,
+        )
+        self.assertTrue(subscription_period_allows(customer))
+
+        real_localtime = timezone.localtime
+        after_end = customer.package_end + timedelta(seconds=1)
+
+        def localtime_at(fixed):
+            def _localtime(value=None):
+                if value is None:
+                    return fixed
+                return real_localtime(value)
+
+            return _localtime
+
+        with patch(
+            "billing.services.timezone.localtime",
+            side_effect=localtime_at(after_end),
+        ):
+            self.assertTrue(customer_subscription_expired(customer))
+            self.assertFalse(subscription_period_allows(customer))
+            self.assertFalse(customer_can_surf_via_hotspot(customer))
+
+    def test_enforcement_watch_includes_active_clock_time_hotspot(self):
+        from billing.services import customers_for_subscription_enforcement_watch
+
+        now = timezone.localtime()
+        hourly = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly Watch",
+            price="50.00",
+            duration=BillingPlan.Duration.HOURLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        active_hs = self._hotspot(
+            account_number="HOT-WATCH",
+            phone="254700000066",
+            hotspot_mac="AA:BB:CC:DD:00:22",
+            plan=hourly,
+            package_start=now - timedelta(minutes=5),
+            package_end=now + timedelta(minutes=40),
+        )
+        daily_hs = self._hotspot(
+            account_number="HOT-DAILY",
+            phone="254700000067",
+            hotspot_mac="AA:BB:CC:DD:00:33",
+            plan=self.plan,
+            package_start=now - timedelta(hours=1),
+            package_end=now + timedelta(days=1),
+        )
+        watch_ids = {
+            c.pk
+            for c in customers_for_subscription_enforcement_watch(
+                past_seconds=600, future_seconds=45, now=now
+            )
+        }
+        self.assertIn(active_hs.pk, watch_ids)
+        self.assertNotIn(daily_hs.pk, watch_ids)
+
 
 class DynamicAccessPolicyTests(TestCase):
     """
@@ -855,6 +944,26 @@ class AccessAccountLoopTests(TestCase):
         result = evaluate_nas_policy(self.hotspot_paid, sync)
         self.assertFalse(result["policy_match"])
         self.assertEqual(result["details"].get("surf_gap"), "wrong_speed_profile")
+
+    def test_evaluate_hotspot_wrong_rate_limit_fails_speed_check(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        sync = {
+            "ok": True,
+            "allowed": True,
+            "provision": {
+                "ok": True,
+                "profile": "ispcentric-hs-5u-10d",
+                "rate_limit": "1M/2M",
+                "max_devices": 2,
+                "allowed_count": 1,
+                "over_cap_count": 0,
+            },
+        }
+        result = evaluate_nas_policy(self.hotspot_paid, sync)
+        self.assertFalse(result["policy_match"])
+        self.assertEqual(result["details"].get("surf_gap"), "wrong_speed_profile")
+        self.assertEqual(result["details"].get("expected_rate_limit"), "5M/10M")
 
     def test_run_correction_loop_retries_speed_gap(self):
         from billing.access_verification import run_access_correction_loop
@@ -2045,6 +2154,100 @@ class AccessVoucherLifecycleTests(TestCase):
         pay_row = response.context["payments"][0]
         self.assertEqual(pay_row.display_reference, "REALRCP01")
 
+    def test_client_billing_heals_receipt_from_invoice_linked_stk(self):
+        """Recover M-Pesa SMS ref when STK is on the invoice but payment FK is missing."""
+        from datetime import date
+
+        from billing.models import Invoice, Payment, StkPushRequest
+
+        self.client.force_login(self.owner)
+        invoice = Invoice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            invoice_number="INV-MPESA-ORPHAN-1",
+            amount=self.plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        payment = Payment.objects.create(
+            organization=self.org,
+            invoice=invoice,
+            amount=self.plan.price,
+            method=Payment.Method.MPESA,
+            reference="ws_CO_ORPHAN_CHECKOUT",
+        )
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_ORPHAN_CHECKOUT",
+            mpesa_receipt="ORPHAN99",
+            status=StkPushRequest.Status.SUCCESS,
+            payment=None,
+            invoice=invoice,
+        )
+
+        response = self.client.get(f"/app/clients/{self.customer.pk}/billing/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "ORPHAN99")
+        self.assertContains(response, "M-Pesa message ref")
+        self.assertNotContains(response, "ws_CO_ORPHAN_CHECKOUT")
+        payment.refresh_from_db()
+        stk.refresh_from_db()
+        self.assertEqual(payment.reference, "ORPHAN99")
+        self.assertEqual(stk.payment_id, payment.pk)
+        self.assertEqual(response.context["payments"][0].display_reference, "ORPHAN99")
+
+    def test_client_billing_heals_receipt_from_raw_callback(self):
+        """Client billing must persist receipts recovered from STK raw (any gateway)."""
+        from datetime import date
+
+        from billing.models import Invoice, Payment, StkPushRequest
+
+        self.client.force_login(self.owner)
+        invoice = Invoice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            invoice_number="INV-MPESA-RAW-1",
+            amount=self.plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        payment = Payment.objects.create(
+            organization=self.org,
+            invoice=invoice,
+            amount=self.plan.price,
+            method=Payment.Method.MPESA,
+            reference="",
+        )
+        StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_RAW_CLIENT",
+            mpesa_receipt="",
+            status=StkPushRequest.Status.SUCCESS,
+            payment=payment,
+            invoice=invoice,
+            raw_callback={
+                "credential_source": "platform",
+                "callback_receipt": "RAWCLIENT1",
+            },
+        )
+
+        response = self.client.get(f"/app/clients/{self.customer.pk}/billing/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "RAWCLIENT1")
+        payment.refresh_from_db()
+        self.assertEqual(payment.reference, "RAWCLIENT1")
+        self.assertEqual(response.context["payments"][0].display_reference, "RAWCLIENT1")
+
     def test_client_detail_shows_available_voucher(self):
         from billing.stk import fulfill_successful_stk
         from billing.vouchers import format_voucher_code
@@ -2545,10 +2748,13 @@ class HotspotMultiDeviceVoucherTests(TestCase):
         self.assertEqual(statuses.count(AccessVoucher.Status.VALID), 2)
 
     def test_expired_package_burns_unused_device_vouchers(self):
-        from billing.models import AccessVoucher
+        from billing.models import AccessVoucher, CustomerDevice
         from billing.stk import fulfill_successful_stk
         from billing.vouchers import invalidate_unused_vouchers_for_expired_customers
 
+        from billing.devices import attach_hotspot_device
+
+        attach_hotspot_device(self.customer, "AA:BB:CC:DD:EE:89")
         stk = self._stk()
         fulfill_successful_stk(stk, result_code=0, result_desc="ok", mpesa_receipt="FAM5")
         self.customer.package_start = timezone.now() - timedelta(days=2)
@@ -2569,6 +2775,114 @@ class HotspotMultiDeviceVoucherTests(TestCase):
             ).count(),
             3,
         )
+        self.customer.refresh_from_db()
+        self.assertFalse(
+            CustomerDevice.objects.filter(customer=self.customer).exists()
+        )
+        self.assertFalse((self.customer.hotspot_mac or "").strip())
+
+    def test_renewal_activates_paying_device_not_shared_peer(self):
+        """After sharing, the next payer is authorized — not the old primary."""
+        from billing.devices import attach_hotspot_device, authorized_hotspot_macs_for_customer
+        from billing.models import AccessVoucher, StkPushRequest
+        from billing.vouchers import activate_paid_subscription_stk
+
+        attach_hotspot_device(self.customer, "AA:BB:CC:DD:EE:89")
+        self.customer.package_start = timezone.now() - timedelta(days=2)
+        self.customer.package_end = timezone.now() - timedelta(hours=1)
+        self.customer.save(update_fields=["package_start", "package_end"])
+
+        stk = self._stk(
+            checkout_request_id="ws_CO_RENEW_PEER",
+            status=StkPushRequest.Status.SUCCESS,
+            raw_callback={"hotspot_mac": "AA:BB:CC:DD:EE:89"},
+        )
+
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": True, "allowed": True},
+        ), patch(
+            "core.subscription_sync.nas_access_ready",
+            return_value=True,
+        ), patch(
+            "billing.services.notify_client_internet_reconnected",
+        ):
+            result = activate_paid_subscription_stk(
+                stk, mac="AA:BB:CC:DD:EE:89", wait_first=False
+            )
+
+        self.assertTrue(result.get("ok"))
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.hotspot_mac, "AA:BB:CC:DD:EE:89")
+        self.assertEqual(
+            authorized_hotspot_macs_for_customer(self.customer),
+            ["AA:BB:CC:DD:EE:89"],
+        )
+        used = AccessVoucher.objects.filter(
+            stk_request=stk, status=AccessVoucher.Status.INVALID
+        ).exclude(redeemed_mac="")
+        self.assertEqual(used.count(), 1)
+        self.assertEqual(used.first().redeemed_mac, "AA:BB:CC:DD:EE:89")
+        # Old primary is unlinked until it redeems a sibling voucher.
+        self.assertNotIn(
+            "AA:BB:CC:DD:EE:88",
+            authorized_hotspot_macs_for_customer(self.customer),
+        )
+
+    def test_staff_renewal_without_mac_keeps_primary_authorized(self):
+        """Staff STK renew omits captive MAC — must not wipe all devices."""
+        from billing.devices import (
+            attach_hotspot_device,
+            authorized_hotspot_macs_for_customer,
+            hotspot_macs_for_customer,
+        )
+        from billing.models import AccessVoucher, CustomerDevice, StkPushRequest
+        from billing.vouchers import activate_paid_subscription_stk
+
+        attach_hotspot_device(self.customer, "AA:BB:CC:DD:EE:89")
+        self.assertEqual(self.customer.hotspot_mac, "AA:BB:CC:DD:EE:88")
+        # Fully past the daily inclusive window so this is a fresh period (not stacked).
+        self.customer.package_start = timezone.now() - timedelta(days=3)
+        self.customer.package_end = timezone.now() - timedelta(days=2)
+        self.customer.save(update_fields=["package_start", "package_end"])
+
+        # No mac kwarg and no raw_callback hotspot_mac — staff renew path.
+        stk = self._stk(
+            checkout_request_id="ws_CO_STAFF_RENEW",
+            status=StkPushRequest.Status.SUCCESS,
+            raw_callback={},
+        )
+
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": True, "allowed": True},
+        ), patch(
+            "core.subscription_sync.nas_access_ready",
+            return_value=True,
+        ), patch(
+            "billing.services.notify_client_internet_reconnected",
+        ):
+            result = activate_paid_subscription_stk(stk, wait_first=False)
+
+        self.assertTrue(result.get("ok"))
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.hotspot_mac, "AA:BB:CC:DD:EE:88")
+        self.assertEqual(
+            authorized_hotspot_macs_for_customer(self.customer),
+            ["AA:BB:CC:DD:EE:88"],
+        )
+        self.assertIn("AA:BB:CC:DD:EE:88", hotspot_macs_for_customer(self.customer))
+        # Shared peer still unlinked on fresh period; only primary kept.
+        self.assertFalse(
+            CustomerDevice.objects.filter(
+                customer=self.customer, mac__iexact="AA:BB:CC:DD:EE:89"
+            ).exists()
+        )
+        used = AccessVoucher.objects.filter(
+            stk_request=stk, status=AccessVoucher.Status.INVALID
+        ).exclude(redeemed_mac="")
+        self.assertEqual(used.count(), 1)
+        self.assertEqual(used.first().redeemed_mac, "AA:BB:CC:DD:EE:88")
 
     def test_pppoe_payment_still_issues_one_voucher(self):
         from billing.models import AccessVoucher, BillingPlan, Customer, StkPushRequest
@@ -3277,14 +3591,27 @@ class CustomerCashRechargeFormTests(TestCase):
 class CustomerNeedsNasProvisionTests(SimpleTestCase):
     def test_hotspot_mac_is_enough_without_pppoe(self):
         class Fake:
+            service_type = ""
             hotspot_mac = "AA:BB:CC:DD:EE:FF"
             pppoe_username = ""
             router_id = None
 
         self.assertTrue(customer_needs_nas_provision(Fake()))
 
-    def test_pppoe_requires_username_and_router(self):
+    def test_hotspot_service_provisions_even_without_primary_mac(self):
+        from billing.models import Customer
+
         class Fake:
+            service_type = Customer.ServiceType.HOTSPOT
+            hotspot_mac = ""
+            pppoe_username = ""
+            router_id = None
+
+        self.assertTrue(customer_needs_nas_provision(Fake()))
+
+    def test_pppoe_username_is_enough_without_router(self):
+        class Fake:
+            service_type = ""
             hotspot_mac = ""
             pppoe_username = "user1"
             router_id = 18
@@ -3292,14 +3619,17 @@ class CustomerNeedsNasProvisionTests(SimpleTestCase):
         self.assertTrue(customer_needs_nas_provision(Fake()))
 
         class NoRouter:
+            service_type = ""
             hotspot_mac = ""
             pppoe_username = "user1"
             router_id = None
 
-        self.assertFalse(customer_needs_nas_provision(NoRouter()))
+        # provision_customer_pppoe can resolve an org NAS when router_id is missing.
+        self.assertTrue(customer_needs_nas_provision(NoRouter()))
 
     def test_empty_identity_does_not_provision(self):
         class Fake:
+            service_type = ""
             hotspot_mac = ""
             pppoe_username = ""
             router_id = 18

@@ -645,6 +645,10 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
     if not organization or not routers:
         return 0
 
+    # Alerts fire from the live probe on the first fail — independent of the
+    # chart debounce / sample gate below (which still require confirmation).
+    _notify_mikrotik_status_alerts(organization, routers)
+
     org_id = organization.pk
     has_outage = False
     has_transition = False
@@ -721,21 +725,45 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
     cache.delete(f"mikrotik_perf_trend:{organization.pk}:24")
     cache.delete(f"mikrotik_perf_trend:{organization.pk}:6")
 
-    # Notify ISP account communications when a router goes offline / health < 70%.
+    return len(rows)
+
+
+def _notify_mikrotik_status_alerts(
+    organization, routers: list[dict[str, Any]]
+) -> None:
+    """
+    Fire ISP offline / health-low alerts from the current probe payload.
+
+    Called even when chart samples are still pending confirmation so the owner
+    is notified on the first failed observation.
+    """
+    if not organization or not routers:
+        return
     try:
         from accounts.communications import maybe_notify_mikrotik_health_low
+    except Exception:
+        return
 
-        names = {
-            int(r.pk): (r.name or r.host or f"Router #{r.pk}")
-            for r in MikroTikRouter.objects.filter(
-                organization=organization, pk__in=known
-            ).only("id", "name", "host")
-        }
-        for row, status in confirmed_rows:
-            rid = row.get("id")
-            if rid is None or int(rid) not in known:
-                continue
-            rid_int = int(rid)
+    router_ids = {
+        int(row["id"]) for row in routers if row.get("id") is not None
+    }
+    if not router_ids:
+        return
+    names = {
+        int(r.pk): (r.name or r.host or f"Router #{r.pk}")
+        for r in MikroTikRouter.objects.filter(
+            organization=organization, pk__in=router_ids
+        ).only("id", "name", "host")
+    }
+    for row in routers:
+        rid = row.get("id")
+        if rid is None:
+            continue
+        rid_int = int(rid)
+        if rid_int not in names:
+            continue
+        status = (row.get("status") or "disconnected").strip().lower()
+        try:
             maybe_notify_mikrotik_health_low(
                 organization=organization,
                 router_id=rid_int,
@@ -744,10 +772,8 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
                 score=status_score(status),
                 error=(row.get("error") or ""),
             )
-    except Exception:
-        pass
-
-    return len(rows)
+        except Exception:
+            continue
 
 
 def _auto_restore_cooldown_key(router_id: int) -> str:

@@ -8199,6 +8199,12 @@ button.clients-list-table-action {
   padding: 0.12rem 0.35rem;
 }
 
+.clients-list-table td[data-label="Remote"] .mikrotik-link-status {
+  display: inline-flex;
+  margin-left: 0;
+  margin-top: 0;
+}
+
 .clients-list-table .mikrotik-link-status {
   display: block;
   margin-left: 0;
@@ -8391,7 +8397,7 @@ button.clients-list-table-action {
   }
 
   .clients-list-table-stack,
-  .clients-list-table td[data-label="Router"] .mikrotik-link-status,
+  .clients-list-table td[data-label="Remote"] .mikrotik-link-status,
   .clients-list-table td[data-label="PPPoE"] .clients-pppoe-secret {
     justify-items: start;
     justify-content: flex-start;
@@ -26655,8 +26661,8 @@ a.packages-stat:focus-visible {
 }
 
 .clients-general-usage-page {
-  width: min(100%, 78rem);
-  max-width: 78rem;
+  width: min(100%, 92rem);
+  max-width: 92rem;
   margin-inline: auto;
   gap: 0;
   overflow-x: clip;
@@ -26666,18 +26672,18 @@ a.packages-stat:focus-visible {
   display: grid;
   min-width: 0;
   gap: 0;
-  border: 1px solid color-mix(in srgb, var(--cat-live, #2ecc71) 18%, var(--border-strong, var(--border)));
-  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--cat-live, #2ecc71) 14%, var(--border-strong, var(--border)));
+  border-radius: 18px;
   background: var(--surface-solid, var(--surface));
-  box-shadow: var(--card-shadow, 0 14px 34px color-mix(in srgb, var(--ink) 8%, transparent));
+  box-shadow: var(--card-shadow, 0 10px 28px color-mix(in srgb, var(--ink) 6%, transparent));
   overflow: clip;
-  animation: clients-usage-rise 0.42s ease both;
+  animation: clients-usage-rise 0.38s ease both;
 }
 
 @keyframes clients-usage-rise {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -26689,21 +26695,17 @@ a.packages-stat:focus-visible {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 0.9rem 1.25rem;
+  gap: 0.85rem 1.15rem;
   flex-wrap: wrap;
-  padding: clamp(1.05rem, 2.2vw, 1.35rem) clamp(1.05rem, 2.2vw, 1.35rem) 1rem;
+  padding: clamp(0.95rem, 1.8vw, 1.2rem) clamp(1rem, 2vw, 1.35rem);
   border-bottom: 1px solid var(--border);
   background:
-    radial-gradient(ellipse 55% 90% at 0% -10%, color-mix(in srgb, var(--cat-live, #2ecc71) 20%, transparent), transparent 58%),
-    radial-gradient(ellipse 42% 70% at 100% 110%, color-mix(in srgb, var(--sea) 14%, transparent), transparent 55%),
-    linear-gradient(180deg, color-mix(in srgb, var(--cat-live, #2ecc71) 7%, transparent), transparent 72%);
+    linear-gradient(180deg, color-mix(in srgb, var(--cat-live, #2ecc71) 6%, transparent), transparent 85%);
 }
 
 .clients-general-usage-page.is-tab-hotspot .clients-usage-workspace-head {
   background:
-    radial-gradient(ellipse 55% 90% at 0% -10%, color-mix(in srgb, #059669 20%, transparent), transparent 58%),
-    radial-gradient(ellipse 42% 70% at 100% 110%, color-mix(in srgb, var(--signal) 12%, transparent), transparent 55%),
-    linear-gradient(180deg, color-mix(in srgb, #059669 7%, transparent), transparent 72%);
+    linear-gradient(180deg, color-mix(in srgb, #059669 6%, transparent), transparent 85%);
 }
 
 .clients-usage-workspace-title {
@@ -26713,8 +26715,8 @@ a.packages-stat:focus-visible {
 
 .clients-usage-workspace-brand {
   display: flex;
-  align-items: flex-start;
-  gap: 0.85rem;
+  align-items: center;
+  gap: 0.75rem;
   min-width: 0;
 }
 
@@ -26722,25 +26724,24 @@ a.packages-stat:focus-visible {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 2.85rem;
-  height: 2.85rem;
-  border-radius: 14px;
-  border: 1px solid color-mix(in srgb, var(--cat-live, #2ecc71) 28%, var(--border));
-  background: color-mix(in srgb, var(--cat-live, #2ecc71) 12%, var(--surface));
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--cat-live, #2ecc71) 22%, var(--border));
+  background: color-mix(in srgb, var(--cat-live, #2ecc71) 10%, var(--surface));
   color: var(--cat-live, #1f8a5b);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--cat-live, #2ecc71) 12%, transparent);
 }
 
 .clients-general-usage-page.is-tab-hotspot .clients-usage-workspace-mark {
-  border-color: color-mix(in srgb, #059669 28%, var(--border));
-  background: color-mix(in srgb, #059669 12%, var(--surface));
+  border-color: color-mix(in srgb, #059669 22%, var(--border));
+  background: color-mix(in srgb, #059669 10%, var(--surface));
   color: #059669;
 }
 
 .clients-usage-workspace-kicker {
-  margin: 0 0 0.2rem;
+  margin: 0 0 0.12rem;
   color: var(--cat-live, #1f8a5b);
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 800;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -26753,7 +26754,7 @@ a.packages-stat:focus-visible {
 .clients-usage-workspace-title h1 {
   margin: 0;
   font-family: var(--font-display);
-  font-size: clamp(1.3rem, 1.1rem + 0.65vw, 1.75rem);
+  font-size: clamp(1.22rem, 1.05rem + 0.55vw, 1.6rem);
   font-weight: 800;
   letter-spacing: -0.035em;
   line-height: 1.15;
@@ -26761,12 +26762,12 @@ a.packages-stat:focus-visible {
 }
 
 .clients-usage-workspace-lead {
-  margin: 0.4rem 0 0;
-  max-width: 44rem;
+  margin: 0.35rem 0 0;
+  max-width: 46rem;
   color: var(--ink-soft);
-  font-size: 0.9rem;
+  font-size: 0.86rem;
   font-weight: 500;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .clients-usage-workspace-summary {
@@ -26799,7 +26800,7 @@ a.packages-stat:focus-visible {
 .clients-usage-workspace-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.45rem;
+  gap: 0.4rem;
   flex: 0 0 auto;
 }
 
@@ -26807,6 +26808,16 @@ a.packages-stat:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+}
+
+/* Unified filters / controls */
+.clients-usage-control-deck {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.85rem clamp(1rem, 2vw, 1.35rem) 0.95rem;
+  border-bottom: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-2, var(--surface)) 70%, transparent), transparent);
 }
 
 .clients-usage-toolbar {
@@ -26819,15 +26830,22 @@ a.packages-stat:focus-visible {
   background: color-mix(in srgb, var(--cat-live, #2ecc71) 3.5%, transparent);
 }
 
+.clients-usage-control-deck .clients-usage-toolbar {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  gap: 0.65rem 0.85rem;
+}
+
 .clients-general-usage-page .clients-general-usage-tabs {
   margin: 0;
   flex: 1 1 auto;
 }
 
 .clients-usage-router-filter {
-  flex: 0 1 16rem;
+  flex: 0 1 15rem;
   margin: 0;
-  min-width: min(100%, 12rem);
+  min-width: min(100%, 11.5rem);
 }
 
 .clients-usage-stamp {
@@ -26837,7 +26855,7 @@ a.packages-stat:focus-visible {
 
 .clients-general-usage-page .clients-general-usage-router-note,
 .clients-general-usage-page .clients-general-usage-widen-note {
-  margin: 0.75rem 1.15rem 0;
+  margin: 0;
 }
 
 .clients-usage-range-nav {
@@ -26854,6 +26872,15 @@ a.packages-stat:focus-visible {
 .client-usage-range-wrap {
   margin: 0.75rem 1.15rem 0;
   padding: 0;
+}
+
+.clients-usage-control-deck .clients-usage-range-wrap {
+  margin: 0;
+}
+
+.clients-general-usage-page .clients-usage-range-wrap .usage-range-filter {
+  border-radius: 14px;
+  padding: 0.5rem 0.6rem;
 }
 
 .client-usage-analysis-page .client-usage-toolbar .client-usage-range-wrap {
@@ -27072,12 +27099,29 @@ a.packages-stat:focus-visible {
 
 .clients-usage-overview,
 .clients-usage-charts {
-  padding: clamp(1rem, 2vw, 1.3rem) clamp(1.05rem, 2.2vw, 1.35rem);
+  padding: clamp(1rem, 1.8vw, 1.25rem) clamp(1rem, 2vw, 1.35rem);
   border-top: 1px solid var(--border);
 }
 
+.clients-general-usage-page .clients-usage-overview {
+  border-top: 0;
+  background: color-mix(in srgb, var(--cat-live, #2ecc71) 2.5%, transparent);
+}
+
+.clients-general-usage-page.is-tab-hotspot .clients-usage-overview {
+  background: color-mix(in srgb, #059669 2.5%, transparent);
+}
+
 .clients-usage-section-head {
-  margin-bottom: 0.95rem;
+  margin-bottom: 0.85rem;
+}
+
+.clients-usage-section-head-inline {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
 }
 
 .clients-usage-section-kicker {
@@ -27105,44 +27149,70 @@ a.packages-stat:focus-visible {
 .clients-usage-section-head h2 {
   margin: 0;
   font-family: var(--font-display);
-  font-size: clamp(1.08rem, 1rem + 0.3vw, 1.28rem);
+  font-size: clamp(1.02rem, 0.96rem + 0.25vw, 1.18rem);
   font-weight: 800;
   letter-spacing: -0.025em;
   color: var(--ink);
 }
 
 .clients-usage-section-meta {
-  margin: 0.3rem 0 0;
+  margin: 0.22rem 0 0;
   color: var(--ink-soft);
-  font-size: 0.88rem;
+  font-size: 0.84rem;
   line-height: 1.4;
 }
 
 .clients-general-usage-page .clients-usage-stat-grid {
   margin: 0;
-  gap: 0.7rem;
+  gap: 0.65rem;
 }
 
 .clients-general-usage-page .client-usage-stat {
   border-radius: 14px;
-  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+  padding: 0.7rem 0.75rem 0.75rem;
+  border-color: color-mix(in srgb, var(--border-strong) 80%, transparent);
+  box-shadow: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .clients-general-usage-page .client-usage-stat:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 12px 24px color-mix(in srgb, var(--cat-live, #2ecc71) 12%, transparent);
+  transform: none;
+  border-color: color-mix(in srgb, var(--cat-live, #2ecc71) 28%, var(--border-strong));
+  box-shadow: none;
+  background: color-mix(in srgb, var(--surface) 92%, var(--cat-live, #2ecc71) 8%);
+}
+
+.clients-general-usage-page .client-usage-stat dd span {
+  font-size: 0.72rem;
+  opacity: 0.72;
+}
+
+.clients-general-usage-page .clients-usage-chart-grid {
+  gap: 0.75rem;
 }
 
 .clients-general-usage-page .client-usage-chart-card {
-  border-radius: 16px;
-  box-shadow: 0 1px 0 color-mix(in srgb, #fff 40%, transparent) inset;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+  border-radius: 14px;
+  padding: 0.9rem 0.95rem 1rem;
+  border-color: color-mix(in srgb, var(--border-strong) 85%, transparent);
+  box-shadow: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .clients-general-usage-page .client-usage-chart-card:hover {
-  border-color: color-mix(in srgb, var(--sea) 28%, var(--border-strong));
-  box-shadow: 0 14px 28px color-mix(in srgb, #0b1f2a 8%, transparent);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--sea) 24%, var(--border-strong));
+  box-shadow: none;
+  transform: none;
+}
+
+.clients-general-usage-page .client-usage-chart-card header h3 {
+  font-size: 0.98rem;
+  margin-top: 0.15rem;
+}
+
+.clients-general-usage-page .client-usage-chart-wrap {
+  height: clamp(190px, 24vw, 230px);
+  margin-top: 0.65rem;
 }
 
 .clients-general-usage-page .clients-usage-users-panel {
@@ -27151,8 +27221,242 @@ a.packages-stat:focus-visible {
   border-top: 1px solid var(--border);
   border-radius: 0;
   box-shadow: none;
-  padding: clamp(1rem, 2vw, 1.3rem) clamp(1.05rem, 2.2vw, 1.35rem);
+  padding: clamp(1rem, 1.8vw, 1.25rem) clamp(1rem, 2vw, 1.35rem);
   background: transparent;
+  gap: 0.85rem;
+}
+
+.clients-general-usage-page .clients-usage-users-shell {
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--users-tone, var(--sea)) 12%, var(--border));
+  background: color-mix(in srgb, var(--surface-2, var(--surface)) 55%, transparent);
+  overflow: hidden;
+  padding: 0.55rem;
+}
+
+.clients-usage-users-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.clients-usage-user-card {
+  --row-tone: var(--users-tone);
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, var(--users-tone));
+  background: var(--surface-solid, var(--surface));
+  animation: clientsRise 0.35s ease both;
+  animation-delay: calc(0.03s + (var(--i, 0) * 0.025s));
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.clients-usage-user-card:hover {
+  border-color: color-mix(in srgb, var(--users-tone) 28%, var(--border));
+  background: color-mix(in srgb, var(--users-tone) 3.5%, var(--surface));
+}
+
+.clients-usage-user-card-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "rank identity actions"
+    "rank badges actions";
+  gap: 0.35rem 0.75rem;
+  align-items: center;
+}
+
+.clients-usage-user-card-top .clients-usage-rank {
+  grid-area: rank;
+  align-self: start;
+  margin-top: 0.15rem;
+}
+
+.clients-usage-user-card-top .clients-usage-user-link {
+  grid-area: identity;
+}
+
+.clients-usage-user-badges {
+  grid-area: badges;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.45rem;
+  min-width: 0;
+}
+
+.clients-usage-user-card-top .clients-usage-row-actions {
+  grid-area: actions;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.3rem;
+  justify-content: flex-start;
+}
+
+.clients-usage-track-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.clients-usage-track-link {
+  margin: 0;
+  padding: 0.15rem 0.4rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 650;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.clients-usage-track-link:hover,
+.clients-usage-track-link:focus-visible {
+  color: var(--users-tone);
+  background: color-mix(in srgb, var(--users-tone) 10%, transparent);
+  outline: none;
+}
+
+.clients-usage-user-metrics {
+  display: grid;
+  grid-template-columns: minmax(7rem, 1.35fr) repeat(3, minmax(5.5rem, 1fr)) auto minmax(6.5rem, 0.9fr);
+  gap: 0.45rem 0.55rem;
+  align-items: stretch;
+  padding: 0.55rem 0.6rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--users-tone) 4%, var(--surface-2, var(--surface)));
+  border: 1px solid color-mix(in srgb, var(--users-tone) 8%, var(--border));
+}
+
+.clients-usage-users-panel.tone-hotspot .clients-usage-user-metrics {
+  grid-template-columns: minmax(7rem, 1.35fr) repeat(3, minmax(5.5rem, 1fr)) auto auto minmax(6.5rem, 0.9fr);
+}
+
+.clients-usage-metric {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0.15rem 0.2rem;
+}
+
+.clients-usage-metric.is-compact {
+  justify-items: start;
+  align-content: start;
+}
+
+.clients-usage-metric-label {
+  font-size: 0.64rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  opacity: 0.85;
+}
+
+.clients-usage-metric .clients-usage-data-cell {
+  min-width: 0;
+  max-width: none;
+  gap: 0.28rem;
+}
+
+.clients-usage-metric .clients-usage-data-value {
+  font-size: 0.92rem;
+}
+
+.clients-usage-metric .clients-usage-rate-cell strong {
+  font-size: 0.84rem;
+  line-height: 1.25;
+}
+
+.clients-usage-metric .clients-usage-rate-cell small:empty {
+  display: none;
+}
+
+.clients-usage-user-card .clients-usage-online-ratio {
+  display: inline-flex;
+  margin: 0;
+  padding: 0.16rem 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink-soft) 8%, transparent);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.clients-usage-user-card .clients-usage-user-name {
+  font-size: 0.94rem;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: -0.015em;
+}
+
+.clients-usage-user-card .clients-usage-level {
+  min-width: 0;
+  padding: 0.16rem 0.5rem;
+  font-size: 0.68rem;
+}
+
+.clients-usage-loading-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1px dashed color-mix(in srgb, var(--users-tone) 18%, var(--border));
+  background: color-mix(in srgb, var(--users-tone) 4%, transparent);
+}
+
+@media (max-width: 1100px) {
+  .clients-usage-user-metrics,
+  .clients-usage-users-panel.tone-hotspot .clients-usage-user-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .clients-usage-metric.is-data {
+    grid-column: 1 / -1;
+  }
+
+  .clients-usage-metric.is-track {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .clients-usage-user-card-top {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "rank identity"
+      "rank badges"
+      "actions actions";
+  }
+
+  .clients-usage-user-card-top .clients-usage-row-actions {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .clients-usage-user-metrics,
+  .clients-usage-users-panel.tone-hotspot .clients-usage-user-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .clients-usage-user-metrics,
+  .clients-usage-users-panel.tone-hotspot .clients-usage-user-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .clients-usage-metric.is-data,
+  .clients-usage-metric.is-track {
+    grid-column: auto;
+  }
 }
 
 [data-theme="dark"] .clients-usage-workspace-mark,
@@ -27190,7 +27494,7 @@ a.packages-stat:focus-visible {
 @media (max-width: 640px) {
   .clients-usage-workspace-actions {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr 1fr;
   }
 
   .clients-usage-workspace-actions .btn {
@@ -27199,12 +27503,12 @@ a.packages-stat:focus-visible {
   }
 
   .clients-usage-range-nav {
-    margin-inline: 0.85rem;
+    margin-inline: 0;
   }
 
   .clients-general-usage-page .clients-general-usage-router-note,
   .clients-general-usage-page .clients-general-usage-widen-note {
-    margin-inline: 0.85rem;
+    margin-inline: 0;
   }
 }
 
@@ -27242,12 +27546,12 @@ a.packages-stat:focus-visible {
 .clients-general-usage-router-note {
   flex: 1 1 100%;
   margin: 0;
-  padding: 0.55rem 0.75rem;
-  border-radius: 12px;
-  font-size: 0.88rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 10px;
+  font-size: 0.84rem;
   color: var(--ink-soft);
-  background: color-mix(in srgb, var(--sea) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--sea) 16%, var(--border));
+  background: color-mix(in srgb, var(--sea) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sea) 14%, var(--border));
 }
 
 .clients-general-usage-router-note strong {
@@ -27267,26 +27571,83 @@ a.packages-stat:focus-visible {
 }
 
 .clients-usage-tracking-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.85rem 1.25rem;
-  align-items: end;
-  margin: 0 0 1rem;
-  padding: 1rem 1.1rem;
-  border-radius: 16px;
-  border: 1px solid color-mix(in srgb, #0e7c86 18%, var(--border));
-  background:
-    linear-gradient(135deg, color-mix(in srgb, #0e7c86 10%, transparent), transparent 55%),
-    color-mix(in srgb, var(--surface-2, var(--surface)) 92%, #0e7c86);
+  display: block;
+  margin: 0;
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, #0e7c86 14%, var(--border));
+  background: color-mix(in srgb, #0e7c86 5%, var(--surface));
+  overflow: clip;
+}
+
+.clients-usage-tracking-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem 1rem;
+  padding: 0.65rem 0.85rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.clients-usage-tracking-summary::-webkit-details-marker {
+  display: none;
+}
+
+.clients-usage-tracking-summary::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-left: auto;
+  border-right: 2px solid var(--ink-soft);
+  border-bottom: 2px solid var(--ink-soft);
+  transform: rotate(45deg);
+  transition: transform 0.16s ease;
+  opacity: 0.7;
+}
+
+.clients-usage-tracking-panel[open] .clients-usage-tracking-summary::after {
+  transform: rotate(225deg);
+  margin-top: 0.2rem;
+}
+
+.clients-usage-tracking-summary-copy {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.65rem;
+  min-width: 0;
+}
+
+.clients-usage-tracking-summary-copy strong {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.clients-usage-tracking-summary-hint {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 500;
 }
 
 .clients-usage-tracking-kicker {
   margin: 0;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 750;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: #0e7c86;
+}
+
+.clients-usage-tracking-body {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0 0.85rem 0.85rem;
+  border-top: 1px solid color-mix(in srgb, #0e7c86 10%, var(--border));
 }
 
 .clients-usage-tracking-copy h2 {
@@ -27298,10 +27659,10 @@ a.packages-stat:focus-visible {
 
 .clients-usage-tracking-lead,
 .clients-usage-tracking-hint {
-  margin: 0.35rem 0 0;
-  max-width: 42rem;
+  margin: 0;
+  max-width: 44rem;
   color: var(--ink-soft);
-  font-size: 0.86rem;
+  font-size: 0.84rem;
   line-height: 1.45;
 }
 
@@ -27309,11 +27670,10 @@ a.packages-stat:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 
 .clients-usage-tracking-status {
-  grid-column: 1 / -1;
   margin: 0;
   padding: 0.5rem 0.7rem;
   border-radius: 10px;
@@ -27355,6 +27715,13 @@ a.packages-stat:focus-visible {
 .clients-usage-track-btn {
   padding: 0.3rem 0.55rem !important;
   font-size: 0.75rem !important;
+}
+
+.clients-usage-user-card .clients-usage-downtime,
+.clients-usage-user-card .clients-usage-gadgets {
+  min-width: 1.6rem;
+  height: 1.6rem;
+  font-size: 0.78rem;
 }
 
 .clients-usage-renew-dialog {
@@ -27413,21 +27780,22 @@ a.packages-stat:focus-visible {
 }
 
 @media (max-width: 820px) {
-  .clients-usage-tracking-panel {
-    grid-template-columns: 1fr;
-  }
-
   .clients-usage-tracking-actions {
     justify-content: flex-start;
+  }
+
+  .clients-usage-tracking-summary-hint {
+    width: 100%;
   }
 }
 
 .clients-general-usage-page .clients-general-usage-widen-note {
-  margin: 0 0 0.75rem;
-  padding: 0.55rem 0.75rem;
+  margin: 0;
+  padding: 0.5rem 0.7rem;
   border-radius: 10px;
   background: var(--cat-live-soft, rgba(46, 204, 113, 0.12));
   color: var(--text, inherit);
+  font-size: 0.84rem;
 }
 
 @media (max-width: 720px) {
@@ -38019,6 +38387,31 @@ h1, h2, h3, h4,
 
 [data-theme="dark"] .client-billing-method {
   color: var(--sea);
+}
+
+.client-billing-ref-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.client-billing-ref {
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  word-break: break-all;
+}
+
+.client-billing-ref-copy {
+  flex: 0 0 auto;
+  min-height: 1.7rem;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.72rem;
+}
+
+.client-billing-ref-empty {
+  color: var(--ink-soft);
 }
 
 .client-billing-empty {

@@ -8,7 +8,7 @@
           <th>Account</th>
           {% if show_pppoe %}<th>PPPoE</th><th>Session</th>{% endif %}
           {% if show_hotspot %}<th>Session</th><th>Connected to</th>{% endif %}
-          {% if show_router %}<th>Router</th>{% endif %}
+          {% if show_router %}<th>MikroTik</th><th>Remote</th>{% endif %}
           <th class="clients-list-table-actions-col"></th>
         </tr>
       </thead>
@@ -96,17 +96,26 @@
               </td>
             {% endif %}
             {% if show_router %}
-              <td data-label="Router">
+              <td data-label="MikroTik">
                 {% if c.router %}
-                  <div class="clients-list-table-stack">
-                    <a class="clients-list-table-link" href="{% url 'core:mikrotik_detail' c.router.id %}">{{ c.router.name }}</a>
-                    <span class="mikrotik-link-status is-checking" data-router-status="{{ c.router.id }}" data-router-host="{{ c.router.host }}">
-                      <span class="mikrotik-link-dot" aria-hidden="true"></span>
-                      <span class="mikrotik-link-label">…</span>
-                    </span>
-                  </div>
+                  <a class="clients-list-table-link" href="{% url 'core:mikrotik_detail' c.router.id %}">{{ c.router.name }}</a>
                 {% else %}
                   —
+                {% endif %}
+              </td>
+              <td data-label="Remote">
+                {% if c.router %}
+                  <span
+                    class="mikrotik-link-status is-checking"
+                    data-router-status="{{ c.router.id }}"
+                    data-router-host="{{ c.router.host }}"
+                    title="Checking whether the system can reach this MikroTik remotely…"
+                  >
+                    <span class="mikrotik-link-dot" aria-hidden="true"></span>
+                    <span class="mikrotik-link-label">…</span>
+                  </span>
+                {% else %}
+                  <span class="clients-list-table-phone is-empty">No MikroTik</span>
                 {% endif %}
               </td>
             {% endif %}

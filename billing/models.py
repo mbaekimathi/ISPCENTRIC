@@ -663,7 +663,14 @@ class Invoice(models.Model):
         on_delete=models.CASCADE,
         related_name="invoices",
     )
-    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="invoices")
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invoices",
+        help_text="Subscriber this invoice was issued to. Cleared if the client is deleted; the invoice stays.",
+    )
     invoice_number = models.CharField(max_length=40, unique=True)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
@@ -749,11 +756,11 @@ class StkPushRequest(models.Model):
     )
     customer = models.ForeignKey(
         Customer,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
         related_name="stk_push_requests",
         null=True,
         blank=True,
-        help_text="Optional for platform fees such as MikroTik onboarding.",
+        help_text="Optional for platform fees such as MikroTik onboarding. Cleared if the client is deleted.",
     )
     plan = models.ForeignKey(
         BillingPlan,
@@ -927,8 +934,11 @@ class AccessVoucher(models.Model):
     )
     customer = models.ForeignKey(
         Customer,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="access_vouchers",
+        help_text="Subscriber this voucher was issued for. Cleared if the client is deleted; the voucher stays.",
     )
     plan = models.ForeignKey(
         BillingPlan,

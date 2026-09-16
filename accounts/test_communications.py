@@ -1071,6 +1071,35 @@ class MikroTikHealthAndPppoeNotSurfingNotifyTests(TestCase):
         self.assertTrue(second.get("skipped"))
         self.assertEqual(mock_notify.call_args.args[0], "isp_mikrotik_off")
 
+    def test_mikrotik_uplink_grace_skips_soft_but_not_auth(self):
+        from django.core.cache import cache
+
+        from accounts.communications import maybe_notify_mikrotik_health_low
+        from core.mikrotik_status_samples import mark_mikrotik_post_uplink_grace
+
+        cache.clear()
+        mark_mikrotik_post_uplink_grace(44, mode="failover")
+        with patch("accounts.communications.notify_org_event") as mock_notify:
+            mock_notify.return_value = {"ok": True, "sent": 1}
+            soft = maybe_notify_mikrotik_health_low(
+                organization=self.org,
+                router_id=44,
+                router_name="Edge",
+                status="disconnected",
+                score=0,
+            )
+            hard = maybe_notify_mikrotik_health_low(
+                organization=self.org,
+                router_id=44,
+                router_name="Edge",
+                status="auth_failed",
+                score=25,
+            )
+        self.assertTrue(soft.get("skipped"))
+        self.assertEqual(soft.get("reason"), "uplink_grace")
+        self.assertTrue(hard.get("ok"))
+        self.assertEqual(mock_notify.call_args.args[0], "isp_mikrotik_off")
+
     def test_mikrotik_health_low_notifies_once_per_outage(self):
         from django.core.cache import cache
 
@@ -1204,6 +1233,48 @@ class MikroTikHealthAndPppoeNotSurfingNotifyTests(TestCase):
         self.assertIn("Cara Dialed", body)
         self.assertNotIn("Bob Ok", body)
         mock_email.assert_called_once()
+
+    def test_note_pppoe_not_surfing_notifies_immediately_without_closing_others(self):
+        from django.core.cache import cache
+        from unittest.mock import patch
+
+        from billing.usage_samples import (
+            _pppoe_ns_episodes_cache_key,
+            note_pppoe_connected_not_surfing_clients,
+        )
+
+        cache.clear()
+        key = _pppoe_ns_episodes_cache_key(self.org.pk)
+        cache.set(
+            key,
+            {
+                "open": {"99": {"since": "2026-01-01T00:00:00+00:00", "reason": "older"}},
+                "closed": [],
+            },
+            3600,
+        )
+        with patch(
+            "accounts.communications.maybe_notify_pppoe_connected_not_surfing"
+        ) as mock_notify:
+            mock_notify.return_value = {"ok": True, "sent": 1}
+            newly = note_pppoe_connected_not_surfing_clients(
+                self.org,
+                [
+                    {
+                        "id": 11,
+                        "full_name": "Ann Dialed",
+                        "account_number": "PPP-11",
+                        "internet_allowed": True,
+                        "connected": True,
+                        "surfing": False,
+                    }
+                ],
+            )
+        self.assertEqual(newly, {"11"})
+        mock_notify.assert_called_once()
+        state = cache.get(key) or {}
+        self.assertIn("99", state.get("open") or {})
+        self.assertIn("11", state.get("open") or {})
 
     def test_mikrotik_usage_high_notifies_once(self):
         from django.core.cache import cache

@@ -11240,6 +11240,17 @@ def _ensure_pppoe_stack(
                 "out-interface-list": "WAN",
                 "comment": f"{PPP_SECRET_TAG} reject https fast",
             },
+            # Apps that prefer HTTP/3 would otherwise keep UDP/443 open while
+            # TCP is being reset — drop QUIC explicitly for expired clients.
+            {
+                "chain": "forward",
+                "action": "drop",
+                "protocol": "udp",
+                "dst-port": "443",
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "out-interface-list": "WAN",
+                "comment": f"{PPP_SECRET_TAG} block quic",
+            },
             # Drop remaining expired-client traffic (UDP/ICMP) once tagged.
             {
                 "chain": "forward",
@@ -11698,9 +11709,13 @@ def _ensure_pppoe_fast_captive_reject(sock: socket.socket) -> list[str]:
 
     Without this, Android/iOS wait on a silent DROP (often 20–30s) before the
     captive popup appears — users report "expired but no redirect".
+
+    Also drops QUIC (UDP/443) explicitly so apps that prefer HTTP/3 cannot keep
+    a half-open path while TCP is being reset.
     """
     notes: list[str] = []
     has_reject = False
+    has_quic_drop = False
     has_drop = False
     for row in _print(sock, "/ip/firewall/filter", props=".id,comment,action"):
         comment = row.get("comment") or ""
@@ -11708,6 +11723,8 @@ def _ensure_pppoe_fast_captive_reject(sock: socket.socket) -> list[str]:
             continue
         if "reject https fast" in comment:
             has_reject = True
+        if "block quic" in comment:
+            has_quic_drop = True
         if "block expired" in comment:
             has_drop = True
     place_before = _first_forward_drop_id(sock)
@@ -11729,6 +11746,22 @@ def _ensure_pppoe_fast_captive_reject(sock: socket.socket) -> list[str]:
             notes.append("fast HTTPS reject for expired clients")
         else:
             notes.append("warning: could not install fast HTTPS reject")
+    if not has_quic_drop:
+        terminal = _add_filter_rule(
+            sock,
+            {
+                "chain": "forward",
+                "action": "drop",
+                "protocol": "udp",
+                "dst-port": "443",
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "out-interface-list": "WAN",
+                "comment": f"{PPP_SECRET_TAG} block quic",
+            },
+            place_before=place_before,
+        )
+        if terminal.get("_reply") != "!trap":
+            notes.append("QUIC/UDP443 drop for expired clients")
     if not has_drop:
         terminal = _add_filter_rule(
             sock,
@@ -11743,6 +11776,165 @@ def _ensure_pppoe_fast_captive_reject(sock: socket.socket) -> list[str]:
         )
         if terminal.get("_reply") != "!trap":
             notes.append("WAN drop for expired clients")
+    return notes
+
+
+def _kill_firewall_connections_for_addresses(
+    sock: socket.socket,
+    addresses: set[str] | list[str] | tuple[str, ...],
+) -> int:
+    """
+    Remove tracked connections so blocked clients cannot keep surfing on
+    already-established HTTPS/QUIC sockets after Hotspot/PPPoE access is revoked.
+    """
+    targets = {
+        (addr or "").strip()
+        for addr in addresses
+        if (addr or "").strip() and ":" not in (addr or "")
+    }
+    if not targets:
+        return 0
+    removed = 0
+    try:
+        rows = _print(
+            sock,
+            "/ip/firewall/connection",
+            props=".id,src-address,dst-address",
+        )
+    except Exception:
+        return 0
+    for row in rows:
+        src = _parse_connection_address(row.get("src-address") or "")
+        if src not in targets:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        if _remove(sock, "/ip/firewall/connection", item_id).get("_reply") != "!trap":
+            removed += 1
+    return removed
+
+
+def _ensure_hotspot_pool_wan_guard(
+    sock: socket.socket,
+    *,
+    portal_url: str = "",
+) -> list[str]:
+    """
+    Hard-stop unpaid Hotspot-pool clients from WAN surfing.
+
+    MikroTik Hotspot dynamic firewall sometimes lets QUIC/HTTPS app sockets
+    limp along for unauthorized hosts. Mirror the PPPoE blocked model for the
+    dedicated 10.50.50.0/24 pool: paid MACs stay on ``ispcentric-hotspot-ok``;
+    everyone else in the pool is RST/dropped to WAN (billing host still allowed).
+    """
+    notes: list[str] = []
+    # Refresh tagged rules so portal IP / order stay correct after PUBLIC_BASE_URL changes.
+    stale_ids: list[str] = []
+    for row in _print(sock, "/ip/firewall/filter", props=".id,comment,chain"):
+        comment = row.get("comment") or ""
+        if ISP_HOTSPOT_TAG not in comment:
+            continue
+        if "pool wan" not in comment and "pool billing" not in comment:
+            continue
+        if (row.get("chain") or "").strip() != "forward":
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if item_id:
+            stale_ids.append(item_id)
+    for item_id in stale_ids:
+        _remove(sock, "/ip/firewall/filter", item_id)
+
+    place_before = _first_forward_drop_id(sock)
+    # Prefer inserting before a broad LAN→WAN accept so unpaid pool traffic
+    # cannot ride that allow when PPPoE compulsory is off.
+    for row in _print(
+        sock,
+        "/ip/firewall/filter",
+        props=".id,chain,action,comment,in-interface-list,out-interface-list",
+    ):
+        if (row.get("chain") or "").strip() != "forward":
+            continue
+        if (row.get("action") or "").strip() != "accept":
+            continue
+        comment = row.get("comment") or ""
+        if (
+            "LAN to internet" in comment
+            or (
+                (row.get("in-interface-list") or "").strip() == "LAN"
+                and (row.get("out-interface-list") or "").strip() == "WAN"
+            )
+        ):
+            place_before = (row.get(".id") or "").strip() or place_before
+            break
+
+    billing_ip = ""
+    portal = _billing_portal_base_url(portal_url)
+    if portal:
+        billing_ip = _portal_target_ipv4(portal)
+
+    rules: list[dict[str, str]] = [
+        {
+            "chain": "forward",
+            "action": "accept",
+            "src-address-list": ISP_HOTSPOT_OK_LIST,
+            "out-interface-list": "WAN",
+            "comment": f"{ISP_HOTSPOT_TAG} pool wan ok",
+        },
+    ]
+    if billing_ip:
+        rules.append(
+            {
+                "chain": "forward",
+                "action": "accept",
+                "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                "dst-address": billing_ip,
+                "comment": f"{ISP_HOTSPOT_TAG} pool billing",
+            }
+        )
+    rules.extend(
+        [
+            {
+                "chain": "forward",
+                "action": "reject",
+                "reject-with": "tcp-reset",
+                "protocol": "tcp",
+                "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                "out-interface-list": "WAN",
+                "comment": f"{ISP_HOTSPOT_TAG} pool wan reject",
+            },
+            {
+                "chain": "forward",
+                "action": "drop",
+                "protocol": "udp",
+                "dst-port": "443",
+                "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                "out-interface-list": "WAN",
+                "comment": f"{ISP_HOTSPOT_TAG} pool wan quic",
+            },
+            {
+                "chain": "forward",
+                "action": "drop",
+                "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                "out-interface-list": "WAN",
+                "comment": f"{ISP_HOTSPOT_TAG} pool wan drop",
+            },
+        ]
+    )
+    added = 0
+    for rule in rules:
+        terminal = _add_filter_rule(sock, rule, place_before=place_before)
+        if terminal.get("_reply") == "!trap" and place_before:
+            terminal = _add_filter_rule(sock, rule)
+        if terminal.get("_reply") != "!trap":
+            added += 1
+    if added:
+        notes.append(
+            f"Hotspot pool WAN guard ({ISP_HOTSPOT_POOL_NETWORK}; "
+            f"{added} rule(s); paid via {ISP_HOTSPOT_OK_LIST})"
+        )
+    else:
+        notes.append("warning: Hotspot pool WAN guard not installed")
     return notes
 
 
@@ -12281,6 +12473,73 @@ def _ensure_pppoe_rate_profile(
     return name
 
 
+def _ensure_simple_queue_for_targets(
+    sock: socket.socket,
+    *,
+    queue_name: str,
+    targets: list[str],
+    rate_limit: str,
+    comment: str,
+    error_label: str,
+) -> None:
+    """Create/update/remove a named simple queue for the given target IPs."""
+    queue_name = (queue_name or "").strip()[:63]
+    rate_limit = (rate_limit or "").strip()
+    targets = sorted({(t or "").strip() for t in targets if (t or "").strip()})
+    if not queue_name or not rate_limit:
+        return
+
+    existing: dict[str, str] = {}
+    for row in _print(
+        sock,
+        "/queue/simple",
+        props=".id,name,target,max-limit,comment",
+    ):
+        if (row.get("name") or "").strip() == queue_name:
+            existing = row
+            break
+
+    if not targets:
+        item_id = (existing.get(".id") or "").strip()
+        if item_id:
+            _remove(sock, "/queue/simple", item_id)
+        return
+
+    target = ",".join(targets)
+    props = {
+        "name": queue_name,
+        "target": target,
+        "max-limit": rate_limit,
+        "comment": comment,
+    }
+    item_id = (existing.get(".id") or "").strip()
+    if item_id:
+        terminal = _set(sock, "/queue/simple", item_id, **props)
+        if terminal.get("_reply") == "!trap":
+            soft = {"name": queue_name, "target": target, "max-limit": rate_limit}
+            terminal = _set(sock, "/queue/simple", item_id, **soft)
+        if terminal.get("_reply") == "!trap":
+            raise ConnectionError(
+                _trap_message(
+                    terminal,
+                    f"Could not update {error_label} speed queue.",
+                )
+            )
+        return
+
+    terminal = _add(sock, "/queue/simple", **props)
+    if terminal.get("_reply") == "!trap":
+        soft = {"name": queue_name, "target": target, "max-limit": rate_limit}
+        terminal = _add(sock, "/queue/simple", **soft)
+    if terminal.get("_reply") == "!trap":
+        raise ConnectionError(
+            _trap_message(
+                terminal,
+                f"Could not create {error_label} speed queue.",
+            )
+        )
+
+
 def _ensure_pppoe_simple_queue(
     sock: socket.socket,
     *,
@@ -12306,59 +12565,88 @@ def _ensure_pppoe_simple_queue(
             and (row.get("address") or "").strip()
         }
     )
-    queue_name = f"ispcentric-rl-{username}"[:63]
-    comment = f"{PPP_SECRET_TAG} {rate_limit}"
-
-    existing: dict[str, str] = {}
-    for row in _print(
+    _ensure_simple_queue_for_targets(
         sock,
-        "/queue/simple",
-        props=".id,name,target,max-limit,comment",
-    ):
-        if (row.get("name") or "").strip() == queue_name:
-            existing = row
-            break
+        queue_name=f"ispcentric-rl-{username}",
+        targets=targets,
+        rate_limit=rate_limit,
+        comment=f"{PPP_SECRET_TAG} {rate_limit}",
+        error_label=f"PPPoE “{username}”",
+    )
 
-    if not targets:
-        # No live session — drop a stale queue so a later dial relies on profile.
-        item_id = (existing.get(".id") or "").strip()
-        if item_id:
-            _remove(sock, "/queue/simple", item_id)
+
+def _hotspot_simple_queue_name(mac: str) -> str:
+    compact = (
+        (mac or "")
+        .strip()
+        .upper()
+        .replace(":", "")
+        .replace("-", "")
+        .replace(".", "")
+    )
+    return f"ispcentric-hs-rl-{compact}"[:63]
+
+
+def _ensure_hotspot_simple_queue(
+    sock: socket.socket,
+    *,
+    mac: str,
+    rate_limit: str,
+    active_rows: list[dict[str, str]] | None = None,
+) -> None:
+    """
+    Shape active Hotspot session IP(s) with a named simple queue.
+
+    Profile rate-limit only rebuilds the dynamic queue on a new login. This
+    static queue caps an already-online phone at package Mbps immediately —
+    same belt-and-suspenders path PPPoE uses.
+    """
+    mac = (mac or "").strip().upper()
+    rate_limit = (rate_limit or "").strip()
+    if not mac or not rate_limit:
         return
 
-    # One queue covering every concurrent session IP for this username.
-    target = ",".join(targets)
-    props = {
-        "name": queue_name,
-        "target": target,
-        "max-limit": rate_limit,
-        "comment": comment,
-    }
-    item_id = (existing.get(".id") or "").strip()
-    if item_id:
-        terminal = _set(sock, "/queue/simple", item_id, **props)
-        if terminal.get("_reply") == "!trap":
-            soft = {"name": queue_name, "target": target, "max-limit": rate_limit}
-            terminal = _set(sock, "/queue/simple", item_id, **soft)
-        if terminal.get("_reply") == "!trap":
-            raise ConnectionError(
-                _trap_message(
-                    terminal,
-                    f"Could not update PPPoE speed queue for “{username}”.",
-                )
-            )
-    else:
-        terminal = _add(sock, "/queue/simple", **props)
-        if terminal.get("_reply") == "!trap":
-            soft = {"name": queue_name, "target": target, "max-limit": rate_limit}
-            terminal = _add(sock, "/queue/simple", **soft)
-        if terminal.get("_reply") == "!trap":
-            raise ConnectionError(
-                _trap_message(
-                    terminal,
-                    f"Could not create PPPoE speed queue for “{username}”.",
-                )
-            )
+    rows = active_rows
+    if rows is None:
+        rows = _print(
+            sock,
+            "/ip/hotspot/active",
+            props="mac-address,address",
+            query={"mac-address": mac},
+        )
+        if not rows:
+            rows = _print(sock, "/ip/hotspot/active", props="mac-address,address")
+
+    targets = sorted(
+        {
+            (row.get("address") or "").strip()
+            for row in rows or []
+            if (row.get("mac-address") or "").strip().upper() == mac
+            and (row.get("address") or "").strip()
+        }
+    )
+    _ensure_simple_queue_for_targets(
+        sock,
+        queue_name=_hotspot_simple_queue_name(mac),
+        targets=targets,
+        rate_limit=rate_limit,
+        comment=f"{ISP_HOTSPOT_TAG} {rate_limit}",
+        error_label=f"Hotspot “{mac}”",
+    )
+
+
+def _remove_hotspot_simple_queue(sock: socket.socket, mac: str) -> None:
+    """Drop the static Hotspot speed queue when the MAC is blocked/offline."""
+    queue_name = _hotspot_simple_queue_name(mac)
+    if not queue_name:
+        return
+    for row in _print(sock, "/queue/simple", props=".id,name"):
+        if (row.get("name") or "").strip() != queue_name:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if item_id:
+            _remove(sock, "/queue/simple", item_id)
+        break
 
 
 def _ppp_secret_profile_for_customer(customer, *, disabled: bool) -> str:
@@ -12552,6 +12840,10 @@ def _disconnect_pppoe_sessions_many(
 
     Walking clients one-by-one serializes outages; removing every matching
     /ppp/active row from a single dump lets redials overlap.
+
+    Also kills tracked firewall connections for those session IPs so apps
+    cannot keep surfing on established sockets after the secret moves to
+    the blocked profile.
     """
     needles = {
         (name or "").strip().lower()
@@ -12560,18 +12852,24 @@ def _disconnect_pppoe_sessions_many(
     }
     if not needles:
         return 0
+    rows = _print(sock, "/ppp/active", props=".id,name,address")
+    session_ips: set[str] = set()
     removed = 0
-    rows = _print(sock, "/ppp/active", props=".id,name")
     for row in rows:
         name = (row.get("name") or "").strip().lower()
         if name not in needles:
             continue
+        address = (row.get("address") or "").strip()
+        if address:
+            session_ips.add(address)
         item_id = (row.get(".id") or "").strip()
         if not item_id:
             continue
         terminal = _remove(sock, "/ppp/active", item_id)
         if terminal.get("_reply") != "!trap":
             removed += 1
+    if session_ips:
+        _kill_firewall_connections_for_addresses(sock, session_ips)
     return removed
 
 
@@ -13208,9 +13506,10 @@ def sync_pppoe_subscription_batch_on_router(
     """
     Apply PPPoE allow/block for many customers on one NAS in one API session.
 
-    Writes every secret first (no kicks), clears stuck blocked address-list
-    rows, then drops all sessions that need a redial together so CPEs reconnect
-    in parallel instead of first→last.
+    Writes every secret first (no kicks), enables the CPE Wi‑Fi pay/pause
+    Hotspot while PPP is still up for expired clients, clears stuck blocked
+    address-list rows, then drops all sessions that need a redial together so
+    CPEs reconnect in parallel instead of first→last.
     """
     if router is None:
         return {"ok": False, "error": "No router provided.", "allowed": 0, "blocked": 0}
@@ -13257,8 +13556,11 @@ def sync_pppoe_subscription_batch_on_router(
     last_error = ""
     kick_usernames: list[str] = []
     clear_usernames: list[str] = []
+    renew_portal_customers: list = []
+    blocked_identity_customers: list = []
     allowed = blocked = errors = 0
     kicked = 0
+    portal_enabled = 0
     notes: list[str] = []
     need_block_stack = False
 
@@ -13359,7 +13661,7 @@ def sync_pppoe_subscription_batch_on_router(
                                 f"ghost PPP session for {username} — "
                                 "leaving for keepalive (no kick)"
                             )
-                        if _pppoe_customer_needs_session_kick(
+                        needs_kick = _pppoe_customer_needs_session_kick(
                             customer,
                             previous_profile=previous_profile,
                             profile=profile,
@@ -13367,8 +13669,25 @@ def sync_pppoe_subscription_batch_on_router(
                             internet_allowed=internet_allowed,
                             session_was_blocked=session_was_blocked,
                             session_active_before=session_active_before,
-                        ):
+                        )
+                        if needs_kick:
                             kick_usernames.append(username)
+                        # Expired/paused: push CPE pay/pause Hotspot while the
+                        # PPP session is still up. Without this, fleet kicks
+                        # leave phones on "no internet" with no renew popup.
+                        if (
+                            not internet_allowed
+                            and not disabled
+                            and getattr(customer, "status", "") == "active"
+                            and (
+                                needs_kick
+                                or session_active_before
+                                or cpe_renew_enable_is_pending(customer)
+                            )
+                        ):
+                            renew_portal_customers.append(customer)
+                            if needs_kick or session_active_before:
+                                blocked_identity_customers.append(customer)
                     except Exception as exc:  # noqa: BLE001
                         errors += 1
                         logger.warning(
@@ -13389,11 +13708,47 @@ def sync_pppoe_subscription_batch_on_router(
                             router_id,
                         )
 
-                kicked = _disconnect_pppoe_sessions_many(sock, kick_usernames)
+            # Pay popup BEFORE kick, outside the timed NAS write session so a
+            # slow CPE HTML push cannot abort the disconnect. Live PPP still
+            # has the old (paid) address-list until we kick below.
+            portal_enabled = _enable_cpe_renew_portals_for_batch_block(
+                renew_portal_customers
+            )
+            if portal_enabled:
+                notes.append(
+                    f"enabled CPE renew Hotspot on {portal_enabled} "
+                    "expired/paused account(s) before kick"
+                )
+
+            if kick_usernames:
+                try:
+                    with _api_session(
+                        candidate, api_user, api_password, timeout=12.0
+                    ) as kick_sock:
+                        kicked = _disconnect_pppoe_sessions_many(
+                            kick_sock, kick_usernames
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "PPPoE batch kick failed router=%s: %s",
+                        router_id,
+                        exc,
+                    )
+                    kicked = 0
                 if kicked:
                     notes.append(
                         f"batch-kicked {kicked} session(s) "
-                        f"({len(set(kick_usernames))} account(s)) — CPEs redial together"
+                        f"({len(set(kick_usernames))} account(s)) — "
+                        "CPEs redial together"
+                    )
+
+            for customer in blocked_identity_customers:
+                try:
+                    _remember_blocked_pppoe_captive_identity(customer)
+                except Exception:
+                    logger.exception(
+                        "Could not cache blocked PPPoE identity for customer %s",
+                        getattr(customer, "pk", None),
                     )
 
             # Outside the API session: CPE renew clear uses NAS→CPE proxy and
@@ -13401,6 +13756,11 @@ def sync_pppoe_subscription_batch_on_router(
             cleared = _follow_up_pending_cpe_renew_clears(customers)
             if cleared:
                 notes.append(f"cleared {cleared} pending CPE renew Hotspot(s)")
+            enabled_followup = _follow_up_pending_cpe_renew_enables(customers)
+            if enabled_followup:
+                notes.append(
+                    f"enabled {enabled_followup} pending CPE renew Hotspot(s)"
+                )
 
             return {
                 "ok": errors == 0,
@@ -13412,11 +13772,13 @@ def sync_pppoe_subscription_batch_on_router(
                 "errors": errors,
                 "kicked": kicked,
                 "kick_accounts": len(set(kick_usernames)),
+                "cpe_renew_enabled": portal_enabled + enabled_followup,
                 "cpe_renew_cleared": cleared,
                 "notes": notes,
                 "message": (
                     f"PPPoE batch on {router_name}: allowed={allowed} "
                     f"blocked={blocked} kick_accounts={len(set(kick_usernames))}"
+                    + (f" cpe_pay={portal_enabled}" if portal_enabled else "")
                     + (f" cpe_cleared={cleared}" if cleared else "")
                 ),
             }
@@ -13678,6 +14040,99 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
         + (f" (cleared {cleared} CPE renew Hotspot(s))" if cleared else "")
     )
     return result
+
+
+def _enable_cpe_renew_portals_for_batch_block(customers: list) -> int:
+    """
+    Push CPE Wi‑Fi pay/pause Hotspot while PPP is still up.
+
+    Fleet batch kicks move secrets onto the blocked profile; without this step
+    phones only see a disconnect instead of ``/pppoe/…/pay/`` (or pause).
+    """
+    enabled = 0
+    seen: set[int] = set()
+    for customer in customers:
+        customer_id = getattr(customer, "pk", None)
+        if customer_id is not None:
+            if int(customer_id) in seen:
+                continue
+            seen.add(int(customer_id))
+        if getattr(customer, "status", "") != "active":
+            continue
+        if _customer_internet_allowed(customer):
+            continue
+        if _customer_pppoe_secret_disabled(customer):
+            continue
+        username = (getattr(customer, "pppoe_username", None) or "").strip()
+        if not username:
+            continue
+        org = getattr(customer, "organization", None)
+        pay_url = _pppoe_pay_portal_url(org, customer=customer)
+        if not pay_url:
+            mark_cpe_renew_enable_pending(customer)
+            continue
+        try:
+            portal = apply_cpe_renew_portal(
+                customer,
+                enabled=True,
+                portal_url=pay_url,
+                timeout=_CAPTIVE_CPE_ENABLE_TIMEOUT,
+            )
+        except Exception:
+            mark_cpe_renew_enable_pending(customer)
+            logger.exception(
+                "CPE renew enable before batch block failed for customer %s",
+                customer_id,
+            )
+            continue
+        if portal.get("ok"):
+            clear_cpe_renew_enable_pending(customer)
+            enabled += 1
+        else:
+            mark_cpe_renew_enable_pending(customer)
+    return enabled
+
+
+def _follow_up_pending_cpe_renew_enables(customers: list) -> int:
+    """
+    Retry CPE pay/pause Hotspot for expired clients the batch kick missed.
+
+    Used when the first enable failed (CPE busy / brief offline) so phones
+    still get ``/pppoe/…/pay/`` after the CPE redials on the blocked profile.
+    """
+    enabled = 0
+    for customer in customers:
+        if not cpe_renew_enable_is_pending(customer):
+            continue
+        if _customer_internet_allowed(customer):
+            clear_cpe_renew_enable_pending(customer)
+            continue
+        if getattr(customer, "status", "") != "active":
+            continue
+        if _customer_pppoe_secret_disabled(customer):
+            clear_cpe_renew_enable_pending(customer)
+            continue
+        org = getattr(customer, "organization", None)
+        pay_url = _pppoe_pay_portal_url(org, customer=customer)
+        if not pay_url:
+            continue
+        try:
+            portal = apply_cpe_renew_portal(
+                customer,
+                enabled=True,
+                portal_url=pay_url,
+                timeout=_CAPTIVE_CPE_ENABLE_TIMEOUT,
+            )
+        except Exception:
+            logger.exception(
+                "CPE renew enable follow-up failed for customer %s",
+                getattr(customer, "pk", None),
+            )
+            continue
+        if portal.get("ok"):
+            clear_cpe_renew_enable_pending(customer)
+            enabled += 1
+    return enabled
 
 
 def _follow_up_pending_cpe_renew_clears(customers: list) -> int:
@@ -15653,6 +16108,133 @@ def repair_hotspot_captive_portal(
     return last
 
 
+def repair_unpaid_hotspot_leaking_on_router(router) -> dict[str, Any]:
+    """
+    Stop unpaid/expired Hotspot clients that still have WAN (app-level leak).
+
+    Clears authorized sessions / ok-list rows for MACs that billing says must
+    not surf, kills tracked connections, and re-installs the Hotspot pool WAN
+    guard + captive pages so the next associate opens the pay page.
+    """
+    if router is None:
+        return {"ok": False, "skipped": True, "repaired": 0, "error": "No router."}
+
+    org = getattr(router, "organization", None)
+    host = (getattr(router, "host", None) or "").strip()
+    api_user = (getattr(router, "username", None) or "").strip()
+    api_password = getattr(router, "password", None) or ""
+    router_id = getattr(router, "pk", None)
+    if not org or not host or not api_user:
+        return {
+            "ok": False,
+            "skipped": True,
+            "repaired": 0,
+            "router_id": router_id,
+            "error": "Router organization or API credentials missing.",
+        }
+
+    from core.models import MikroTikRouter
+
+    if getattr(router, "account_status", "") == MikroTikRouter.AccountStatus.SUSPENDED:
+        return {
+            "ok": True,
+            "skipped": True,
+            "repaired": 0,
+            "router_id": router_id,
+            "message": "Router suspended — Hotspot leak repair skipped.",
+        }
+
+    hotspot_on = bool(getattr(org, "hotspot_enabled", False))
+    from billing.models import Customer
+
+    has_hotspot = hotspot_on or Customer.objects.filter(
+        organization_id=org.pk,
+        service_type=Customer.ServiceType.HOTSPOT,
+    ).exclude(hotspot_mac="").exists()
+    if not has_hotspot:
+        return {
+            "ok": True,
+            "skipped": True,
+            "repaired": 0,
+            "router_id": router_id,
+            "message": "No Hotspot clients on this router.",
+        }
+
+    last_error = ""
+    for candidate in _router_api_host_candidates(router, discover=False):
+        try:
+            with _api_session(candidate, api_user, api_password, timeout=15.0) as sock:
+                notes = _block_orphan_hotspot_users_on_socket(sock, router)
+                portal = _billing_portal_base_url(
+                    organization=org,
+                )
+                notes.extend(
+                    _ensure_hotspot_pool_wan_guard(sock, portal_url=portal)
+                )
+                # Re-assert option 114 + login.html lightly when leaks were found
+                # so devices that were surfing without a popup get redirected.
+                if notes:
+                    try:
+                        urls = _hotspot_portal_urls_for_org(org)
+                        page_notes = _fetch_isp_hotspot_pages(
+                            sock,
+                            login_url=urls.get("login_url") or "",
+                            alogin_url=urls.get("alogin_url") or "",
+                            pay_url=urls.get("pay_url") or "",
+                            welcome_url=urls.get("welcome_url") or "",
+                        )
+                        notes.extend(page_notes[:3])
+                        notes.extend(
+                            _ensure_captive_portal_dhcp_option(
+                                sock,
+                                urls.get("pay_url") or portal,
+                                comment=ISP_HOTSPOT_TAG,
+                            )
+                        )
+                        # Bounce only unauthorized hosts — keep paid sessions.
+                        notes.extend(_bounce_isp_hotspot_clients(sock))
+                    except Exception as exc:  # noqa: BLE001
+                        notes.append(
+                            f"warning: captive refresh after leak repair failed: {exc}"
+                        )
+                repaired = sum(
+                    1
+                    for n in notes
+                    if "blocked orphan" in n
+                    or "purged" in n
+                    or "killed" in n
+                )
+                return {
+                    "ok": True,
+                    "skipped": repaired == 0 and not any(
+                        "pool WAN guard" in n for n in notes
+                    ),
+                    "repaired": repaired,
+                    "router_id": router_id,
+                    "host": candidate,
+                    "notes": notes,
+                    "message": (
+                        f"Hotspot leak repair: repaired={repaired}"
+                        if repaired
+                        else (
+                            "; ".join(notes[:4])
+                            if notes
+                            else "No unpaid Hotspot leak on this router."
+                        )
+                    ),
+                }
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc) or "unreachable"
+            continue
+    return {
+        "ok": False,
+        "repaired": 0,
+        "router_id": router_id,
+        "host": host,
+        "error": last_error or f"{host}: unreachable",
+    }
+
+
 def refresh_onboarded_router_config(
     router,
     *,
@@ -16517,6 +17099,29 @@ def resolve_captive_organization(client_ip: str = ""):
         if org is not None:
             _captive_cache_set(cache_key, org.pk, _CAPTIVE_ORG_CACHE_TTL)
             return org
+
+    # Known captive pools without a live session (NAS offline / host not yet
+    # in the Hotspot table): a single org for that service type is still safe
+    # — better an instant pay page than silent pass-through while apps leak.
+    if is_hotspot_pool_ip(client_ip):
+        hs = [o for o in candidates if getattr(o, "hotspot_enabled", False)]
+        if len(hs) == 1:
+            _captive_cache_set(cache_key, hs[0].pk, _CAPTIVE_ORG_CACHE_TTL)
+            return hs[0]
+    if is_pppoe_pool_ip(client_ip) or is_cpe_renew_pool_ip(client_ip):
+        ppp = [
+            o
+            for o in candidates
+            if getattr(o, "pppoe_compulsory", False)
+            or getattr(o, "hotspot_enabled", False)
+        ]
+        # Prefer orgs that clearly run PPPoE; fall back to single captive org.
+        if len(ppp) == 1:
+            _captive_cache_set(cache_key, ppp[0].pk, _CAPTIVE_ORG_CACHE_TTL)
+            return ppp[0]
+        if len(candidates) == 1:
+            _captive_cache_set(cache_key, candidates[0].pk, _CAPTIVE_ORG_CACHE_TTL)
+            return candidates[0]
 
     # Multi-tenant without a session match: do not guess a join_code.
     return None
@@ -18367,6 +18972,7 @@ def _ensure_hotspot_user(
     disabled: bool = False,
     limit_uptime: str = "",
     profile: str = "",
+    rate_limit: str = "",
 ) -> str:
     username = (username or "").strip()
     password = password or ""
@@ -18400,16 +19006,20 @@ def _ensure_hotspot_user(
     disabled_value = "yes" if disabled else "no"
     tag = comment or ISP_HOTSPOT_TAG
     profile_name = (profile or "").strip() or ISP_HOTSPOT_USER_PROFILE
+    user_rate = (rate_limit or "").strip()
     # limit-uptime is the router-side hard cap on what this MAC bought. It is
     # cumulative across sessions, so reconnecting cannot extend the package, and
     # it survives the billing server going offline. RouterOS reads "0s" as
     # "no cap", which is only ever passed for a user that is also disabled.
     #
-    # Billing passes *remaining wall-clock* surfing time. Because RouterOS
-    # compares that cap against already-used uptime, a deploy/sweep that rewrote
-    # limit-uptime to "seconds left" alone would cut mid-package clients whose
-    # used uptime already exceeded the new smaller cap. Add used uptime so the
-    # net remaining online time matches billing.
+    # Billing is wall-clock (period runs offline too). We pass *remaining
+    # wall-clock* seconds. Because RouterOS compares that cap against
+    # already-used session uptime (which only advances while online), a
+    # deploy/sweep that rewrote limit-uptime to "seconds left" alone would cut
+    # mid-package clients whose used uptime already exceeded the new smaller
+    # cap. Add used uptime so the net RouterOS remaining matches billing's
+    # wall-clock remaining. The expiry watch rewrites this often so offline
+    # time still shrinks the cap.
     uptime_cap = (limit_uptime or "").strip() or "0s"
     if not disabled and uptime_cap not in {"", "0s"}:
         remaining = _parse_ros_duration(uptime_cap)
@@ -18424,28 +19034,55 @@ def _ensure_hotspot_user(
                     remaining,
                 )
             uptime_cap = _format_ros_duration(used_uptime + remaining)
-    attempts = [
-        {
-            "name": username,
-            "password": password,
-            "profile": profile_name,
-            "limit-uptime": uptime_cap,
-            "disabled": disabled_value,
-            "comment": tag,
-        },
-        {
-            "name": username,
-            "password": password,
-            "profile": profile_name,
-            "limit-uptime": uptime_cap,
-            "disabled": disabled_value,
-        },
-        {
-            "name": username,
-            "password": password,
-            "disabled": disabled_value,
-        },
-    ]
+    # Prefer profile + per-user rate-limit so package Mbps stick even if a
+    # shared profile is reused. Soft fallbacks drop rate-limit then profile.
+    attempts: list[dict[str, str]] = []
+    if user_rate and not disabled:
+        attempts.append(
+            {
+                "name": username,
+                "password": password,
+                "profile": profile_name,
+                "rate-limit": user_rate,
+                "limit-uptime": uptime_cap,
+                "disabled": disabled_value,
+                "comment": tag,
+            }
+        )
+        attempts.append(
+            {
+                "name": username,
+                "password": password,
+                "profile": profile_name,
+                "rate-limit": user_rate,
+                "limit-uptime": uptime_cap,
+                "disabled": disabled_value,
+            }
+        )
+    attempts.extend(
+        [
+            {
+                "name": username,
+                "password": password,
+                "profile": profile_name,
+                "limit-uptime": uptime_cap,
+                "disabled": disabled_value,
+                "comment": tag,
+            },
+            {
+                "name": username,
+                "password": password,
+                "profile": profile_name,
+                "limit-uptime": uptime_cap,
+                "disabled": disabled_value,
+            },
+            {
+                "name": username,
+                "password": password,
+                "disabled": disabled_value,
+            },
+        ]
+    )
     terminal, _ = _add_or_set_attempts(sock, "/ip/hotspot/user", user_id, attempts)
     if terminal.get("_reply") == "!trap":
         raise ConnectionError(
@@ -18474,9 +19111,11 @@ def _hotspot_customer_access_fields(customer, *, organization=None, now=None):
     org = organization or getattr(customer, "organization", None)
     disabled = not customer_can_surf_via_hotspot(customer, org)
     limit_uptime = ""
-    # Cap online time until the real access deadline (midnight for calendar
+    # Cap until the real wall-clock access deadline (midnight for calendar
     # packages). Using raw package_end would cut Wi‑Fi mid-afternoon while
-    # PPPoE still had the rest of the day.
+    # PPPoE still had the rest of the day. Remaining seconds shrink whether
+    # the client is online or offline; RouterOS only burns this while the
+    # session is up, so the expiry watch must rewrite it periodically.
     deadline = subscription_access_deadline(customer)
     if not disabled and deadline is not None:
         stamp = timezone.localtime(now or timezone.now())
@@ -18506,7 +19145,10 @@ def _is_hotspot_mac_name(name: str) -> bool:
 
 def _paid_hotspot_mac_set(organization) -> set[str]:
     """MACs that may surf Hotspot right now according to billing."""
-    from billing.devices import customer_max_devices, hotspot_macs_for_customer
+    from billing.devices import (
+        authorized_hotspot_macs_for_customer,
+        customer_max_devices,
+    )
     from billing.models import Customer
     from billing.services import customer_can_surf_via_hotspot
 
@@ -18522,7 +19164,7 @@ def _paid_hotspot_mac_set(organization) -> set[str]:
         if not customer_can_surf_via_hotspot(customer):
             continue
         cap = customer_max_devices(customer)
-        linked = hotspot_macs_for_customer(customer)
+        linked = authorized_hotspot_macs_for_customer(customer)
         if cap > 0:
             linked = linked[:cap]
         for mac in linked:
@@ -18551,7 +19193,7 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
     host_rows = _print(
         sock,
         "/ip/hotspot/host",
-        props=".id,mac-address,authorized",
+        props=".id,mac-address,address,authorized",
     )
 
     for row in _print(sock, "/ip/hotspot/user", props=".id,name,disabled,comment"):
@@ -18582,14 +19224,19 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
         purged = _purge_hotspot_ok_list_for_mac(sock, name, active_rows=active_rows)
         notes.append(f"blocked orphan Hotspot MAC {name} (ok-list purged={purged})")
 
-    stale_ips: set[str] = set()
+    # Paid surfing IPs only — anything else on the ok-list is a leak (stale
+    # dynamic rows after kick, orphan imports, or over-cap MACs).
+    paid_ips: set[str] = set()
+    leak_ips: set[str] = set()
     for row in active_rows:
         mac = _normalize_hotspot_mac(row.get("mac-address") or "")
-        if mac in paid_macs:
-            continue
         address = (row.get("address") or "").strip()
-        if address:
-            stale_ips.add(address)
+        if not address:
+            continue
+        if mac in paid_macs:
+            paid_ips.add(address)
+        else:
+            leak_ips.add(address)
 
     removed_ips = 0
     for row in _print(
@@ -18598,17 +19245,22 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
         if (row.get("list") or "").strip() != ISP_HOTSPOT_OK_LIST:
             continue
         address = (row.get("address") or "").strip()
-        if not address or address not in stale_ips:
+        if not address or address in paid_ips:
             continue
         item_id = (row.get(".id") or "").strip()
         if item_id and _remove(sock, "/ip/firewall/address-list", item_id).get(
             "_reply"
         ) != "!trap":
             removed_ips += 1
+            leak_ips.add(address)
     if removed_ips:
         notes.append(
-            f"purged {removed_ips} unpaid Hotspot IP(s) from {ISP_HOTSPOT_OK_LIST}"
+            f"purged {removed_ips} unpaid/stale Hotspot IP(s) from {ISP_HOTSPOT_OK_LIST}"
         )
+    if leak_ips:
+        killed = _kill_firewall_connections_for_addresses(sock, leak_ips)
+        if killed:
+            notes.append(f"killed {killed} leaked Hotspot connection(s)")
     return notes
 
 
@@ -18652,6 +19304,8 @@ def _purge_hotspot_ok_list_for_mac(
                 "_reply"
             ) != "!trap":
                 removed += 1
+    if ips:
+        _kill_firewall_connections_for_addresses(sock, ips)
     return removed
 
 
@@ -18950,7 +19604,17 @@ def _expire_hotspot_mac_sessions(
     active_rows: list[dict[str, str]] | None = None,
     host_rows: list[dict[str, str]] | None = None,
 ) -> None:
-    """Expire Hotspot active/host/cookie rows for one MAC when access changes."""
+    """Expire Hotspot active/host/cookie rows for one MAC when access changes.
+
+    ``reauthenticate=True`` also drops live ``/ip/hotspot/active`` sessions so
+    RouterOS rebuilds the dynamic rate-limit queue from the current package
+    profile (profile edits alone do not reshape an already-online phone).
+    Soft sweeps must pass ``reauthenticate=False`` to refresh limit-uptime
+    without bouncing surfing clients.
+
+    When ``disabled=True``, tracked firewall connections for the MAC's IPs
+    are killed so apps cannot keep surfing on established HTTPS/QUIC sockets.
+    """
     mac = (mac or "").strip().upper()
     if not mac:
         return
@@ -18958,6 +19622,7 @@ def _expire_hotspot_mac_sessions(
         ("/ip/hotspot/active", active_rows),
         ("/ip/hotspot/host", host_rows),
     )
+    session_ips: set[str] = set()
     for path, preset in tables:
         rows = preset
         if rows is None:
@@ -18966,21 +19631,33 @@ def _expire_hotspot_mac_sessions(
             rows = _print(
                 sock,
                 path,
-                props=".id,mac-address,authorized",
+                props=".id,mac-address,address,authorized",
                 query={"mac-address": mac},
             )
             if not rows:
-                rows = _print(sock, path, props=".id,mac-address,authorized")
+                rows = _print(
+                    sock, path, props=".id,mac-address,address,authorized"
+                )
         for row in rows:
             if (row.get("mac-address") or "").strip().upper() != mac:
                 continue
+            address = (row.get("address") or "").strip()
+            if address:
+                session_ips.add(address)
             authorized = (row.get("authorized") or "").strip().lower() == "true"
-            should_remove = disabled or (
-                reauthenticate and path == "/ip/hotspot/host" and not authorized
-            )
+            if disabled:
+                should_remove = True
+            elif reauthenticate:
+                # Kick the live session so package Mbps take effect, and clear
+                # unauthorized hosts that would otherwise bypass the portal.
+                should_remove = path == "/ip/hotspot/active" or not authorized
+            else:
+                should_remove = False
             item_id = (row.get(".id") or "").strip()
             if should_remove and item_id:
                 _remove(sock, path, item_id)
+    if disabled and session_ips:
+        _kill_firewall_connections_for_addresses(sock, session_ips)
     if not disabled:
         return
     cookie_rows = _print(
@@ -19010,6 +19687,7 @@ def _apply_hotspot_customer_on_socket(
 ) -> dict[str, Any]:
     """Create/update Hotspot MAC users for this customer and expire stale sessions."""
     from billing.devices import (
+        authorized_hotspot_macs_for_customer,
         customer_max_devices,
         hotspot_macs_for_customer,
         prune_over_cap_hotspot_devices,
@@ -19021,10 +19699,25 @@ def _apply_hotspot_customer_on_socket(
     primary, disabled, limit_uptime, comment = _hotspot_customer_access_fields(
         customer, now=now
     )
-    macs = hotspot_macs_for_customer(customer)
-    if not macs and primary:
-        macs = [_normalize_hotspot_mac(primary)]
-    if not macs:
+    # All known MACs (for disable/kick); only voucher-redeemed MACs get enabled.
+    known = hotspot_macs_for_customer(customer)
+    if not known and primary:
+        known = [_normalize_hotspot_mac(primary)]
+    if disabled:
+        allowed = []
+    else:
+        authorized = [
+            _normalize_hotspot_mac(m)
+            for m in authorized_hotspot_macs_for_customer(customer)
+            if _normalize_hotspot_mac(m)
+        ]
+        auth_set = set(authorized)
+        known_norm = [_normalize_hotspot_mac(m) for m in known if _normalize_hotspot_mac(m)]
+        known_set = set(known_norm)
+        # Keep primary-first known order so cap drops extras, not the payer.
+        allowed = [m for m in known_norm if m in auth_set]
+        allowed.extend(m for m in authorized if m not in known_set)
+    if not known and not allowed:
         # Still disable any MACs we just pruned off the account.
         for mac in pruned:
             norm = _normalize_hotspot_mac(mac)
@@ -19048,6 +19741,7 @@ def _apply_hotspot_customer_on_socket(
                 host_rows=host_rows,
             )
             _purge_hotspot_ok_list_for_mac(sock, norm, active_rows=active_rows)
+            _remove_hotspot_simple_queue(sock, norm)
         return {
             "ok": False,
             "profile": "",
@@ -19063,12 +19757,15 @@ def _apply_hotspot_customer_on_socket(
             ],
         }
     cap = customer_max_devices(customer)
-    if cap > 0:
-        allowed = macs[:cap]
-        extra = macs[cap:]
-    else:
-        allowed = macs
-        extra = []
+    if cap > 0 and allowed:
+        allowed = allowed[:cap]
+    allowed_set = {_normalize_hotspot_mac(m) for m in allowed}
+    # Linked / historical MACs that did not redeem a voucher this period stay off.
+    extra = [
+        m
+        for m in known
+        if _normalize_hotspot_mac(m) and _normalize_hotspot_mac(m) not in allowed_set
+    ]
     org = getattr(customer, "organization", None)
     upload, download = _hotspot_speeds_for_customer(customer, org)
     rate_limit = _rate_limit_string(upload, download)
@@ -19086,24 +19783,37 @@ def _apply_hotspot_customer_on_socket(
             username=mac,
             password="",
             comment=comment,
-            disabled=disabled,
+            disabled=False,
             limit_uptime=uptime,
             profile=profile,
+            rate_limit=rate_limit,
         )
-        _expire_hotspot_mac_sessions(
-            sock,
-            mac,
-            disabled=disabled,
-            reauthenticate=kick_sessions,
-            active_rows=active_rows,
-            host_rows=host_rows,
-        )
-        if disabled:
-            _purge_hotspot_ok_list_for_mac(sock, mac, active_rows=active_rows)
-    # Extra linked MACs (e.g. voucher redeemed beyond cap) stay in billing but
-    # must be disabled on NAS. Pruned CustomerDevice rows are already gone from
-    # the DB — still disable+kick them on the router or they keep surfing.
-    allowed_set = {_normalize_hotspot_mac(m) for m in allowed}
+        if kick_sessions:
+            # Drop the live session so the next MAC login rebuilds the dynamic
+            # queue from the package profile. Clear any stale static queue that
+            # still points at the pre-kick address.
+            _expire_hotspot_mac_sessions(
+                sock,
+                mac,
+                disabled=False,
+                reauthenticate=True,
+                active_rows=active_rows,
+                host_rows=host_rows,
+            )
+            _remove_hotspot_simple_queue(sock, mac)
+        else:
+            # Soft sweep: keep the session, but pin package Mbps with a static
+            # simple queue (profile edits alone do not reshape online phones).
+            if rate_limit and not disabled:
+                _ensure_hotspot_simple_queue(
+                    sock,
+                    mac=mac,
+                    rate_limit=rate_limit,
+                    active_rows=active_rows,
+                )
+    # Extra linked MACs (no voucher this period / over-cap) and pruned rows
+    # must be disabled on NAS or they keep surfing. When the package is
+    # expired, ``allowed`` is empty so every known MAC lands in ``extra``.
     disable_macs: list[str] = []
     seen_disable: set[str] = set()
     for mac in [*extra, *pruned]:
@@ -19131,6 +19841,7 @@ def _apply_hotspot_customer_on_socket(
             host_rows=host_rows,
         )
         _purge_hotspot_ok_list_for_mac(sock, mac, active_rows=active_rows)
+        _remove_hotspot_simple_queue(sock, mac)
     return {
         "ok": True,
         "profile": profile,
@@ -19964,6 +20675,11 @@ def _ensure_isp_hotspot_stack(
             sock, pay_url or garden_url, comment=ISP_HOTSPOT_TAG
         )
     )
+    # Hard-stop unpaid pool clients (QUIC/app leak) even when Hotspot dynamic
+    # firewall or PPPoE compulsory LAN drop is incomplete.
+    notes.extend(
+        _ensure_hotspot_pool_wan_guard(sock, portal_url=pay_url or garden_url)
+    )
     notes.extend(_bounce_isp_hotspot_clients(sock))
     return notes
 
@@ -20173,6 +20889,12 @@ def apply_hotspot_on_router(
                             comment=ISP_HOTSPOT_TAG,
                             portal_url=garden,
                         )
+                    )
+                    # PPPoE stack rewrite can insert LAN→WAN accept after our
+                    # pool drop; re-assert the guard so unpaid 10.50.50 clients
+                    # cannot leak through apps (QUIC/HTTPS).
+                    notes.extend(
+                        _ensure_hotspot_pool_wan_guard(sock, portal_url=garden)
                     )
                 else:
                     notes = _disable_isp_hotspot_stack(sock)

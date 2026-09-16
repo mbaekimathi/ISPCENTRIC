@@ -24,18 +24,19 @@ _SAMPLE_MIN_INTERVAL = 25  # seconds between persisted samples per client
 _OFFLINE_SAMPLE_MIN_INTERVAL = 300  # avoid flooding zeros when clients are offline
 _ORG_SAMPLE_TTL = 45  # seconds between org-wide MikroTik sweeps
 _ORG_PAYLOAD_TTL = 20  # seconds for aggregated chart payloads
-_ORG_PAYLOAD_CACHE_VERSION = "v8"  # bump when payload shape / sampling changes
+_ORG_PAYLOAD_CACHE_VERSION = "v10"  # bump when payload shape / sampling changes
 _ORG_LIVE_USAGE_TTL = 120  # NAS presence snapshot after each org sweep
 _ORG_DEVICE_TOUCH_TTL = 60  # throttle CustomerDevice last_seen updates
 _CLIENT_TREND_TTL = 20  # short cache for per-client chart payloads
-_CLIENT_TREND_CACHE_VERSION = "v6"  # bump when payload shape changes
+_CLIENT_TREND_CACHE_VERSION = "v7"  # bump when payload shape changes
 _CLIENT_TREND_MAX_POINTS = 48  # hard cap on chart buckets
 _CLIENT_SAMPLE_CAP = 8000  # max rows scanned per client trend request
 _ORG_SAMPLE_ROW_SOFT_CAP = 8000  # target rows after fair per-client downsample
 _ORG_SAMPLE_MAX_PER_CUSTOMER = 240  # keep enough points for rate/delta fidelity
+_ORG_SAMPLE_MAX_PER_CUSTOMER_MONTH = 720  # denser month/year fidelity (~hourly)
 _ORG_SAMPLE_MIN_PER_CUSTOMER = 24
 _LIVE_SAMPLE_STALE_SEC = 90  # re-probe analysis page when history is this old
-_HOTSPOT_SYNTH_TTL = 60 * 60 * 12  # multi-MAC synthetic counters
+_HOTSPOT_SYNTH_TTL = 60 * 60 * 24 * 7  # keep multi-MAC synth across sampling gaps
 # Chart y-values for access presence: surfing / not surfing / disconnected
 _SURF_STATE_SURFING = 2
 _SURF_STATE_NOT_SURFING = 1
@@ -420,14 +421,75 @@ def _offline_usage_payload() -> dict[str, Any]:
     }
 
 
+def _sample_byte_total(row: dict[str, Any]) -> int:
+    return int(row.get("bytes_in") or 0) + int(row.get("bytes_out") or 0)
+
+
+def _is_offline_zero_sample(row: dict[str, Any]) -> bool:
+    return (not row.get("session_active")) and _sample_byte_total(row) == 0
+
+
 def _downsample_rows(rows: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]:
-    """Evenly spaced subsample so long histories keep start, middle, and end."""
+    """
+    Subsample long histories while preserving counter-reset boundaries.
+
+    Even spacing alone can jump from a high pre-reset total to a later post-reset
+    point and drop all growth after the reconnect. Always keep ends + reset edges.
+    """
     if keep <= 0 or not rows:
         return []
     if keep >= len(rows):
         return list(rows)
-    step = len(rows) / float(keep)
-    return [rows[min(len(rows) - 1, int(i * step))] for i in range(keep)]
+
+    must: set[int] = {0, len(rows) - 1}
+    prev_total: int | None = None
+    for i, row in enumerate(rows):
+        if _is_offline_zero_sample(row):
+            continue
+        total = _sample_byte_total(row)
+        if prev_total is not None and total < prev_total:
+            must.add(i)
+            if i > 0:
+                must.add(i - 1)
+        prev_total = total
+
+    if len(must) >= keep:
+        ordered = sorted(must)
+        if len(ordered) <= keep:
+            chosen_idx = ordered
+        else:
+            step = len(ordered) / float(keep)
+            chosen_idx = sorted(
+                {
+                    ordered[min(len(ordered) - 1, int(i * step))]
+                    for i in range(keep)
+                }
+                | {0, len(rows) - 1}
+            )
+        return [rows[i] for i in chosen_idx]
+
+    remaining = keep - len(must)
+    candidates = [i for i in range(len(rows)) if i not in must]
+    if remaining >= len(candidates):
+        chosen = sorted(must | set(candidates))
+    else:
+        step = len(candidates) / float(max(1, remaining))
+        extra = {
+            candidates[min(len(candidates) - 1, int(i * step))]
+            for i in range(remaining)
+        }
+        chosen = sorted(must | extra)
+    return [rows[i] for i in chosen]
+
+
+def _org_max_per_customer(sample_cap: int) -> int:
+    """Allow denser per-client history on month/year windows."""
+    sample_cap = int(sample_cap or _ORG_SAMPLE_ROW_SOFT_CAP)
+    if sample_cap >= 16000:
+        return _ORG_SAMPLE_MAX_PER_CUSTOMER_MONTH
+    if sample_cap >= 8000:
+        return max(_ORG_SAMPLE_MAX_PER_CUSTOMER, 480)
+    return _ORG_SAMPLE_MAX_PER_CUSTOMER
 
 
 def _load_org_usage_samples(samples_qs, *, sample_cap: int) -> list[dict[str, Any]]:
@@ -438,6 +500,7 @@ def _load_org_usage_samples(samples_qs, *, sample_cap: int) -> list[dict[str, An
     Group first, then fair-downsample so every client with history stays represented.
     """
     sample_cap = max(100, int(sample_cap or _ORG_SAMPLE_ROW_SOFT_CAP))
+    max_each = _org_max_per_customer(sample_cap)
     value_fields = (
         "customer_id",
         "sampled_at",
@@ -448,7 +511,7 @@ def _load_org_usage_samples(samples_qs, *, sample_cap: int) -> list[dict[str, An
         "bytes_out",
     )
     grouped: dict[int, list[dict[str, Any]]] = {}
-    max_raw = max(sample_cap * 8, _ORG_SAMPLE_MAX_PER_CUSTOMER * 400)
+    max_raw = max(sample_cap * 8, max_each * 400)
     raw_count = 0
     for row in samples_qs.order_by("customer_id", "sampled_at").values(*value_fields).iterator(
         chunk_size=2500
@@ -458,8 +521,8 @@ def _load_org_usage_samples(samples_qs, *, sample_cap: int) -> list[dict[str, An
         bucket.append(row)
         raw_count += 1
         # Bound memory while streaming: compress noisy clients early.
-        if len(bucket) > _ORG_SAMPLE_MAX_PER_CUSTOMER * 3:
-            grouped[cid] = _downsample_rows(bucket, _ORG_SAMPLE_MAX_PER_CUSTOMER)
+        if len(bucket) > max_each * 3:
+            grouped[cid] = _downsample_rows(bucket, max_each)
         if raw_count >= max_raw:
             break
 
@@ -470,7 +533,7 @@ def _load_org_usage_samples(samples_qs, *, sample_cap: int) -> list[dict[str, An
     fair_each = max(
         _ORG_SAMPLE_MIN_PER_CUSTOMER,
         min(
-            _ORG_SAMPLE_MAX_PER_CUSTOMER,
+            max_each,
             max(sample_cap // max(1, n_clients), _ORG_SAMPLE_MIN_PER_CUSTOMER),
         ),
     )
@@ -492,12 +555,29 @@ def _load_org_usage_samples(samples_qs, *, sample_cap: int) -> list[dict[str, An
                 _ORG_SAMPLE_MIN_PER_CUSTOMER,
                 int(round(len(rows) * sample_cap / float(total))),
             )
-            keep = min(keep, len(rows), _ORG_SAMPLE_MAX_PER_CUSTOMER)
+            keep = min(keep, len(rows), max_each)
             trimmed.extend(_downsample_rows(rows, keep))
         samples = trimmed
 
     samples.sort(key=lambda r: (int(r["customer_id"]), r["sampled_at"]))
     return samples
+
+
+def _hotspot_synth_baseline_from_db(customer_id: int) -> dict[str, int]:
+    """Resume Hotspot synthetic counters from the latest stored sample."""
+    row = (
+        CustomerUsageSample.objects.filter(customer_id=int(customer_id))
+        .order_by("-sampled_at")
+        .values("bytes_in", "bytes_out", "session_active")
+        .first()
+    )
+    if not row:
+        return {"bytes_in": 0, "bytes_out": 0}
+    bi = int(row.get("bytes_in") or 0)
+    bo = int(row.get("bytes_out") or 0)
+    if not row.get("session_active") and bi == 0 and bo == 0:
+        return {"bytes_in": 0, "bytes_out": 0}
+    return {"bytes_in": bi, "bytes_out": bo}
 
 
 def merge_hotspot_session_payloads(
@@ -523,9 +603,13 @@ def merge_hotspot_session_payloads(
     previous = cache.get(prev_key) or {}
     if not isinstance(previous, dict):
         previous = {}
-    synth = cache.get(synth_key) or {"bytes_in": 0, "bytes_out": 0}
-    if not isinstance(synth, dict):
-        synth = {"bytes_in": 0, "bytes_out": 0}
+    synth_cached = cache.get(synth_key)
+    if isinstance(synth_cached, dict):
+        synth = synth_cached
+    else:
+        # Cache miss/expiry: continue from last persisted sample so multi-MAC
+        # history is not wiped back to a single session absolute.
+        synth = _hotspot_synth_baseline_from_db(customer_id)
 
     next_prev: dict[str, dict[str, int]] = {}
     delta_in = 0
@@ -567,10 +651,18 @@ def merge_hotspot_session_payloads(
 
     synth_in = _as_int(synth.get("bytes_in")) + delta_in
     synth_out = _as_int(synth.get("bytes_out")) + delta_out
-    # First observation of every MAC: seed synth from the busiest session so a
-    # brand-new client is not stuck at 0 until the second poll.
-    if not previous and best_total >= 0:
-        busiest = max(active, key=lambda p: _as_int(p.get("bytes_in")) + _as_int(p.get("bytes_out")))
+    # Brand-new client (no cache, no DB history): seed from the busiest MAC so
+    # the first poll is not stuck at 0. After a cache gap, keep the DB/cache
+    # synth and only establish fresh per-MAC baselines (deltas stay 0).
+    if (
+        not previous
+        and _as_int(synth.get("bytes_in")) == 0
+        and _as_int(synth.get("bytes_out")) == 0
+        and best_total >= 0
+    ):
+        busiest = max(
+            active, key=lambda p: _as_int(p.get("bytes_in")) + _as_int(p.get("bytes_out"))
+        )
         synth_in = _as_int(busiest.get("bytes_in"))
         synth_out = _as_int(busiest.get("bytes_out"))
 
@@ -663,8 +755,8 @@ def apply_live_usage_overlay(
     Merge the latest MikroTik presence snapshot into an org usage payload.
 
     Historical charts/bytes stay sample-based; Status / live rates reflect who
-    is actually dialed or on Hotspot right now. Gadgets use live active-session
-    counts when a client is online; otherwise historical linked/seen counts stay.
+    is actually dialed or on Hotspot right now. Device chips use live
+    active-session counts when a snapshot exists (0 when offline).
     """
     if not isinstance(payload, dict) or not organization:
         return payload
@@ -686,7 +778,7 @@ def apply_live_usage_overlay(
         entry = live_map.get(cid) or live_map.get(str(cid)) or {}
         if not isinstance(entry, dict):
             entry = {}
-        # Without a fresh NAS snapshot, keep historical sample status.
+        # Without a fresh NAS snapshot, keep sample-based status / device chips.
         if not has_live:
             user.setdefault("live_active", bool(user.get("latest_active")))
             user.setdefault("live_download_bps", 0)
@@ -720,12 +812,22 @@ def apply_live_usage_overlay(
                     user["devices_connected"] = gadgets
                 gadgets_now += gadgets
             else:
-                gadgets_now += 1
+                # PPPoE: one CPE dial session on the client's MikroTik.
+                devices = gadgets if gadgets > 0 else 1
+                if override_gadgets:
+                    user["gadgets_connected"] = devices
+                    user["devices_connected"] = devices
+                gadgets_now += devices
             user["live_state"] = "online"
             user["live_label"] = "Online"
         else:
             if override_status:
                 user["latest_active"] = False
+            if override_gadgets:
+                # Live snapshot says offline — clear the connected-device chip for
+                # both Hotspot and PPPoE so stale last_seen counts cannot linger.
+                user["gadgets_connected"] = 0
+                user["devices_connected"] = 0
             user["live_state"] = "offline"
             user["live_label"] = "Offline"
 
@@ -1943,9 +2045,9 @@ def usage_trend_payload(
     )
     # Keep the full window: when dense, pick evenly spaced points so long
     # ranges (7d/30d) are not truncated to only the newest samples.
+    # Preserve counter-reset edges so reconnect growth is not dropped.
     if len(samples) > _CLIENT_SAMPLE_CAP:
-        step = len(samples) / float(_CLIENT_SAMPLE_CAP)
-        samples = [samples[min(len(samples) - 1, int(i * step))] for i in range(_CLIENT_SAMPLE_CAP)]
+        samples = _downsample_rows(samples, _CLIENT_SAMPLE_CAP)
 
     access = build_client_access_timeline(
         customer,
@@ -1978,6 +2080,11 @@ def usage_trend_payload(
     surfing_samples = 0
     peak_down = 0
     peak_up = 0
+    counter_resets = 0
+    sampling_gaps = 0
+    max_gap_seconds = 0.0
+    # Warn when consecutive readings are much farther apart than the window density.
+    gap_warn_seconds = max(30 * 60, min(6 * 3600, (hours * 3600) / 48.0))
     prime_sample: dict[str, Any] | None = None
     lowest_sample: dict[str, Any] | None = None
     prime_bucket: int | None = None
@@ -2021,6 +2128,12 @@ def usage_trend_payload(
             previous_active = False
             continue
 
+        if previous_at is not None:
+            gap = max(0.0, (stamp - previous_at).total_seconds())
+            if gap >= gap_warn_seconds:
+                sampling_gaps += 1
+                max_gap_seconds = max(max_gap_seconds, gap)
+
         # Before the tracking baseline: keep presence/rate charts, skip data-used.
         if tracking_since is not None and stamp < tracking_since:
             if active:
@@ -2035,7 +2148,11 @@ def usage_trend_payload(
                 up_by_bucket[bucket] = max(up_by_bucket.get(bucket, 0.0), float(up))
             else:
                 previous_active = False
+            previous_at = stamp
             continue
+
+        if previous_total is not None and total < previous_total:
+            counter_resets += 1
 
         delta = _bytes_delta(previous_total, total)
         if previous_at is not None:
@@ -2179,6 +2296,7 @@ def usage_trend_payload(
             event_indexes[kind].append(best_idx)
 
     latest = samples[-1] if samples else None
+    first = samples[0] if samples else None
     current_session_bytes = 0
     if latest and latest.get("session_active"):
         current_session_bytes = int(latest.get("bytes_in") or 0) + int(
@@ -2212,6 +2330,14 @@ def usage_trend_payload(
         access_state=access_public.get("current_state") or "",
         access_alert=access_public.get("alert") or "",
     )
+    insight = story["insight"]
+    if sampling_gaps and total_bytes_delta >= 0:
+        gap_note = (
+            f" Sparse sampling: {sampling_gaps} gap"
+            f"{'' if sampling_gaps == 1 else 's'} over "
+            f"{_human_duration(int(max_gap_seconds))} — totals may undercount."
+        )
+        insight = f"{insight}{gap_note}" if insight else gap_note.strip()
 
     payload = {
         "ok": True,
@@ -2245,6 +2371,19 @@ def usage_trend_payload(
             "data_used_bytes": total_bytes_delta,
             "current_session_bytes": current_session_bytes,
             "latest_active": latest_active,
+            "counter_resets": counter_resets,
+            "sampling_gaps": sampling_gaps,
+            "max_gap_seconds": int(max_gap_seconds),
+            "first_sample_at": (
+                timezone.localtime(first["sampled_at"]).isoformat() if first else ""
+            ),
+            "last_sample_at": (
+                timezone.localtime(latest["sampled_at"]).isoformat() if latest else ""
+            ),
+            "data_basis": (
+                "Period usage is counter growth between samples after the usage "
+                "baseline — not the MikroTik session absolute total."
+            ),
             "usage_tracking_since": (
                 timezone.localtime(tracking_since).isoformat() if tracking_since else ""
             ),
@@ -2262,7 +2401,7 @@ def usage_trend_payload(
             "status": story["status"],
             "status_hint": story["status_hint"],
             "tracking": story["tracking"],
-            "insight": story["insight"],
+            "insight": insight,
             "access_alert": access_public.get("alert") or "",
             "prime_point": (
                 _usage_point(
@@ -2320,7 +2459,90 @@ def _bytes_delta(previous_total: int | None, total: int) -> int:
         return total - previous_total
     # Counter reset (reconnect / new session) — do not count the new absolute
     # total as data used; that created huge false spikes on the trend chart.
+    # The new total becomes the baseline so later growth still counts.
     return 0
+
+
+def client_usage_samples_export(
+    customer: Customer,
+    *,
+    hours: int = 24,
+    since=None,
+    until=None,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    """Raw sample rows used to audit period data-used totals."""
+    since, until, hours = resolve_usage_window(hours=hours, since=since, until=until)
+    limit = max(1, min(int(limit or 5000), 20000))
+    tracking_since = _customer_usage_tracking_since(customer)
+    rows = list(
+        CustomerUsageSample.objects.filter(
+            customer=customer,
+            sampled_at__gte=since,
+            sampled_at__lt=until,
+        )
+        .order_by("sampled_at")
+        .values(
+            "sampled_at",
+            "session_active",
+            "bytes_in",
+            "bytes_out",
+            "download_bps",
+            "upload_bps",
+        )[:limit]
+    )
+    previous_total = None
+    exported: list[dict[str, Any]] = []
+    running = 0
+    for row in rows:
+        stamp = row["sampled_at"]
+        bi = int(row["bytes_in"] or 0)
+        bo = int(row["bytes_out"] or 0)
+        total = bi + bo
+        active = bool(row["session_active"])
+        counted = True
+        delta = 0
+        if not active and total == 0:
+            counted = False
+        elif tracking_since is not None and stamp < tracking_since:
+            counted = False
+        else:
+            if previous_total is not None and total < previous_total:
+                delta = 0
+            else:
+                delta = _bytes_delta(previous_total, total)
+            previous_total = total
+            running += delta
+        exported.append(
+            {
+                "at": timezone.localtime(stamp).isoformat(),
+                "session_active": active,
+                "bytes_in": bi,
+                "bytes_out": bo,
+                "bytes_total": total,
+                "download_bps": int(row["download_bps"] or 0),
+                "upload_bps": int(row["upload_bps"] or 0),
+                "delta_bytes": delta if counted else 0,
+                "counted": counted,
+                "running_data_used_bytes": running if counted else running,
+            }
+        )
+    return {
+        "ok": True,
+        "hours": hours,
+        "since": timezone.localtime(since).isoformat(),
+        "until": timezone.localtime(until).isoformat(),
+        "usage_tracking_since": (
+            timezone.localtime(tracking_since).isoformat() if tracking_since else ""
+        ),
+        "sample_count": len(exported),
+        "data_used_bytes": running,
+        "data_basis": (
+            "Period usage is the sum of positive counter deltas after the usage "
+            "baseline. Counter resets contribute 0 and re-baseline."
+        ),
+        "samples": exported,
+    }
 
 
 def _customer_usage_tracking_since(customer) -> datetime | None:
@@ -2737,9 +2959,9 @@ def _build_org_usage_payload(
                 stats["lowest_download_bps"] = down
                 stats["lowest_upload_bps"] = up
 
-    # Linked + recently seen Hotspot gadgets.
-    # Near-live windows use a 15-minute "online now" cut; historical windows use
-    # devices last seen inside the selected range so past charts stay honest.
+    # Linked Hotspot gadgets + currently-connected approximation.
+    # The usage list chip means "connected now", so always use a short last_seen
+    # window — never the selected month/year range (that inflated counts).
     gadget_counts: dict[int, int] = {}
     linked_counts: dict[int, int] = {}
     if customers:
@@ -2747,20 +2969,11 @@ def _build_org_usage_payload(
 
         from billing.models import CustomerDevice
 
-        near_live = abs((timezone.now() - until).total_seconds()) <= 30 * 60
-        if near_live:
-            gadget_qs = CustomerDevice.objects.filter(
-                organization=organization,
-                customer_id__in=customers.keys(),
-                last_seen_at__gte=timezone.now() - timedelta(minutes=15),
-            )
-        else:
-            gadget_qs = CustomerDevice.objects.filter(
-                organization=organization,
-                customer_id__in=customers.keys(),
-                last_seen_at__gte=since,
-                last_seen_at__lt=until,
-            )
+        gadget_qs = CustomerDevice.objects.filter(
+            organization=organization,
+            customer_id__in=customers.keys(),
+            last_seen_at__gte=timezone.now() - timedelta(minutes=15),
+        )
         for row in gadget_qs.values("customer_id").annotate(n=Count("id")):
             gadget_counts[int(row["customer_id"])] = int(row["n"] or 0)
         for row in (
@@ -2822,14 +3035,28 @@ def _build_org_usage_payload(
         if not customer:
             continue
         sample_count = item["sample_count"] or 1
-        gadgets = gadget_counts.get(item["customer_id"], 0)
         linked = linked_counts.get(item["customer_id"], 0)
-        if gadgets <= 0 and item["latest_active"]:
-            gadgets = 1
-        if linked <= 0 and gadgets > 0:
-            linked = gadgets
-        elif linked <= 0 and item["latest_active"]:
-            linked = 1
+        if service == Customer.ServiceType.PPPOE or (
+            not service and customer.service_type == Customer.ServiceType.PPPOE
+        ):
+            # PPPoE: one dialed CPE on the client's MikroTik (LAN hosts are CPE-side).
+            gadgets = 1 if item["latest_active"] else 0
+            if linked <= 0 and gadgets > 0:
+                linked = gadgets
+        else:
+            # Hotspot: recently-seen linked MACs only while the client still looks
+            # online (or has never been sampled). Offline samples clear the chip.
+            recent = gadget_counts.get(item["customer_id"], 0)
+            if item["latest_active"]:
+                gadgets = recent or 1
+            elif item["sample_count"] > 0:
+                gadgets = 0
+            else:
+                gadgets = recent
+            if linked <= 0 and gadgets > 0:
+                linked = gadgets
+            elif linked <= 0 and item["latest_active"]:
+                linked = 1
         prime_at = item.get("prime_at")
         lowest_at = item.get("lowest_at")
         top_users.append(
@@ -2986,15 +3213,7 @@ def _build_org_usage_payload(
         "top_chart": {
             "labels": [u["full_name"] for u in top_users[:10]],
             "data_used_mb": [
-                round(
-                    (
-                        u["data_used_bytes"]
-                        if u["data_used_bytes"]
-                        else u.get("peak_session_bytes") or 0
-                    )
-                    / (1024 * 1024),
-                    3,
-                )
+                round(int(u["data_used_bytes"] or 0) / (1024 * 1024), 3)
                 for u in top_users[:10]
             ],
         },
@@ -3026,12 +3245,12 @@ def _build_org_usage_payload(
             ),
             "top_user_name": top_users[0]["full_name"] if top_users else "",
             "top_user_bytes": (
-                top_users[0]["data_used_bytes"]
-                or top_users[0].get("peak_session_bytes")
-                or 0
-            )
-            if top_users
-            else 0,
+                int(top_users[0]["data_used_bytes"] or 0) if top_users else 0
+            ),
+            "data_basis": (
+                "Period usage is counter growth between samples after each client's "
+                "usage baseline — not peak MikroTik session totals."
+            ),
             "live_at": "",
         },
         "live": {"ok": False, "at": "", "clients_online": 0, "gadgets_online": 0},
@@ -3327,6 +3546,67 @@ def _sample_surfing_loss_stats(
     return out
 
 
+def note_pppoe_connected_not_surfing_clients(
+    organization,
+    clients: list[dict[str, Any]],
+) -> set[str]:
+    """
+    Open downtime episodes for paid/dialed/not-surfing clients and notify now.
+
+    Safe for partial scans (one MikroTik at a time): does not close episodes for
+    clients missing from this batch. Returns newly opened client ids.
+    """
+    if not organization:
+        return set()
+
+    now = timezone.now()
+    key = _pppoe_ns_episodes_cache_key(organization.pk)
+    state = cache.get(key) or {}
+    open_eps: dict[str, dict[str, Any]] = dict(state.get("open") or {})
+    closed: list[dict[str, Any]] = list(state.get("closed") or [])
+
+    current_map: dict[str, dict[str, Any]] = {}
+    for row in clients or []:
+        if not (
+            row.get("internet_allowed")
+            and row.get("connected")
+            and not row.get("surfing")
+        ):
+            continue
+        cid = str(row.get("id") or "")
+        if not cid:
+            continue
+        current_map[cid] = row
+
+    newly_affected = set(current_map.keys()) - set(open_eps.keys())
+    for cid, row in current_map.items():
+        reason = (row.get("reason") or "").strip()
+        if cid not in open_eps:
+            open_eps[cid] = {"since": now.isoformat(), "reason": reason}
+        elif reason:
+            open_eps[cid]["reason"] = reason
+
+    cache.set(
+        key,
+        {"open": open_eps, "closed": closed},
+        _NS_CONNECTED_TREND_TTL,
+    )
+
+    if newly_affected:
+        try:
+            from accounts.communications import maybe_notify_pppoe_connected_not_surfing
+
+            maybe_notify_pppoe_connected_not_surfing(
+                organization=organization,
+                clients=list(current_map.values()),
+                newly_affected_ids=newly_affected,
+            )
+        except Exception:
+            pass
+
+    return newly_affected
+
+
 def track_pppoe_connected_not_surfing_episodes(
     organization,
     current_rows: list[dict[str, Any]],
@@ -3392,6 +3672,8 @@ def track_pppoe_connected_not_surfing_episodes(
         try:
             from accounts.communications import maybe_notify_pppoe_connected_not_surfing
 
+            # Notify before any enrichment work so the ISP gets the alert
+            # immediately when a subscribed client loses surfing.
             maybe_notify_pppoe_connected_not_surfing(
                 organization=organization,
                 clients=current_rows,
@@ -3823,11 +4105,12 @@ def org_usage_payload(
     if use_cache:
         cached = cache.get(cache_key)
         if cached is not None:
-            return apply_live_usage_overlay(
+            payload = apply_live_usage_overlay(
                 deepcopy(cached),
                 organization,
                 service=service,
             )
+            return _attach_org_sampling_health(payload)
 
     payload = _build_org_usage_payload(
         organization,
@@ -3889,4 +4172,33 @@ def org_usage_payload(
     if use_cache:
         # Cache historical aggregates only; live overlay is applied per read.
         cache.set(cache_key, payload, _ORG_PAYLOAD_TTL)
-    return apply_live_usage_overlay(deepcopy(payload), organization, service=service)
+    return _attach_org_sampling_health(
+        apply_live_usage_overlay(deepcopy(payload), organization, service=service)
+    )
+
+
+def _attach_org_sampling_health(payload: dict[str, Any]) -> dict[str, Any]:
+    """Annotate org usage payloads with background sampler freshness."""
+    try:
+        from core.boot import (
+            usage_sampling_heartbeat_age_sec,
+            usage_sampling_is_fresh,
+        )
+
+        summary = payload.setdefault("summary", {})
+        age = usage_sampling_heartbeat_age_sec()
+        summary["sampling_fresh"] = usage_sampling_is_fresh()
+        summary["sampling_age_sec"] = None if age is None else int(age)
+        if age is None:
+            summary["sampling_hint"] = (
+                "Background usage sampling has not reported yet."
+            )
+        elif not summary["sampling_fresh"]:
+            summary["sampling_hint"] = (
+                f"Usage sampler last ran {int(age)}s ago — totals may lag."
+            )
+        else:
+            summary["sampling_hint"] = ""
+    except Exception:
+        pass
+    return payload
