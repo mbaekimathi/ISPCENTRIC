@@ -436,7 +436,9 @@ def _router_last_changes(
             sampled_at__gte=since,
         )
         .order_by("router_id", "sampled_at")
-        .values("router_id", "sampled_at", "status")[:12000]
+        .values("router_id", "sampled_at", "status")[
+            : max(1, min(len(router_ids) * 200, 4000))
+        ]
     )
     previous: dict[int, str] = {}
     last_change: dict[int, dict[str, str]] = {}

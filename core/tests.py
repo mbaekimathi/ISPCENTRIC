@@ -6809,6 +6809,98 @@ class PackageSpeedLimitTests(SimpleTestCase):
         self.assertEqual(by_user["unpaid"]["profile"], PPPOE_BLOCKED_PROFILE_NAME)
 
 
+class PppoeSessionKickDecisionTests(SimpleTestCase):
+    """Paid surfing CPEs must not be kicked when live profile reads flake."""
+
+    def _customer(self, pk=1):
+        return type("Customer", (), {"pk": pk})()
+
+    def test_empty_previous_profile_does_not_kick_stable_paid_session(self):
+        from core.mikrotik_connect import (
+            clear_cpe_renew_clear_pending,
+            _pppoe_customer_needs_session_kick,
+        )
+
+        customer = self._customer()
+        clear_cpe_renew_clear_pending(customer)
+        self.assertFalse(
+            _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile="",
+                profile="ispcentric-pppoe-5u-10d",
+                disabled=False,
+                internet_allowed=True,
+                session_was_blocked=False,
+                session_active_before=True,
+            )
+        )
+
+    def test_known_profile_change_still_kicks(self):
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            clear_cpe_renew_clear_pending,
+            _pppoe_customer_needs_session_kick,
+        )
+
+        customer = self._customer()
+        clear_cpe_renew_clear_pending(customer)
+        self.assertTrue(
+            _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile=PPPOE_BLOCKED_PROFILE_NAME,
+                profile="ispcentric-pppoe-5u-10d",
+                disabled=False,
+                internet_allowed=True,
+                session_was_blocked=False,
+                session_active_before=True,
+            )
+        )
+
+    def test_empty_previous_clears_renew_pending_when_already_surfing(self):
+        from core.mikrotik_connect import (
+            cpe_renew_clear_is_pending,
+            mark_cpe_renew_clear_pending,
+            _pppoe_customer_needs_session_kick,
+        )
+
+        customer = self._customer(pk=42)
+        mark_cpe_renew_clear_pending(customer)
+        self.assertTrue(cpe_renew_clear_is_pending(customer))
+        self.assertFalse(
+            _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile="",
+                profile="ispcentric-pppoe-5u-10d",
+                disabled=False,
+                internet_allowed=True,
+                session_was_blocked=False,
+                session_active_before=True,
+            )
+        )
+        self.assertFalse(cpe_renew_clear_is_pending(customer))
+
+    def test_unknown_previous_still_kicks_leaking_blocked_secret(self):
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            clear_cpe_renew_clear_pending,
+            _pppoe_customer_needs_session_kick,
+        )
+
+        customer = self._customer()
+        clear_cpe_renew_clear_pending(customer)
+        self.assertTrue(
+            _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile="",
+                profile=PPPOE_BLOCKED_PROFILE_NAME,
+                disabled=False,
+                internet_allowed=False,
+                session_was_blocked=False,
+                session_active_before=True,
+            )
+        )
+
+
 class ExpiredCaptivePayTests(SimpleTestCase):
     def test_https_public_url_dstnats_to_http_80(self):
         from core.mikrotik_connect import _portal_http_port

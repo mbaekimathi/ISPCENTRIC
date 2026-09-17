@@ -489,6 +489,16 @@ class Customer(models.Model):
                 fields=["organization", "service_type"],
                 name="bill_cust_org_svc_idx",
             ),
+            # Workspace / billing attention scans and "ending soon" client sorts.
+            models.Index(
+                fields=["organization", "package_end"],
+                name="bill_cust_org_pkg_end_idx",
+            ),
+            # Clients list: filter by service + status, order by created_at.
+            models.Index(
+                fields=["organization", "service_type", "status", "created_at"],
+                name="bill_cust_org_svc_st_cr_idx",
+            ),
         ]
         constraints = [
             # NULL MACs are distinct in MySQL/MariaDB unique indexes, so PPPoE

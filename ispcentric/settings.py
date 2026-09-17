@@ -331,7 +331,7 @@ DATABASES = {
         "HOST": os.getenv("MYSQL_HOST", _mysql_host_default),
         "PORT": os.getenv("MYSQL_PORT", "3306"),
         # Reuse connections across requests (avoids TCP/auth handshake each time).
-        "CONN_MAX_AGE": int(os.getenv("MYSQL_CONN_MAX_AGE", "60")),
+        "CONN_MAX_AGE": int(os.getenv("MYSQL_CONN_MAX_AGE", "120" if HOSTED else "60")),
         "OPTIONS": {
             "charset": "utf8mb4",
             "init_command": "SET sql_mode='STRICT_TRANS_TABLES'",
@@ -361,14 +361,14 @@ if _cache_backend in {"locmem", "locmemcache", "local"}:
             "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
             "LOCATION": "ispcentric-default",
             "TIMEOUT": 60,
-            "OPTIONS": {"MAX_ENTRIES": 1000},
+            "OPTIONS": {"MAX_ENTRIES": 5000},
         },
         # MikroTik push jobs must survive worker threads/processes and dev reloads.
         "jobs": {
             "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
             "LOCATION": str(_jobs_cache_dir),
             "TIMEOUT": None,
-            "OPTIONS": {"MAX_ENTRIES": 500},
+            "OPTIONS": {"MAX_ENTRIES": 1000},
         },
     }
 else:
@@ -382,15 +382,22 @@ else:
             "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
             "LOCATION": str(_cache_dir),
             "TIMEOUT": 60,
-            "OPTIONS": {"MAX_ENTRIES": 2000},
+            "OPTIONS": {"MAX_ENTRIES": 8000},
         },
         "jobs": {
             "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
             "LOCATION": str(_cache_dir / "jobs"),
             "TIMEOUT": None,
-            "OPTIONS": {"MAX_ENTRIES": 500},
+            "OPTIONS": {"MAX_ENTRIES": 1000},
         },
     }
+
+# Prefer cached DB sessions when the shared file/locmem cache is available so
+# authenticated page loads avoid a session-row write on every request.
+SESSION_ENGINE = os.getenv(
+    "DJANGO_SESSION_ENGINE",
+    "django.contrib.sessions.backends.cached_db",
+)
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

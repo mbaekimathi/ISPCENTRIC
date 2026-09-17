@@ -454,6 +454,20 @@
             </tbody>
           </table>
         </div>
+        {% if payments_page and payments_page.paginator.num_pages > 1 %}
+          <nav class="clients-pagination" aria-label="Payment pages">
+            {% if payments_page.has_previous %}
+              <a class="btn btn-ghost btn-sm" href="?pay_page={{ payments_page.previous_page_number }}{% if revenue_filter.range %}&amp;range={{ revenue_filter.range|urlencode }}{% endif %}{% if revenue_filter.range == 'day' and revenue_filter.day %}&amp;day={{ revenue_filter.day|urlencode }}{% endif %}{% if revenue_filter.range == 'period' %}{% if revenue_filter.start %}&amp;start={{ revenue_filter.start|urlencode }}{% endif %}{% if revenue_filter.end %}&amp;end={{ revenue_filter.end|urlencode }}{% endif %}{% endif %}{% if revenue_filter.range == 'month' and revenue_filter.month %}&amp;month={{ revenue_filter.month|urlencode }}{% endif %}{% if attention_filter.value != 'pppoe' %}&amp;attention={{ attention_filter.value|urlencode }}{% endif %}{% if payments_filter.value != 'all' %}&amp;payments={{ payments_filter.value|urlencode }}{% endif %}">Previous</a>
+            {% endif %}
+            <span class="clients-pagination-meta">
+              Page {{ payments_page.number }} of {{ payments_page.paginator.num_pages }}
+              · showing {{ payments|length }} of {{ payments_filter.filtered_count }}
+            </span>
+            {% if payments_page.has_next %}
+              <a class="btn btn-ghost btn-sm" href="?pay_page={{ payments_page.next_page_number }}{% if revenue_filter.range %}&amp;range={{ revenue_filter.range|urlencode }}{% endif %}{% if revenue_filter.range == 'day' and revenue_filter.day %}&amp;day={{ revenue_filter.day|urlencode }}{% endif %}{% if revenue_filter.range == 'period' %}{% if revenue_filter.start %}&amp;start={{ revenue_filter.start|urlencode }}{% endif %}{% if revenue_filter.end %}&amp;end={{ revenue_filter.end|urlencode }}{% endif %}{% endif %}{% if revenue_filter.range == 'month' and revenue_filter.month %}&amp;month={{ revenue_filter.month|urlencode }}{% endif %}{% if attention_filter.value != 'pppoe' %}&amp;attention={{ attention_filter.value|urlencode }}{% endif %}{% if payments_filter.value != 'all' %}&amp;payments={{ payments_filter.value|urlencode }}{% endif %}">Next</a>
+            {% endif %}
+          </nav>
+        {% endif %}
       {% else %}
         <div class="billing-dash-empty">
           <p class="billing-dash-empty-title">No payments yet</p>

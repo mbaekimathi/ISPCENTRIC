@@ -417,19 +417,27 @@ def subscription_period_progress(customer, *, now: datetime | None = None) -> di
     }
 
 
-def customers_needing_renewal_attention(organization):
+def customers_needing_renewal_attention(organization, *, limit: int = 200):
     """
     Customers whose package has expired, or who have used ≥ ¾ of the period.
 
     Returns a list of dicts: ``customer``, ``progress``, ``attention``
     (``expired`` or ``three_quarters``), sorted expired first then by progress.
+    ``limit`` caps work and response size for dashboard scalability.
     """
     if not organization:
         return []
     from datetime import timedelta
 
+    from django.core.cache import cache
     from django.db.models import Q
     from django.db.models.expressions import RawSQL
+
+    soft_limit = max(1, min(int(limit or 200), 1000))
+    cache_key = f"renewal_attention:v2:{organization.pk}:{soft_limit}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     now = timezone.localtime()
     # Narrow the scan before Python progress checks:
@@ -454,7 +462,14 @@ def customers_needing_renewal_attention(organization):
         .order_by("package_end", "full_name")
     )
     rows = []
+    # Scan a bounded window; stop once we have enough confirmed attention rows.
+    scan_cap = max(soft_limit * 4, 400)
     for customer in qs.iterator(chunk_size=200):
+        if len(rows) >= soft_limit:
+            break
+        scan_cap -= 1
+        if scan_cap < 0:
+            break
         expired = customer_subscription_expired(customer)
         progress = subscription_period_progress(customer, now=now)
         if expired:
@@ -483,6 +498,8 @@ def customers_needing_renewal_attention(organization):
             (row["customer"].full_name or "").lower(),
         )
     )
+    rows = rows[:soft_limit]
+    cache.set(cache_key, rows, 30)
     return rows
 
 
@@ -1397,6 +1414,19 @@ def payment_mpesa_reference(payment) -> str:
     if ref in checkout_ids or _is_mpesa_checkout_placeholder(ref):
         return ""
     return ref
+
+
+def payment_needs_mpesa_heal(payment) -> bool:
+    """True when stored fields look incomplete and STK healing is worth the queries."""
+    ref = (payment.reference or "").strip()
+    phone = (getattr(payment, "phone", None) or "").strip()
+    method = (getattr(payment, "method", None) or "").strip().lower()
+    if method == "mpesa":
+        if not ref or _is_mpesa_checkout_placeholder(ref) or not phone:
+            return True
+        return False
+    # Cash/bank/etc.: only heal when a checkout placeholder leaked into reference.
+    return bool(ref) and _is_mpesa_checkout_placeholder(ref)
 
 
 def heal_payment_mpesa_reference(payment) -> str:

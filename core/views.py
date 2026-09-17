@@ -5575,12 +5575,20 @@ def _workspace_day_snapshot(org, *, force: bool = False) -> dict:
         .prefetch_related("stk_push_requests")
         .order_by("-received_at")[:8]
     )
-    from billing.services import heal_payment_mpesa_phone, heal_payment_mpesa_reference
+    from billing.services import (
+        heal_payment_mpesa_phone,
+        heal_payment_mpesa_reference,
+        payment_needs_mpesa_heal,
+    )
 
     for pay in recent_payments:
-        pay.display_reference = heal_payment_mpesa_reference(pay)
-        pay.display_phone = heal_payment_mpesa_phone(pay)
-    attention = customers_needing_renewal_attention(org)
+        if payment_needs_mpesa_heal(pay):
+            pay.display_reference = heal_payment_mpesa_reference(pay)
+            pay.display_phone = heal_payment_mpesa_phone(pay)
+        else:
+            pay.display_reference = (pay.reference or "").strip()
+            pay.display_phone = (pay.phone or "").strip()
+    attention = customers_needing_renewal_attention(org, limit=200)
     expired_rows = [row for row in attention if row["attention"] == "expired"]
     expiring_rows = [
         row for row in attention if row["attention"] == "three_quarters"
@@ -5624,15 +5632,21 @@ def _workspace_day_snapshot(org, *, force: bool = False) -> dict:
     )
     routers_total = router_stats["routers_total"] or 0
     routers_suspended = router_stats["routers_suspended"] or 0
-    stk_pending = StkPushRequest.objects.filter(
-        organization=org, status=StkPushRequest.Status.PENDING
-    ).count()
-    stk_failed_today = StkPushRequest.objects.filter(
-        organization=org,
-        status=StkPushRequest.Status.FAILED,
-        created_at__gte=day_start,
-        created_at__lt=day_end,
-    ).count()
+    stk_stats = StkPushRequest.objects.filter(organization=org).aggregate(
+        stk_pending=Count(
+            "id", filter=Q(status=StkPushRequest.Status.PENDING)
+        ),
+        stk_failed_today=Count(
+            "id",
+            filter=Q(
+                status=StkPushRequest.Status.FAILED,
+                created_at__gte=day_start,
+                created_at__lt=day_end,
+            ),
+        ),
+    )
+    stk_pending = stk_stats["stk_pending"] or 0
+    stk_failed_today = stk_stats["stk_failed_today"] or 0
 
     def _attention_payload(rows, limit=48):
         out = []
@@ -11822,23 +11836,39 @@ def my_clients(request):
         service_type=Customer.ServiceType.PPPOE,
         status=Customer.Status.INSTALLED,
     )
-    pending_activation_count = pending_activation_qs.count() if org else 0
+    if org:
+        tab_counts = base_qs.aggregate(
+            pending_activation=Count(
+                "id",
+                filter=Q(
+                    service_type=Customer.ServiceType.PPPOE,
+                    status=Customer.Status.INSTALLED,
+                ),
+            ),
+            pppoe=Count(
+                "id",
+                filter=Q(service_type=Customer.ServiceType.PPPOE)
+                & ~Q(status=Customer.Status.INSTALLED),
+            ),
+            static=Count(
+                "id", filter=Q(service_type=Customer.ServiceType.STATIC)
+            ),
+            hotspot=Count(
+                "id", filter=Q(service_type=Customer.ServiceType.HOTSPOT)
+            ),
+        )
+        pending_activation_count = tab_counts["pending_activation"] or 0
+        pppoe_count = tab_counts["pppoe"] or 0
+        static_count = tab_counts["static"] or 0
+        hotspot_count = tab_counts["hotspot"] or 0
+    else:
+        pending_activation_count = 0
+        pppoe_count = 0
+        static_count = 0
+        hotspot_count = 0
 
     # PPPoE tab counts/lists exclude pending activation; those live only on
     # ?tab=pppoe&view=pending for this ISP.
-    pppoe_count = (
-        base_qs.filter(service_type=Customer.ServiceType.PPPOE)
-        .exclude(status=Customer.Status.INSTALLED)
-        .count()
-        if org
-        else 0
-    )
-    static_count = (
-        base_qs.filter(service_type=Customer.ServiceType.STATIC).count() if org else 0
-    )
-    hotspot_count = (
-        base_qs.filter(service_type=Customer.ServiceType.HOTSPOT).count() if org else 0
-    )
 
     service_type = {
         "pppoe": Customer.ServiceType.PPPOE,
@@ -11930,12 +11960,50 @@ def my_clients(request):
     if tab == "hotspot" and not pending_view:
         clients_sort_choices.insert(0, ("session", "Latest surfing"))
 
-    # Attach package progress for the Used column, then sort before pagination
-    # so the chosen order applies across the full filtered list.
+    # Order in the database, paginate with LIMIT/OFFSET, then attach progress
+    # only for the current page — avoids materializing every matching client.
     page_size = 200 if tab == "hotspot" else 100
     now = timezone.localtime()
-    ranked_customers = list(tab_qs)
-    for customer in ranked_customers:
+    from django.db.models import F
+    from django.db.models.expressions import RawSQL
+
+    if clients_sort in {"used", "used_asc"}:
+        # Approximate package-used ratio for ranking (exact progress on page).
+        used_ratio = RawSQL(
+            "(CASE WHEN package_start IS NULL OR package_end IS NULL OR "
+            "TIMESTAMPDIFF(SECOND, package_start, package_end) <= 0 THEN NULL "
+            "ELSE CAST(TIMESTAMPDIFF(SECOND, package_start, %s) AS DECIMAL(18,6)) / "
+            "CAST(TIMESTAMPDIFF(SECOND, package_start, package_end) AS DECIMAL(18,6)) "
+            "END)",
+            (now,),
+        )
+        tab_qs = tab_qs.annotate(_used_ratio=used_ratio)
+        if clients_sort == "used_asc":
+            tab_qs = tab_qs.order_by(
+                F("_used_ratio").asc(nulls_last=True), "full_name", "id"
+            )
+        else:
+            tab_qs = tab_qs.order_by(
+                F("_used_ratio").desc(nulls_last=True), "full_name", "id"
+            )
+    elif clients_sort == "ending":
+        tab_qs = tab_qs.order_by(
+            F("package_end").asc(nulls_last=True), "full_name", "id"
+        )
+    elif clients_sort == "newest":
+        tab_qs = tab_qs.order_by(
+            F("created_at").desc(nulls_last=True), "full_name", "id"
+        )
+    elif clients_sort in {"name", "session"}:
+        # Session: name order initially; browser re-ranks by live Hotspot session.
+        tab_qs = tab_qs.order_by("full_name", "id")
+    else:
+        tab_qs = tab_qs.order_by("-created_at", "id")
+
+    paginator = Paginator(tab_qs, page_size)
+    page_obj = paginator.get_page(request.GET.get("page") or 1)
+    page_customers = list(page_obj)
+    for customer in page_customers:
         progress = subscription_period_progress(customer, now=now)
         customer.subscription_progress = progress
         if progress:
@@ -11951,58 +12019,6 @@ def my_clients(request):
         customer.package_uses_clock_time = plan_uses_clock_time(
             getattr(customer, "plan", None)
         )
-
-    def _client_name_key(customer):
-        return (customer.full_name or "").lower()
-
-    if clients_sort == "used_asc":
-        ranked_customers.sort(
-            key=lambda c: (
-                c.subscription_used_ratio is None,
-                c.subscription_used_ratio or 0.0,
-                _client_name_key(c),
-            )
-        )
-    elif clients_sort == "ending":
-        from datetime import timedelta
-
-        far_future = now + timedelta(days=36500)
-
-        def _ending_key(customer):
-            progress = customer.subscription_progress
-            if not progress:
-                return (1, far_future, _client_name_key(customer))
-            deadline = progress.get("access_deadline") or getattr(
-                customer, "package_end", None
-            )
-            return (0, deadline or far_future, _client_name_key(customer))
-
-        ranked_customers.sort(key=_ending_key)
-    elif clients_sort == "newest":
-        ranked_customers.sort(
-            key=lambda c: (
-                c.created_at is None,
-                -(c.created_at.timestamp() if c.created_at else 0.0),
-                _client_name_key(c),
-            )
-        )
-    elif clients_sort == "name":
-        ranked_customers.sort(key=_client_name_key)
-    elif clients_sort == "session":
-        # Initial name order; the browser re-ranks by live Hotspot session.
-        ranked_customers.sort(key=_client_name_key)
-    else:
-        # Default: most of the package period used first.
-        ranked_customers.sort(
-            key=lambda c: (
-                c.subscription_used_ratio is None,
-                -(c.subscription_used_ratio or 0.0),
-                _client_name_key(c),
-            )
-        )
-    paginator = Paginator(ranked_customers, page_size)
-    page_obj = paginator.get_page(request.GET.get("page") or 1)
-    page_customers = list(page_obj)
 
     pppoe_customers = page_customers if tab == "pppoe" else []
     static_customers = page_customers if tab == "static" else []

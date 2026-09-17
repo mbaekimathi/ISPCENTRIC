@@ -5,6 +5,7 @@ import threading
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core.paginator import Paginator
 from django.db.models import Count, Q, Sum
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -16,13 +17,27 @@ from core.views import client_page_context, resolve_organization
 
 from .forms import BillingPackageRegisterForm
 from .models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
-from .services import customers_needing_renewal_attention, heal_payment_mpesa_phone, heal_payment_mpesa_reference
+from .services import (
+    customers_needing_renewal_attention,
+    format_customer_phone_display,
+    heal_payment_mpesa_phone,
+    heal_payment_mpesa_reference,
+    payment_needs_mpesa_heal,
+)
 from .stk import refresh_stk_status, start_subscription_stk_payment
 
 _REVENUE_RANGE_CHOICES = ("day", "period", "month")
 _ATTENTION_SERVICE_CHOICES = ("pppoe", "hotspot", "all")
 _PAYMENT_SERVICE_CHOICES = ("all", "pppoe", "hotspot")
+# Cap dashboard tables so large orgs cannot materialize unbounded payment lists.
+_DASHBOARD_PAYMENTS_PAGE_SIZE = 100
+_DASHBOARD_ATTENTION_LIMIT = 200
 logger = logging.getLogger(__name__)
+
+
+def _payment_needs_mpesa_heal(payment) -> bool:
+    """Backward-compatible alias for dashboard helpers."""
+    return payment_needs_mpesa_heal(payment)
 
 
 def _require_client_workspace(request):
@@ -591,7 +606,7 @@ def dashboard(request):
         if service_q is not None:
             display_payments_qs = display_payments_qs.filter(service_q)
 
-        payments = list(
+        display_payments_qs = (
             display_payments_qs.select_related(
                 "invoice",
                 "invoice__customer",
@@ -600,9 +615,20 @@ def dashboard(request):
             .prefetch_related("stk_push_requests")
             .order_by("-received_at")
         )
+        payments_filter["filtered_count"] = display_payments_qs.count()
+        payments_page = Paginator(
+            display_payments_qs, _DASHBOARD_PAYMENTS_PAGE_SIZE
+        ).get_page(request.GET.get("pay_page") or 1)
+        payments = list(payments_page)
         for pay in payments:
-            pay.display_reference = heal_payment_mpesa_reference(pay)
-            pay.display_phone = heal_payment_mpesa_phone(pay)
+            if _payment_needs_mpesa_heal(pay):
+                pay.display_reference = heal_payment_mpesa_reference(pay)
+                pay.display_phone = heal_payment_mpesa_phone(pay)
+            else:
+                pay.display_reference = (pay.reference or "").strip()
+                pay.display_phone = format_customer_phone_display(
+                    getattr(pay, "phone", "") or ""
+                ) or (pay.phone or "").strip()
             recorder = pay.recorded_by
             if recorder is not None:
                 pay.recorder_label = (
@@ -610,9 +636,10 @@ def dashboard(request):
                 )
             else:
                 pay.recorder_label = ""
-        payments_filter["filtered_count"] = len(payments)
 
-        attention_all = customers_needing_renewal_attention(org)
+        attention_all = customers_needing_renewal_attention(
+            org, limit=_DASHBOARD_ATTENTION_LIMIT
+        )
         attention_customers = _filter_attention_by_service(
             attention_all, attention_filter["value"]
         )
@@ -637,6 +664,7 @@ def dashboard(request):
             "attention_customers": 0,
         }
         payments = []
+        payments_page = None
         attention_customers = []
         attention_filter["total_count"] = 0
         attention_filter["pppoe_count"] = 0
@@ -663,6 +691,7 @@ def dashboard(request):
             page_title="Billings",
             stats=stats,
             payments=payments,
+            payments_page=payments_page,
             attention_customers=attention_customers,
             attention_filter=attention_filter,
             payments_filter=payments_filter,

@@ -13621,38 +13621,44 @@ def _pppoe_customer_needs_session_kick(
     session_active_before: bool,
 ) -> bool:
     """Whether this secret rewrite requires dropping /ppp/active for the CPE."""
+    previous = (previous_profile or "").strip()
+    target = (profile or "").strip()
     restoring_surf = bool(
         internet_allowed
         and not disabled
-        and profile != PPPOE_BLOCKED_PROFILE_NAME
+        and target != PPPOE_BLOCKED_PROFILE_NAME
     )
+    # Known profile change only. Empty previous_profile means the live dump
+    # missed this secret (common on hosted WireGuard API flakes) — treating
+    # that as a change used to kick every paid CPE on each 30s/120s sweep.
+    # Match ``_sync_organization_pppoe_secrets_on_socket`` which already
+    # requires a non-empty previous profile before kicking.
+    profile_changed = bool(previous and previous != target)
+    # Paid session already up and not address-list blocked: renew Hotspot is
+    # done from the client's POV. Clear pending even when this pass could not
+    # read the secret profile — otherwise stuck pending + empty profile reads
+    # redial-nudge the same surfing CPE forever.
     if (
         restoring_surf
         and cpe_renew_clear_is_pending(customer)
         and session_active_before
         and not session_was_blocked
-        and (previous_profile or "")
-        not in {"", PPPOE_BLOCKED_PROFILE_NAME}
+        and previous != PPPOE_BLOCKED_PROFILE_NAME
     ):
         clear_cpe_renew_clear_pending(customer)
     needs_redial_nudge = bool(
         restoring_surf and cpe_renew_clear_is_pending(customer)
     )
     stuck_unblocked_session = bool(
-        profile == PPPOE_BLOCKED_PROFILE_NAME
+        target == PPPOE_BLOCKED_PROFILE_NAME
         and not session_was_blocked
         and session_active_before
     )
     return bool(
-        (previous_profile or "") != profile
+        profile_changed
         or (internet_allowed and session_was_blocked)
         or needs_redial_nudge
         or stuck_unblocked_session
-        or (
-            restoring_surf
-            and session_active_before
-            and (previous_profile or "") == PPPOE_BLOCKED_PROFILE_NAME
-        )
     )
 
 
