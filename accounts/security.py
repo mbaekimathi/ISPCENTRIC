@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
 from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django import forms
+
+logger = logging.getLogger(__name__)
 
 
 class AuthRateLimitExceeded(Exception):
@@ -26,18 +30,6 @@ def _rate_key(scope: str, ip: str, identifier: str = "") -> str:
     return f"auth_rl:{scope}:{ip}:{ident}"
 
 
-def is_auth_rate_limited(
-    scope: str,
-    request,
-    identifier: str = "",
-    *,
-    limit: int = 5,
-) -> bool:
-    key = _rate_key(scope, client_ip(request), identifier)
-    data = cache.get(key) or {"count": 0}
-    return int(data.get("count") or 0) >= limit
-
-
 def record_auth_failure(
     scope: str,
     request,
@@ -48,14 +40,37 @@ def record_auth_failure(
 ) -> int:
     """Increment failure counter. Returns new count."""
     key = _rate_key(scope, client_ip(request), identifier)
-    data = cache.get(key) or {"count": 0}
-    count = int(data.get("count") or 0) + 1
-    cache.set(key, {"count": count}, window)
-    return count
+    try:
+        data = cache.get(key) or {"count": 0}
+        count = int(data.get("count") or 0) + 1
+        cache.set(key, {"count": count}, window)
+        return count
+    except Exception:
+        # Hosted file-cache permission blips must not turn Pay into HTTP 500.
+        logger.exception("auth rate-limit cache write failed for %s", scope)
+        return 0
 
 
 def clear_auth_failures(scope: str, request, identifier: str = "") -> None:
-    cache.delete(_rate_key(scope, client_ip(request), identifier))
+    try:
+        cache.delete(_rate_key(scope, client_ip(request), identifier))
+    except Exception:
+        pass
+
+
+def is_auth_rate_limited(
+    scope: str,
+    request,
+    identifier: str = "",
+    *,
+    limit: int = 5,
+) -> bool:
+    key = _rate_key(scope, client_ip(request), identifier)
+    try:
+        data = cache.get(key) or {"count": 0}
+    except Exception:
+        return False
+    return int(data.get("count") or 0) >= limit
 
 
 def assert_auth_allowed(

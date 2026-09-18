@@ -375,24 +375,45 @@ if _cache_backend in {"locmem", "locmemcache", "local"}:
     }
 else:
     _cache_dir = BASE_DIR / ".cache"
+    _cache_writable = True
     try:
         _cache_dir.mkdir(parents=True, exist_ok=True)
+        _probe = _cache_dir / ".write_probe"
+        _probe.write_text("ok", encoding="utf-8")
+        _probe.unlink(missing_ok=True)
     except OSError:
-        pass
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
-            "LOCATION": str(_cache_dir),
-            "TIMEOUT": 60,
-            "OPTIONS": {"MAX_ENTRIES": 8000},
-        },
-        "jobs": {
-            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
-            "LOCATION": str(_cache_dir / "jobs"),
-            "TIMEOUT": None,
-            "OPTIONS": {"MAX_ENTRIES": 1000},
-        },
-    }
+        _cache_writable = False
+    if not _cache_writable:
+        # Unwritable .cache (common after root-owned deploy) must not 500 Pay.
+        CACHES = {
+            "default": {
+                "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                "LOCATION": "ispcentric-default-fallback",
+                "TIMEOUT": 60,
+                "OPTIONS": {"MAX_ENTRIES": 5000},
+            },
+            "jobs": {
+                "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                "LOCATION": "ispcentric-jobs-fallback",
+                "TIMEOUT": None,
+                "OPTIONS": {"MAX_ENTRIES": 1000},
+            },
+        }
+    else:
+        CACHES = {
+            "default": {
+                "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+                "LOCATION": str(_cache_dir),
+                "TIMEOUT": 60,
+                "OPTIONS": {"MAX_ENTRIES": 8000},
+            },
+            "jobs": {
+                "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+                "LOCATION": str(_cache_dir / "jobs"),
+                "TIMEOUT": None,
+                "OPTIONS": {"MAX_ENTRIES": 1000},
+            },
+        }
 
 # Prefer cached DB sessions when the shared file/locmem cache is available so
 # authenticated page loads avoid a session-row write on every request.

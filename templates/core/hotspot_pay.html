@@ -1972,12 +1972,18 @@
               var hint = response.status
                 ? ("Server error (" + response.status + "). Refresh and try again.")
                 : "Server returned an invalid response. Refresh and try again.";
+              if (raw.indexOf("Database") !== -1) {
+                hint = "Database update needed on the server. Ask the admin to migrate, then retry.";
+              }
               throw new Error(hint);
             }
           } else if (!response.ok) {
             throw new Error(
               "Server error (" + response.status + "). Refresh and try again."
             );
+          }
+          if (data && typeof data === "object" && data.error && !response.ok) {
+            throw new Error(data.error);
           }
           return { ok: response.ok, data: data || {} };
         });

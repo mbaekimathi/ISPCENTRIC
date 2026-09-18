@@ -29,6 +29,8 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
+logger = logging.getLogger(__name__)
+
 from accounts.communications import (
     CLIENT_COMMUNICATION_EVENTS,
     ISP_COMMUNICATION_EVENTS,
@@ -17499,6 +17501,21 @@ def pppoe_voucher_redeem(request, join_code: str):
 @require_POST
 def hotspot_payment_start(request, join_code: str):
     """Start public M-Pesa payment for a captive device; no Hotspot password."""
+    try:
+        return _hotspot_payment_start_impl(request, join_code)
+    except Exception:
+        logger.exception("hotspot_payment_start failed join=%s", join_code)
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "Could not start payment. Refresh and try again.",
+            },
+            status=500,
+        )
+
+
+def _hotspot_payment_start_impl(request, join_code: str):
+    """Start public M-Pesa payment for a captive device; no Hotspot password."""
     from accounts.security import AuthRateLimitExceeded, assert_public_pay_allowed, record_auth_failure
     from billing.devices import resolve_or_create_hotspot_customer
     from billing.stk import start_subscription_stk_payment
@@ -17518,11 +17535,14 @@ def hotspot_payment_start(request, join_code: str):
             {"ok": False, "error": "Too many payment attempts. Try again later."},
             status=429,
         )
-    record_auth_failure("stk_start_ip", request, limit=12, window=900)
-    if join_code:
-        record_auth_failure(
-            "stk_start_code", request, identifier=join_code, limit=20, window=900
-        )
+    try:
+        record_auth_failure("stk_start_ip", request, limit=12, window=900)
+        if join_code:
+            record_auth_failure(
+                "stk_start_code", request, identifier=join_code, limit=20, window=900
+            )
+    except Exception:
+        logger.exception("hotspot pay rate-limit counter failed")
 
     org = Organization.objects.filter(join_code=join_code).first()
     if org is None:

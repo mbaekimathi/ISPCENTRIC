@@ -11,7 +11,7 @@ import logging
 import re
 from urllib.parse import urlparse
 
-from django.http import HttpResponseServerError
+from django.http import HttpResponseServerError, JsonResponse
 
 logger = logging.getLogger(__name__)
 
@@ -525,6 +525,34 @@ class SchemaErrorMiddleware:
             repaired = bool(repair_schema_if_needed())
         except Exception:
             logger.exception("Automatic schema repair failed")
+
+        wants_json = "application/json" in (request.headers.get("Accept") or "")
+        if not wants_json:
+            path = request.path or ""
+            if "/pay/" in path or "/voucher/" in path:
+                wants_json = True
+
+        if wants_json:
+            if repaired:
+                return JsonResponse(
+                    {
+                        "ok": False,
+                        "error": "Database was updated. Refresh the page and try again.",
+                        "schema_repaired": True,
+                    },
+                    status=500,
+                )
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "error": (
+                        "Database update needed. Ask the ISP admin to run "
+                        "migrations on the server, then retry."
+                    ),
+                    "schema_repaired": False,
+                },
+                status=500,
+            )
 
         if repaired:
             body = """<!DOCTYPE html>
