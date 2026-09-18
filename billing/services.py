@@ -1528,37 +1528,49 @@ def create_renewal_invoice_and_payment(
     method: str | None = None,
 ):
     """Create a paid invoice + payment row for a successful renewal payment."""
+    from django.db import IntegrityError, transaction
+
     from billing.models import Invoice, Payment
 
     payment_method = method or Payment.Method.MPESA
     now = timezone.localtime()
     stamp = now.strftime("%Y%m%d%H%M%S")
-    invoice_number = f"{invoice_prefix}-{organization.pk}-{stamp}-{secrets.token_hex(2).upper()}"
-    while Invoice.objects.filter(invoice_number=invoice_number).exists():
-        invoice_number = f"{invoice_prefix}-{organization.pk}-{stamp}-{secrets.token_hex(2).upper()}"
-    invoice = Invoice.objects.create(
-        organization=organization,
-        customer=customer,
-        invoice_number=invoice_number,
-        amount=amount,
-        status=Invoice.Status.PAID,
-        due_date=now.date(),
-        issued_at=now,
-        paid_at=now,
-        notes=notes,
-    )
     paid_phone = format_customer_phone_display(phone or "")[:30]
-    payment = Payment.objects.create(
-        organization=organization,
-        invoice=invoice,
-        amount=amount,
-        method=payment_method,
-        reference=(reference or "")[:100],
-        phone=paid_phone,
-        received_at=now,
-        recorded_by=recorded_by,
-    )
-    return invoice, payment
+    last_error = None
+    for _ in range(8):
+        invoice_number = (
+            f"{invoice_prefix}-{organization.pk}-{stamp}-{secrets.token_hex(2).upper()}"
+        )
+        try:
+            # Nested savepoint so a rare invoice_number clash does not roll back
+            # an outer STK fulfill transaction after Daraja already confirmed pay.
+            with transaction.atomic():
+                invoice = Invoice.objects.create(
+                    organization=organization,
+                    customer=customer,
+                    invoice_number=invoice_number,
+                    amount=amount,
+                    status=Invoice.Status.PAID,
+                    due_date=now.date(),
+                    issued_at=now,
+                    paid_at=now,
+                    notes=notes,
+                )
+                payment = Payment.objects.create(
+                    organization=organization,
+                    invoice=invoice,
+                    amount=amount,
+                    method=payment_method,
+                    reference=(reference or "")[:100],
+                    phone=paid_phone,
+                    received_at=now,
+                    recorded_by=recorded_by,
+                )
+            return invoice, payment
+        except IntegrityError as exc:
+            last_error = exc
+            continue
+    raise RuntimeError("Could not allocate a unique invoice number.") from last_error
 
 
 def customer_needs_nas_provision(customer) -> bool:

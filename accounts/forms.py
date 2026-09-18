@@ -1127,7 +1127,15 @@ class OrganizationEditForm(forms.ModelForm):
     SECTION_DARAJA = "daraja"
     SECTION_ALL = "all"
 
-    PROFILE_FIELDS = ("name", "phone", "status", "profile_photo")
+    PROFILE_FIELDS = (
+        "name",
+        "phone",
+        "dpo_name",
+        "dpo_email",
+        "dpo_phone",
+        "status",
+        "profile_photo",
+    )
     PAYMENTS_FIELDS = ("mpesa_payment_type", "mpesa_number", "mpesa_account", "mpesa_account_mode")
     DARAJA_FIELDS = (
         "daraja_enabled",
@@ -1158,6 +1166,9 @@ class OrganizationEditForm(forms.ModelForm):
         fields = [
             "name",
             "phone",
+            "dpo_name",
+            "dpo_email",
+            "dpo_phone",
             "status",
             "profile_photo",
             "mpesa_payment_type",
@@ -1180,6 +1191,27 @@ class OrganizationEditForm(forms.ModelForm):
                 attrs={
                     "class": "form-control",
                     "autocomplete": "tel",
+                }
+            ),
+            "dpo_name": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "name",
+                    "placeholder": "DPO full name",
+                }
+            ),
+            "dpo_email": forms.EmailInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "email",
+                    "placeholder": "dpo@example.com",
+                }
+            ),
+            "dpo_phone": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "tel",
+                    "placeholder": "07…",
                 }
             ),
             "status": forms.Select(attrs={"class": "form-control"}),
@@ -1299,6 +1331,9 @@ class OrganizationEditForm(forms.ModelForm):
         for name in (
             "status",
             "profile_photo",
+            "dpo_name",
+            "dpo_email",
+            "dpo_phone",
             "mpesa_payment_type",
             "mpesa_number",
             "mpesa_account",
@@ -1309,6 +1344,11 @@ class OrganizationEditForm(forms.ModelForm):
         ):
             if name in self.fields:
                 self.fields[name].required = False
+        if "dpo_name" in self.fields:
+            self.fields["dpo_name"].help_text = (
+                "Receives MikroTik and client operational alerts when those "
+                "triggers are set to DPO."
+            )
         if "daraja_environment" in self.fields and not (
             self.instance.daraja_environment or ""
         ).strip():
@@ -1328,6 +1368,15 @@ class OrganizationEditForm(forms.ModelForm):
 
     def clean_phone(self):
         return (self.cleaned_data.get("phone") or "").strip()
+
+    def clean_dpo_name(self):
+        return (self.cleaned_data.get("dpo_name") or "").strip()
+
+    def clean_dpo_email(self):
+        return (self.cleaned_data.get("dpo_email") or "").strip().lower()
+
+    def clean_dpo_phone(self):
+        return (self.cleaned_data.get("dpo_phone") or "").strip()
 
     def clean_mpesa_number(self):
         return (self.cleaned_data.get("mpesa_number") or "").strip()

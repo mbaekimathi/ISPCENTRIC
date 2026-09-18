@@ -385,7 +385,6 @@ def _claim_voucher_mac(voucher: AccessVoucher, mac: str) -> AccessVoucher:
     return voucher
 
 
-@transaction.atomic
 def redeem_access_voucher(
     *,
     organization,
@@ -404,128 +403,148 @@ def redeem_access_voucher(
     INVALID (used) only after NAS authorize succeeds (or when ``provision=False``
     skips MikroTik). If the router is offline, the package is applied but the
     voucher stays redeemable for retry.
+
+    MikroTik sync runs after the DB transaction commits so row locks are not held
+    across router API latency.
     """
     compact = normalize_voucher_code(code)
     if len(compact) < 5:
         return {"ok": False, "error": "Enter a valid voucher code."}
 
-    voucher = (
-        AccessVoucher.objects.select_for_update()
-        .select_related("customer", "customer__plan", "customer__router", "plan", "stk_request")
-        .filter(organization=organization, code=compact)
-        .first()
-    )
-    if voucher is None:
-        return {"ok": False, "error": "Voucher not found."}
-
-    if voucher.status in (AccessVoucher.Status.EXPIRED, AccessVoucher.Status.INVALID):
-        return {
-            "ok": False,
-            "error": "This voucher was already used and is no longer valid.",
-            "voucher_status": voucher.status,
-        }
-    if voucher.status != AccessVoucher.Status.VALID:
-        return {"ok": False, "error": "This voucher cannot be used."}
-
-    target = customer or voucher.customer
-    if target is None:
-        return {"ok": False, "error": "No customer is linked to this voucher."}
-    if target.organization_id != organization.pk:
-        return {"ok": False, "error": "Voucher not found."}
-    if customer is not None and customer.pk != voucher.customer_id:
-        from billing.services import customer_can_surf_via_hotspot
-
-        stray = (
-            getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
-            and not customer_can_surf_via_hotspot(customer)
-            and not AccessVoucher.objects.filter(
-                customer=customer, status=AccessVoucher.Status.VALID
-            ).exists()
+    with transaction.atomic():
+        voucher = (
+            AccessVoucher.objects.select_for_update()
+            .select_related(
+                "customer", "customer__plan", "customer__router", "plan", "stk_request"
+            )
+            .filter(organization=organization, code=compact)
+            .first()
         )
-        if not stray:
+        if voucher is None:
+            return {"ok": False, "error": "Voucher not found."}
+
+        if voucher.status in (
+            AccessVoucher.Status.EXPIRED,
+            AccessVoucher.Status.INVALID,
+        ):
             return {
                 "ok": False,
-                "error": "This voucher belongs to a different account.",
+                "error": "This voucher was already used and is no longer valid.",
+                "voucher_status": voucher.status,
             }
-        target = voucher.customer
+        if voucher.status != AccessVoucher.Status.VALID:
+            return {"ok": False, "error": "This voucher cannot be used."}
 
-    paid_plan = voucher.plan or target.plan
-    if paid_plan is not None and target.plan_id != paid_plan.pk:
-        target.plan = paid_plan
-        target.save(update_fields=["plan"])
+        target = customer or voucher.customer
+        if target is None:
+            return {"ok": False, "error": "No customer is linked to this voucher."}
+        if target.organization_id != organization.pk:
+            return {"ok": False, "error": "Voucher not found."}
+        if customer is not None and customer.pk != voucher.customer_id:
+            from billing.services import customer_can_surf_via_hotspot
 
-    # Link the device before applying the package so a failed attach
-    # (at cap / MAC clash) cannot leave a renewal committed for retry.
-    if mac:
-        from billing.devices import (
-            attach_hotspot_device,
-            normalize_device_mac,
-            reassign_unpaid_hotspot_mac,
-        )
-
-        mac = normalize_device_mac(mac)
-        moved = reassign_unpaid_hotspot_mac(target, mac)
-        if not moved.get("ok"):
-            attach = attach_hotspot_device(target, mac, enforce_cap=True)
-            if not attach.get("ok"):
+            stray = (
+                getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
+                and not customer_can_surf_via_hotspot(customer)
+                and not AccessVoucher.objects.filter(
+                    customer=customer, status=AccessVoucher.Status.VALID
+                ).exists()
+            )
+            if not stray:
                 return {
                     "ok": False,
-                    "error": attach.get("error") or "Could not link this device.",
-                    "at_cap": bool(attach.get("at_cap")),
+                    "error": "This voucher belongs to a different account.",
                 }
+            target = voucher.customer
 
-    stk = voucher.stk_request
-    # Cash recharge / auto-connect may already have applied this payment.
-    already_applied = bool(voucher.subscription_applied) or (
-        stk is not None and bool(stk.subscription_applied)
-    )
-    if not already_applied:
-        from accounts.communications import notify_org_event
-        from billing.services import customer_subscription_window_active
+        paid_plan = voucher.plan or target.plan
+        if paid_plan is not None and target.plan_id != paid_plan.pk:
+            target.plan = paid_plan
+            target.save(update_fields=["plan"])
 
-        stacked = customer_subscription_window_active(target)
-        try:
-            apply_paid_subscription_with_offer(target, plan=paid_plan)
-        except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
-        voucher.subscription_applied = True
-        voucher.save(update_fields=["subscription_applied"])
-        if voucher.payment_id:
-            AccessVoucher.objects.filter(payment_id=voucher.payment_id).update(
-                subscription_applied=True
+        # Link the device before applying the package so a failed attach
+        # (at cap / MAC clash) cannot leave a renewal committed for retry.
+        if mac:
+            from billing.devices import (
+                attach_hotspot_device,
+                normalize_device_mac,
+                reassign_unpaid_hotspot_mac,
             )
-        elif stk is not None:
+
+            mac = normalize_device_mac(mac)
+            moved = reassign_unpaid_hotspot_mac(target, mac)
+            if not moved.get("ok"):
+                attach = attach_hotspot_device(target, mac, enforce_cap=True)
+                if not attach.get("ok"):
+                    return {
+                        "ok": False,
+                        "error": attach.get("error") or "Could not link this device.",
+                        "at_cap": bool(attach.get("at_cap")),
+                    }
+
+        stk = voucher.stk_request
+        # Cash recharge / auto-connect may already have applied this payment.
+        already_applied = bool(voucher.subscription_applied) or (
+            stk is not None and bool(stk.subscription_applied)
+        )
+        if not already_applied:
+            from accounts.communications import notify_org_event
+            from billing.services import customer_subscription_window_active
+
+            stacked = customer_subscription_window_active(target)
+            try:
+                apply_paid_subscription_with_offer(target, plan=paid_plan)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            voucher.subscription_applied = True
+            voucher.save(update_fields=["subscription_applied"])
+            if voucher.payment_id:
+                AccessVoucher.objects.filter(payment_id=voucher.payment_id).update(
+                    subscription_applied=True
+                )
+            elif stk is not None:
+                AccessVoucher.objects.filter(stk_request=stk).update(
+                    subscription_applied=True
+                )
+            target.refresh_from_db()
+            org = getattr(target, "organization", None)
+            extend_ctx = {
+                "package_name": getattr(paid_plan, "name", "") or "",
+                "package_end": (
+                    target.package_end.isoformat() if target.package_end else ""
+                ),
+            }
+            if stacked and org is not None:
+                notify_org_event(
+                    "subscription_extended",
+                    organization=org,
+                    client=target,
+                    context=extend_ctx,
+                    subject="Subscription extended",
+                )
+
+        if stk is not None and not stk.subscription_applied:
+            stk.subscription_applied = True
+            stk.save(update_fields=["subscription_applied"])
             AccessVoucher.objects.filter(stk_request=stk).update(
                 subscription_applied=True
             )
-        target.refresh_from_db()
-        org = getattr(target, "organization", None)
-        extend_ctx = {
-            "package_name": getattr(paid_plan, "name", "") or "",
-            "package_end": (
-                target.package_end.isoformat() if target.package_end else ""
-            ),
-        }
-        if stacked and org is not None:
-            notify_org_event(
-                "subscription_extended",
-                organization=org,
-                client=target,
-                context=extend_ctx,
-                subject="Subscription extended",
-            )
 
-    if stk is not None and not stk.subscription_applied:
-        stk.subscription_applied = True
-        stk.save(update_fields=["subscription_applied"])
-        AccessVoucher.objects.filter(stk_request=stk).update(subscription_applied=True)
+        # Claim this device on the voucher before NAS sync so only this MAC is enabled.
+        if mac:
+            try:
+                _claim_voucher_mac(voucher, mac)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
 
-    # Claim this device on the voucher before NAS sync so only this MAC is enabled.
-    if mac:
-        try:
-            _claim_voucher_mac(voucher, mac)
-        except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
+        target_pk = target.pk
+        voucher_pk = voucher.pk
+        stk_pk = stk.pk if stk else None
+        account_number = target.account_number
+        package_start = (
+            target.package_start.isoformat() if target.package_start else ""
+        )
+        package_end = target.package_end.isoformat() if target.package_end else ""
 
     nas = {"ok": False, "allowed": False}
     if provision:
@@ -534,7 +553,7 @@ def redeem_access_voucher(
 
             nas = (
                 enqueue_customer_subscription_sync(
-                    target.pk,
+                    target_pk,
                     True,
                     wait_first=wait_first,
                     quick=quick,
@@ -545,16 +564,28 @@ def redeem_access_voucher(
         except Exception:  # noqa: BLE001 — package already applied
             logger.exception(
                 "Voucher %s redeemed for customer %s but MikroTik sync failed",
-                voucher.code,
-                target.pk,
+                compact,
+                target_pk,
             )
 
-    target.refresh_from_db()
+    target = Customer.objects.filter(pk=target_pk).select_related("organization").first()
+    voucher = AccessVoucher.objects.filter(pk=voucher_pk).first()
+    if target is None or voucher is None:
+        return {"ok": False, "error": "Voucher redemption could not be finalized."}
+
     from core.subscription_sync import nas_access_ready
 
     authorized = nas_access_ready(nas) if provision else False
     if (not provision or authorized) and voucher.status == AccessVoucher.Status.VALID:
-        _mark_voucher_used(voucher, mac=mac)
+        with transaction.atomic():
+            locked = (
+                AccessVoucher.objects.select_for_update()
+                .filter(pk=voucher.pk)
+                .first()
+            )
+            if locked is not None and locked.status == AccessVoucher.Status.VALID:
+                _mark_voucher_used(locked, mac=mac)
+                voucher = locked
 
     if authorized:
         from billing.services import notify_client_internet_reconnected
@@ -562,11 +593,7 @@ def redeem_access_voucher(
         notify_client_internet_reconnected(
             organization=getattr(target, "organization", None),
             customer=target,
-            context={
-                "package_end": (
-                    target.package_end.isoformat() if target.package_end else ""
-                ),
-            },
+            context={"package_end": package_end},
         )
 
     voucher.refresh_from_db()
@@ -574,22 +601,25 @@ def redeem_access_voucher(
     return {
         "ok": True,
         "activated": True,
-        "customer_id": target.pk,
-        "account_number": target.account_number,
-        "package_start": target.package_start.isoformat() if target.package_start else "",
-        "package_end": target.package_end.isoformat() if target.package_end else "",
+        "customer_id": target_pk,
+        "account_number": account_number,
+        "package_start": package_start,
+        "package_end": package_end,
         "authorized": authorized,
         "offline": bool(nas.get("offline")),
         "authorization_error": (
             ""
             if authorized
-            else (nas.get("message") or "Package activated; router authorize retry needed.")
+            else (
+                nas.get("message")
+                or "Package activated; router authorize retry needed."
+            )
         ),
         "can_retry_authorize": not authorized,
         "voucher_fallback": bool(
             voucher.status == AccessVoucher.Status.VALID and not authorized
         ),
-        "stk_id": stk.pk if stk else None,
+        "stk_id": stk_pk,
         **voucher_payload(voucher, all_vouchers=siblings),
     }
 
@@ -650,7 +680,6 @@ def activate_paid_subscription_stk(
     )
 
 
-@transaction.atomic
 def _activate_paid_subscription_stk_locked(
     stk: StkPushRequest,
     *,
@@ -658,25 +687,11 @@ def _activate_paid_subscription_stk_locked(
     wait_first: bool = False,
     quick: bool = True,
 ) -> dict:
-    """Apply once under row lock so callback + poll cannot double-extend."""
-    stk = (
-        StkPushRequest.objects.select_for_update()
-        .select_related(
-            "customer",
-            "customer__plan",
-            "customer__router",
-            "organization",
-            "plan",
-        )
-        .get(pk=stk.pk)
-    )
-    if stk.status != StkPushRequest.Status.SUCCESS:
-        return {"ok": False, "skipped": True, "reason": "not_success"}
+    """Apply once under row lock so callback + poll cannot double-extend.
 
-    customer = stk.customer
-    if customer is None:
-        return {"ok": False, "error": "No customer on this payment."}
-
+    MikroTik authorize runs *after* the DB transaction commits so captive polls
+    do not hold ``select_for_update`` locks across router API latency.
+    """
     from billing.devices import (
         attach_hotspot_device,
         normalize_device_mac,
@@ -684,104 +699,137 @@ def _activate_paid_subscription_stk_locked(
         unlink_hotspot_devices,
     )
 
-    # Prefer the MAC that started this payment (captive). Do not use primary for
-    # captive identity — that activates the wrong shared gadget. Staff renews
-    # often omit MAC; then keep/claim primary so empty keep_macs cannot wipe all
-    # devices and leave a paid package with nobody authorized.
-    raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
-    paying_mac = normalize_device_mac(mac or raw.get("hotspot_mac") or "")
-    primary_mac = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
-    device_mac = paying_mac or primary_mac
-    try:
-        vouchers = create_vouchers_for_stk(stk)
-    except Exception:  # noqa: BLE001
-        logger.exception("Could not create voucher while activating STK %s", stk.pk)
-        return {"ok": False, "error": "Could not create voucher."}
-    voucher = next(
-        (row for row in vouchers if row.status == AccessVoucher.Status.VALID),
-        vouchers[0] if vouchers else None,
-    )
-    if voucher is None:
-        return {"ok": False, "error": "Could not create voucher."}
+    with transaction.atomic():
+        stk = (
+            StkPushRequest.objects.select_for_update()
+            .select_related(
+                "customer",
+                "customer__plan",
+                "customer__router",
+                "organization",
+                "plan",
+            )
+            .get(pk=stk.pk)
+        )
+        if stk.status != StkPushRequest.Status.SUCCESS:
+            return {"ok": False, "skipped": True, "reason": "not_success"}
 
-    already_applied = bool(stk.subscription_applied)
-    if not already_applied:
-        paid_plan = voucher.plan or customer.plan
-        if paid_plan is not None and customer.plan_id != paid_plan.pk:
-            customer.plan = paid_plan
-            customer.save(update_fields=["plan"])
-        from accounts.communications import notify_org_event
-        from billing.services import customer_subscription_window_active
+        customer = stk.customer
+        if customer is None:
+            return {"ok": False, "error": "No customer on this payment."}
 
-        stacked = customer_subscription_window_active(customer)
+        # Prefer the MAC that started this payment (captive). Do not use primary for
+        # captive identity — that activates the wrong shared gadget. Staff renews
+        # often omit MAC; then keep/claim primary so empty keep_macs cannot wipe all
+        # devices and leave a paid package with nobody authorized.
+        raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+        paying_mac = normalize_device_mac(mac or raw.get("hotspot_mac") or "")
+        primary_mac = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
+        device_mac = paying_mac or primary_mac
         try:
-            apply_paid_subscription_with_offer(customer, plan=paid_plan)
-        except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
-        stk.subscription_applied = True
-        stk.save(update_fields=["subscription_applied"])
-        AccessVoucher.objects.filter(stk_request=stk).update(subscription_applied=True)
-        if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
-            if not stacked and device_mac:
-                # Fresh period: drop previous shared gadgets; only the payer
-                # (or staff-kept primary) stays. Never unlink with empty keep.
-                unlink_hotspot_devices(customer, keep_macs=[device_mac])
-            if device_mac:
-                set_primary_hotspot_mac(customer, device_mac)
-                attach_hotspot_device(customer, device_mac, enforce_cap=True)
-        customer.refresh_from_db()
-        if stacked:
-            notify_org_event(
-                "subscription_extended",
-                organization=stk.organization,
-                client=customer,
-                context={
-                    "package_name": getattr(paid_plan, "name", "") or "",
-                    "package_end": (
-                        customer.package_end.isoformat() if customer.package_end else ""
-                    ),
-                    "mpesa_receipt": stk.mpesa_receipt or "",
-                },
-                subject="Subscription extended",
-            )
+            vouchers = create_vouchers_for_stk(stk)
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not create voucher while activating STK %s", stk.pk)
+            return {"ok": False, "error": "Could not create voucher."}
+        voucher = next(
+            (row for row in vouchers if row.status == AccessVoucher.Status.VALID),
+            vouchers[0] if vouchers else None,
+        )
+        if voucher is None:
+            return {"ok": False, "error": "Could not create voucher."}
 
-    # Claim device MAC on a VALID voucher before NAS sync so voucher-scoped
-    # authorize enables this gadget (and not a stale shared peer).
-    if (
-        device_mac
-        and voucher is not None
-        and getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
-    ):
-        set_primary_hotspot_mac(customer, device_mac)
-        attach_hotspot_device(customer, device_mac, enforce_cap=True)
-        claimed = False
-        candidates = [voucher] + [
-            row
-            for row in vouchers
-            if row.pk != voucher.pk and row.status == AccessVoucher.Status.VALID
-        ]
-        for candidate in candidates:
+        already_applied = bool(stk.subscription_applied)
+        if not already_applied:
+            paid_plan = voucher.plan or customer.plan
+            if paid_plan is not None and customer.plan_id != paid_plan.pk:
+                customer.plan = paid_plan
+                customer.save(update_fields=["plan"])
+            from accounts.communications import notify_org_event
+            from billing.services import customer_subscription_window_active
+
+            stacked = customer_subscription_window_active(customer)
             try:
-                _claim_voucher_mac(candidate, device_mac)
-                voucher = candidate
-                claimed = True
-                break
-            except ValueError:
-                continue
-        if not claimed:
-            logger.warning(
-                "STK %s could not claim MAC %s on any VALID voucher",
-                stk.pk,
-                device_mac,
+                apply_paid_subscription_with_offer(customer, plan=paid_plan)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            stk.subscription_applied = True
+            stk.save(update_fields=["subscription_applied"])
+            AccessVoucher.objects.filter(stk_request=stk).update(
+                subscription_applied=True
             )
+            if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+                if not stacked and device_mac:
+                    # Fresh period: drop previous shared gadgets; only the payer
+                    # (or staff-kept primary) stays. Never unlink with empty keep.
+                    unlink_hotspot_devices(customer, keep_macs=[device_mac])
+                if device_mac:
+                    set_primary_hotspot_mac(customer, device_mac)
+                    attach_hotspot_device(customer, device_mac, enforce_cap=True)
+            customer.refresh_from_db()
+            if stacked:
+                notify_org_event(
+                    "subscription_extended",
+                    organization=stk.organization,
+                    client=customer,
+                    context={
+                        "package_name": getattr(paid_plan, "name", "") or "",
+                        "package_end": (
+                            customer.package_end.isoformat()
+                            if customer.package_end
+                            else ""
+                        ),
+                        "mpesa_receipt": stk.mpesa_receipt or "",
+                    },
+                    subject="Subscription extended",
+                )
 
+        # Claim device MAC on a VALID voucher before NAS sync so voucher-scoped
+        # authorize enables this gadget (and not a stale shared peer).
+        if (
+            device_mac
+            and voucher is not None
+            and getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
+        ):
+            set_primary_hotspot_mac(customer, device_mac)
+            attach_hotspot_device(customer, device_mac, enforce_cap=True)
+            claimed = False
+            candidates = [voucher] + [
+                row
+                for row in vouchers
+                if row.pk != voucher.pk and row.status == AccessVoucher.Status.VALID
+            ]
+            for candidate in candidates:
+                try:
+                    _claim_voucher_mac(candidate, device_mac)
+                    voucher = candidate
+                    claimed = True
+                    break
+                except ValueError:
+                    continue
+            if not claimed:
+                logger.warning(
+                    "STK %s could not claim MAC %s on any VALID voucher",
+                    stk.pk,
+                    device_mac,
+                )
+
+        customer_pk = customer.pk
+        voucher_pk = voucher.pk if voucher is not None else None
+        organization = stk.organization
+        mpesa_receipt = stk.mpesa_receipt or ""
+        package_end = (
+            customer.package_end.isoformat() if customer.package_end else ""
+        )
+        stk_pk = stk.pk
+
+    # Outside the row lock — MikroTik latency must not block other payers.
     nas = {"ok": False, "allowed": False}
     try:
         from core.subscription_sync import enqueue_customer_subscription_sync
 
         nas = (
             enqueue_customer_subscription_sync(
-                customer.pk,
+                customer_pk,
                 True,
                 wait_first=wait_first,
                 quick=quick,
@@ -792,31 +840,50 @@ def _activate_paid_subscription_stk_locked(
     except Exception:  # noqa: BLE001
         logger.exception(
             "STK %s package applied but MikroTik sync failed for customer %s",
-            stk.pk,
-            customer.pk,
+            stk_pk,
+            customer_pk,
         )
     from core.subscription_sync import nas_access_ready
 
     authorized = nas_access_ready(nas)
-    if authorized and voucher is not None and voucher.status == AccessVoucher.Status.VALID:
+    voucher = (
+        AccessVoucher.objects.filter(pk=voucher_pk).first() if voucher_pk else None
+    )
+    customer = Customer.objects.filter(pk=customer_pk).first()
+    if (
+        authorized
+        and voucher is not None
+        and voucher.status == AccessVoucher.Status.VALID
+    ):
         # Consume only this device's voucher; sibling device codes stay valid.
         if device_mac or (voucher.redeemed_mac or "").strip():
-            _mark_voucher_used(voucher, mac=device_mac or voucher.redeemed_mac)
-    if authorized:
+            with transaction.atomic():
+                locked = (
+                    AccessVoucher.objects.select_for_update()
+                    .filter(pk=voucher.pk)
+                    .first()
+                )
+                if locked is not None and locked.status == AccessVoucher.Status.VALID:
+                    _mark_voucher_used(
+                        locked, mac=device_mac or locked.redeemed_mac
+                    )
+                    voucher = locked
+    if authorized and customer is not None:
         from billing.services import notify_client_internet_reconnected
 
         notify_client_internet_reconnected(
-            organization=stk.organization,
+            organization=organization,
             customer=customer,
             context={
-                "mpesa_receipt": stk.mpesa_receipt or "",
-                "package_end": (
-                    customer.package_end.isoformat() if customer.package_end else ""
-                ),
+                "mpesa_receipt": mpesa_receipt,
+                "package_end": package_end,
             },
         )
-    siblings = list(AccessVoucher.objects.filter(stk_request=stk).order_by("id"))
-    voucher.refresh_from_db()
+    siblings = list(
+        AccessVoucher.objects.filter(stk_request_id=stk_pk).order_by("id")
+    )
+    if voucher is not None:
+        voucher.refresh_from_db()
     return {
         "ok": True,
         "activated": True,
@@ -826,10 +893,13 @@ def _activate_paid_subscription_stk_locked(
         "authorization_error": (
             ""
             if authorized
-            else (nas.get("message") or "Package activated; router authorize retry needed.")
+            else (
+                nas.get("message")
+                or "Package activated; router authorize retry needed."
+            )
         ),
         "can_retry_authorize": not authorized,
-        "stk_id": stk.pk,
+        "stk_id": stk_pk,
         **voucher_payload(voucher, all_vouchers=siblings),
     }
 

@@ -23,6 +23,11 @@ CLIENT_EVENT_RECIPIENT_OPTIONS = ("client",)
 ORG_ISP_EVENT_RECIPIENT_OPTIONS = (
     "organization_owner",
     "assigned_technician",
+    "dpo",
+)
+ORG_MIKROTIK_CLIENT_RECIPIENT_OPTIONS = (
+    "dpo",
+    "organization_owner",
 )
 
 CLIENT_COMMUNICATION_EVENTS = (
@@ -274,8 +279,8 @@ ISP_COMMUNICATION_EVENTS = (
         "when": "Onboarding-fee STK Push succeeds or fails before a tunnel script is generated.",
         "includes": "Router name, amount, and whether the script can be generated.",
         "channels": ("sms", "email", "whatsapp"),
-        "recipient": "Organization owner",
-        "recipient_options": ("organization_owner",),
+        "recipient": "DPO",
+        "recipient_options": ORG_MIKROTIK_CLIENT_RECIPIENT_OPTIONS,
         "default_message": (
             "Your MikroTik onboarding fee payment was processed. "
             "Check your workspace for the next onboarding step."
@@ -288,8 +293,8 @@ ISP_COMMUNICATION_EVENTS = (
         "when": "This ISP finishes onboarding a MikroTik router into ISPCENTRIC.",
         "includes": "Router name and confirmation that the device is ready to manage.",
         "channels": ("sms", "email", "whatsapp"),
-        "recipient": "Organization owner",
-        "recipient_options": ("organization_owner",),
+        "recipient": "DPO",
+        "recipient_options": ORG_MIKROTIK_CLIENT_RECIPIENT_OPTIONS,
         "default_message": (
             "Your MikroTik “{router_name}” was successfully onboarded for {company_name}. "
             "Open MikroTik to manage the router."
@@ -302,8 +307,8 @@ ISP_COMMUNICATION_EVENTS = (
         "when": "A MikroTik stays reachable but its health score drops below 70%.",
         "includes": "Router name, health score, status, and a short reason.",
         "channels": ("sms", "email", "whatsapp"),
-        "recipient": "Organization owner",
-        "recipient_options": ("organization_owner",),
+        "recipient": "DPO",
+        "recipient_options": ORG_MIKROTIK_CLIENT_RECIPIENT_OPTIONS,
         "default_message": (
             "Alert: MikroTik “{router_name}” health is {health_score}% "
             "({status_label}). {status_reason} "
@@ -317,8 +322,8 @@ ISP_COMMUNICATION_EVENTS = (
         "when": "A MikroTik goes offline or becomes unreachable.",
         "includes": "Router name, status, and a short reason.",
         "channels": ("sms", "email", "whatsapp"),
-        "recipient": "Organization owner",
-        "recipient_options": ("organization_owner",),
+        "recipient": "DPO",
+        "recipient_options": ORG_MIKROTIK_CLIENT_RECIPIENT_OPTIONS,
         "default_message": (
             "Alert: MikroTik “{router_name}” is offline ({status_label}). "
             "{status_reason} Open MikroTik in ISPCENTRIC to investigate."
@@ -331,8 +336,8 @@ ISP_COMMUNICATION_EVENTS = (
         "when": "An ISP staff user opens that MikroTik’s detail page in ISPCENTRIC.",
         "includes": "Router name and who opened it.",
         "channels": ("sms", "email", "whatsapp"),
-        "recipient": "Organization owner",
-        "recipient_options": ("organization_owner",),
+        "recipient": "DPO",
+        "recipient_options": ORG_MIKROTIK_CLIENT_RECIPIENT_OPTIONS,
         "default_message": (
             "{actor_name} opened MikroTik “{router_name}” in ISPCENTRIC."
         ),
@@ -344,8 +349,8 @@ ISP_COMMUNICATION_EVENTS = (
         "when": "Name, host, Wi‑Fi, ports, uplink, or other router settings are saved.",
         "includes": "Router name and a short summary of what changed.",
         "channels": ("sms", "email", "whatsapp"),
-        "recipient": "Organization owner",
-        "recipient_options": ("organization_owner",),
+        "recipient": "DPO",
+        "recipient_options": ORG_MIKROTIK_CLIENT_RECIPIENT_OPTIONS,
         "default_message": (
             "MikroTik “{router_name}” configuration was changed: {change_summary}."
         ),
@@ -360,8 +365,8 @@ ISP_COMMUNICATION_EVENTS = (
         ),
         "includes": "Count and a list of affected client names / account numbers.",
         "channels": ("sms", "email", "whatsapp"),
-        "recipient": "Organization owner",
-        "recipient_options": ("organization_owner",),
+        "recipient": "DPO",
+        "recipient_options": ORG_MIKROTIK_CLIENT_RECIPIENT_OPTIONS,
         "default_message": (
             "{affected_count} PPPoE client(s) are dialed with an active package "
             "but without internet:\n{affected_clients}\n"
@@ -378,8 +383,8 @@ ISP_COMMUNICATION_EVENTS = (
         ),
         "includes": "Router name, total TB used, and client count on that MikroTik.",
         "channels": ("sms", "email", "whatsapp"),
-        "recipient": "Organization owner",
-        "recipient_options": ("organization_owner",),
+        "recipient": "DPO",
+        "recipient_options": ORG_MIKROTIK_CLIENT_RECIPIENT_OPTIONS,
         "default_message": (
             "Alert: MikroTik “{router_name}” has used {usage_tb} TB across "
             "{client_count} client(s) since {usage_since}. "
@@ -446,6 +451,7 @@ RECIPIENT_OPTIONS = {
     "client": "Client",
     "organization_owner": "Organization owner",
     "assigned_technician": "Assigned technician",
+    "dpo": "DPO",
     "super_admin": "Super admin",
     "administrator": "Administrator",
     "manager": "Customer support",
@@ -1334,6 +1340,30 @@ def resolve_org_event_contacts(
             email=owner_email,
             phone=getattr(organization, "phone", "") or "",
         )
+
+    if "dpo" in selected and organization is not None:
+        dpo_email = (getattr(organization, "dpo_email", "") or "").strip()
+        dpo_phone = (getattr(organization, "dpo_phone", "") or "").strip()
+        dpo_name = (getattr(organization, "dpo_name", "") or "").strip()
+        if dpo_email or dpo_phone:
+            _add(
+                name=dpo_name or "DPO",
+                email=dpo_email,
+                phone=dpo_phone,
+            )
+        elif "organization_owner" not in selected:
+            # No dedicated DPO contact yet — keep alerts delivering via owner.
+            owner = getattr(organization, "owner", None)
+            owner_name = ""
+            owner_email = ""
+            if owner is not None:
+                owner_name = owner.get_full_name() or owner.username or ""
+                owner_email = (owner.email or "").strip()
+            _add(
+                name=dpo_name or owner_name or "DPO",
+                email=owner_email,
+                phone=getattr(organization, "phone", "") or "",
+            )
 
     if "client" in selected and client is not None:
         _add(

@@ -278,14 +278,17 @@ def ensure_customer_device(customer, mac: str):
         return None
     now = timezone.now()
     try:
-        device, created = CustomerDevice.objects.get_or_create(
-            organization_id=org_id,
-            mac=mac,
-            defaults={
-                "customer_id": customer.pk,
-                "last_seen_at": now,
-            },
-        )
+        # Nested atomic so IntegrityError only rolls back this savepoint when
+        # called under an outer transaction (e.g. attach_hotspot_device).
+        with transaction.atomic():
+            device, created = CustomerDevice.objects.get_or_create(
+                organization_id=org_id,
+                mac=mac,
+                defaults={
+                    "customer_id": customer.pk,
+                    "last_seen_at": now,
+                },
+            )
     except IntegrityError:
         return CustomerDevice.objects.filter(organization_id=org_id, mac=mac).first()
     if device.customer_id != customer.pk:
@@ -590,7 +593,14 @@ def maybe_set_customer_phone(customer, phone: str) -> bool:
     if clash:
         return False
     customer.phone = format_customer_phone_display(phone)
-    customer.save(update_fields=["phone", "phone_normalized"])
+    try:
+        # Nested savepoint: phone uniqueness races must not poison an outer
+        # atomic (STK fulfill / resolve_or_create) and roll back a paid payment.
+        with transaction.atomic():
+            customer.save(update_fields=["phone", "phone_normalized"])
+    except IntegrityError:
+        customer.refresh_from_db(fields=["phone", "phone_normalized"])
+        return False
     return True
 
 
@@ -840,17 +850,21 @@ def resolve_or_create_hotspot_customer(
             # can still proceed, then backfill if the clash clears.
             phone_to_store = ""
         try:
-            customer = Customer.objects.create(
-                organization=org,
-                full_name=f"Hotspot device {mac[-5:]}",
-                phone=phone_to_store,
-                account_number=account_number,
-                service_type=Customer.ServiceType.HOTSPOT,
-                hotspot_mac=mac,
-                status=Customer.Status.ACTIVE,
-                plan=plan,
-                router=router,
-            )
+            # Nested atomic: IntegrityError must not poison the outer
+            # transaction.atomic() or recovery queries raise
+            # TransactionManagementError and Hotspot pay fails.
+            with transaction.atomic():
+                customer = Customer.objects.create(
+                    organization=org,
+                    full_name=f"Hotspot device {mac[-5:]}",
+                    phone=phone_to_store,
+                    account_number=account_number,
+                    service_type=Customer.ServiceType.HOTSPOT,
+                    hotspot_mac=mac,
+                    status=Customer.Status.ACTIVE,
+                    plan=plan,
+                    router=router,
+                )
         except IntegrityError:
             again = _locked_hotspot_customer_for_mac(org, mac)
             if again is None and phone:

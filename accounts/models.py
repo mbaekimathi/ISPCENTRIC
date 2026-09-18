@@ -27,6 +27,26 @@ class Organization(models.Model):
         help_text="6-digit code the ISP owner uses to log in (separate from staff login codes).",
     )
     phone = models.CharField(max_length=30, blank=True)
+    dpo_name = models.CharField(
+        "DPO name",
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Data protection / ops contact who receives MikroTik and client alerts.",
+    )
+    dpo_email = models.EmailField(
+        "DPO email",
+        blank=True,
+        default="",
+        help_text="Email for DPO alerts. Falls back to the organization owner when empty.",
+    )
+    dpo_phone = models.CharField(
+        "DPO phone",
+        max_length=30,
+        blank=True,
+        default="",
+        help_text="Phone for DPO SMS/WhatsApp alerts.",
+    )
     join_code = models.CharField(
         max_length=6,
         unique=True,

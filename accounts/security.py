@@ -44,6 +44,37 @@ def public_pay_rate_limit_message(retry_after: int) -> str:
     )
 
 
+# Gateway / network faults must not burn the captive STK rate-limit budget.
+_PAY_START_INFRA_ERROR_MARKERS = (
+    "daraja",
+    "stk push failed",
+    "access token",
+    "not ready",
+    "credential",
+    "timeout",
+    "timed out",
+    "connection",
+    "enable daraja",
+    "payment gateway",
+    "transactionmanagement",
+    "integrityerror",
+)
+
+
+def pay_start_failure_counts_toward_limit(
+    error: str = "",
+    *,
+    is_exception: bool = False,
+) -> bool:
+    """True when a failed pay-start should count as client abuse for rate limits."""
+    if is_exception:
+        return False
+    err = (error or "").strip().lower()
+    if not err:
+        return False
+    return not any(marker in err for marker in _PAY_START_INFRA_ERROR_MARKERS)
+
+
 class AuthRateLimitExceeded(Exception):
     """Raised when an auth endpoint has too many attempts."""
 

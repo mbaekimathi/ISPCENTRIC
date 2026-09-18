@@ -167,6 +167,22 @@
                   {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
                 </div>
                 <div class="field">
+                  <label for="{{ form.dpo_name.id_for_label }}">{{ form.dpo_name.label }}</label>
+                  {{ form.dpo_name }}
+                  {% if form.dpo_name.help_text %}<p class="field-hint">{{ form.dpo_name.help_text }}</p>{% endif %}
+                  {% if form.dpo_name.errors %}<div class="field-error">{{ form.dpo_name.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field">
+                  <label for="{{ form.dpo_email.id_for_label }}">{{ form.dpo_email.label }}</label>
+                  {{ form.dpo_email }}
+                  {% if form.dpo_email.errors %}<div class="field-error">{{ form.dpo_email.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field">
+                  <label for="{{ form.dpo_phone.id_for_label }}">{{ form.dpo_phone.label }}</label>
+                  {{ form.dpo_phone }}
+                  {% if form.dpo_phone.errors %}<div class="field-error">{{ form.dpo_phone.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field">
                   <label for="{{ form.status.id_for_label }}">{{ form.status.label }}</label>
                   {{ form.status }}
                   {% if form.status.errors %}<div class="field-error">{{ form.status.errors|striptags }}</div>{% endif %}
@@ -217,6 +233,7 @@
             <div class="account-session-row"><span>Password</span><strong>••••••</strong></div>
             <div class="account-session-row"><span>Organization</span><strong>{{ organization.name }}</strong></div>
             <div class="account-session-row"><span>Contact phone</span><strong>{{ organization.phone|default:"—" }}</strong></div>
+            <div class="account-session-row"><span>DPO</span><strong>{% if organization.dpo_name or organization.dpo_email or organization.dpo_phone %}{{ organization.dpo_name|default:"—" }}{% if organization.dpo_email %} · {{ organization.dpo_email }}{% endif %}{% if organization.dpo_phone %} · {{ organization.dpo_phone }}{% endif %}{% else %}—{% endif %}</strong></div>
             <div class="account-session-row"><span>Status</span><strong>{{ organization.get_status_display }}</strong></div>
             <div class="account-session-row"><span>Owner</span><strong>{{ organization.owner.get_full_name|default:organization.owner.username }}</strong></div>
           </dl>

@@ -263,7 +263,7 @@ class CommunicationSettingsViewTests(TestCase):
                 "form_action": "save_enabled_messages",
                 "event_key": "isp_mikrotik_onboarded",
                 "message": "MikroTik {router_name} onboarded for {company_name}.",
-                "recipients": ["organization_owner"],
+                "recipients": ["dpo"],
                 "channels": ["email"],
                 "include_link": "1",
             },
@@ -274,8 +274,8 @@ class CommunicationSettingsViewTests(TestCase):
         rule = (comms.enabled_messages or {}).get("isp_mikrotik_onboarded")
         self.assertIsInstance(rule, dict)
         self.assertEqual(rule.get("channels"), ["email"])
-        self.assertEqual(rule.get("recipients"), ["organization_owner"])
-        self.assertTrue(rule.get("include_link"))
+        self.assertEqual(rule.get("recipients"), ["dpo"])
+        self.assertFalse(rule.get("include_link"))
 
         page = self.client.get(self.url)
         self.assertContains(page, "is-enabled")
@@ -1444,3 +1444,66 @@ class RouterUsageResetTests(TestCase):
             ),
             timezone.localtime(personal).replace(second=0, microsecond=0),
         )
+
+
+class DpoRecipientResolutionTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            "dpo-owner",
+            password="x",
+            email="owner@example.com",
+        )
+        self.org = Organization.objects.create(
+            name="DPO ISP",
+            owner=self.owner,
+            join_code="778899",
+            phone="0712000000",
+        )
+
+    def test_dpo_uses_dedicated_contact(self):
+        from accounts.communications import resolve_org_event_contacts
+
+        self.org.dpo_name = "Ada DPO"
+        self.org.dpo_email = "dpo@example.com"
+        self.org.dpo_phone = "0712111222"
+        self.org.save(
+            update_fields=["dpo_name", "dpo_email", "dpo_phone"]
+        )
+        contacts = resolve_org_event_contacts(
+            ["dpo"],
+            organization=self.org,
+        )
+        self.assertEqual(len(contacts), 1)
+        self.assertEqual(contacts[0]["name"], "Ada DPO")
+        self.assertEqual(contacts[0]["email"], "dpo@example.com")
+        self.assertEqual(contacts[0]["phone"], "0712111222")
+
+    def test_dpo_falls_back_to_owner_when_unset(self):
+        from accounts.communications import resolve_org_event_contacts
+
+        contacts = resolve_org_event_contacts(
+            ["dpo"],
+            organization=self.org,
+        )
+        self.assertEqual(len(contacts), 1)
+        self.assertEqual(contacts[0]["email"], "owner@example.com")
+        self.assertEqual(contacts[0]["phone"], "0712000000")
+
+    def test_mikrotik_events_default_recipient_is_dpo(self):
+        from accounts.communications import ISP_COMMUNICATION_EVENTS
+
+        mikrotik_keys = {
+            "isp_mikrotik_onboarding",
+            "isp_mikrotik_onboarded",
+            "isp_mikrotik_health_low",
+            "isp_mikrotik_off",
+            "isp_mikrotik_accessed",
+            "isp_mikrotik_config_changed",
+            "isp_pppoe_connected_not_surfing",
+            "isp_mikrotik_usage_high",
+        }
+        for event in ISP_COMMUNICATION_EVENTS:
+            if event["key"] not in mikrotik_keys:
+                continue
+            self.assertEqual(event["recipient_options"][0], "dpo")
+            self.assertIn("organization_owner", event["recipient_options"])

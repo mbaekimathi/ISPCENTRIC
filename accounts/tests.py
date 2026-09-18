@@ -879,6 +879,26 @@ class AuthRateLimitTests(TestCase):
         self.assertIn("Try again in", str(raised.exception))
         self.assertIn("minute", str(raised.exception))
 
+    def test_pay_start_infra_errors_do_not_count_toward_limit(self):
+        from accounts.security import pay_start_failure_counts_toward_limit
+
+        self.assertFalse(
+            pay_start_failure_counts_toward_limit(
+                "Daraja STK Push is not ready yet."
+            )
+        )
+        self.assertFalse(
+            pay_start_failure_counts_toward_limit("STK Push failed (Timeout)")
+        )
+        self.assertFalse(
+            pay_start_failure_counts_toward_limit("boom", is_exception=True)
+        )
+        self.assertTrue(
+            pay_start_failure_counts_toward_limit(
+                "Enter a valid Kenyan mobile number (e.g. 07xxxxxxxx)."
+            )
+        )
+
 
 class OrganizationMpesaAccountModeTests(TestCase):
     def setUp(self):

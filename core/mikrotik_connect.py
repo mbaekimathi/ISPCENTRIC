@@ -17396,7 +17396,7 @@ def find_pppoe_router_for_username(organization, pppoe_username: str):
     return None
 
 
-def find_hotspot_router_for_mac(organization, mac_address: str):
+def find_hotspot_router_for_mac(organization, mac_address: str, *, live_walk: bool = True):
     """
     Return the organization's active MikroTik currently seeing this client MAC.
 
@@ -17407,6 +17407,9 @@ def find_hotspot_router_for_mac(organization, mac_address: str):
 
     Fast path: cache hit or an already-bound customer.router for this MAC —
     skips a multi-router live walk so post-PIN authorize stays snappy.
+
+    When ``live_walk=False`` (Hotspot pay-start), only cache/bound routers are
+    considered so STK Push is not delayed by MikroTik API timeouts.
     """
     from core.models import MikroTikRouter
 
@@ -17472,6 +17475,9 @@ def find_hotspot_router_for_mac(organization, mac_address: str):
             routers.sort(key=lambda row: 0 if row.pk == bound_id else 1)
     except Exception:
         pass
+
+    if not live_walk:
+        return None
 
     for router in routers:
         host = router.api_host

@@ -17505,13 +17505,21 @@ def hotspot_payment_start(request, join_code: str):
         return _hotspot_payment_start_impl(request, join_code)
     except Exception as exc:
         logger.exception("hotspot_payment_start failed join=%s", join_code)
-        detail = f"{type(exc).__name__}: {exc}".strip()
-        if len(detail) > 180:
-            detail = detail[:177] + "…"
+        from django.db.transaction import TransactionManagementError
+
+        if isinstance(exc, TransactionManagementError):
+            user_error = (
+                "Could not start payment right now. Please wait a moment and try again."
+            )
+        else:
+            detail = f"{type(exc).__name__}: {exc}".strip()
+            if len(detail) > 180:
+                detail = detail[:177] + "…"
+            user_error = f"Could not start payment ({detail})"
         return JsonResponse(
             {
                 "ok": False,
-                "error": f"Could not start payment ({detail})",
+                "error": user_error,
             },
             status=500,
         )
@@ -17525,10 +17533,29 @@ def _hotspot_payment_start_impl(request, join_code: str):
         AuthRateLimitExceeded,
         assert_public_pay_allowed,
         clear_auth_failures,
+        pay_start_failure_counts_toward_limit,
         record_auth_failure,
     )
     from billing.devices import resolve_or_create_hotspot_customer
     from billing.stk import start_subscription_stk_payment
+
+    def _count_pay_failure(error: str = "", *, is_exception: bool = False) -> None:
+        if not pay_start_failure_counts_toward_limit(
+            error, is_exception=is_exception
+        ):
+            return
+        try:
+            record_auth_failure("stk_start_ip", request, limit=12, window=900)
+            if join_code:
+                record_auth_failure(
+                    "stk_start_code",
+                    request,
+                    identifier=join_code,
+                    limit=20,
+                    window=900,
+                )
+        except Exception:
+            pass
 
     try:
         assert_public_pay_allowed(request, join_code)
@@ -17599,10 +17626,10 @@ def _hotspot_payment_start_impl(request, join_code: str):
     ).order_by("id")
     from core.mikrotik_connect import find_hotspot_router_for_mac
 
-    # Prefer a bound/cached NAS; never block Pay on a live scan failure.
+    # Prefer bound/cached NAS only — never block STK send on a live multi-router walk.
     router = None
     try:
-        router = find_hotspot_router_for_mac(org, mac)
+        router = find_hotspot_router_for_mac(org, mac, live_walk=False)
     except Exception:
         logger.exception("find_hotspot_router_for_mac failed mac=%s", mac)
     if router is None:
@@ -17635,14 +17662,7 @@ def _hotspot_payment_start_impl(request, join_code: str):
             status=409,
         )
     if not resolved.get("ok"):
-        try:
-            record_auth_failure("stk_start_ip", request, limit=12, window=900)
-            if join_code:
-                record_auth_failure(
-                    "stk_start_code", request, identifier=join_code, limit=20, window=900
-                )
-        except Exception:
-            pass
+        _count_pay_failure(resolved.get("error") or "")
         return JsonResponse(
             {"ok": False, "error": resolved.get("error") or "Could not start payment."},
             status=int(resolved.get("status") or 400),
@@ -17702,18 +17722,21 @@ def _hotspot_payment_start_impl(request, join_code: str):
         try:
             from core.subscription_sync import enqueue_customer_subscription_sync
 
+            # Don't hold the captive Pay response on MikroTik; authorize can retry.
             provision = (
                 enqueue_customer_subscription_sync(
                     customer.pk,
                     True,
-                    wait_first=True,
+                    wait_first=False,
                     quick=True,
                     reauthenticate=False,
                 )
                 or provision
             )
         except Exception:
-            pass
+            logger.exception(
+                "hotspot free-attach sync failed customer=%s", customer.pk
+            )
         mac_norm = normalize_device_mac(mac)
         mac_authorized = mac_norm in {
             m.upper() for m in authorized_hotspot_macs_for_customer(customer)
@@ -17744,14 +17767,7 @@ def _hotspot_payment_start_impl(request, join_code: str):
         )
     except Exception as exc:
         logger.exception("start_subscription_stk_payment failed customer=%s", customer.pk)
-        try:
-            record_auth_failure("stk_start_ip", request, limit=12, window=900)
-            if join_code:
-                record_auth_failure(
-                    "stk_start_code", request, identifier=join_code, limit=20, window=900
-                )
-        except Exception:
-            pass
+        _count_pay_failure(str(exc), is_exception=True)
         detail = f"{type(exc).__name__}: {exc}".strip()
         if len(detail) > 160:
             detail = detail[:157] + "…"
@@ -17760,14 +17776,7 @@ def _hotspot_payment_start_impl(request, join_code: str):
             status=500,
         )
     if not result.get("ok"):
-        try:
-            record_auth_failure("stk_start_ip", request, limit=12, window=900)
-            if join_code:
-                record_auth_failure(
-                    "stk_start_code", request, identifier=join_code, limit=20, window=900
-                )
-        except Exception:
-            pass
+        _count_pay_failure(result.get("error") or "")
         return JsonResponse(result, status=400)
 
     clear_auth_failures("stk_start_ip", request)
@@ -18852,11 +18861,6 @@ def pppoe_payment_start(request, join_code: str):
         )
         response["Retry-After"] = str(retry_after)
         return response
-    record_auth_failure("stk_start_ip", request, limit=12, window=900)
-    if join_code:
-        record_auth_failure(
-            "stk_start_code", request, identifier=join_code, limit=20, window=900
-        )
 
     org = Organization.objects.filter(join_code=join_code).first()
     if org is None:
@@ -18949,6 +18953,11 @@ def pppoe_payment_start(request, join_code: str):
         )
     phone = (request.POST.get("phone") or "").strip() or (customer.phone or "")
 
+    from accounts.security import (
+        clear_auth_failures,
+        pay_start_failure_counts_toward_limit,
+    )
+
     result = start_subscription_stk_payment(
         organization=org,
         customer=customer,
@@ -18957,7 +18966,21 @@ def pppoe_payment_start(request, join_code: str):
         request=request,
     )
     if not result.get("ok"):
+        if pay_start_failure_counts_toward_limit(result.get("error") or ""):
+            record_auth_failure("stk_start_ip", request, limit=12, window=900)
+            if join_code:
+                record_auth_failure(
+                    "stk_start_code",
+                    request,
+                    identifier=join_code,
+                    limit=20,
+                    window=900,
+                )
         return JsonResponse(result, status=400)
+
+    clear_auth_failures("stk_start_ip", request)
+    if join_code:
+        clear_auth_failures("stk_start_code", request, identifier=join_code)
 
     access_token = signing.dumps(
         {"stk": result["stk_id"], "org": org.pk, "cid": customer.pk, "mode": "pppoe"},

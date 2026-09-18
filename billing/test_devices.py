@@ -335,6 +335,46 @@ class HotspotDeviceLimitTests(TestCase):
             ).exists()
         )
 
+    def test_create_integrity_error_recovers_without_poisoning_transaction(self):
+        """Race on Customer.create must not raise TransactionManagementError."""
+        from django.db import IntegrityError
+        from django.db.transaction import TransactionManagementError
+
+        mac = "AA:BB:CC:DD:EE:88"
+        existing = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot device EE:88",
+            phone="",
+            account_number="HOT-RACE-88",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac=mac,
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        # Miss on the first lock lookup (as if the row was inserted after we looked),
+        # then let create hit the unique constraint and recover.
+        with patch(
+            "billing.devices._locked_hotspot_customer_for_mac",
+            side_effect=[None, existing],
+        ):
+            try:
+                resolved = resolve_or_create_hotspot_customer(
+                    self.org,
+                    mac=mac,
+                    phone="",
+                    plan=self.plan,
+                )
+            except TransactionManagementError:
+                self.fail(
+                    "IntegrityError recovery poisoned the outer atomic block"
+                )
+            except IntegrityError:
+                self.fail("IntegrityError escaped resolve_or_create_hotspot_customer")
+
+        self.assertTrue(resolved["ok"])
+        self.assertEqual(resolved["customer"].pk, existing.pk)
+        self.assertFalse(resolved["created"])
+
 
 class HotspotPaymentStartDeviceTests(TestCase):
     def setUp(self):
