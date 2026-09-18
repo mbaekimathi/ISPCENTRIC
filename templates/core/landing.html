@@ -6,6 +6,7 @@
 <header class="site-header">
   <a class="brand" href="/accounts/employee/login/">ISP<span>CENTRIC</span></a>
   <div class="nav-actions">
+    {% include "partials/theme_toggle_button.html" %}
     <a class="btn btn-ghost" href="{% url 'accounts:login' %}">Login</a>
     {% if landing_register_enabled %}
       <a class="btn btn-primary" href="{% url 'accounts:register' %}">Register</a>
@@ -39,6 +40,9 @@
   </div>
 </section>
 <script>
+  document.addEventListener("DOMContentLoaded", function () {
+    if (window.IspTheme) window.IspTheme.bindToggle();
+  });
   document.getElementById("employee-login-brand")?.addEventListener("click", function (e) {
     e.preventDefault();
     window.location.assign("/accounts/employee/login/");

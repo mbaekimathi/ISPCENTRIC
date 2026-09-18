@@ -4,6 +4,7 @@
 
 {% block body %}
 <div class="staff-shell">
+  {% include "partials/public_theme_bar.html" %}
   <aside class="staff-rail">
     <div class="staff-rail-inner">
       <p class="staff-kicker">Awaiting access</p>
@@ -63,4 +64,5 @@
     </div>
   </main>
 </div>
+{% include "partials/bind_theme_script.html" %}
 {% endblock %}

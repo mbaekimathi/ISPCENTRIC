@@ -189,7 +189,7 @@
       </div>
     </section>
 
-    <section class="clients-usage-insights-panel" data-usage-panel="insights">
+    <section class="clients-usage-insights-panel" data-usage-panel="insights"{% if view_mode == 'raw' %} hidden{% endif %}>
       <header class="clients-usage-section-head clients-usage-section-head-inline">
         <div>
           <h2>Client insights</h2>
@@ -227,33 +227,33 @@
           </div>
         </article>
 
-        <article class="client-usage-chart-card clients-usage-chart-card-rank is-wide">
+        <article class="client-usage-chart-card clients-usage-chart-card-rank">
           <header>
             <h3>Highest data users</h3>
-            <p>Up to 40 clients by period data used — for capacity and plan decisions.</p>
+            <p>Top 12 clients by period data used — for capacity and plan decisions.</p>
           </header>
-          <div class="client-usage-chart-wrap is-tall">
-            <canvas id="chart-top" height="420"></canvas>
+          <div class="client-usage-chart-wrap is-compact-rank">
+            <canvas id="chart-top" height="240"></canvas>
           </div>
         </article>
 
-        <article class="client-usage-chart-card clients-usage-chart-card-rank is-wide">
+        <article class="client-usage-chart-card clients-usage-chart-card-rank">
           <header>
             <h3>Online ratio by client</h3>
             <p>Same ranked set — who stayed online through the window.</p>
           </header>
-          <div class="client-usage-chart-wrap is-tall">
-            <canvas id="chart-uptime" height="420"></canvas>
+          <div class="client-usage-chart-wrap is-compact-rank">
+            <canvas id="chart-uptime" height="240"></canvas>
           </div>
         </article>
 
-        <article class="client-usage-chart-card clients-usage-chart-card-rank is-wide">
+        <article class="client-usage-chart-card clients-usage-chart-card-rank">
           <header>
             <h3>Offline clients</h3>
             <p>Clients offline now (or lowest window uptime) — downtimes and online %.</p>
           </header>
-          <div class="client-usage-chart-wrap is-tall">
-            <canvas id="chart-offline" height="420"></canvas>
+          <div class="client-usage-chart-wrap is-compact-rank">
+            <canvas id="chart-offline" height="240"></canvas>
           </div>
         </article>
       </div>
@@ -296,8 +296,8 @@
             <h3>Data transferred</h3>
             <p>Counter growth between samples after each usage baseline (MB).</p>
           </header>
-          <div class="client-usage-chart-wrap">
-            <canvas id="chart-data" height="240"></canvas>
+          <div class="client-usage-chart-wrap client-usage-chart-wrap-compact">
+            <canvas id="chart-data" height="200"></canvas>
           </div>
         </article>
       </div>
@@ -805,7 +805,7 @@
       var bb = userBytes(b);
       if (ab !== bb) return bb - ab;
       return String((a && a.full_name) || "").localeCompare(String((b && b.full_name) || ""));
-    }).slice(0, 40);
+    }).slice(0, 12);
     return {
       labels: list.map(function (u) { return u.full_name || "Client"; }),
       data_used_mb: list.map(function (u) {
@@ -840,7 +840,7 @@
         return ar - br;
       });
     }
-    list = list.slice(0, 40);
+    list = list.slice(0, 12);
     return {
       labels: list.map(function (u) { return u.full_name || "Client"; }),
       online_ratio: list.map(function (u) { return Number(u.online_ratio || 0) || 0; }),
@@ -910,6 +910,7 @@
   }
 
   function ensureCharts() {
+    if (viewMode === "raw") return;
     if (!window.Chart || charts.levels) return;
     var empty = { labels: [], datasets: [] };
     var defaults = chartDefaults();
@@ -996,6 +997,7 @@
   }
 
   function paintCharts(data, users) {
+    if (viewMode === "raw") return;
     ensureCharts();
     if (!charts.levels && !charts.top) return;
     var labels = (data && data.labels) || [];

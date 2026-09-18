@@ -4,6 +4,7 @@
 
 {% block body %}
 <div class="auth-shell">
+  {% include "partials/public_theme_bar.html" %}
   <div class="auth-panel">
     <div class="auth-role">ISP client</div>
     <div class="auth-brand">ISP<span>CENTRIC</span></div>
@@ -76,6 +77,9 @@
   </div>
 </div>
 <script>
+  document.addEventListener("DOMContentLoaded", function () {
+    if (window.IspTheme) window.IspTheme.bindToggle();
+  });
   document.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       var input = document.getElementById(btn.getAttribute("data-toggle-password"));

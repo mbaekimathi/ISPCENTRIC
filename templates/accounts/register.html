@@ -4,6 +4,7 @@
 
 {% block body %}
 <div class="auth-shell">
+  {% include "partials/public_theme_bar.html" %}
   <div class="auth-panel">
     <div class="auth-role">ISP client</div>
     <div class="auth-brand">ISP<span>CENTRIC</span></div>
@@ -310,4 +311,5 @@
     checkPasswords();
   })();
 </script>
+{% include "partials/bind_theme_script.html" %}
 {% endblock %}

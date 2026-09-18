@@ -17,13 +17,18 @@ from accounts.routing import (
 
 
 def staff_workspace(request):
+    try:
+        company_profile = CompanyProfile.get_solo()
+    except Exception:
+        company_profile = None
+
     user = getattr(request, "user", None)
     if user is None or not user.is_authenticated:
-        return {}
+        return {"company_profile": company_profile}
 
     employee = getattr(user, "employee_profile", None)
     if employee is None or not employee.can_access_workspace:
-        return {}
+        return {"company_profile": company_profile}
 
     role_labels = dict(Employee.Role.choices)
     viewed = get_role_view(request, employee) or employee.role
@@ -44,11 +49,6 @@ def staff_workspace(request):
     if current_page == "stock_audit" and request.GET.get("register"):
         current_page = "stock_audit"
     nav = {} if viewing_client else nav_items_for_role(viewed, current_page)
-
-    try:
-        company_profile = CompanyProfile.get_solo()
-    except Exception:
-        company_profile = None
 
     return {
         "employee": employee,

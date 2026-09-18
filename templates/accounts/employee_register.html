@@ -4,6 +4,7 @@
 
 {% block body %}
 <div class="staff-shell">
+  {% include "partials/public_theme_bar.html" %}
   <aside class="staff-rail">
     <div class="staff-rail-inner">
       <p class="staff-kicker">Staff onboarding</p>
@@ -296,4 +297,5 @@
     });
   })();
 </script>
+{% include "partials/bind_theme_script.html" %}
 {% endblock %}

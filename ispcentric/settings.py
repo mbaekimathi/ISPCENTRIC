@@ -542,3 +542,7 @@ LOGGING = {
         },
     },
 }
+
+# MariaDB/MySQL cannot install conditioned UniqueConstraints; uniqueness is
+# still enforced in app code / migrations that note this limitation.
+SILENCED_SYSTEM_CHECKS = ["models.W036"]

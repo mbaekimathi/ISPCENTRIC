@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+{% include "partials/theme_fouc.html" %}
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   {% if auto_refresh %}<meta http-equiv="refresh" content="2;url={{ refresh_url }}">{% endif %}
@@ -25,19 +26,15 @@
     .is-pending { --accent: #0369a1; --tint: rgba(3, 105, 161, 0.12); }
     .is-error { --accent: #b91c1c; --tint: rgba(185, 28, 28, 0.12); }
 
-    @media (prefers-color-scheme: dark) {
-      :root {
+    [data-theme="dark"] {
+
         --surface: #131c28;
         --text: #eaf1fa;
         --muted: #9db0c8;
         --line: rgba(255, 255, 255, 0.1);
         --brand: #2ea3ad;
         --brand-ink: #04121a;
-      }
-      .is-ok { --accent: #4ade80; --tint: rgba(74, 222, 128, 0.14); }
-      .is-pending { --accent: #60c8f5; --tint: rgba(96, 200, 245, 0.14); }
-      .is-error { --accent: #fca5a5; --tint: rgba(252, 165, 165, 0.14); }
-    }
+}
 
     html { -webkit-text-size-adjust: 100%; }
     body {
@@ -303,5 +300,34 @@
       {% if result.can_retry != False %}<a class="action" href="{{ retry_url }}">Try again</a>{% endif %}
     {% endif %}
   </main>
+
+  <div class="public-theme-bar" style="position:fixed;top:0.85rem;right:0.85rem;z-index:50;">
+    <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme" title="Toggle light / dark mode" style="display:inline-flex;align-items:center;justify-content:center;width:2.5rem;height:2.5rem;border:1px solid var(--line);border-radius:12px;background:var(--glass, var(--panel));color:var(--ink);cursor:pointer;">
+      <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" style="display:none"><path d="M21 14.5A8.5 8.5 0 0 1 9.5 3a7 7 0 1 0 11.5 11.5z"></path></svg>
+    </button>
+  </div>
+  <script>
+  (function(){
+    var KEY="ispcentric-theme";
+    var btn=document.getElementById("theme-toggle");
+    function cur(){return document.documentElement.getAttribute("data-theme")==="dark"?"dark":"light";}
+    function apply(t){
+      document.documentElement.setAttribute("data-theme",t);
+      try{localStorage.setItem(KEY,t);}catch(e){}
+      if(btn){
+        btn.setAttribute("aria-label",t==="dark"?"Switch to light mode":"Switch to dark mode");
+        var sun=btn.querySelector(".icon-sun"); var moon=btn.querySelector(".icon-moon");
+        if(sun) sun.style.display=t==="dark"?"none":"block";
+        if(moon) moon.style.display=t==="dark"?"block":"none";
+      }
+      var metas=document.querySelectorAll('meta[name="theme-color"]');
+      var color=t==="dark"?"#0a1118":"#0e7c86";
+      metas.forEach(function(m){m.setAttribute("content",color);});
+    }
+    if(btn){btn.addEventListener("click",function(){apply(cur()==="dark"?"light":"dark");}); apply(cur());}
+  })();
+  </script>
+
 </body>
 </html>

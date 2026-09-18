@@ -89,8 +89,9 @@ def check_hosted_production_secrets(app_configs, **kwargs):
         warnings.append(
             Warning(
                 "FIELD_ENCRYPTION_KEY is unset on a production hosted install. "
-                "Generate a Fernet key and add it to .env so router passwords "
-                "remain readable after DJANGO_SECRET_KEY rotation.",
+                "Safest if secrets are already encrypted: set it to a copy of the "
+                "current DJANGO_SECRET_KEY (passphrase). Or generate a Fernet key "
+                "only when ciphertext is still plaintext — see .env.production.example.",
                 id="core.W003",
             )
         )
@@ -98,7 +99,8 @@ def check_hosted_production_secrets(app_configs, **kwargs):
         warnings.append(
             Warning(
                 "MPESA_CALLBACK_ALLOWED_IPS is empty on a production hosted install. "
-                "Pin Safaricom callback source IPs in .env to reject forged STK posts.",
+                "Pin Safaricom callback source IPs in .env to reject forged STK posts "
+                "(see .env.production.example).",
                 id="core.W004",
             )
         )

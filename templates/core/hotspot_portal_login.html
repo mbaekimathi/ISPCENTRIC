@@ -2,10 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+{% include "partials/theme_fouc.html" %}
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <meta name="color-scheme" content="light">
-  <meta name="theme-color" content="#e8eef3">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0e7c86">
   <title>{% if portal_mode == "pppoe" %}Renew connection{% else %}Get online{% endif %} — {{ org_name }}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
@@ -17,9 +18,9 @@
       --surface: rgba(255, 255, 255, 0.92);
       --surface-solid: #ffffff;
       --wash: #f3f6f9;
-      --brand: #0c6e78;
-      --brand-deep: #084e56;
-      --brand-soft: rgba(12, 110, 120, 0.1);
+      --brand: #0e7c86;
+      --brand-deep: #0a5f66;
+      --brand-soft: rgba(14, 124, 134, 0.1);
       --brand-ink: #ffffff;
       --accent: #c98512;
       --ok: #157a42;
@@ -30,6 +31,26 @@
       /* System stack only — captive users often have no web fonts yet */
       --font: "Segoe UI Variable", "Segoe UI", "SF Pro Text", "Avenir Next", "Helvetica Neue", sans-serif;
       --display: "Segoe UI Variable Display", "Segoe UI", "Avenir Next", "Helvetica Neue", sans-serif;
+    }
+
+
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --ink: #e8f0f6;
+      --muted: #9aabbd;
+      --line: rgba(232, 240, 246, 0.12);
+      --surface: rgba(14, 22, 32, 0.92);
+      --surface-solid: #121a24;
+      --wash: #0a1118;
+      --brand: #52d0db;
+      --brand-deep: #0e7c86;
+      --brand-soft: rgba(82, 208, 219, 0.12);
+      --brand-ink: #0a1118;
+      --shadow: 0 1px 1px rgba(0, 0, 0, 0.35), 0 18px 48px rgba(0, 0, 0, 0.45);
+    }
+    [data-theme="dark"] body {
+      background: #0a1118;
+      color: var(--ink);
     }
 
     html { -webkit-text-size-adjust: 100%; }
@@ -1758,5 +1779,31 @@
     })();
   </script>
   {% endif %}
+
+  <div class="public-theme-bar" style="position:fixed;top:0.85rem;right:0.85rem;z-index:50;">
+    <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme" title="Toggle light / dark mode" style="display:inline-flex;align-items:center;justify-content:center;width:2.5rem;height:2.5rem;border:1px solid rgba(16,32,51,0.15);border-radius:12px;background:rgba(255,255,255,0.9);color:#102033;cursor:pointer;">
+      <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="display:none"><path d="M21 14.5A8.5 8.5 0 0 1 9.5 3a7 7 0 1 0 11.5 11.5z"></path></svg>
+    </button>
+  </div>
+  <script>
+  (function(){
+    var KEY="ispcentric-theme";
+    var btn=document.getElementById("theme-toggle");
+    function cur(){return document.documentElement.getAttribute("data-theme")==="dark"?"dark":"light";}
+    function apply(t){
+      document.documentElement.setAttribute("data-theme",t);
+      try{localStorage.setItem(KEY,t);}catch(e){}
+      if(btn){
+        btn.setAttribute("aria-label",t==="dark"?"Switch to light mode":"Switch to dark mode");
+        var sun=btn.querySelector(".icon-sun"); var moon=btn.querySelector(".icon-moon");
+        if(sun) sun.style.display=t==="dark"?"none":"block";
+        if(moon) moon.style.display=t==="dark"?"block":"none";
+      }
+    }
+    if(btn){btn.addEventListener("click",function(){apply(cur()==="dark"?"light":"dark");}); apply(cur());}
+  })();
+  </script>
+
 </body>
 </html>

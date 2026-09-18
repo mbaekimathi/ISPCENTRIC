@@ -1,0 +1,15 @@
+{# Shared sidebar/header brand. Pass brand_href (resolved URL). #}
+<a class="brand staff-brand" href="{{ brand_href }}">
+  {% if company_profile and company_profile.logo %}
+    <img class="staff-brand-logo" src="{{ company_profile.logo.url }}" alt="" width="28" height="28" decoding="async">
+  {% endif %}
+  {% if company_profile and company_profile.app_name %}
+    {% if company_profile.app_name|upper == "ISPCENTRIC" %}
+      ISP<span>CENTRIC</span>
+    {% else %}
+      {{ company_profile.app_name }}
+    {% endif %}
+  {% else %}
+    ISP<span>CENTRIC</span>
+  {% endif %}
+</a>

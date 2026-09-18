@@ -28384,6 +28384,7 @@ a.packages-stat:focus-visible {
   border-top: 1px solid var(--border);
 }
 
+.clients-usage-insights-panel[hidden],
 .clients-usage-visual-panel[hidden],
 .clients-usage-table-panel[hidden] {
   display: none !important;
@@ -52242,4 +52243,375 @@ a.module-card:focus-visible {
 
 @media (max-width: 520px) {
   .sp-kpi-chip { min-width: calc(50% - 0.25rem); flex: 1 1 calc(50% - 0.25rem); }
+}
+
+/* �� Public / auth theme toggle (UI consistency) �� */
+.auth-shell,
+.staff-shell {
+  position: relative;
+}
+
+.public-theme-bar {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 30;
+}
+
+.public-theme-bar .theme-toggle {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+
+.site-header .theme-toggle {
+  width: 2.35rem;
+  height: 2.35rem;
+}
+
+.sidebar .brand,
+.staff-brand {
+  color: var(--sidebar-text, #fff);
+}
+
+.sidebar .brand span,
+.staff-brand span {
+  color: var(--sea, #5fd0d8);
+}
+
+@media (max-width: 640px) {
+  .public-theme-bar {
+    top: 0.75rem;
+    right: 0.75rem;
+  }
+}
+
+
+/* ========================================================================
+   Analytics polish — compact, responsive, non-stretching charts (v193)
+   ======================================================================== */
+
+:root {
+  --analytics-max: 72rem;
+  --analytics-chart-h: clamp(9.5rem, 18vw, 11.5rem);
+  --analytics-chart-h-sm: clamp(8.5rem, 16vw, 10.25rem);
+  --analytics-chart-h-rank: clamp(11rem, 22vw, 15rem);
+  --analytics-gap: 0.75rem;
+}
+
+/* —— Page shells: stop edge-to-edge stretch —— */
+.workspace-dash {
+  max-width: var(--analytics-max);
+}
+
+.clients-general-usage-page {
+  width: min(100%, var(--analytics-max));
+  max-width: var(--analytics-max);
+}
+
+.client-usage-analysis-page {
+  width: min(100%, 68rem);
+  max-width: 68rem;
+}
+
+.noc-console {
+  max-width: var(--analytics-max);
+}
+
+.sp-page {
+  width: min(100%, 68rem);
+}
+
+/* —— Workspace: denser KPIs + side-by-side charts —— */
+.workspace-dash-kpis,
+.workspace-dash-stats,
+.workspace-dash-stats.has-referral {
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 0.55rem;
+}
+
+.workspace-dash-kpi,
+.workspace-dash-stat {
+  padding: 0.7rem 0.8rem 0.65rem;
+}
+
+.workspace-dash-kpi-value,
+.workspace-dash-stat-value {
+  font-size: clamp(1.15rem, 2.2vw, 1.45rem);
+}
+
+.workspace-dash-analytics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--analytics-gap);
+  align-items: start;
+  min-width: 0;
+}
+
+.workspace-dash-analytics > .workspace-dash-panel {
+  min-width: 0;
+  margin: 0;
+}
+
+.workspace-dash-chart-wrap {
+  height: var(--analytics-chart-h);
+  margin: 0.15rem 0 0.55rem;
+  padding: 0.4rem 0.3rem 0.2rem;
+}
+
+.workspace-dash-chart-wrap-compact {
+  height: var(--analytics-chart-h-sm);
+  margin-bottom: 0.35rem;
+}
+
+.workspace-dash-panel-chart .workspace-dash-panel-head {
+  margin-bottom: 0.35rem;
+}
+
+.workspace-dash-panel-chart .panel-sub {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.workspace-dash-panel-chart h2 {
+  font-size: 1.05rem;
+}
+
+@media (max-width: 1080px) {
+  .workspace-dash-analytics {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* —— Client / general usage charts —— */
+.client-usage-chart-wrap {
+  height: var(--analytics-chart-h);
+  margin-top: 0.55rem;
+}
+
+.client-usage-chart-wrap-tall,
+.client-usage-chart-wrap-compact {
+  height: var(--analytics-chart-h-sm);
+}
+
+.client-usage-chart-wrap.is-tall,
+.clients-usage-visual-grid .client-usage-chart-wrap.is-tall,
+.clients-usage-insights-grid .client-usage-chart-wrap.is-tall {
+  height: var(--analytics-chart-h-rank);
+}
+
+.client-usage-chart-wrap.is-compact-rank {
+  height: var(--analytics-chart-h-rank);
+}
+
+.client-usage-chart-grid,
+.clients-usage-visual-grid,
+.clients-usage-insights-grid {
+  gap: var(--analytics-gap);
+}
+
+.clients-usage-insights-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.clients-usage-insights-grid .clients-usage-chart-card-rank {
+  grid-column: auto;
+}
+
+@media (min-width: 1100px) {
+  .clients-usage-insights-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .clients-usage-insights-grid > .client-usage-chart-card:not(.clients-usage-chart-card-rank) {
+    grid-column: span 3;
+  }
+
+  .clients-usage-insights-grid > .clients-usage-chart-card-rank {
+    grid-column: span 2;
+  }
+}
+
+.client-usage-chart-card {
+  padding: 0.8rem 0.85rem 0.9rem;
+  border-radius: 14px;
+}
+
+.client-usage-chart-card header h3 {
+  font-size: 0.98rem;
+}
+
+.client-usage-chart-card header p:last-child {
+  font-size: 0.72rem;
+}
+
+.clients-usage-summary-strip {
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.5rem 0.75rem;
+  padding: 0.7rem clamp(0.85rem, 1.6vw, 1.15rem);
+}
+
+@media (max-width: 720px) {
+  .client-usage-chart-wrap,
+  .client-usage-chart-wrap-tall,
+  .client-usage-chart-wrap-compact,
+  .client-usage-chart-wrap.is-tall,
+  .client-usage-chart-wrap.is-compact-rank {
+    height: 10.5rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .client-usage-chart-wrap,
+  .client-usage-chart-wrap-tall,
+  .client-usage-chart-wrap-compact,
+  .client-usage-chart-wrap.is-tall,
+  .client-usage-chart-wrap.is-compact-rank {
+    height: 9.5rem;
+  }
+}
+
+/* —— NOC: compact trend / mix —— */
+.noc-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.25rem, 1fr));
+  gap: 0.4rem;
+}
+
+.noc-kpi-chip {
+  min-width: 0;
+  padding: 0.4rem 0.55rem;
+}
+
+.noc-kpi-chip strong {
+  font-size: 1.05rem;
+}
+
+.noc-trend {
+  padding: 0.7rem 0.85rem 0.85rem;
+}
+
+.noc-trend-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(7.5rem, 9.5rem);
+  gap: 0.55rem 0.75rem;
+}
+
+.noc-chart-wrap {
+  min-height: 0;
+  height: 8.25rem;
+}
+
+.noc-chart-wrap-trend {
+  min-height: 0;
+  height: 9.75rem;
+}
+
+.noc-chart-wrap-mix {
+  min-height: 0;
+  height: 8.5rem;
+}
+
+.noc-stage {
+  gap: 0.6rem;
+}
+
+.noc-raw {
+  gap: 0.6rem;
+}
+
+@media (max-width: 900px) {
+  .noc-trend-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .noc-chart-wrap-trend,
+  .noc-chart-wrap-mix,
+  .noc-chart-wrap {
+    height: 9rem;
+  }
+}
+
+/* —— System performance —— */
+.sp-page {
+  --sp-section-gap: 0.95rem;
+}
+
+.sp-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+  gap: 0.4rem;
+}
+
+.sp-trend-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(7.5rem, 9.5rem);
+  gap: 0.55rem 0.75rem;
+}
+
+.sp-chart {
+  height: 9.75rem;
+}
+
+.sp-chart-lg {
+  height: 11rem;
+}
+
+.sp-chart-mix {
+  height: 9rem;
+}
+
+.sp-chart-bar {
+  height: 10.5rem;
+}
+
+.sp-gauge-ring {
+  width: 3.6rem;
+  height: 3.6rem;
+}
+
+.sp-table-wrap {
+  max-height: min(32vh, 16rem);
+}
+
+@media (max-width: 900px) {
+  .sp-trend-grid,
+  .sp-trend-grid-half {
+    grid-template-columns: 1fr;
+  }
+
+  .sp-chart,
+  .sp-chart-lg,
+  .sp-chart-mix,
+  .sp-chart-bar {
+    height: 9.5rem;
+  }
+}
+
+@media (max-width: 520px) {
+  .workspace-dash-kpis,
+  .workspace-dash-stats,
+  .workspace-dash-stats.has-referral {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .noc-kpi-strip,
+  .sp-kpi-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-dash-kpi:hover,
+  .workspace-dash-stat:hover,
+  .client-usage-chart-card:hover {
+    transform: none;
+  }
+}
+
+/* Rank charts: readable bar density for top-12 */
+:root {
+  --analytics-chart-h-rank: clamp(12rem, 24vw, 16.5rem);
 }

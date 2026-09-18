@@ -1,0 +1,20 @@
+{# Inline FOUC theme bootstrap for pages that do not extend base.html #}
+<script>
+  (function () {
+    try {
+      var key = "ispcentric-theme";
+      var stored = localStorage.getItem(key);
+      var theme = stored === "light" || stored === "dark" ? stored : "dark";
+      document.documentElement.setAttribute("data-theme", theme);
+      var meta = document.querySelector('meta[name="theme-color"]:not([media])');
+      if (!meta) {
+        meta = document.createElement("meta");
+        meta.setAttribute("name", "theme-color");
+        document.head.appendChild(meta);
+      }
+      meta.setAttribute("content", theme === "dark" ? "#0a1118" : "#0e7c86");
+    } catch (e) {
+      document.documentElement.setAttribute("data-theme", "dark");
+    }
+  })();
+</script>

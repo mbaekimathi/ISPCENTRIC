@@ -4,6 +4,7 @@
 
 {% block body %}
 <div class="auth-shell">
+  {% include "partials/public_theme_bar.html" %}
   <div class="auth-panel">
     <div class="auth-role">Company owner</div>
     <div class="auth-brand">ISP<span>CENTRIC</span></div>
@@ -18,4 +19,5 @@
     </p>
   </div>
 </div>
+{% include "partials/bind_theme_script.html" %}
 {% endblock %}
