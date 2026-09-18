@@ -645,6 +645,34 @@ def activate_paid_subscription_stk(
         ).start()
         return {"ok": True, "queued": True}
 
+    return _activate_paid_subscription_stk_locked(
+        stk, mac=mac, wait_first=wait_first, quick=quick
+    )
+
+
+@transaction.atomic
+def _activate_paid_subscription_stk_locked(
+    stk: StkPushRequest,
+    *,
+    mac: str = "",
+    wait_first: bool = False,
+    quick: bool = True,
+) -> dict:
+    """Apply once under row lock so callback + poll cannot double-extend."""
+    stk = (
+        StkPushRequest.objects.select_for_update()
+        .select_related(
+            "customer",
+            "customer__plan",
+            "customer__router",
+            "organization",
+            "plan",
+        )
+        .get(pk=stk.pk)
+    )
+    if stk.status != StkPushRequest.Status.SUCCESS:
+        return {"ok": False, "skipped": True, "reason": "not_success"}
+
     customer = stk.customer
     if customer is None:
         return {"ok": False, "error": "No customer on this payment."}
@@ -676,7 +704,8 @@ def activate_paid_subscription_stk(
     if voucher is None:
         return {"ok": False, "error": "Could not create voucher."}
 
-    if not stk.subscription_applied:
+    already_applied = bool(stk.subscription_applied)
+    if not already_applied:
         paid_plan = voucher.plan or customer.plan
         if paid_plan is not None and customer.plan_id != paid_plan.pk:
             customer.plan = paid_plan
@@ -721,16 +750,30 @@ def activate_paid_subscription_stk(
     if (
         device_mac
         and voucher is not None
-        and voucher.status == AccessVoucher.Status.VALID
+        and getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
     ):
-        if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
-            set_primary_hotspot_mac(customer, device_mac)
-            attach_hotspot_device(customer, device_mac, enforce_cap=True)
-        try:
-            _claim_voucher_mac(voucher, device_mac)
-        except ValueError:
-            # Another device already claimed this code — leave VALID for manual entry.
-            pass
+        set_primary_hotspot_mac(customer, device_mac)
+        attach_hotspot_device(customer, device_mac, enforce_cap=True)
+        claimed = False
+        candidates = [voucher] + [
+            row
+            for row in vouchers
+            if row.pk != voucher.pk and row.status == AccessVoucher.Status.VALID
+        ]
+        for candidate in candidates:
+            try:
+                _claim_voucher_mac(candidate, device_mac)
+                voucher = candidate
+                claimed = True
+                break
+            except ValueError:
+                continue
+        if not claimed:
+            logger.warning(
+                "STK %s could not claim MAC %s on any VALID voucher",
+                stk.pk,
+                device_mac,
+            )
 
     nas = {"ok": False, "allowed": False}
     try:
@@ -756,7 +799,7 @@ def activate_paid_subscription_stk(
 
     authorized = nas_access_ready(nas)
     if authorized and voucher is not None and voucher.status == AccessVoucher.Status.VALID:
-        # Consume only this device’s voucher; sibling device codes stay valid.
+        # Consume only this device's voucher; sibling device codes stay valid.
         if device_mac or (voucher.redeemed_mac or "").strip():
             _mark_voucher_used(voucher, mac=device_mac or voucher.redeemed_mac)
     if authorized:
@@ -777,7 +820,7 @@ def activate_paid_subscription_stk(
     return {
         "ok": True,
         "activated": True,
-        "already_applied": True,
+        "already_applied": already_applied,
         "authorized": authorized,
         "offline": bool(nas.get("offline")),
         "authorization_error": (
@@ -789,6 +832,7 @@ def activate_paid_subscription_stk(
         "stk_id": stk.pk,
         **voucher_payload(voucher, all_vouchers=siblings),
     }
+
 
 
 def _apply_package_while_burning(voucher: AccessVoucher) -> None:

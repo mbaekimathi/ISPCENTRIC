@@ -749,21 +749,25 @@ def start_subscription_stk_payment(
     )
 
     def _send(env: str) -> dict:
-        return initiate_stk_push(
-            consumer_key=creds["consumer_key"],
-            consumer_secret=creds["consumer_secret"],
-            passkey=creds["passkey"],
-            shortcode=creds["shortcode"],
-            payment_type=creds.get("payment_type") or "",
-            amount=amount,
-            phone=msisdn,
-            account_reference=account_ref,
-            callback_url=resolve_stk_callback_url(
-                creds, request=request, environment=env
-            ),
-            environment=env,
-            description="Subscription",
-        )
+        try:
+            return initiate_stk_push(
+                consumer_key=creds["consumer_key"],
+                consumer_secret=creds["consumer_secret"],
+                passkey=creds["passkey"],
+                shortcode=creds["shortcode"],
+                payment_type=creds.get("payment_type") or "",
+                amount=amount,
+                phone=msisdn,
+                account_reference=account_ref,
+                callback_url=resolve_stk_callback_url(
+                    creds, request=request, environment=env
+                ),
+                environment=env,
+                description="Subscription",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("STK Push initiate crashed for org=%s", organization.pk)
+            return {"ok": False, "error": f"STK Push failed ({type(exc).__name__})", "data": {}}
 
     result = _send(environment)
     used_env = environment

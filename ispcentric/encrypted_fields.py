@@ -28,7 +28,11 @@ PREFIX = "enc1:"
 
 
 def _fernet():
-    from cryptography.fernet import Fernet
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError:
+        logger.error("cryptography package is not installed; encrypted fields disabled")
+        return None
 
     raw = (getattr(settings, "FIELD_ENCRYPTION_KEY", "") or "").strip()
     if raw:
