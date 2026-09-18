@@ -856,8 +856,14 @@ def resolve_or_create_hotspot_customer(
             if again is None and phone:
                 again = find_hotspot_customer_by_phone(org, phone)
             if again is None:
-                raise
-            attach = attach_hotspot_device(again, mac, enforce_cap=True)
+                return {
+                    "ok": False,
+                    "error": (
+                        "Could not register this device. Rejoin the Hotspot Wi‑Fi "
+                        "and try again."
+                    ),
+                    "status": 409,
+                }
             if not attach.get("ok"):
                 return {
                     "ok": False,

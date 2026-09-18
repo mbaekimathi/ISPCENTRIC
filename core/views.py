@@ -17503,12 +17503,15 @@ def hotspot_payment_start(request, join_code: str):
     """Start public M-Pesa payment for a captive device; no Hotspot password."""
     try:
         return _hotspot_payment_start_impl(request, join_code)
-    except Exception:
+    except Exception as exc:
         logger.exception("hotspot_payment_start failed join=%s", join_code)
+        detail = f"{type(exc).__name__}: {exc}".strip()
+        if len(detail) > 180:
+            detail = detail[:177] + "…"
         return JsonResponse(
             {
                 "ok": False,
-                "error": "Could not start payment. Refresh and try again.",
+                "error": f"Could not start payment ({detail})",
             },
             status=500,
         )
@@ -17516,7 +17519,14 @@ def hotspot_payment_start(request, join_code: str):
 
 def _hotspot_payment_start_impl(request, join_code: str):
     """Start public M-Pesa payment for a captive device; no Hotspot password."""
-    from accounts.security import AuthRateLimitExceeded, assert_public_pay_allowed, record_auth_failure
+    from django.db import IntegrityError
+
+    from accounts.security import (
+        AuthRateLimitExceeded,
+        assert_public_pay_allowed,
+        clear_auth_failures,
+        record_auth_failure,
+    )
     from billing.devices import resolve_or_create_hotspot_customer
     from billing.stk import start_subscription_stk_payment
 
@@ -17535,14 +17545,6 @@ def _hotspot_payment_start_impl(request, join_code: str):
             {"ok": False, "error": "Too many payment attempts. Try again later."},
             status=429,
         )
-    try:
-        record_auth_failure("stk_start_ip", request, limit=12, window=900)
-        if join_code:
-            record_auth_failure(
-                "stk_start_code", request, identifier=join_code, limit=20, window=900
-            )
-    except Exception:
-        logger.exception("hotspot pay rate-limit counter failed")
 
     org = Organization.objects.filter(join_code=join_code).first()
     if org is None:
@@ -17589,9 +17591,14 @@ def _hotspot_payment_start_impl(request, join_code: str):
     ).order_by("id")
     from core.mikrotik_connect import find_hotspot_router_for_mac
 
-    # Bind the payment to the NAS that actually intercepted this MAC. Using the
-    # first organization router attached paid clients to stale router records.
-    router = find_hotspot_router_for_mac(org, mac) or active_routers.first()
+    # Prefer a bound/cached NAS; never block Pay on a live scan failure.
+    router = None
+    try:
+        router = find_hotspot_router_for_mac(org, mac)
+    except Exception:
+        logger.exception("find_hotspot_router_for_mac failed mac=%s", mac)
+    if router is None:
+        router = active_routers.first()
     if router is None:
         return JsonResponse(
             {"ok": False, "error": "No active Hotspot router is available."},
@@ -17606,10 +17613,28 @@ def _hotspot_payment_start_impl(request, join_code: str):
             status=400,
         )
 
-    resolved = resolve_or_create_hotspot_customer(
-        org, mac=mac, phone=phone, plan=plan, router=router
-    )
+    try:
+        resolved = resolve_or_create_hotspot_customer(
+            org, mac=mac, phone=phone, plan=plan, router=router
+        )
+    except IntegrityError:
+        logger.exception("hotspot customer create conflict mac=%s", mac)
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "Could not register this device. Rejoin the Hotspot Wi‑Fi and try again.",
+            },
+            status=409,
+        )
     if not resolved.get("ok"):
+        try:
+            record_auth_failure("stk_start_ip", request, limit=12, window=900)
+            if join_code:
+                record_auth_failure(
+                    "stk_start_code", request, identifier=join_code, limit=20, window=900
+                )
+        except Exception:
+            pass
         return JsonResponse(
             {"ok": False, "error": resolved.get("error") or "Could not start payment."},
             status=int(resolved.get("status") or 400),
@@ -17700,16 +17725,46 @@ def _hotspot_payment_start_impl(request, join_code: str):
             }
         )
 
-    result = start_subscription_stk_payment(
-        organization=org,
-        customer=customer,
-        phone=phone,
-        plan=plan,
-        request=request,
-        mac=mac,
-    )
+    try:
+        result = start_subscription_stk_payment(
+            organization=org,
+            customer=customer,
+            phone=phone,
+            plan=plan,
+            request=request,
+            mac=mac,
+        )
+    except Exception as exc:
+        logger.exception("start_subscription_stk_payment failed customer=%s", customer.pk)
+        try:
+            record_auth_failure("stk_start_ip", request, limit=12, window=900)
+            if join_code:
+                record_auth_failure(
+                    "stk_start_code", request, identifier=join_code, limit=20, window=900
+                )
+        except Exception:
+            pass
+        detail = f"{type(exc).__name__}: {exc}".strip()
+        if len(detail) > 160:
+            detail = detail[:157] + "…"
+        return JsonResponse(
+            {"ok": False, "error": f"Could not start M-Pesa payment ({detail})"},
+            status=500,
+        )
     if not result.get("ok"):
+        try:
+            record_auth_failure("stk_start_ip", request, limit=12, window=900)
+            if join_code:
+                record_auth_failure(
+                    "stk_start_code", request, identifier=join_code, limit=20, window=900
+                )
+        except Exception:
+            pass
         return JsonResponse(result, status=400)
+
+    clear_auth_failures("stk_start_ip", request)
+    if join_code:
+        clear_auth_failures("stk_start_code", request, identifier=join_code)
 
     access_token = signing.dumps(
         {"stk": result["stk_id"], "org": org.pk, "mac": mac},
