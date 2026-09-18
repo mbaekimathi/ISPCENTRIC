@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
@@ -13,12 +14,45 @@ from django import forms
 logger = logging.getLogger(__name__)
 
 
+def format_retry_after(seconds: int) -> str:
+    """Human-readable wait time for rate-limit messages."""
+    seconds = max(1, int(seconds))
+    if seconds < 60:
+        unit = "second" if seconds == 1 else "seconds"
+        return f"{seconds} {unit}"
+    minutes = seconds // 60
+    rem = seconds % 60
+    if minutes < 60:
+        m_unit = "minute" if minutes == 1 else "minutes"
+        if rem == 0:
+            return f"{minutes} {m_unit}"
+        s_unit = "second" if rem == 1 else "seconds"
+        return f"{minutes} {m_unit} {rem} {s_unit}"
+    hours = minutes // 60
+    rem_min = minutes % 60
+    h_unit = "hour" if hours == 1 else "hours"
+    if rem_min == 0:
+        return f"{hours} {h_unit}"
+    m_unit = "minute" if rem_min == 1 else "minutes"
+    return f"{hours} {h_unit} {rem_min} {m_unit}"
+
+
+def public_pay_rate_limit_message(retry_after: int) -> str:
+    return (
+        "Too many payment attempts. Try again in "
+        f"{format_retry_after(retry_after)}."
+    )
+
+
 class AuthRateLimitExceeded(Exception):
     """Raised when an auth endpoint has too many attempts."""
 
-    def __init__(self, retry_after: int = 900):
-        self.retry_after = retry_after
-        super().__init__("Too many attempts. Try again later.")
+    def __init__(self, retry_after: int = 900, *, message: str | None = None):
+        self.retry_after = max(1, int(retry_after or 1))
+        super().__init__(
+            message
+            or f"Too many attempts. Try again in {format_retry_after(self.retry_after)}."
+        )
 
 
 def client_ip(request) -> str:
@@ -28,6 +62,26 @@ def client_ip(request) -> str:
 def _rate_key(scope: str, ip: str, identifier: str = "") -> str:
     ident = (identifier or "").strip().lower()[:80]
     return f"auth_rl:{scope}:{ip}:{ident}"
+
+
+def _read_rate_entry(key: str, *, window: int = 900) -> tuple[int, int]:
+    """Return (count, remaining_seconds). Expired / missing entries are (0, 0)."""
+    try:
+        data = cache.get(key) or {}
+    except Exception:
+        return 0, 0
+    now = time.time()
+    count = int(data.get("count") or 0)
+    expires_at = float(data.get("expires_at") or 0)
+    if expires_at > 0:
+        remaining = int(expires_at - now)
+        if remaining <= 0:
+            return 0, 0
+        return count, remaining
+    # Legacy entries without expires_at: treat full window as remaining.
+    if count > 0:
+        return count, max(1, int(window))
+    return 0, 0
 
 
 def record_auth_failure(
@@ -41,9 +95,18 @@ def record_auth_failure(
     """Increment failure counter. Returns new count."""
     key = _rate_key(scope, client_ip(request), identifier)
     try:
-        data = cache.get(key) or {"count": 0}
-        count = int(data.get("count") or 0) + 1
-        cache.set(key, {"count": count}, window)
+        now = time.time()
+        data = cache.get(key) or {}
+        count = int(data.get("count") or 0)
+        expires_at = float(data.get("expires_at") or 0)
+        if expires_at <= now:
+            count = 0
+            expires_at = now + window
+        elif count <= 0:
+            expires_at = now + window
+        count += 1
+        ttl = max(1, int(expires_at - now))
+        cache.set(key, {"count": count, "expires_at": expires_at}, ttl)
         return count
     except Exception:
         # Hosted file-cache permission blips must not turn Pay into HTTP 500.
@@ -64,13 +127,27 @@ def is_auth_rate_limited(
     identifier: str = "",
     *,
     limit: int = 5,
+    window: int = 900,
 ) -> bool:
     key = _rate_key(scope, client_ip(request), identifier)
-    try:
-        data = cache.get(key) or {"count": 0}
-    except Exception:
-        return False
-    return int(data.get("count") or 0) >= limit
+    count, _remaining = _read_rate_entry(key, window=window)
+    return count >= limit
+
+
+def auth_rate_limit_retry_after(
+    scope: str,
+    request,
+    identifier: str = "",
+    *,
+    limit: int = 5,
+    window: int = 900,
+) -> int:
+    """Seconds until the rate limit clears, or 0 if not limited."""
+    key = _rate_key(scope, client_ip(request), identifier)
+    count, remaining = _read_rate_entry(key, window=window)
+    if count < limit:
+        return 0
+    return max(1, remaining or window)
 
 
 def assert_auth_allowed(
@@ -81,20 +158,32 @@ def assert_auth_allowed(
     limit: int = 5,
     window: int = 900,
 ) -> None:
-    if is_auth_rate_limited(scope, request, identifier, limit=limit):
-        raise AuthRateLimitExceeded(window)
+    retry_after = auth_rate_limit_retry_after(
+        scope, request, identifier, limit=limit, window=window
+    )
+    if retry_after:
+        raise AuthRateLimitExceeded(retry_after)
 
 
 def assert_public_pay_allowed(request, join_code: str = "") -> None:
     """Rate-limit public captive STK start endpoints (per IP and per join code)."""
-    assert_auth_allowed("stk_start_ip", request, limit=12, window=900)
+    retry_after = auth_rate_limit_retry_after(
+        "stk_start_ip", request, limit=12, window=900
+    )
     if join_code:
-        assert_auth_allowed(
+        code_retry = auth_rate_limit_retry_after(
             "stk_start_code",
             request,
             identifier=join_code,
             limit=20,
             window=900,
+        )
+        if code_retry:
+            retry_after = max(retry_after, code_retry)
+    if retry_after:
+        raise AuthRateLimitExceeded(
+            retry_after,
+            message=public_pay_rate_limit_message(retry_after),
         )
 
 

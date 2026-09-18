@@ -1962,6 +1962,45 @@
       var AUTH_RETRY_MAX = 4;
       var AUTH_RETRY_MS = 350;
 
+      function formatRetryAfter(seconds) {
+        seconds = Math.max(1, Math.floor(Number(seconds) || 0));
+        if (seconds < 60) {
+          return seconds + (seconds === 1 ? " second" : " seconds");
+        }
+        var minutes = Math.floor(seconds / 60);
+        var rem = seconds % 60;
+        if (minutes < 60) {
+          if (rem === 0) {
+            return minutes + (minutes === 1 ? " minute" : " minutes");
+          }
+          return (
+            minutes +
+            (minutes === 1 ? " minute " : " minutes ") +
+            rem +
+            (rem === 1 ? " second" : " seconds")
+          );
+        }
+        var hours = Math.floor(minutes / 60);
+        var remMin = minutes % 60;
+        if (remMin === 0) {
+          return hours + (hours === 1 ? " hour" : " hours");
+        }
+        return (
+          hours +
+          (hours === 1 ? " hour " : " hours ") +
+          remMin +
+          (remMin === 1 ? " minute" : " minutes")
+        );
+      }
+
+      function rateLimitMessage(seconds) {
+        return (
+          "Too many payment attempts. Try again in " +
+          formatRetryAfter(seconds) +
+          "."
+        );
+      }
+
       function parseJsonResponse(response) {
         return response.text().then(function (text) {
           var data = null;
@@ -1984,7 +2023,9 @@
             );
           }
           if (data && typeof data === "object" && data.error && !response.ok) {
-            throw new Error(data.error);
+            var err = new Error(data.error);
+            if (data.retry_after) err.retryAfter = Number(data.retry_after) || 0;
+            throw err;
           }
           return { ok: response.ok, data: data || {} };
         });
@@ -2001,9 +2042,18 @@
       var overlayVoucherList = overlay && overlay.querySelector("[data-overlay-voucher-list]");
       var activeCtx = null;
       var continueTarget = "";
+      var rateLimitTimer = null;
+
+      function clearRateLimitTimer() {
+        if (rateLimitTimer) {
+          window.clearInterval(rateLimitTimer);
+          rateLimitTimer = null;
+        }
+      }
 
       function setWaiting(active, title, copy, isError, isSuccess) {
         if (!overlay) return;
+        if (!active) clearRateLimitTimer();
         overlay.hidden = !active;
         overlay.classList.toggle("is-error", !!isError);
         overlay.classList.toggle("is-success", !!isSuccess);
@@ -2017,6 +2067,7 @@
       }
 
       function closeOverlay() {
+        clearRateLimitTimer();
         setWaiting(false);
         if (activeCtx && activeCtx.submit) activeCtx.submit.disabled = false;
       }
@@ -2249,10 +2300,39 @@
       }
 
       function offerRetry(message) {
+        clearRateLimitTimer();
         activeCtx = ctx;
         setWaiting(true, "Payment not completed", message || "The payment was not completed.", true);
         submit.disabled = false;
         show(message || "The payment was not completed.", true);
+      }
+
+      function offerRateLimitRetry(message, retryAfter) {
+        clearRateLimitTimer();
+        activeCtx = ctx;
+        var remaining = Math.max(1, Math.floor(Number(retryAfter) || 0));
+        var endsAt = Date.now() + remaining * 1000;
+        function render() {
+          var left = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+          var copy =
+            left > 0
+              ? rateLimitMessage(left)
+              : "You can try paying again now.";
+          setWaiting(
+            true,
+            left > 0 ? "Too many payment attempts" : "Ready to try again",
+            copy,
+            true
+          );
+          show(copy, true);
+          if (left <= 0) {
+            clearRateLimitTimer();
+            submit.disabled = false;
+          }
+        }
+        submit.disabled = true;
+        render();
+        rateLimitTimer = window.setInterval(render, 1000);
       }
 
       function poll(url, token, waitNas) {
@@ -2377,6 +2457,7 @@
           }
         }
         window.clearTimeout(pollTimer);
+        clearRateLimitTimer();
         activeCtx = ctx;
         submit.disabled = true;
         pollStartedAt = Date.now();
@@ -2392,7 +2473,13 @@
           .then(parseJsonResponse)
           .then(function (result) {
             var data = result.data || {};
-            if (!result.ok || !data.ok) throw new Error(data.error || "Could not start payment.");
+            if (!result.ok || !data.ok) {
+              var startErr = new Error(data.error || "Could not start payment.");
+              if (data.retry_after) {
+                startErr.retryAfter = Number(data.retry_after) || 0;
+              }
+              throw startErr;
+            }
             if (data.already_paid) {
               setWaiting(true, "Connecting", data.message || "This device was added to your package.");
               window.setTimeout(function () {
@@ -2409,6 +2496,13 @@
             poll(data.status_url, data.status_token, false);
           })
           .catch(function (error) {
+            if (error && error.retryAfter) {
+              offerRateLimitRetry(
+                error.message || rateLimitMessage(error.retryAfter),
+                error.retryAfter
+              );
+              return;
+            }
             offerRetry(error.message || "Could not start payment.");
           });
       });

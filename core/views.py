@@ -17534,17 +17534,25 @@ def _hotspot_payment_start_impl(request, join_code: str):
         assert_public_pay_allowed(request, join_code)
     except AuthRateLimitExceeded as exc:
         from accounts.audit import record_audit
+        from accounts.security import public_pay_rate_limit_message
 
+        retry_after = int(getattr(exc, "retry_after", 900) or 900)
         record_audit(
             action="stk_rate_limit",
             request=request,
             target=f"hotspot:{join_code}",
-            detail={"retry_after": exc.retry_after},
+            detail={"retry_after": retry_after},
         )
-        return JsonResponse(
-            {"ok": False, "error": "Too many payment attempts. Try again later."},
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error": public_pay_rate_limit_message(retry_after),
+                "retry_after": retry_after,
+            },
             status=429,
         )
+        response["Retry-After"] = str(retry_after)
+        return response
 
     org = Organization.objects.filter(join_code=join_code).first()
     if org is None:
@@ -18825,17 +18833,25 @@ def pppoe_payment_start(request, join_code: str):
         assert_public_pay_allowed(request, join_code)
     except AuthRateLimitExceeded as exc:
         from accounts.audit import record_audit
+        from accounts.security import public_pay_rate_limit_message
 
+        retry_after = int(getattr(exc, "retry_after", 900) or 900)
         record_audit(
             action="stk_rate_limit",
             request=request,
             target=f"pppoe:{join_code}",
-            detail={"retry_after": getattr(exc, "retry_after", 900)},
+            detail={"retry_after": retry_after},
         )
-        return JsonResponse(
-            {"ok": False, "error": "Too many payment attempts. Try again later."},
+        response = JsonResponse(
+            {
+                "ok": False,
+                "error": public_pay_rate_limit_message(retry_after),
+                "retry_after": retry_after,
+            },
             status=429,
         )
+        response["Retry-After"] = str(retry_after)
+        return response
     record_auth_failure("stk_start_ip", request, limit=12, window=900)
     if join_code:
         record_auth_failure(

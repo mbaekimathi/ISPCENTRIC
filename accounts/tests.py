@@ -851,6 +851,34 @@ class AuthRateLimitTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    def test_pay_rate_limit_reports_remaining_time(self):
+        from django.test import RequestFactory
+
+        from accounts.security import (
+            AuthRateLimitExceeded,
+            assert_public_pay_allowed,
+            format_retry_after,
+            public_pay_rate_limit_message,
+            record_auth_failure,
+        )
+
+        self.assertEqual(format_retry_after(1), "1 second")
+        self.assertEqual(format_retry_after(45), "45 seconds")
+        self.assertEqual(format_retry_after(60), "1 minute")
+        self.assertEqual(format_retry_after(90), "1 minute 30 seconds")
+        self.assertIn("15 minutes", public_pay_rate_limit_message(900))
+
+        request = RequestFactory().post("/hotspot/pay/")
+        request.META["REMOTE_ADDR"] = "203.0.113.50"
+        for _ in range(12):
+            record_auth_failure("stk_start_ip", request, limit=12, window=900)
+        with self.assertRaises(AuthRateLimitExceeded) as raised:
+            assert_public_pay_allowed(request, join_code="998877")
+        self.assertGreater(raised.exception.retry_after, 0)
+        self.assertLessEqual(raised.exception.retry_after, 900)
+        self.assertIn("Try again in", str(raised.exception))
+        self.assertIn("minute", str(raised.exception))
+
 
 class OrganizationMpesaAccountModeTests(TestCase):
     def setUp(self):
