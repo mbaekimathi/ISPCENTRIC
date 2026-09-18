@@ -864,6 +864,7 @@ def resolve_or_create_hotspot_customer(
                     ),
                     "status": 409,
                 }
+            attach = attach_hotspot_device(again, mac, enforce_cap=True)
             if not attach.get("ok"):
                 return {
                     "ok": False,
