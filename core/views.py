@@ -17150,9 +17150,13 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     plans = hotspot_plans
     has_payable_plans = bool(hotspot_plans)
 
-    hotspot_start = public_absolute_url(
-        reverse("core:hotspot_payment_start", kwargs={"join_code": org.join_code}),
-        request,
+    # Same-origin relative paths: absolute PUBLIC_BASE_URL form actions caused
+    # CSRF/cookie mismatches and HTML error pages that broke response.json().
+    hotspot_start = reverse(
+        "core:hotspot_payment_start", kwargs={"join_code": org.join_code}
+    )
+    voucher_redeem = reverse(
+        "core:hotspot_voucher_redeem", kwargs={"join_code": org.join_code}
     )
     # Hotspot pay URL is Hotspot-only. PPPoE renew uses /pppoe/<join>/pay/?t=…
     portal_mode = "hotspot"
@@ -17232,10 +17236,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "hotspot_mac": hotspot_mac,
         "payment_start_url": hotspot_start,
         "hotspot_payment_start_url": hotspot_start,
-        "voucher_redeem_url": public_absolute_url(
-            reverse("core:hotspot_voucher_redeem", kwargs={"join_code": org.join_code}),
-            request,
-        ),
+        "voucher_redeem_url": voucher_redeem,
         "welcome_url": urls["welcome_url"],
         "error": error,
         "pppoe_option_available": False,
@@ -17407,12 +17408,15 @@ def _make_pppoe_customer_token(org, customer) -> str:
     )
 
 
+@csrf_exempt
 @require_POST
 def hotspot_voucher_redeem(request, join_code: str):
     """Redeem a paid Hotspot voucher and authorize this device."""
     from billing.vouchers import redeem_access_voucher
 
-    org = get_object_or_404(Organization, join_code=join_code)
+    org = Organization.objects.filter(join_code=join_code).first()
+    if org is None:
+        return JsonResponse({"ok": False, "error": "Hotspot portal not found."}, status=404)
     mac = _resolve_request_hotspot_mac(org, request)
     code = (request.POST.get("voucher_code") or request.POST.get("code") or "").strip()
     customer = _find_hotspot_customer_for_mac(org, mac) if mac else None
@@ -17449,12 +17453,15 @@ def hotspot_voucher_redeem(request, join_code: str):
     return JsonResponse(result)
 
 
+@csrf_exempt
 @require_POST
 def pppoe_voucher_redeem(request, join_code: str):
     """Redeem a paid PPPoE voucher and restore the subscription."""
     from billing.vouchers import redeem_access_voucher
 
-    org = get_object_or_404(Organization, join_code=join_code)
+    org = Organization.objects.filter(join_code=join_code).first()
+    if org is None:
+        return JsonResponse({"ok": False, "error": "Portal not found."}, status=404)
     code = (request.POST.get("voucher_code") or request.POST.get("code") or "").strip()
     customer = None
     token = (request.POST.get("customer_token") or "").strip()
@@ -17488,6 +17495,7 @@ def pppoe_voucher_redeem(request, join_code: str):
     return JsonResponse(result)
 
 
+@csrf_exempt
 @require_POST
 def hotspot_payment_start(request, join_code: str):
     """Start public M-Pesa payment for a captive device; no Hotspot password."""
@@ -17516,7 +17524,9 @@ def hotspot_payment_start(request, join_code: str):
             "stk_start_code", request, identifier=join_code, limit=20, window=900
         )
 
-    org = get_object_or_404(Organization, join_code=join_code)
+    org = Organization.objects.filter(join_code=join_code).first()
+    if org is None:
+        return JsonResponse({"ok": False, "error": "Hotspot portal not found."}, status=404)
     mac = _resolve_request_hotspot_mac(org, request)
     if not mac:
         return JsonResponse(
@@ -17700,7 +17710,9 @@ def hotspot_payment_status(request, join_code: str, stk_id: int):
     from billing.models import StkPushRequest
     from billing.stk import refresh_stk_status
 
-    org = get_object_or_404(Organization, join_code=join_code)
+    org = Organization.objects.filter(join_code=join_code).first()
+    if org is None:
+        return JsonResponse({"ok": False, "error": "Hotspot portal not found."}, status=404)
     try:
         payload = signing.loads(
             request.GET.get("token") or "",
@@ -17712,16 +17724,21 @@ def hotspot_payment_status(request, join_code: str, stk_id: int):
     if payload.get("stk") != stk_id or payload.get("org") != org.pk:
         return JsonResponse({"ok": False, "error": "Invalid payment session."}, status=403)
 
-    stk = get_object_or_404(
+    stk = (
         StkPushRequest.objects.select_related(
             "customer",
             "customer__organization",
             "customer__router",
             "customer__plan",
-        ),
-        pk=stk_id,
-        organization=org,
+        )
+        .filter(pk=stk_id, organization=org)
+        .first()
     )
+    if stk is None:
+        return JsonResponse(
+            {"ok": False, "error": "Payment not found.", "can_retry": False},
+            status=404,
+        )
     from billing.devices import customer_owns_hotspot_mac, normalize_device_mac
     from billing.stk import stk_hotspot_mac
 
@@ -17937,7 +17954,9 @@ def hotspot_payment_activate(request, join_code: str, stk_id: int):
         nas_access_ready,
     )
 
-    org = get_object_or_404(Organization, join_code=join_code)
+    org = Organization.objects.filter(join_code=join_code).first()
+    if org is None:
+        return JsonResponse({"ok": False, "error": "Hotspot portal not found."}, status=404)
     try:
         payload = signing.loads(
             request.GET.get("token") or "",
@@ -17949,13 +17968,31 @@ def hotspot_payment_activate(request, join_code: str, stk_id: int):
     if payload.get("stk") != stk_id or payload.get("org") != org.pk:
         return JsonResponse({"ok": False, "error": "Invalid payment session."}, status=403)
 
-    stk = get_object_or_404(
-        StkPushRequest.objects.select_related("customer", "customer__organization"),
-        pk=stk_id,
-        organization=org,
-        status=StkPushRequest.Status.SUCCESS,
-        subscription_applied=True,
+    stk = (
+        StkPushRequest.objects.select_related("customer", "customer__organization")
+        .filter(pk=stk_id, organization=org)
+        .first()
     )
+    if stk is None:
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "Payment not found.",
+                "authorized": False,
+                "can_retry_authorize": False,
+            },
+            status=404,
+        )
+    if stk.status != StkPushRequest.Status.SUCCESS:
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "Payment is not confirmed yet.",
+                "authorized": False,
+                "can_retry_authorize": True,
+            },
+            status=409,
+        )
     from billing.devices import customer_owns_hotspot_mac, normalize_device_mac
     from billing.stk import stk_hotspot_mac
 
@@ -18476,13 +18513,11 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     # Don't scold the client for a missing match when the ISP has nothing to sell.
     if setup_hint and not pppoe_plans:
         identify_error = ""
-    pppoe_start = public_absolute_url(
-        reverse("core:pppoe_payment_start", kwargs={"join_code": org.join_code}),
-        request,
+    pppoe_start = reverse(
+        "core:pppoe_payment_start", kwargs={"join_code": org.join_code}
     )
-    hotspot_start = public_absolute_url(
-        reverse("core:hotspot_payment_start", kwargs={"join_code": org.join_code}),
-        request,
+    hotspot_start = reverse(
+        "core:hotspot_payment_start", kwargs={"join_code": org.join_code}
     )
     # PPPoE renew by default; Hotspot packages follow on the same page when enabled.
     portal_mode = "pppoe"
@@ -18523,13 +18558,11 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "payment_start_url": pppoe_start,
         "pppoe_payment_start_url": pppoe_start,
         "hotspot_payment_start_url": hotspot_start,
-        "voucher_redeem_url": public_absolute_url(
-            reverse("core:pppoe_voucher_redeem", kwargs={"join_code": org.join_code}),
-            request,
+        "voucher_redeem_url": reverse(
+            "core:pppoe_voucher_redeem", kwargs={"join_code": org.join_code}
         ),
-        "hotspot_voucher_redeem_url": public_absolute_url(
-            reverse("core:hotspot_voucher_redeem", kwargs={"join_code": org.join_code}),
-            request,
+        "hotspot_voucher_redeem_url": reverse(
+            "core:hotspot_voucher_redeem", kwargs={"join_code": org.join_code}
         ),
         "welcome_url": urls["welcome_url"],
         "identify_error": identify_error,
@@ -18706,6 +18739,7 @@ def _pppoe_captive_page(request, join_code: str, *, expected_page: str):
     return response
 
 
+@csrf_exempt
 @require_POST
 def pppoe_payment_start(request, join_code: str):
     """Start M-Pesa STK Push for an identified PPPoE customer."""
@@ -18733,7 +18767,9 @@ def pppoe_payment_start(request, join_code: str):
             "stk_start_code", request, identifier=join_code, limit=20, window=900
         )
 
-    org = get_object_or_404(Organization, join_code=join_code)
+    org = Organization.objects.filter(join_code=join_code).first()
+    if org is None:
+        return JsonResponse({"ok": False, "error": "Portal not found."}, status=404)
     customer = None
     token = (request.POST.get("customer_token") or "").strip()
     if token:

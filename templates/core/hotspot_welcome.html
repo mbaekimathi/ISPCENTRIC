@@ -629,8 +629,21 @@
           headers: { "Accept": "application/json" }
         })
           .then(function (response) {
-            return response.json().then(function (data) {
-              return { ok: response.ok, data: data || {} };
+            return response.text().then(function (text) {
+              var data = {};
+              var raw = (text || "").trim();
+              if (raw) {
+                try {
+                  data = JSON.parse(raw);
+                } catch (err) {
+                  throw new Error(
+                    response.status
+                      ? ("Server error (" + response.status + ")")
+                      : "Invalid server response"
+                  );
+                }
+              }
+              return { ok: response.ok, data: data };
             });
           })
           .then(function (result) {

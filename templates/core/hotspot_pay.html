@@ -1961,6 +1961,28 @@
       var POLL_GIVE_UP_MS = 600000;
       var AUTH_RETRY_MAX = 4;
 
+      function parseJsonResponse(response) {
+        return response.text().then(function (text) {
+          var data = null;
+          var raw = (text || "").trim();
+          if (raw) {
+            try {
+              data = JSON.parse(raw);
+            } catch (err) {
+              var hint = response.status
+                ? ("Server error (" + response.status + "). Refresh and try again.")
+                : "Server returned an invalid response. Refresh and try again.";
+              throw new Error(hint);
+            }
+          } else if (!response.ok) {
+            throw new Error(
+              "Server error (" + response.status + "). Refresh and try again."
+            );
+          }
+          return { ok: response.ok, data: data || {} };
+        });
+      }
+
       var overlay = document.querySelector("[data-payment-waiting]");
       var waitingTitle = overlay && overlay.querySelector("[data-waiting-title]");
       var waitingCopy = overlay && overlay.querySelector("[data-waiting-copy]");
@@ -2138,11 +2160,7 @@
             headers: { "Accept": "application/json" },
             credentials: "same-origin"
           })
-            .then(function (response) {
-              return response.json().then(function (data) {
-                return { ok: response.ok, data: data };
-              });
-            })
+            .then(parseJsonResponse)
             .then(function (result) {
               var data = result.data || {};
               if (!result.ok || !data.ok) throw new Error(data.error || "Could not activate voucher.");
@@ -2240,11 +2258,7 @@
           headers: { "Accept": "application/json" },
           credentials: "same-origin"
         })
-          .then(function (response) {
-            return response.json().then(function (data) {
-              return { ok: response.ok, data: data };
-            });
-          })
+          .then(parseJsonResponse)
           .then(function (result) {
             var data = result.data || {};
             if (!result.ok || !data.ok) {
@@ -2370,11 +2384,7 @@
           headers: { "Accept": "application/json" },
           credentials: "same-origin"
         })
-          .then(function (response) {
-            return response.json().then(function (data) {
-              return { ok: response.ok, data: data };
-            });
-          })
+          .then(parseJsonResponse)
           .then(function (result) {
             var data = result.data || {};
             if (!result.ok || !data.ok) throw new Error(data.error || "Could not start payment.");

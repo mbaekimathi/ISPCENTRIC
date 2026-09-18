@@ -143,6 +143,8 @@ CSRF_TRUSTED_ORIGINS = [
     for o in (os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS") or "").split(",")
     if o.strip()
 ]
+# Captive Hotspot/PPPoE fetch() calls expect JSON, not Django's HTML 403 page.
+CSRF_FAILURE_VIEW = "ispcentric.csrf.csrf_failure"
 # On hosted with pinned hosts, middleware adds https://<current-host> per request.
 # With ALLOWED_HOSTS='*', auto-trusting the request Host enables CSRF origin
 # injection — require an explicit DJANGO_AUTO_CSRF_ORIGINS=true in that case.
