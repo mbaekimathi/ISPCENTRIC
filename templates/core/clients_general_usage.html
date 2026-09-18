@@ -192,6 +192,7 @@
     <section class="clients-usage-insights-panel" data-usage-panel="insights"{% if view_mode == 'raw' %} hidden{% endif %}>
       <header class="clients-usage-section-head clients-usage-section-head-inline">
         <div>
+          <p class="clients-usage-section-kicker">Insights</p>
           <h2>Client insights</h2>
           <p class="clients-usage-section-meta">
             Highest data users, online ratio, offline clients, usage mix, and devices for
@@ -203,6 +204,7 @@
       <div class="client-usage-chart-grid clients-usage-chart-grid clients-usage-insights-grid">
         <article class="client-usage-chart-card">
           <header>
+            <p class="ax-chart-kicker">Distribution</p>
             <h3>Usage mix</h3>
             <p>Clients by usage level in this window.</p>
           </header>
@@ -213,6 +215,7 @@
 
         <article class="client-usage-chart-card">
           <header>
+            <p class="ax-chart-kicker">Endpoints</p>
             <h3>{% if active_tab == 'hotspot' %}Gadgets{% else %}Devices{% endif %} by client</h3>
             <p>
               {% if active_tab == 'hotspot' %}
@@ -229,6 +232,7 @@
 
         <article class="client-usage-chart-card clients-usage-chart-card-rank">
           <header>
+            <p class="ax-chart-kicker">Top volume</p>
             <h3>Highest data users</h3>
             <p>Top 12 clients by period data used — for capacity and plan decisions.</p>
           </header>
@@ -239,6 +243,7 @@
 
         <article class="client-usage-chart-card clients-usage-chart-card-rank">
           <header>
+            <p class="ax-chart-kicker">Presence</p>
             <h3>Online ratio by client</h3>
             <p>Same ranked set — who stayed online through the window.</p>
           </header>
@@ -249,6 +254,7 @@
 
         <article class="client-usage-chart-card clients-usage-chart-card-rank">
           <header>
+            <p class="ax-chart-kicker">Risk</p>
             <h3>Offline clients</h3>
             <p>Clients offline now (or lowest window uptime) — downtimes and online %.</p>
           </header>
@@ -262,6 +268,7 @@
     <section class="clients-usage-visual-panel" data-usage-panel="visual"{% if view_mode == 'raw' %} hidden{% endif %}>
       <header class="clients-usage-section-head clients-usage-section-head-inline">
         <div>
+          <p class="clients-usage-section-kicker">Trends</p>
           <h2>Visual analytics</h2>
           <p class="clients-usage-section-meta">
             Full-window presence, throughput, and traffic for
@@ -273,6 +280,7 @@
       <div class="client-usage-chart-grid clients-usage-chart-grid clients-usage-visual-grid">
         <article class="client-usage-chart-card">
           <header>
+            <p class="ax-chart-kicker">Sessions</p>
             <h3>Online clients</h3>
             <p>Active {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} sessions per interval.</p>
           </header>
@@ -283,6 +291,7 @@
 
         <article class="client-usage-chart-card">
           <header>
+            <p class="ax-chart-kicker">Throughput</p>
             <h3>Download &amp; upload</h3>
             <p>Combined live speed samples (kbps).</p>
           </header>
@@ -293,6 +302,7 @@
 
         <article class="client-usage-chart-card is-wide">
           <header>
+            <p class="ax-chart-kicker">Volume</p>
             <h3>Data transferred</h3>
             <p>Counter growth between samples after each usage baseline (MB).</p>
           </header>
@@ -884,26 +894,59 @@
 
   function chartDefaults() {
     var dark = document.documentElement.getAttribute("data-theme") === "dark";
+    var tick = dark ? "#93a8b4" : "#5b7380";
+    var grid = dark ? "rgba(255,255,255,0.055)" : "rgba(11,31,42,0.055)";
+    var label = dark ? "#d5e0e6" : "#3d5a66";
     return {
       responsive: true,
       maintainAspectRatio: false,
-      animation: false,
+      animation: { duration: 420, easing: "easeOutQuart" },
+      layout: { padding: { top: 4, right: 6, bottom: 2, left: 2 } },
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: {
-          labels: { color: dark ? "#c8d4db" : "#4a6573", boxWidth: 12, font: { weight: "600" } }
+          labels: {
+            color: label,
+            boxWidth: 10,
+            boxHeight: 10,
+            borderRadius: 2,
+            useBorderRadius: true,
+            padding: 14,
+            font: { family: "'Plus Jakarta Sans', system-ui, sans-serif", size: 11, weight: "650" }
+          }
         },
-        tooltip: { backgroundColor: dark ? "#141c22" : "#0b1f2a" }
+        tooltip: {
+          backgroundColor: dark ? "rgba(14, 22, 30, 0.94)" : "rgba(11, 31, 42, 0.94)",
+          titleFont: { family: "'Outfit', system-ui, sans-serif", size: 12, weight: "700" },
+          bodyFont: { family: "'Plus Jakarta Sans', system-ui, sans-serif", size: 11, weight: "600" },
+          padding: 10,
+          cornerRadius: 10,
+          displayColors: true,
+          boxPadding: 4,
+          borderColor: dark ? "rgba(82,208,219,0.25)" : "rgba(14,124,134,0.28)",
+          borderWidth: 1
+        }
       },
       scales: {
         x: {
-          ticks: { color: dark ? "#8aa0ab" : "#64748b", maxRotation: 0, autoSkipPadding: 12 },
-          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+          border: { display: false },
+          ticks: {
+            color: tick,
+            maxRotation: 0,
+            autoSkipPadding: 14,
+            font: { family: "'Plus Jakarta Sans', system-ui, sans-serif", size: 10, weight: "600" }
+          },
+          grid: { color: grid, drawTicks: false }
         },
         y: {
           beginAtZero: true,
-          ticks: { color: dark ? "#8aa0ab" : "#64748b" },
-          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+          border: { display: false },
+          ticks: {
+            color: tick,
+            font: { family: "'Plus Jakarta Sans', system-ui, sans-serif", size: 10, weight: "600" },
+            padding: 6
+          },
+          grid: { color: grid, drawTicks: false }
         }
       }
     };

@@ -11,7 +11,10 @@
   data-surfing-url="{% url 'core:clients_surfing' %}"
 >
   <div class="workspace-dash-toolbar">
-    <p class="workspace-dash-toolbar-copy">Live network and subscription snapshot for today.</p>
+    <div>
+      <p class="workspace-dash-panel-kicker">Operations</p>
+      <p class="workspace-dash-toolbar-copy">Live network and subscription snapshot for today.</p>
+    </div>
     <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:audits' %}">
       <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2m-6 9 2 2 4-4"/></svg>
       Audits
@@ -242,24 +245,37 @@
   function chartDefaults() {
     var dark = document.documentElement.getAttribute("data-theme") === "dark";
     var narrow = window.matchMedia("(max-width: 720px)").matches;
+    var tick = dark ? "#93a8b4" : "#5b7380";
+    var grid = dark ? "rgba(255,255,255,0.055)" : "rgba(11,31,42,0.055)";
+    var label = dark ? "#d5e0e6" : "#3d5a66";
     return {
       responsive: true,
       maintainAspectRatio: false,
+      animation: { duration: 420, easing: "easeOutQuart" },
       interaction: { mode: "index", intersect: false },
-      layout: { padding: { top: 4, right: 4, bottom: 0, left: 0 } },
+      layout: { padding: { top: 6, right: 6, bottom: 2, left: 2 } },
       plugins: {
         legend: {
           display: !narrow,
           position: "bottom",
           labels: {
-            color: dark ? "#c8d4db" : "#4a6573",
-            boxWidth: 12,
-            font: { weight: "600", size: narrow ? 10 : 12 },
-            padding: narrow ? 10 : 16
+            color: label,
+            boxWidth: 10,
+            boxHeight: 10,
+            borderRadius: 2,
+            useBorderRadius: true,
+            font: { family: "'Plus Jakarta Sans', system-ui, sans-serif", weight: "650", size: narrow ? 10 : 11 },
+            padding: narrow ? 10 : 14
           }
         },
         tooltip: {
-          backgroundColor: dark ? "#141c22" : "#0b1f2a",
+          backgroundColor: dark ? "rgba(14, 22, 30, 0.94)" : "rgba(11, 31, 42, 0.94)",
+          titleFont: { family: "'Outfit', system-ui, sans-serif", size: 12, weight: "700" },
+          bodyFont: { family: "'Plus Jakarta Sans', system-ui, sans-serif", size: 11, weight: "600" },
+          padding: 10,
+          cornerRadius: 10,
+          borderColor: dark ? "rgba(82,208,219,0.25)" : "rgba(14,124,134,0.28)",
+          borderWidth: 1,
           callbacks: {
             afterBody: function (items) {
               if (!items || !items.length) return [];
@@ -277,23 +293,28 @@
       },
       scales: {
         x: {
+          border: { display: false },
           ticks: {
-            color: dark ? "#8aa0ab" : "#64748b",
+            color: tick,
             maxRotation: narrow ? 45 : 0,
             autoSkip: true,
-            autoSkipPadding: narrow ? 6 : 10,
-            maxTicksLimit: narrow ? 6 : 12
+            autoSkipPadding: narrow ? 6 : 12,
+            maxTicksLimit: narrow ? 6 : 12,
+            font: { family: "'Plus Jakarta Sans', system-ui, sans-serif", size: 10, weight: "600" }
           },
-          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+          grid: { color: grid, drawTicks: false }
         },
         y: {
           min: 0,
           max: 100,
+          border: { display: false },
           ticks: {
-            color: dark ? "#8aa0ab" : "#64748b",
-            callback: function (v) { return v + "%"; }
+            color: tick,
+            callback: function (v) { return v + "%"; },
+            font: { family: "'Plus Jakarta Sans', system-ui, sans-serif", size: 10, weight: "600" },
+            padding: 6
           },
-          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+          grid: { color: grid, drawTicks: false }
         }
       }
     };
@@ -302,42 +323,62 @@
   function networkChartDefaults() {
     var dark = document.documentElement.getAttribute("data-theme") === "dark";
     var narrow = window.matchMedia("(max-width: 720px)").matches;
+    var tick = dark ? "#93a8b4" : "#5b7380";
+    var grid = dark ? "rgba(255,255,255,0.055)" : "rgba(11,31,42,0.055)";
+    var label = dark ? "#d5e0e6" : "#3d5a66";
     return {
       responsive: true,
       maintainAspectRatio: false,
+      animation: { duration: 420, easing: "easeOutQuart" },
       interaction: { mode: "index", intersect: false },
-      layout: { padding: { top: 4, right: 4, bottom: 0, left: 0 } },
+      layout: { padding: { top: 6, right: 6, bottom: 2, left: 2 } },
       plugins: {
         legend: {
           display: !narrow,
           position: "bottom",
           labels: {
-            color: dark ? "#c8d4db" : "#4a6573",
-            boxWidth: 12,
-            font: { weight: "600", size: narrow ? 10 : 12 },
-            padding: narrow ? 10 : 16
+            color: label,
+            boxWidth: 10,
+            boxHeight: 10,
+            borderRadius: 2,
+            useBorderRadius: true,
+            font: { family: "'Plus Jakarta Sans', system-ui, sans-serif", weight: "650", size: narrow ? 10 : 11 },
+            padding: narrow ? 10 : 14
           }
         },
-        tooltip: { backgroundColor: dark ? "#141c22" : "#0b1f2a" }
+        tooltip: {
+          backgroundColor: dark ? "rgba(14, 22, 30, 0.94)" : "rgba(11, 31, 42, 0.94)",
+          titleFont: { family: "'Outfit', system-ui, sans-serif", size: 12, weight: "700" },
+          bodyFont: { family: "'Plus Jakarta Sans', system-ui, sans-serif", size: 11, weight: "600" },
+          padding: 10,
+          cornerRadius: 10,
+          borderColor: dark ? "rgba(82,208,219,0.25)" : "rgba(14,124,134,0.28)",
+          borderWidth: 1
+        }
       },
       scales: {
         x: {
+          border: { display: false },
           ticks: {
-            color: dark ? "#8aa0ab" : "#64748b",
+            color: tick,
             maxRotation: narrow ? 45 : 0,
             autoSkip: true,
-            autoSkipPadding: narrow ? 6 : 10,
-            maxTicksLimit: narrow ? 6 : 12
+            autoSkipPadding: narrow ? 6 : 12,
+            maxTicksLimit: narrow ? 6 : 12,
+            font: { family: "'Plus Jakarta Sans', system-ui, sans-serif", size: 10, weight: "600" }
           },
-          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+          grid: { color: grid, drawTicks: false }
         },
         y: {
           beginAtZero: true,
+          border: { display: false },
           ticks: {
-            color: dark ? "#8aa0ab" : "#64748b",
-            precision: 0
+            color: tick,
+            precision: 0,
+            font: { family: "'Plus Jakarta Sans', system-ui, sans-serif", size: 10, weight: "600" },
+            padding: 6
           },
-          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+          grid: { color: grid, drawTicks: false }
         }
       }
     };

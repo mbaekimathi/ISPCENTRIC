@@ -1,0 +1,654 @@
+/* ========================================================================
+   Analytics design system v195 — professional ops UI
+   Workspace · Usage · NOC · System performance
+   ======================================================================== */
+
+:root {
+  --ax-max: 74rem;
+  --ax-gap: 0.85rem;
+  --ax-radius: 16px;
+  --ax-radius-sm: 12px;
+  --ax-chart-h: clamp(11rem, 20vw, 13.5rem);
+  --ax-chart-h-sm: clamp(10rem, 18vw, 12rem);
+  --ax-chart-h-rank: clamp(12.5rem, 24vw, 17rem);
+  --ax-ink: var(--ink, #102a32);
+  --ax-muted: var(--ink-soft, #3d5a66);
+  --ax-line: color-mix(in srgb, var(--border-strong, var(--border)) 88%, transparent);
+  --ax-sea: var(--sea, #0e7c86);
+  --ax-sea-soft: color-mix(in srgb, var(--sea, #0e7c86) 12%, transparent);
+  --ax-panel: color-mix(in srgb, var(--surface-solid, var(--surface)) 96%, transparent);
+  --ax-panel-elev:
+    linear-gradient(165deg, color-mix(in srgb, var(--sea, #0e7c86) 7%, transparent), transparent 42%),
+    var(--ax-panel);
+  --ax-shadow: 0 1px 0 color-mix(in srgb, #fff 28%, transparent) inset,
+    0 10px 28px color-mix(in srgb, var(--ink, #102a32) 5%, transparent);
+  --ax-shadow-hot: 0 1px 0 color-mix(in srgb, #fff 18%, transparent) inset,
+    0 14px 32px color-mix(in srgb, var(--sea, #0e7c86) 12%, transparent);
+}
+
+[data-theme="dark"] {
+  --ax-shadow: 0 1px 0 color-mix(in srgb, #fff 4%, transparent) inset,
+    0 12px 32px rgba(0, 0, 0, 0.35);
+  --ax-shadow-hot: 0 1px 0 color-mix(in srgb, #fff 5%, transparent) inset,
+    0 16px 36px color-mix(in srgb, var(--sea, #52d0db) 14%, transparent);
+  --ax-panel-elev:
+    linear-gradient(165deg, color-mix(in srgb, var(--sea, #52d0db) 8%, transparent), transparent 48%),
+    color-mix(in srgb, var(--surface-solid, #121a24) 94%, transparent);
+}
+
+/* —— Shell widths —— */
+.workspace-dash,
+.noc-console,
+.clients-general-usage-page {
+  max-width: var(--ax-max);
+  width: min(100%, var(--ax-max));
+}
+
+.client-usage-analysis-page,
+.sp-page {
+  width: min(100%, 70rem);
+  max-width: 70rem;
+}
+
+/* —— Shared metric tile —— */
+.ax-metric,
+.workspace-dash-kpi,
+.workspace-dash-stat,
+.noc-kpi-chip,
+.sp-kpi-chip,
+.clients-usage-summary-item {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.workspace-dash-kpi,
+.workspace-dash-stat {
+  padding: 0.85rem 0.95rem 0.8rem;
+  border-radius: var(--ax-radius-sm);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel-elev);
+  box-shadow: var(--ax-shadow);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.workspace-dash-kpi:hover,
+.workspace-dash-stat:hover {
+  border-color: color-mix(in srgb, var(--ax-sea) 35%, var(--ax-line));
+  box-shadow: var(--ax-shadow-hot);
+  transform: translateY(-1px);
+}
+
+.workspace-dash-kpi::after,
+.workspace-dash-stat::after {
+  content: "";
+  position: absolute;
+  inset: auto -20% -55% auto;
+  width: 7rem;
+  height: 7rem;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--ax-sea-soft), transparent 68%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.workspace-dash-kpi > *,
+.workspace-dash-stat > * {
+  position: relative;
+  z-index: 1;
+}
+
+.workspace-dash-kpi-label,
+.workspace-dash-stat-label {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ax-muted);
+}
+
+.workspace-dash-kpi-value,
+.workspace-dash-stat-value {
+  margin: 0.28rem 0 0.12rem;
+  font-family: var(--font-display, Outfit, system-ui, sans-serif);
+  font-size: clamp(1.35rem, 2.4vw, 1.7rem);
+  font-weight: 750;
+  letter-spacing: -0.04em;
+  line-height: 1.05;
+  color: var(--ax-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.workspace-dash-kpi-meta,
+.workspace-dash-stat-meta {
+  margin: 0;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--ax-muted);
+  line-height: 1.3;
+}
+
+.workspace-dash-kpis,
+.workspace-dash-stats,
+.workspace-dash-stats.has-referral {
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.65rem;
+}
+
+/* —— Workspace intro + panels —— */
+.workspace-dash-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  padding: 0.15rem 0.1rem 0.35rem;
+  margin-bottom: 0.15rem;
+}
+
+.workspace-dash-toolbar-copy {
+  margin: 0;
+  max-width: 42rem;
+  font-size: 0.9rem;
+  font-weight: 550;
+  color: var(--ax-muted);
+  line-height: 1.4;
+}
+
+.workspace-dash-analytics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ax-gap);
+  align-items: stretch;
+}
+
+.workspace-dash-panel {
+  border-radius: var(--ax-radius);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel-elev);
+  box-shadow: var(--ax-shadow);
+  padding: 1rem 1.05rem 1.05rem;
+}
+
+.workspace-dash-panel-head {
+  gap: 0.65rem;
+  margin-bottom: 0.55rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--ax-line) 80%, transparent);
+}
+
+.workspace-dash-panel-kicker {
+  color: var(--ax-sea);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.workspace-dash-panel-head h2 {
+  margin: 0.15rem 0 0;
+  font-size: 1.12rem;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+}
+
+.workspace-dash-panel-head .panel-sub {
+  margin: 0.3rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--ax-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.workspace-dash-chart-wrap,
+.workspace-dash-chart-wrap-compact {
+  height: var(--ax-chart-h-sm);
+  margin: 0.15rem 0 0.45rem;
+  padding: 0.55rem 0.45rem 0.35rem;
+  border-radius: var(--ax-radius-sm);
+  border: 1px solid color-mix(in srgb, var(--ax-line) 75%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--ax-sea) 4%, transparent), transparent 55%),
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 23px,
+      color-mix(in srgb, var(--ax-line) 45%, transparent) 23px,
+      color-mix(in srgb, var(--ax-line) 45%, transparent) 24px
+    );
+  overflow: hidden;
+}
+
+.workspace-dash-chip {
+  border-radius: 999px;
+  border: 1px solid var(--ax-line);
+  background: color-mix(in srgb, var(--surface-2, var(--surface)) 88%, transparent);
+  font-size: 0.74rem;
+  font-weight: 650;
+}
+
+/* —— Usage summary rail —— */
+.clients-usage-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.75rem, 1fr));
+  gap: 0.55rem;
+  padding: 0.85rem clamp(0.9rem, 1.8vw, 1.25rem);
+  border-bottom: 1px solid var(--ax-line);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--ax-sea) 5%, transparent), transparent 70%),
+    color-mix(in srgb, var(--surface-2, var(--surface)) 70%, transparent);
+}
+
+.clients-usage-summary-item {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+  padding: 0.7rem 0.75rem 0.65rem;
+  border-radius: var(--ax-radius-sm);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel);
+  box-shadow: var(--ax-shadow);
+}
+
+.clients-usage-summary-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.55rem;
+  bottom: 0.55rem;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--ax-sea);
+  opacity: 0.85;
+}
+
+.clients-usage-summary-label {
+  padding-left: 0.45rem;
+  color: var(--ax-muted);
+  font-size: 0.66rem;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.clients-usage-summary-item strong {
+  padding-left: 0.45rem;
+  font-family: var(--font-display, Outfit, system-ui, sans-serif);
+  font-size: 1.2rem;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: var(--ax-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.clients-usage-summary-item small {
+  padding-left: 0.45rem;
+  color: var(--ax-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+/* —— Usage section + chart cards —— */
+.clients-usage-insights-panel,
+.clients-usage-visual-panel {
+  padding: clamp(1rem, 1.8vw, 1.35rem) clamp(0.95rem, 2vw, 1.35rem) 1.2rem;
+}
+
+.clients-usage-section-head-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 0.65rem 1rem;
+  margin-bottom: 0.85rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--ax-line);
+}
+
+.clients-usage-section-head-inline .clients-usage-section-kicker {
+  margin: 0 0 0.2rem;
+  color: var(--ax-sea);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.clients-usage-section-meta {
+  margin: 0.25rem 0 0;
+  max-width: 40rem;
+  color: var(--ax-muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.client-usage-chart-grid,
+.clients-usage-visual-grid,
+.clients-usage-insights-grid {
+  gap: var(--ax-gap);
+}
+
+.client-usage-chart-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0.9rem 0.95rem 0.95rem;
+  border-radius: var(--ax-radius);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel-elev);
+  box-shadow: var(--ax-shadow);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.client-usage-chart-card:hover {
+  border-color: color-mix(in srgb, var(--ax-sea) 32%, var(--ax-line));
+  box-shadow: var(--ax-shadow-hot);
+  transform: translateY(-1px);
+}
+
+.client-usage-chart-card header {
+  margin-bottom: 0.15rem;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--ax-line) 70%, transparent);
+}
+
+.client-usage-chart-card header .ax-chart-kicker,
+.client-usage-chart-card header .client-cat {
+  margin: 0 0 0.2rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--ax-sea);
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.client-usage-chart-card header h3 {
+  margin: 0;
+  font-family: var(--font-display, Outfit, system-ui, sans-serif);
+  font-size: 1rem;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  color: var(--ax-ink);
+}
+
+.client-usage-chart-card header p:last-child {
+  margin: 0.25rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--ax-muted);
+  opacity: 1;
+}
+
+.client-usage-chart-wrap,
+.client-usage-chart-wrap-tall,
+.client-usage-chart-wrap-compact,
+.client-usage-chart-wrap.is-tall,
+.client-usage-chart-wrap.is-compact-rank {
+  height: var(--ax-chart-h);
+  margin-top: 0.65rem;
+  padding: 0.35rem 0.2rem 0.15rem;
+  border-radius: 10px;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 21px,
+      color-mix(in srgb, var(--ax-line) 40%, transparent) 21px,
+      color-mix(in srgb, var(--ax-line) 40%, transparent) 22px
+    );
+}
+
+.client-usage-chart-wrap.is-compact-rank,
+.clients-usage-visual-grid .client-usage-chart-wrap.is-tall,
+.clients-usage-insights-grid .client-usage-chart-wrap.is-tall {
+  height: var(--ax-chart-h-rank);
+}
+
+.client-usage-chart-wrap-compact {
+  height: var(--ax-chart-h-sm);
+}
+
+@media (min-width: 1100px) {
+  .clients-usage-insights-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .clients-usage-insights-grid > .client-usage-chart-card:not(.clients-usage-chart-card-rank) {
+    grid-column: span 3;
+  }
+
+  .clients-usage-insights-grid > .clients-usage-chart-card-rank {
+    grid-column: span 2;
+  }
+}
+
+/* —— NOC —— */
+.noc-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.75rem, 1fr));
+  gap: 0.5rem;
+}
+
+.noc-kpi-chip {
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--ax-radius-sm);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel-elev);
+  box-shadow: var(--ax-shadow);
+}
+
+.noc-kpi-chip strong {
+  font-size: 1.2rem;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.noc-trend {
+  padding: 0.95rem 1.05rem 1.05rem;
+  border-radius: var(--ax-radius);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel-elev);
+  box-shadow: var(--ax-shadow);
+}
+
+.noc-section-head {
+  padding-bottom: 0.55rem;
+  margin-bottom: 0.65rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--ax-line) 75%, transparent);
+}
+
+.noc-section-head h2 {
+  font-size: 1.02rem;
+  letter-spacing: -0.025em;
+}
+
+.noc-trend-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(8rem, 10.5rem);
+  gap: 0.65rem 0.85rem;
+}
+
+.noc-chart-wrap,
+.noc-chart-wrap-trend,
+.noc-chart-wrap-mix {
+  min-height: 0;
+  height: var(--ax-chart-h-sm);
+  padding: 0.35rem 0.25rem;
+  border-radius: 10px;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 21px,
+      color-mix(in srgb, var(--ax-line) 40%, transparent) 21px,
+      color-mix(in srgb, var(--ax-line) 40%, transparent) 22px
+    );
+}
+
+.noc-chart-wrap-trend {
+  height: var(--ax-chart-h);
+}
+
+.noc-list-block,
+.noc-detail-drawer {
+  border-radius: var(--ax-radius);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel);
+  box-shadow: var(--ax-shadow);
+}
+
+/* —— System performance —— */
+.sp-page {
+  --sp-section-gap: 1rem;
+}
+
+.sp-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: 0.5rem;
+}
+
+.sp-kpi-chip {
+  border-radius: var(--ax-radius-sm);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel-elev);
+  box-shadow: var(--ax-shadow);
+  padding: 0.55rem 0.7rem;
+}
+
+.sp-stage {
+  border-radius: var(--ax-radius);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel-elev);
+  box-shadow: var(--ax-shadow);
+  padding: 0.95rem 1.05rem 1.05rem;
+}
+
+.sp-section-head {
+  padding-bottom: 0.55rem;
+  margin-bottom: 0.55rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--ax-line) 75%, transparent);
+}
+
+.sp-section-title {
+  font-size: 1.05rem;
+  letter-spacing: -0.025em;
+}
+
+.sp-trend-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(8rem, 10.5rem);
+  gap: 0.65rem 0.85rem;
+}
+
+.sp-chart,
+.sp-chart-lg,
+.sp-chart-mix,
+.sp-chart-bar {
+  height: var(--ax-chart-h-sm);
+  padding: 0.3rem 0.2rem;
+  border-radius: 10px;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 21px,
+      color-mix(in srgb, var(--ax-line) 40%, transparent) 21px,
+      color-mix(in srgb, var(--ax-line) 40%, transparent) 22px
+    );
+}
+
+.sp-chart-lg,
+.sp-chart-bar {
+  height: var(--ax-chart-h);
+}
+
+.sp-list-block {
+  border-radius: var(--ax-radius);
+  border: 1px solid var(--ax-line);
+  box-shadow: var(--ax-shadow);
+}
+
+.sp-gauge {
+  border-radius: var(--ax-radius-sm);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel);
+  box-shadow: var(--ax-shadow);
+}
+
+.sp-gauge-ring {
+  width: 3.85rem;
+  height: 3.85rem;
+}
+
+/* —— Responsive —— */
+@media (max-width: 1080px) {
+  .workspace-dash-analytics {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .noc-trend-grid,
+  .sp-trend-grid,
+  .sp-trend-grid-half {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .client-usage-chart-wrap,
+  .client-usage-chart-wrap-tall,
+  .client-usage-chart-wrap-compact,
+  .client-usage-chart-wrap.is-tall,
+  .client-usage-chart-wrap.is-compact-rank,
+  .workspace-dash-chart-wrap,
+  .workspace-dash-chart-wrap-compact,
+  .noc-chart-wrap,
+  .noc-chart-wrap-trend,
+  .noc-chart-wrap-mix,
+  .sp-chart,
+  .sp-chart-lg,
+  .sp-chart-mix,
+  .sp-chart-bar {
+    height: 11rem;
+  }
+
+  .workspace-dash-kpi:hover,
+  .workspace-dash-stat:hover,
+  .client-usage-chart-card:hover {
+    transform: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .workspace-dash-kpis,
+  .workspace-dash-stats,
+  .workspace-dash-stats.has-referral,
+  .noc-kpi-strip,
+  .sp-kpi-strip,
+  .clients-usage-summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-dash-kpi,
+  .workspace-dash-stat,
+  .client-usage-chart-card {
+    transition: none;
+  }
+
+  .workspace-dash-kpi:hover,
+  .workspace-dash-stat:hover,
+  .client-usage-chart-card:hover {
+    transform: none;
+  }
+}
