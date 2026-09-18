@@ -10610,7 +10610,9 @@ STATIC_CLIENT_DHCP_TAG = "ispcentric-static-client"
 # Short-lived caches for captive-portal critical path (connect → pay redirect).
 # Keys are intentionally narrow so a reconnect after renew still re-resolves.
 _CAPTIVE_ORG_CACHE_TTL = 45
-_CAPTIVE_SESSION_CACHE_TTL = 15
+# Must outlive typical M-Pesa PIN entry so pay/start discovery is reused on
+# the post-PIN authorize path (was 15s and forced a full live NAS walk).
+_CAPTIVE_SESSION_CACHE_TTL = 180
 # PPP IP → customer must outlive brief API blips after block/kick/redial so the
 # dst-nat renew page can still auto-fill without a signed CPE token.
 _CAPTIVE_PPPOE_IP_CACHE_TTL = 60 * 60 * 6
@@ -17402,6 +17404,9 @@ def find_hotspot_router_for_mac(organization, mac_address: str):
     unsafe: a stale/unreachable NAS can receive the customer assignment while
     the payment came through a different Hotspot. The paying device must be
     provisioned on the router whose host/active table contains its MAC.
+
+    Fast path: cache hit or an already-bound customer.router for this MAC —
+    skips a multi-router live walk so post-PIN authorize stays snappy.
     """
     from core.models import MikroTikRouter
 
@@ -17431,6 +17436,7 @@ def find_hotspot_router_for_mac(organization, mac_address: str):
         ).order_by("id")
     )
     # Prefer a router already bound to this MAC customer — usually the live NAS.
+    bound_id = None
     try:
         from billing.models import Customer, CustomerDevice
 
@@ -17457,6 +17463,12 @@ def find_hotspot_router_for_mac(organization, mac_address: str):
                 .first()
             )
         if bound_id:
+            bound = next((row for row in routers if row.pk == bound_id), None)
+            if bound is not None:
+                # Trust the payment-bound NAS through the STK PIN window instead
+                # of re-dumping host/active tables on every authorize poll.
+                _captive_cache_set(cache_key, bound.pk, _CAPTIVE_SESSION_CACHE_TTL)
+                return bound
             routers.sort(key=lambda row: 0 if row.pk == bound_id else 1)
     except Exception:
         pass
@@ -18170,26 +18182,35 @@ def sync_customer_subscription_access(
                 )
         router = getattr(customer, "router", None)
         from billing.devices import hotspot_macs_for_customer
+        from core.models import MikroTikRouter
 
         lookup_macs = hotspot_macs_for_customer(customer) or [
             getattr(customer, "hotspot_mac", "") or ""
         ]
         detected_router = None
-        for lookup_mac in lookup_macs:
-            detected_router = find_hotspot_router_for_mac(
-                customer.organization,
-                lookup_mac,
-            )
-            if detected_router is not None:
-                break
+        # Quick captive authorize: trust the bound NAS. Live rediscovery runs on
+        # background follow-ups (quick=False) so post-PIN surfing is not blocked
+        # by a multi-router host/active dump.
+        trust_bound = (
+            quick
+            and router is not None
+            and getattr(router, "account_status", "")
+            == MikroTikRouter.AccountStatus.ACTIVE
+        )
+        if not trust_bound:
+            for lookup_mac in lookup_macs:
+                detected_router = find_hotspot_router_for_mac(
+                    customer.organization,
+                    lookup_mac,
+                )
+                if detected_router is not None:
+                    break
         if detected_router is not None:
             router = detected_router
             if customer.router_id != detected_router.pk:
                 customer.router = detected_router
                 customer.save(update_fields=["router"])
         if router is None:
-            from core.models import MikroTikRouter
-
             router = (
                 MikroTikRouter.objects.filter(
                     organization_id=customer.organization_id,

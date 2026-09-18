@@ -1956,10 +1956,11 @@
       var root = document.querySelector("[data-pay-panel]");
       if (!root) return;
       var welcomeUrl = "{{ welcome_url|escapejs }}" || "http://neverssl.com/";
-      var POLL_FAST_MS = 1000;
-      var POLL_SLOW_MS = 2500;
+      var POLL_FAST_MS = 800;
+      var POLL_SLOW_MS = 2000;
       var POLL_GIVE_UP_MS = 600000;
       var AUTH_RETRY_MAX = 4;
+      var AUTH_RETRY_MS = 350;
 
       function parseJsonResponse(response) {
         return response.text().then(function (text) {
@@ -2130,11 +2131,9 @@
       function openInternet(stkId, token) {
         setWaiting(true, "You're online", "MikroTik allowed surfing. Opening…", false, true);
         var separator = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
-        window.setTimeout(function () {
-          window.location.replace(
-            welcomeUrl + separator + "stk=" + encodeURIComponent(stkId) + "&token=" + encodeURIComponent(token)
-          );
-        }, 50);
+        window.location.replace(
+          welcomeUrl + separator + "stk=" + encodeURIComponent(stkId) + "&token=" + encodeURIComponent(token)
+        );
       }
 
       var voucherForm = root.querySelector("[data-voucher-form]");
@@ -2302,10 +2301,10 @@
                   ? "Payment successful. Router is offline — checking again…"
                   : "Payment successful. Connecting you automatically…";
                 setWaiting(true, "Restoring your connection", authMsg);
-                // Paid detected with nas=0 — immediately wait for NAS once.
+                // Always wait for NAS on the next poll — do not waste a nas=0 hop.
                 pollTimer = window.setTimeout(function () {
                   poll(url, token, true);
-                }, waitNas ? POLL_FAST_MS : 0);
+                }, waitNas ? AUTH_RETRY_MS : 0);
                 return;
               }
               showVoucherFallback(extraVoucherCodes(data));
@@ -2328,7 +2327,7 @@
                 data.result_desc || "Enter your PIN on your phone. This page updates automatically."
               );
               if ((Date.now() - pollStartedAt) < POLL_GIVE_UP_MS) {
-                // Pending: do not wait for NAS (or re-hit Daraja via nas sync).
+                // Pending: skip NAS wait (Daraja only). After success, polls use nas=1.
                 pollTimer = window.setTimeout(function () { poll(url, token, false); }, POLL_FAST_MS);
               } else {
                 offerRetry("The M-Pesa prompt timed out. Try again.");
@@ -2406,7 +2405,7 @@
               "Waiting for M-Pesa",
               "M-Pesa prompt sent for KES " + data.amount + ". Check your phone and enter your PIN."
             );
-            // nas=0 while waiting for PIN; first success poll waits for NAS.
+            // Pending polls use nas=0; as soon as SUCCESS is seen we upgrade to nas=1.
             poll(data.status_url, data.status_token, false);
           })
           .catch(function (error) {

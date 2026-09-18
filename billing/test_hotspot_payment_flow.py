@@ -301,3 +301,110 @@ class HotspotPaymentConnectionFlowTests(TestCase):
         self.assertTrue(data["authorized"])
         voucher.refresh_from_db()
         self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
+
+
+class HotspotConnectSpeedTests(TestCase):
+    """Regression guards for post-PIN connect latency."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-hs-speed", password="x")
+        self.org = Organization.objects.create(
+            name="Speed ISP",
+            owner=self.owner,
+            join_code="727272",
+            hotspot_enabled=True,
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Speed Daily",
+            price=Decimal("30.00"),
+            download_speed_mbps=5,
+            upload_speed_mbps=2,
+            duration=BillingPlan.Duration.DAILY,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=1,
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Speed NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.72.72.1",
+            username="admin",
+            password="secret",
+        )
+        self.mac = "AA:BB:CC:DD:EE:72"
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Speed Client",
+            phone="254700007272",
+            account_number="HOT-SPEED-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac=self.mac,
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            router=self.router,
+        )
+
+    def test_bound_router_skips_live_nas_walk(self):
+        from core.mikrotik_connect import find_hotspot_router_for_mac
+
+        with patch(
+            "core.mikrotik_connect._api_session",
+            side_effect=AssertionError("live NAS walk should be skipped"),
+        ):
+            found = find_hotspot_router_for_mac(self.org, self.mac)
+        self.assertEqual(found.pk, self.router.pk)
+
+    def test_first_status_success_waits_for_nas_even_with_nas0(self):
+        """nas=0 must still wait on first apply so UI does not need a second hop."""
+        from billing.stk import fulfill_successful_stk, refresh_stk_status
+
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            amount=Decimal("30.00"),
+            phone="254700007272",
+            account_reference=self.customer.account_number,
+            status=StkPushRequest.Status.PENDING,
+            checkout_request_id="ws_speed_1",
+            raw_callback={"hotspot_mac": self.mac},
+        )
+        fulfill_successful_stk(
+            stk, result_code=0, result_desc="ok", mpesa_receipt="RCPSPEED1"
+        )
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": True, "allowed": True},
+        ) as enqueue:
+            result = refresh_stk_status(stk, wait_for_nas=False)
+        self.assertTrue(result["success"])
+        self.assertTrue(result["authorized"])
+        self.assertTrue(enqueue.call_args.kwargs.get("wait_first"))
+        self.assertTrue(enqueue.call_args.kwargs.get("quick"))
+
+    def test_quick_sync_trusts_bound_router(self):
+        from core.mikrotik_connect import sync_customer_subscription_access
+
+        with (
+            patch(
+                "core.mikrotik_connect.find_hotspot_router_for_mac",
+                side_effect=AssertionError("should not rediscover on quick"),
+            ),
+            patch(
+                "core.mikrotik_connect.authorize_hotspot_customer",
+                return_value={"ok": True, "allowed": True},
+            ) as authorize,
+        ):
+            # Force allowed path.
+            self.customer.package_start = timezone.now() - timedelta(hours=1)
+            self.customer.package_end = timezone.now() + timedelta(hours=5)
+            self.customer.save(update_fields=["package_start", "package_end"])
+            sync_customer_subscription_access(
+                self.customer,
+                provision=True,
+                reauthenticate=False,
+                quick=True,
+            )
+        authorize.assert_called_once()
+        self.assertEqual(authorize.call_args.kwargs["router"].pk, self.router.pk)

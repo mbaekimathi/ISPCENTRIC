@@ -652,7 +652,7 @@
               return;
             }
             if (attempts < 4 && (result.data.can_retry_authorize || result.data.offline || result.ok)) {
-              window.setTimeout(activate, 1500 * attempts);
+              window.setTimeout(activate, attempts === 1 ? 300 : 500 * attempts);
               return;
             }
             if (statusEl) statusEl.textContent = "Payment confirmed · Could not auto-connect";
@@ -664,7 +664,7 @@
           })
           .catch(function () {
             if (attempts < 3) {
-              window.setTimeout(activate, 1500 * attempts);
+              window.setTimeout(activate, attempts === 1 ? 300 : 500 * attempts);
               return;
             }
             if (statusEl) statusEl.textContent = "Payment confirmed · Retrying connection…";

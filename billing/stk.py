@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Captive pay pages poll ~1s for UX, but Safaricom STK Query is slow (up to
 # 25s). Only one Daraja query per STK every few seconds; intervening polls
 # return local pending so the queue does not pile up behind Safaricom.
-STK_QUERY_MIN_INTERVAL_SECONDS = 3
+STK_QUERY_MIN_INTERVAL_SECONDS = 2
 
 # Keys that must survive Daraja callback/query overwrites of raw_callback.
 # Callback receipt fields must survive STK Query merges so a late/early
@@ -2207,12 +2207,15 @@ def _apply_paid_subscription_to_status(
 
     # Captive pay pages (wait_for_nas) block on one quick MikroTik restore so
     # "Connected" / welcome only appears after the NAS can let them surf.
+    # Also wait on the *first* apply even when the client sent nas=0 — otherwise
+    # the UI pays for an extra round-trip before authorize.
     activation = {}
-    if not stk.subscription_applied or wait_for_nas:
+    first_apply = not bool(stk.subscription_applied)
+    if first_apply or wait_for_nas:
         activation = activate_paid_subscription_stk(
             stk,
             mac=stk_hotspot_mac(stk),
-            wait_first=wait_for_nas,
+            wait_first=wait_for_nas or first_apply,
             quick=True,
         )
     stk.refresh_from_db()
