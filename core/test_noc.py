@@ -165,6 +165,42 @@ class NocBoardTests(TestCase):
             )
         )
 
+    def test_noc_board_sold_vs_uplink_capacity(self):
+        self.router.uplink_capacity_mbps = 20
+        self.router.save(update_fields=["uplink_capacity_mbps"])
+        # Two active clients on a 10 Mbps plan → 20 Mbps sold on 20 Mbps cap (1×).
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Bob Client",
+            account_number="ACC-NOC-2",
+            phone="0700000002",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            plan=self.plan,
+            pppoe_username="bob",
+        )
+        board = build_noc_board(self.org)
+        perf = board["routers"][0]["performance"]
+        self.assertEqual(perf["sold_download_mbps"], 20)
+        self.assertEqual(perf["uplink_capacity_mbps"], 20)
+        self.assertEqual(perf["oversubscription_ratio"], 1.0)
+        self.assertFalse(perf["oversubscribed"])
+
+        # Oversell to 5×.
+        self.plan.download_speed_mbps = 50
+        self.plan.upload_speed_mbps = 20
+        self.plan.save()
+        board = build_noc_board(self.org)
+        perf = board["routers"][0]["performance"]
+        self.assertEqual(perf["sold_download_mbps"], 100)
+        self.assertEqual(perf["oversubscription_ratio"], 5.0)
+        self.assertTrue(perf["oversubscribed"])
+        self.assertGreaterEqual(board["summary"]["routers_oversubscribed"], 1)
+        self.assertTrue(
+            any(i["kind"] == "oversubscribed" for i in board["improvements"])
+        )
+
     def test_noc_page_and_summary_require_owner_workspace(self):
         self.client.force_login(self.owner)
         page = self.client.get(reverse("core:noc"))

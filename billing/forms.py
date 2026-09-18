@@ -1660,6 +1660,8 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "price",
             "download_speed_mbps",
             "upload_speed_mbps",
+            "download_guaranteed_mbps",
+            "upload_guaranteed_mbps",
             "duration_value",
             "duration_unit",
             "max_devices",
@@ -1715,6 +1717,22 @@ class BillingPackageRegisterForm(forms.ModelForm):
                     "placeholder": "5",
                     "min": "1",
                     "id": "id_package_upload_speed",
+                }
+            ),
+            "download_guaranteed_mbps": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "0",
+                    "min": "0",
+                    "id": "id_package_download_guaranteed",
+                }
+            ),
+            "upload_guaranteed_mbps": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "0",
+                    "min": "0",
+                    "id": "id_package_upload_guaranteed",
                 }
             ),
             "duration_value": forms.NumberInput(
@@ -1778,6 +1796,8 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "price": "Price",
             "download_speed_mbps": "Download speed (Mbps)",
             "upload_speed_mbps": "Upload speed (Mbps)",
+            "download_guaranteed_mbps": "Guaranteed download (Mbps)",
+            "upload_guaranteed_mbps": "Guaranteed upload (Mbps)",
             "duration_value": "Billing period",
             "duration_unit": "Period unit",
             "max_devices": "Max devices",
@@ -1798,6 +1818,14 @@ class BillingPackageRegisterForm(forms.ModelForm):
         self.fields["routers"].required = False
         self.fields["service_type"].required = True
         self.fields["max_devices"].required = False
+        self.fields["download_guaranteed_mbps"].required = False
+        self.fields["upload_guaranteed_mbps"].required = False
+        self.fields["download_guaranteed_mbps"].help_text = (
+            "Optional CIR reserved under load. 0 = best-effort only."
+        )
+        self.fields["upload_guaranteed_mbps"].help_text = (
+            "Optional CIR reserved under load. 0 = best-effort only."
+        )
         self.fields["max_devices"].help_text = (
             "Leave blank for unlimited Hotspot devices. "
             "Hotspot: number of phones/laptops; payment creates one one-time voucher per device. "
@@ -1839,6 +1867,8 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "price": f"id_{self.id_prefix}_price",
             "download_speed_mbps": f"id_{self.id_prefix}_download_speed",
             "upload_speed_mbps": f"id_{self.id_prefix}_upload_speed",
+            "download_guaranteed_mbps": f"id_{self.id_prefix}_download_guaranteed",
+            "upload_guaranteed_mbps": f"id_{self.id_prefix}_upload_guaranteed",
             "duration_value": f"id_{self.id_prefix}_duration_value",
             "duration_unit": f"id_{self.id_prefix}_duration_unit",
             "max_devices": f"id_{self.id_prefix}_max_devices",
@@ -1895,6 +1925,44 @@ class BillingPackageRegisterForm(forms.ModelForm):
             cleaned["offer_pay_count"] = int(
                 offer_pay_count or getattr(self.instance, "offer_pay_count", None) or 5
             )
+
+        download = int(cleaned.get("download_speed_mbps") or 0)
+        upload = int(cleaned.get("upload_speed_mbps") or 0)
+        g_down = cleaned.get("download_guaranteed_mbps")
+        g_up = cleaned.get("upload_guaranteed_mbps")
+        if g_down in (None, ""):
+            cleaned["download_guaranteed_mbps"] = 0
+            g_down = 0
+        else:
+            g_down = int(g_down)
+            cleaned["download_guaranteed_mbps"] = g_down
+        if g_up in (None, ""):
+            cleaned["upload_guaranteed_mbps"] = 0
+            g_up = 0
+        else:
+            g_up = int(g_up)
+            cleaned["upload_guaranteed_mbps"] = g_up
+        if g_down < 0 or g_up < 0:
+            self.add_error(
+                "download_guaranteed_mbps",
+                "Guaranteed speeds cannot be negative.",
+            )
+        if g_down > 0 and download > 0 and g_down > download:
+            self.add_error(
+                "download_guaranteed_mbps",
+                "Guaranteed download cannot exceed package download speed.",
+            )
+        if g_up > 0 and upload > 0 and g_up > upload:
+            self.add_error(
+                "upload_guaranteed_mbps",
+                "Guaranteed upload cannot exceed package upload speed.",
+            )
+        if (g_down > 0) != (g_up > 0):
+            # Mirror the unset side so RouterOS always gets a complete CIR pair.
+            if g_down > 0 and g_up <= 0:
+                cleaned["upload_guaranteed_mbps"] = min(g_down, upload or g_down)
+            elif g_up > 0 and g_down <= 0:
+                cleaned["download_guaranteed_mbps"] = min(g_up, download or g_up)
         return cleaned
 
     def clean_description(self):

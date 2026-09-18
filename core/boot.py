@@ -392,40 +392,50 @@ def _run_near_deadline_expiry_sync() -> None:
         if routers:
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
+            def _repair_one_router(router):
+                """Run all access repairs for one NAS sequentially (no API races)."""
+                results = []
+                for fn in (
+                    repair_paid_pppoe_not_surfing_on_router,
+                    repair_unpaid_pppoe_leaking_on_router,
+                    repair_unpaid_hotspot_leaking_on_router,
+                ):
+                    try:
+                        results.append(fn(router))
+                    except Exception:
+                        logger.exception(
+                            "access repair failed router=%s fn=%s",
+                            getattr(router, "pk", None),
+                            getattr(fn, "__name__", fn),
+                        )
+                return results
+
             workers = min(8, len(routers))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [
-                    pool.submit(repair_paid_pppoe_not_surfing_on_router, router)
-                    for router in routers
+                    pool.submit(_repair_one_router, router) for router in routers
                 ]
-                futures.extend(
-                    pool.submit(repair_unpaid_pppoe_leaking_on_router, router)
-                    for router in routers
-                )
-                futures.extend(
-                    pool.submit(repair_unpaid_hotspot_leaking_on_router, router)
-                    for router in routers
-                )
                 for future in as_completed(futures):
                     try:
-                        result = future.result()
+                        batch = future.result() or []
                     except Exception:
                         logger.exception("access repair failed")
                         continue
-                    count = int(result.get("repaired") or 0)
-                    if not count:
-                        continue
-                    message = result.get("message") or count
-                    msg_text = str(message)
-                    if "Hotspot leak" in msg_text:
-                        hotspot_repaired += count
-                        logger.info("unpaid-hotspot leak repair: %s", message)
-                    elif "PPPoE leak" in msg_text:
-                        pppoe_leak_repaired += count
-                        logger.info("unpaid-pppoe leak repair: %s", message)
-                    else:
-                        repaired += count
-                        logger.info("paid-not-surfing repair: %s", message)
+                    for result in batch:
+                        count = int(result.get("repaired") or 0)
+                        if not count:
+                            continue
+                        message = result.get("message") or count
+                        msg_text = str(message)
+                        if "Hotspot leak" in msg_text:
+                            hotspot_repaired += count
+                            logger.info("unpaid-hotspot leak repair: %s", message)
+                        elif "PPPoE leak" in msg_text:
+                            pppoe_leak_repaired += count
+                            logger.info("unpaid-pppoe leak repair: %s", message)
+                        else:
+                            repaired += count
+                            logger.info("paid-not-surfing repair: %s", message)
         if repaired:
             logger.info("paid-not-surfing repaired %s account(s)", repaired)
         if pppoe_leak_repaired:

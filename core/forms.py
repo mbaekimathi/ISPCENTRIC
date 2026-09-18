@@ -246,6 +246,7 @@ class MikroTikEditDetailsForm(forms.ModelForm):
             "host",
             "username",
             "password",
+            "uplink_capacity_mbps",
             "default_cpe_username",
             "default_cpe_password",
         ]
@@ -297,6 +298,14 @@ class MikroTikEditDetailsForm(forms.ModelForm):
                 },
                 render_value=True,
             ),
+            "uplink_capacity_mbps": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "0",
+                    "min": "0",
+                    "id": "id_edit_mikrotik_uplink_capacity",
+                }
+            ),
             "default_cpe_username": forms.TextInput(
                 attrs={
                     "class": "form-control",
@@ -322,6 +331,7 @@ class MikroTikEditDetailsForm(forms.ModelForm):
             "host": "IP / Host",
             "username": "Username",
             "password": "Password",
+            "uplink_capacity_mbps": "Uplink capacity (Mbps)",
             "default_cpe_username": "Client router username",
             "default_cpe_password": "Client router password",
         }
@@ -330,7 +340,17 @@ class MikroTikEditDetailsForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields["default_cpe_username"].required = False
         self.fields["default_cpe_password"].required = False
+        self.fields["uplink_capacity_mbps"].required = False
         self.unlisted_model = self._keep_current_model_selectable()
+
+    def clean_uplink_capacity_mbps(self):
+        value = self.cleaned_data.get("uplink_capacity_mbps")
+        if value in (None, ""):
+            return 0
+        value = int(value)
+        if value < 0:
+            raise forms.ValidationError("Uplink capacity cannot be negative.")
+        return value
 
     def clean_host(self):
         host = (self.cleaned_data.get("host") or "").strip()

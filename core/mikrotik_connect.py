@@ -11131,6 +11131,98 @@ def _address_on_interface(sock: socket.socket, address: str, interface: str) -> 
     return False
 
 
+def _pppoe_filter_rule_matches(row: dict[str, str], rule: dict[str, str]) -> bool:
+    """True when an existing filter row already implements the desired rule."""
+    for key, expected in rule.items():
+        if key in {".id", "place-before"}:
+            continue
+        actual = (row.get(key) or "").strip()
+        if actual != (expected or "").strip():
+            return False
+    return True
+
+
+def _pppoe_filter_rule_key(rule: dict[str, str]) -> tuple[str, ...]:
+    """Stable identity for a desired PPPoE filter rule (comment alone is not unique)."""
+    return (
+        (rule.get("chain") or "").strip(),
+        (rule.get("action") or "").strip(),
+        (rule.get("comment") or "").strip(),
+        (rule.get("protocol") or "").strip(),
+        (rule.get("dst-port") or "").strip(),
+        (rule.get("src-address-list") or "").strip(),
+        (rule.get("src-address") or "").strip(),
+        (rule.get("dst-address") or "").strip(),
+        (rule.get("out-interface-list") or "").strip(),
+        (rule.get("in-interface-list") or "").strip(),
+        (rule.get("connection-state") or "").strip(),
+        (rule.get("reject-with") or "").strip(),
+    )
+
+
+def _ensure_pppoe_firewall_filters(
+    sock: socket.socket,
+    *,
+    rules: list[dict[str, str]],
+    place_before_drop: str,
+    place_before_input_drop: str,
+) -> list[str]:
+    """
+    Install PPPoE tagged filter rules without wipe+recreate when already correct.
+
+    Full delete/re-add every sweep briefly opens WAN for blocked clients and
+    can drop established forwards for paid ones over slow WireGuard links.
+    """
+    notes: list[str] = []
+    props = (
+        ".id,chain,action,comment,src-address-list,src-address,"
+        "dst-address,out-interface-list,in-interface-list,protocol,"
+        "dst-port,connection-state,reject-with"
+    )
+    existing = [
+        row
+        for row in _print(sock, "/ip/firewall/filter", props=props)
+        if PPP_SECRET_TAG in (row.get("comment") or "")
+    ]
+    desired_by_key = {_pppoe_filter_rule_key(rule): rule for rule in rules}
+
+    changed = False
+    present_keys: set[tuple[str, ...]] = set()
+    for row in existing:
+        item_id = (row.get(".id") or "").strip()
+        key = _pppoe_filter_rule_key(row)
+        desired = desired_by_key.get(key)
+        if desired is None or not _pppoe_filter_rule_matches(row, desired):
+            if item_id:
+                _remove(sock, "/ip/firewall/filter", item_id)
+                changed = True
+            continue
+        present_keys.add(key)
+
+    added = 0
+    for key, rule in desired_by_key.items():
+        if key in present_keys:
+            continue
+        anchor = (
+            place_before_input_drop
+            if rule.get("chain") == "input"
+            else place_before_drop
+        )
+        terminal = _add_filter_rule(sock, rule, place_before=anchor)
+        if terminal.get("_reply") == "!trap" and anchor:
+            terminal = _add_filter_rule(sock, rule)
+        if terminal.get("_reply") != "!trap":
+            added += 1
+            changed = True
+    if changed:
+        notes.append(
+            f"PPPoE firewall repaired ({added} rule(s) added)"
+            if added
+            else "PPPoE firewall cleaned stale rules"
+        )
+    return notes
+
+
 def _ensure_pppoe_stack(
     sock: socket.socket,
     *,
@@ -11281,16 +11373,6 @@ def _ensure_pppoe_stack(
         ],
     )
 
-    existing_pppoe_filters = [
-        row
-        for row in _print(sock, "/ip/firewall/filter", props=".id,comment")
-        if PPP_SECRET_TAG in (row.get("comment") or "")
-    ]
-    for row in existing_pppoe_filters:
-        item_id = (row.get(".id") or "").strip()
-        if item_id:
-            _remove(sock, "/ip/firewall/filter", item_id)
-
     notes.extend(_disable_fasttrack_connection_rules(sock))
 
     place_before_drop = _first_forward_drop_id(sock)
@@ -11425,20 +11507,24 @@ def _ensure_pppoe_stack(
             }
         )
     place_before_input_drop = _first_input_drop_id(sock)
-    for rule in forward_rules:
-        anchor = (
-            place_before_input_drop
-            if rule.get("chain") == "input"
-            else place_before_drop
-        )
-        terminal = _add_filter_rule(sock, rule, place_before=anchor)
-        if terminal.get("_reply") == "!trap" and anchor:
-            _add_filter_rule(sock, rule)
-    notes.append(
-        "PPPoE compulsory firewall (Hotspot clients allowed)"
-        if compulsory
-        else "LAN forward allow"
+    filter_notes = _ensure_pppoe_firewall_filters(
+        sock,
+        rules=forward_rules,
+        place_before_drop=place_before_drop,
+        place_before_input_drop=place_before_input_drop,
     )
+    notes.extend(filter_notes)
+    if not filter_notes:
+        notes.append(
+            "PPPoE firewall already current"
+            + (" (compulsory)" if compulsory else "")
+        )
+    else:
+        notes.append(
+            "PPPoE compulsory firewall (Hotspot clients allowed)"
+            if compulsory
+            else "LAN forward allow"
+        )
     notes.append(f"forward allow {PPPOE_POOL_NETWORK} to WAN")
     if compulsory:
         notes.append(f"forward allow address-list {ISP_HOTSPOT_OK_LIST} to WAN")
@@ -12383,17 +12469,68 @@ def _plan_speeds_mbps(plan) -> tuple[int, int]:
     return upload, download
 
 
-def _rate_limit_string(upload_mbps: int, download_mbps: int) -> str:
-    """RouterOS rate-limit (rx=upload / tx=download from the router's view)."""
-    upload = int(upload_mbps or 0)
-    download = int(download_mbps or 0)
+def _plan_guaranteed_mbps(plan) -> tuple[int, int]:
+    """
+    Return (upload_min, download_min) CIR from a billing plan.
+
+    Values are capped at the plan max speeds. 0/0 means best-effort only.
+    """
+    if plan is None:
+        return 0, 0
+    upload_max, download_max = _plan_speeds_mbps(plan)
+    upload = int(getattr(plan, "upload_guaranteed_mbps", 0) or 0)
+    download = int(getattr(plan, "download_guaranteed_mbps", 0) or 0)
     if upload < 1 and download < 1:
-        return ""
+        return 0, 0
     if upload < 1:
         upload = download
     if download < 1:
         download = upload
-    return f"{upload}M/{download}M"
+    if upload_max >= 1:
+        upload = min(upload, upload_max)
+    if download_max >= 1:
+        download = min(download, download_max)
+    if upload < 1 or download < 1:
+        return 0, 0
+    return upload, download
+
+
+def _clamp_rate_pair(upload_mbps: int, download_mbps: int) -> tuple[int, int]:
+    upload = int(upload_mbps or 0)
+    download = int(download_mbps or 0)
+    if upload < 1 and download < 1:
+        return 0, 0
+    if upload < 1:
+        upload = download
+    if download < 1:
+        download = upload
+    return upload, download
+
+
+def _rate_limit_string(
+    upload_mbps: int,
+    download_mbps: int,
+    upload_min_mbps: int = 0,
+    download_min_mbps: int = 0,
+) -> str:
+    """RouterOS rate-limit (rx=upload / tx=download from the router's view).
+
+    When guaranteed mins are set, appends burst placeholders + priority +
+    rate-min (CIR) so PPP/Hotspot dynamic queues reserve bandwidth under load:
+    ``8M/25M 0/0 0/0 0/0 8 4M/10M``.
+    """
+    upload, download = _clamp_rate_pair(upload_mbps, download_mbps)
+    if upload < 1 or download < 1:
+        return ""
+    max_pair = f"{upload}M/{download}M"
+    umin, dmin = _clamp_rate_pair(upload_min_mbps, download_min_mbps)
+    if umin < 1 or dmin < 1:
+        return max_pair
+    umin = min(umin, upload)
+    dmin = min(dmin, download)
+    if umin < 1 or dmin < 1:
+        return max_pair
+    return f"{max_pair} 0/0 0/0 0/0 8 {umin}M/{dmin}M"
 
 
 def _parse_rate_limit_mbps(rate_limit: str) -> tuple[int, int]:
@@ -12433,10 +12570,44 @@ def _parse_rate_limit_mbps(rate_limit: str) -> tuple[int, int]:
     return _part_to_mbps(upload_s), _part_to_mbps(download_s)
 
 
+def _parse_rate_limit_min_mbps(rate_limit: str) -> tuple[int, int]:
+    """Parse optional rate-min (CIR) pair from a RouterOS rate-limit string."""
+    parts = (rate_limit or "").strip().split()
+    if len(parts) < 2:
+        return 0, 0
+    # Last slash-pair is rate-min when present
+    # (max burst-rate burst-threshold burst-time [priority] rate-min).
+    candidate = parts[-1]
+    if "/" not in candidate:
+        return 0, 0
+    # Prefer treating the last pair as CIR only when the string has the
+    # extended shape (more than just the max pair).
+    return _parse_rate_limit_mbps(candidate)
+
+
+def _max_limit_string(rate_limit: str) -> str:
+    """Simple-queue max-limit from a (possibly extended) rate-limit string."""
+    upload, download = _parse_rate_limit_mbps(rate_limit)
+    upload, download = _clamp_rate_pair(upload, download)
+    if upload < 1 or download < 1:
+        return ""
+    return f"{upload}M/{download}M"
+
+
+def _limit_at_string(rate_limit: str) -> str:
+    """Simple-queue limit-at (CIR) from an extended rate-limit string."""
+    upload, download = _parse_rate_limit_min_mbps(rate_limit)
+    upload, download = _clamp_rate_pair(upload, download)
+    if upload < 1 or download < 1:
+        return ""
+    return f"{upload}M/{download}M"
+
+
 def _normalize_rate_limit_string(rate_limit: str) -> str:
     """Canonicalize RouterOS rate-limit strings for strict comparison."""
     upload, download = _parse_rate_limit_mbps(rate_limit)
-    return _rate_limit_string(upload, download)
+    umin, dmin = _parse_rate_limit_min_mbps(rate_limit)
+    return _rate_limit_string(upload, download, umin, dmin)
 
 
 def _rate_limits_match(expected: str, actual: str) -> bool:
@@ -12558,7 +12729,10 @@ def _expected_hotspot_profile_for_customer(customer, organization=None) -> str:
     org = organization or getattr(customer, "organization", None)
     upload, download = _hotspot_speeds_for_customer(customer, org)
     if upload >= 1 and download >= 1:
-        return _hotspot_speed_profile_name(upload, download)
+        umin, dmin = _plan_guaranteed_mbps(getattr(customer, "plan", None))
+        return _hotspot_speed_profile_name(
+            upload, download, upload_min_mbps=umin, download_min_mbps=dmin
+        )
     return ISP_HOTSPOT_USER_PROFILE
 
 
@@ -12569,12 +12743,22 @@ def _pppoe_speeds_for_customer(customer) -> tuple[int, int]:
 def _pppoe_rate_limit_for_customer(customer) -> str:
     """RouterOS rate-limit string for this customer's package."""
     upload, download = _pppoe_speeds_for_customer(customer)
-    return _rate_limit_string(upload, download)
+    umin, dmin = _plan_guaranteed_mbps(getattr(customer, "plan", None))
+    return _rate_limit_string(upload, download, umin, dmin)
 
 
-def _pppoe_speed_profile_name(upload_mbps: int, download_mbps: int) -> str:
+def _pppoe_speed_profile_name(
+    upload_mbps: int,
+    download_mbps: int,
+    upload_min_mbps: int = 0,
+    download_min_mbps: int = 0,
+) -> str:
     """Stable per-package PPP profile name carrying that plan's rate-limit."""
-    return f"ispcentric-pppoe-{int(upload_mbps)}u-{int(download_mbps)}d"
+    name = f"ispcentric-pppoe-{int(upload_mbps)}u-{int(download_mbps)}d"
+    umin, dmin = _clamp_rate_pair(upload_min_mbps, download_min_mbps)
+    if umin >= 1 and dmin >= 1:
+        name = f"{name}-g{umin}u-{dmin}d"
+    return name[:63]
 
 
 def _ensure_pppoe_rate_profile(
@@ -12582,6 +12766,8 @@ def _ensure_pppoe_rate_profile(
     *,
     upload_mbps: int,
     download_mbps: int,
+    upload_min_mbps: int = 0,
+    download_min_mbps: int = 0,
 ) -> str:
     """
     Create/update a PPP profile that shapes traffic to the plan speeds.
@@ -12589,14 +12775,22 @@ def _ensure_pppoe_rate_profile(
     MikroTik applies profile rate-limit as a dynamic simple queue when the
     client dials, which is the reliable way to enforce per-package speeds
     (many RouterOS builds reject rate-limit on /ppp/secret itself).
+    Optional guaranteed Mbps become rate-min (CIR) on that dynamic queue.
     """
     upload = int(upload_mbps or 0)
     download = int(download_mbps or 0)
     if upload < 1 or download < 1:
         return PPPOE_PROFILE_NAME
 
-    name = _pppoe_speed_profile_name(upload, download)
-    rate_limit = _rate_limit_string(upload, download)
+    umin, dmin = _clamp_rate_pair(upload_min_mbps, download_min_mbps)
+    if umin >= 1 and dmin >= 1:
+        umin = min(umin, upload)
+        dmin = min(dmin, download)
+
+    name = _pppoe_speed_profile_name(
+        upload, download, upload_min_mbps=umin, download_min_mbps=dmin
+    )
+    rate_limit = _rate_limit_string(upload, download, umin, dmin)
     _ensure_pppoe_pool(sock)
     profile_id = ""
     had_profile = False
@@ -12654,11 +12848,14 @@ def _ensure_simple_queue_for_targets(
     if not queue_name or not rate_limit:
         return
 
+    max_limit = _max_limit_string(rate_limit) or rate_limit.split()[0]
+    limit_at = _limit_at_string(rate_limit)
+
     existing: dict[str, str] = {}
     for row in _print(
         sock,
         "/queue/simple",
-        props=".id,name,target,max-limit,comment",
+        props=".id,name,target,max-limit,limit-at,comment",
     ):
         if (row.get("name") or "").strip() == queue_name:
             existing = row
@@ -12674,14 +12871,21 @@ def _ensure_simple_queue_for_targets(
     props = {
         "name": queue_name,
         "target": target,
-        "max-limit": rate_limit,
+        "max-limit": max_limit,
         "comment": comment,
     }
+    if limit_at:
+        props["limit-at"] = limit_at
     item_id = (existing.get(".id") or "").strip()
     if item_id:
         terminal = _set(sock, "/queue/simple", item_id, **props)
         if terminal.get("_reply") == "!trap":
-            soft = {"name": queue_name, "target": target, "max-limit": rate_limit}
+            soft = {"name": queue_name, "target": target, "max-limit": max_limit}
+            if limit_at:
+                soft["limit-at"] = limit_at
+            terminal = _set(sock, "/queue/simple", item_id, **soft)
+        if terminal.get("_reply") == "!trap":
+            soft = {"name": queue_name, "target": target, "max-limit": max_limit}
             terminal = _set(sock, "/queue/simple", item_id, **soft)
         if terminal.get("_reply") == "!trap":
             raise ConnectionError(
@@ -12694,7 +12898,12 @@ def _ensure_simple_queue_for_targets(
 
     terminal = _add(sock, "/queue/simple", **props)
     if terminal.get("_reply") == "!trap":
-        soft = {"name": queue_name, "target": target, "max-limit": rate_limit}
+        soft = {"name": queue_name, "target": target, "max-limit": max_limit}
+        if limit_at:
+            soft["limit-at"] = limit_at
+        terminal = _add(sock, "/queue/simple", **soft)
+    if terminal.get("_reply") == "!trap":
+        soft = {"name": queue_name, "target": target, "max-limit": max_limit}
         terminal = _add(sock, "/queue/simple", **soft)
     if terminal.get("_reply") == "!trap":
         raise ConnectionError(
@@ -12800,6 +13009,21 @@ def _ensure_hotspot_simple_queue(
     )
 
 
+def _remove_pppoe_simple_queue(sock: socket.socket, username: str) -> None:
+    """Drop the static PPPoE speed queue (profile rate-limit owns shaping)."""
+    username = (username or "").strip()
+    if not username:
+        return
+    queue_name = f"ispcentric-rl-{username}"[:63]
+    for row in _print(sock, "/queue/simple", props=".id,name"):
+        if (row.get("name") or "").strip() != queue_name:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if item_id:
+            _remove(sock, "/queue/simple", item_id)
+        break
+
+
 def _remove_hotspot_simple_queue(sock: socket.socket, mac: str) -> None:
     """Drop the static Hotspot speed queue when the MAC is blocked/offline."""
     queue_name = _hotspot_simple_queue_name(mac)
@@ -12823,7 +13047,10 @@ def _ppp_secret_profile_for_customer(customer, *, disabled: bool) -> str:
         return PPPOE_BLOCKED_PROFILE_NAME
     upload, download = _pppoe_speeds_for_customer(customer)
     if upload >= 1 and download >= 1:
-        return _pppoe_speed_profile_name(upload, download)
+        umin, dmin = _plan_guaranteed_mbps(getattr(customer, "plan", None))
+        return _pppoe_speed_profile_name(
+            upload, download, upload_min_mbps=umin, download_min_mbps=dmin
+        )
     return PPPOE_PROFILE_NAME
 
 
@@ -13255,11 +13482,14 @@ def _ensure_ppp_secret(
     ):
         try:
             upload_mbps, download_mbps = _parse_rate_limit_mbps(rate_limit)
+            upload_min_mbps, download_min_mbps = _parse_rate_limit_min_mbps(rate_limit)
             if upload_mbps >= 1 and download_mbps >= 1:
                 profile = _ensure_pppoe_rate_profile(
                     sock,
                     upload_mbps=upload_mbps,
                     download_mbps=download_mbps,
+                    upload_min_mbps=upload_min_mbps,
+                    download_min_mbps=download_min_mbps,
                 )
         except (TypeError, ValueError):
             pass
@@ -13442,9 +13672,18 @@ def _ensure_ppp_secret(
     )
 
     if rate_limit and profile != PPPOE_BLOCKED_PROFILE_NAME and not disabled:
-        _ensure_pppoe_simple_queue(
-            sock, username=username, rate_limit=rate_limit
-        )
+        # Speed profiles already install a dynamic simple queue via rate-limit.
+        # A second static ispcentric-rl-* queue on the same IP halves package
+        # Mbps (both queues apply). Keep static queues only for the bare
+        # fallback profile that has no package rate-limit.
+        if profile == PPPOE_PROFILE_NAME or not profile.startswith(
+            "ispcentric-pppoe-"
+        ):
+            _ensure_pppoe_simple_queue(
+                sock, username=username, rate_limit=rate_limit
+            )
+        else:
+            _remove_pppoe_simple_queue(sock, username)
     if should_kick:
         _disconnect_pppoe_sessions(sock, username)
     return action
@@ -13647,7 +13886,9 @@ def _pppoe_customer_needs_session_kick(
     ):
         clear_cpe_renew_clear_pending(customer)
     needs_redial_nudge = bool(
-        restoring_surf and cpe_renew_clear_is_pending(customer)
+        restoring_surf
+        and cpe_renew_clear_is_pending(customer)
+        and not session_active_before
     )
     stuck_unblocked_session = bool(
         target == PPPOE_BLOCKED_PROFILE_NAME
@@ -13711,10 +13952,6 @@ def sync_pppoe_subscription_batch_on_router(
             "message": "No PPPoE customers on this router.",
         }
 
-    lan_interface = getattr(router, "lan_bridge", None) or "bridgeLocal"
-    wan_interface = getattr(router, "wan_interface", None) or "ether1"
-    org = getattr(router, "organization", None)
-    compulsory = bool(getattr(org, "pppoe_compulsory", False)) if org else False
     hosts = _router_api_host_candidates(router, discover=False)
     last_error = ""
     kick_usernames: list[str] = []
@@ -13754,15 +13991,11 @@ def sync_pppoe_subscription_batch_on_router(
                         _ensure_pppoe_expired_access(sock, portal_url=portal_url)
                     )
                     notes.extend(_ensure_pppoe_blocked_profile(sock))
-                    if compulsory:
-                        _, stack_notes = _ensure_pppoe_stack(
-                            sock,
-                            lan_interface=lan_interface,
-                            wan_interface=wan_interface,
-                            compulsory=True,
-                            portal_url=portal_url,
-                        )
-                        notes.extend(stack_notes[:4])
+                    # Do NOT call full _ensure_pppoe_stack here. Batch secret
+                    # sync used to wipe+rebuild compulsory firewall whenever
+                    # any unpaid client was in the batch — brief WAN gaps for
+                    # every paid CPE. Stack refresh belongs to onboard /
+                    # refresh_onboarded_router_config (now idempotent).
 
                 live = _pppoe_live_state_maps(sock)
                 for customer in customers:
@@ -14164,8 +14397,16 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
                     renew_pending = cpe_renew_clear_is_pending(customer)
                     if renew_pending:
                         pending_clear.append(customer)
+                    surfing_ok = bool(
+                        active and not blocked_session and not wrong_profile
+                    )
                     # Ghost alone is not a repair target (deploy-safe).
-                    if blocked_session or wrong_profile or renew_pending:
+                    # Renew-pending alone must not batch-kick a CPE that is
+                    # already dialed on the paid profile and surfing — only
+                    # follow up the CPE renew Hotspot clear.
+                    if blocked_session or wrong_profile or (
+                        renew_pending and not surfing_ok
+                    ):
                         need_repair.append(customer)
                 break
         except Exception as exc:  # noqa: BLE001
@@ -16386,12 +16627,15 @@ def _bounce_cpe_wifi_clients(sock: socket.socket) -> list[str]:
 
 def _bounce_isp_hotspot_clients(sock: socket.socket) -> list[str]:
     """
-    Force Hotspot Wi‑Fi clients to re-probe so the pay page opens immediately.
+    Force unpaid Hotspot Wi‑Fi clients to re-probe so the pay page opens.
 
     Clears leftover Hotspot cookies (cookie login is disabled, but stale cookies
     still confuse some RouterOS builds), clears unauthorized host/active rows,
-    then drops Wi‑Fi associations for a fresh DHCP + option 114 / captive probe.
-    Paid (authorized) sessions are left alone.
+    then drops Wi‑Fi associations **only for unauthorized MACs**.
+
+    Paid (authorized) Hotspot sessions must not be bounced — a prior blanket
+    registration-table wipe disconnected every surfing client whenever the
+    30s leak-repair path refreshed pool WAN / tether rules.
     """
     notes: list[str] = []
     cookies = 0
@@ -16404,21 +16648,68 @@ def _bounce_isp_hotspot_clients(sock: socket.socket) -> list[str]:
     if cookies:
         notes.append(f"cleared {cookies} Hotspot cookie(s)")
 
+    unauthorized_macs: set[str] = set()
     cleared = 0
     for path in ("/ip/hotspot/active", "/ip/hotspot/host"):
-        for row in _print(sock, path, props=".id,authorized"):
+        for row in _print(sock, path, props=".id,mac-address,authorized"):
             item_id = (row.get(".id") or "").strip()
             if not item_id:
                 continue
             # Leave authorized (paid) sessions alone — only bounce unpaid hosts.
             if (row.get("authorized") or "").strip().lower() in {"true", "yes"}:
                 continue
+            mac = _normalize_hotspot_mac(row.get("mac-address") or "")
+            if mac:
+                unauthorized_macs.add(mac)
             terminal = _remove(sock, path, item_id)
             if terminal.get("_reply") != "!trap":
                 cleared += 1
     if cleared:
         notes.append(f"cleared {cleared} unauthorized Hotspot host(s)")
-    notes.extend(_bounce_wifi_clients(sock, reason="Hotspot pay popup"))
+    if unauthorized_macs:
+        notes.extend(
+            _bounce_wifi_clients_for_macs(
+                sock,
+                unauthorized_macs,
+                reason="Hotspot pay popup",
+            )
+        )
+    return notes
+
+
+def _bounce_wifi_clients_for_macs(
+    sock: socket.socket,
+    macs: set[str] | list[str],
+    *,
+    reason: str = "captive pay popup",
+) -> list[str]:
+    """Drop Wi‑Fi associations for specific MACs only (never the whole AP)."""
+    want = {
+        _normalize_hotspot_mac(m)
+        for m in (macs or [])
+        if _normalize_hotspot_mac(m)
+    }
+    if not want:
+        return []
+    notes: list[str] = []
+    removed = 0
+    for path in (
+        "/interface/wireless/registration-table",
+        "/interface/wifi/registration-table",
+        "/caps-man/registration-table",
+    ):
+        for row in _print(sock, path, props=".id,mac-address"):
+            mac = _normalize_hotspot_mac(row.get("mac-address") or "")
+            if mac not in want:
+                continue
+            item_id = (row.get(".id") or "").strip()
+            if not item_id:
+                continue
+            terminal = _remove(sock, path, item_id)
+            if terminal.get("_reply") != "!trap":
+                removed += 1
+    if removed:
+        notes.append(f"bounced {removed} unpaid Wi‑Fi client(s) for {reason}")
     return notes
 
 
@@ -16526,20 +16817,29 @@ def repair_unpaid_hotspot_leaking_on_router(router) -> dict[str, Any]:
                 portal = _billing_portal_base_url(
                     organization=org,
                 )
-                notes.extend(
-                    _ensure_hotspot_pool_wan_guard(sock, portal_url=portal)
+                # Bounce / firewall rewrite only when this pass actually stopped
+                # a leak. Pool WAN + tether ensure delete/recreate filter rules
+                # every call — doing that every ~30s briefly drops paid WAN
+                # even when no orphan was found. Full sweep still refreshes
+                # the stack on its own cadence.
+                leak_found = any(
+                    "blocked orphan" in n
+                    or "purged" in n
+                    or "killed" in n
+                    for n in notes
                 )
-                notes.extend(
-                    _ensure_hotspot_tether_block(
-                        sock,
-                        enabled=bool(
-                            getattr(org, "hotspot_block_tethering", True)
-                        ),
+                if leak_found:
+                    notes.extend(
+                        _ensure_hotspot_pool_wan_guard(sock, portal_url=portal)
                     )
-                )
-                # Re-assert option 114 + login.html lightly when leaks were found
-                # so devices that were surfing without a popup get redirected.
-                if notes:
+                    notes.extend(
+                        _ensure_hotspot_tether_block(
+                            sock,
+                            enabled=bool(
+                                getattr(org, "hotspot_block_tethering", True)
+                            ),
+                        )
+                    )
                     try:
                         urls = _hotspot_portal_urls_for_org(org)
                         page_notes = _fetch_isp_hotspot_pages(
@@ -16557,7 +16857,7 @@ def repair_unpaid_hotspot_leaking_on_router(router) -> dict[str, Any]:
                                 comment=ISP_HOTSPOT_TAG,
                             )
                         )
-                        # Bounce only unauthorized hosts — keep paid sessions.
+                        # Unauthorized hosts / MACs only — paid sessions stay up.
                         notes.extend(_bounce_isp_hotspot_clients(sock))
                     except Exception as exc:  # noqa: BLE001
                         notes.append(
@@ -18580,11 +18880,21 @@ def _hotspot_speeds_for_customer(customer, organization=None) -> tuple[int, int]
 
 def _hotspot_rate_limit_for_customer(customer, organization=None) -> str:
     upload, download = _hotspot_speeds_for_customer(customer, organization)
-    return _rate_limit_string(upload, download)
+    umin, dmin = _plan_guaranteed_mbps(getattr(customer, "plan", None))
+    return _rate_limit_string(upload, download, umin, dmin)
 
 
-def _hotspot_speed_profile_name(upload_mbps: int, download_mbps: int) -> str:
-    return f"ispcentric-hs-{int(upload_mbps)}u-{int(download_mbps)}d"
+def _hotspot_speed_profile_name(
+    upload_mbps: int,
+    download_mbps: int,
+    upload_min_mbps: int = 0,
+    download_min_mbps: int = 0,
+) -> str:
+    name = f"ispcentric-hs-{int(upload_mbps)}u-{int(download_mbps)}d"
+    umin, dmin = _clamp_rate_pair(upload_min_mbps, download_min_mbps)
+    if umin >= 1 and dmin >= 1:
+        name = f"{name}-g{umin}u-{dmin}d"
+    return name[:63]
 
 
 def _hotspot_customers_for_router(router):
@@ -19138,7 +19448,10 @@ def _ensure_isp_hotspot_user_profile(sock: socket.socket, organization) -> list[
     notes: list[str] = []
     rate_limit = _hotspot_rate_limit_from_org(organization)
     idle = _ros_duration_minutes(int(getattr(organization, "hotspot_idle_timeout_minutes", 15) or 0))
-    session = _ros_duration_hours(int(getattr(organization, "hotspot_voucher_validity_hours", 24) or 24))
+    # Do not mirror hotspot_voucher_validity_hours into session-timeout.
+    # That org field is only the default when creating vouchers. Package length
+    # is enforced per MAC via limit-uptime; a 24h session-timeout was cutting
+    # weekly/monthly clients after a day of continuous surfing.
 
     profile_id = ""
     for row in _print(sock, "/ip/hotspot/user/profile", props=".id,name,comment"):
@@ -19146,9 +19459,8 @@ def _ensure_isp_hotspot_user_profile(sock: socket.socket, organization) -> list[
             profile_id = (row.get(".id") or "").strip()
             break
 
-    # session-timeout here is only the outer ceiling shared by every device.
-    # What a customer actually bought is enforced per user via limit-uptime, so
-    # this value must never be mistaken for the package length.
+    # session-timeout=0s → no outer ceiling (RouterOS unlimited).
+    # limit-uptime on each Hotspot user carries the bought remaining time.
     #
     # add-mac-cookie is off: a stored cookie lets a device log back in without
     # its Hotspot user being re-checked, which would keep an expired package
@@ -19156,7 +19468,7 @@ def _ensure_isp_hotspot_user_profile(sock: socket.socket, organization) -> list[
     attempts = [
         {
             "name": ISP_HOTSPOT_USER_PROFILE,
-            "session-timeout": session,
+            "session-timeout": "0s",
             "idle-timeout": idle,
             "keepalive-timeout": "2m",
             "status-autorefresh": "1m",
@@ -19168,7 +19480,7 @@ def _ensure_isp_hotspot_user_profile(sock: socket.socket, organization) -> list[
         },
         {
             "name": ISP_HOTSPOT_USER_PROFILE,
-            "session-timeout": session,
+            "session-timeout": "0s",
             "idle-timeout": idle,
             "add-mac-cookie": "no",
             "rate-limit": rate_limit,
@@ -19216,26 +19528,35 @@ def _ensure_hotspot_rate_profile(
     organization,
     upload_mbps: int,
     download_mbps: int,
+    upload_min_mbps: int = 0,
+    download_min_mbps: int = 0,
 ) -> str:
     """
     Per-package Hotspot user profile with rate-limit.
 
     The shared default profile stays as a fallback; each plan gets its own
     profile so a 5 Mbps voucher is not capped the same as a 50 Mbps one.
+    Optional guaranteed Mbps become rate-min (CIR) on the dynamic queue.
     """
     upload = int(upload_mbps or 0)
     download = int(download_mbps or 0)
     if upload < 1 or download < 1:
         return ISP_HOTSPOT_USER_PROFILE
 
-    name = _hotspot_speed_profile_name(upload, download)
-    rate_limit = _rate_limit_string(upload, download)
+    umin, dmin = _clamp_rate_pair(upload_min_mbps, download_min_mbps)
+    if umin >= 1 and dmin >= 1:
+        umin = min(umin, upload)
+        dmin = min(dmin, download)
+
+    name = _hotspot_speed_profile_name(
+        upload, download, upload_min_mbps=umin, download_min_mbps=dmin
+    )
+    rate_limit = _rate_limit_string(upload, download, umin, dmin)
     idle = _ros_duration_minutes(
         int(getattr(organization, "hotspot_idle_timeout_minutes", 15) or 0)
     )
-    session = _ros_duration_hours(
-        int(getattr(organization, "hotspot_voucher_validity_hours", 24) or 24)
-    )
+    # session-timeout stays unlimited; package length is per-user limit-uptime.
+    # Do not use hotspot_voucher_validity_hours here (cuts long packages early).
 
     profile_id = ""
     for row in _print(sock, "/ip/hotspot/user/profile", props=".id,name"):
@@ -19246,7 +19567,7 @@ def _ensure_hotspot_rate_profile(
     attempts = [
         {
             "name": name,
-            "session-timeout": session,
+            "session-timeout": "0s",
             "idle-timeout": idle,
             "keepalive-timeout": "2m",
             "status-autorefresh": "1m",
@@ -19509,14 +19830,49 @@ def _is_hotspot_mac_name(name: str) -> bool:
     )
 
 
-def _paid_hotspot_mac_set(organization) -> set[str]:
-    """MACs that may surf Hotspot right now according to billing."""
+def _allowed_hotspot_macs_for_customer(customer) -> list[str]:
+    """
+    MACs that should have enabled Hotspot users while this customer is paid.
+
+    Same ordering/cap rules as ``_apply_hotspot_customer_on_socket`` so orphan
+    cleanup never disables a MAC the apply path just enabled (or vice versa).
+    """
     from billing.devices import (
         authorized_hotspot_macs_for_customer,
         customer_max_devices,
+        hotspot_macs_for_customer,
     )
-    from billing.models import Customer
     from billing.services import customer_can_surf_via_hotspot
+
+    if customer is None or not customer_can_surf_via_hotspot(customer):
+        return []
+    primary = _normalize_hotspot_mac(getattr(customer, "hotspot_mac", "") or "")
+    known = [
+        _normalize_hotspot_mac(m)
+        for m in hotspot_macs_for_customer(customer)
+        if _normalize_hotspot_mac(m)
+    ]
+    if not known and primary:
+        known = [primary]
+    authorized = [
+        _normalize_hotspot_mac(m)
+        for m in authorized_hotspot_macs_for_customer(customer)
+        if _normalize_hotspot_mac(m)
+    ]
+    auth_set = set(authorized)
+    known_set = set(known)
+    # Keep primary-first known order so cap drops extras, not the payer.
+    allowed = [m for m in known if m in auth_set]
+    allowed.extend(m for m in authorized if m not in known_set)
+    cap = customer_max_devices(customer)
+    if cap > 0 and allowed:
+        allowed = allowed[:cap]
+    return allowed
+
+
+def _paid_hotspot_mac_set(organization) -> set[str]:
+    """MACs that may surf Hotspot right now according to billing."""
+    from billing.models import Customer
 
     macs: set[str] = set()
     if organization is None:
@@ -19527,14 +19883,8 @@ def _paid_hotspot_mac_set(organization) -> set[str]:
         status=Customer.Status.ACTIVE,
     ).prefetch_related("devices", "access_vouchers")
     for customer in qs:
-        if not customer_can_surf_via_hotspot(customer):
-            continue
-        cap = customer_max_devices(customer)
-        linked = authorized_hotspot_macs_for_customer(customer)
-        if cap > 0:
-            linked = linked[:cap]
-        for mac in linked:
-            macs.add(_normalize_hotspot_mac(mac))
+        for mac in _allowed_hotspot_macs_for_customer(customer):
+            macs.add(mac)
     return macs
 
 
@@ -20053,7 +20403,6 @@ def _apply_hotspot_customer_on_socket(
 ) -> dict[str, Any]:
     """Create/update Hotspot MAC users for this customer and expire stale sessions."""
     from billing.devices import (
-        authorized_hotspot_macs_for_customer,
         customer_max_devices,
         hotspot_macs_for_customer,
         prune_over_cap_hotspot_devices,
@@ -20072,17 +20421,7 @@ def _apply_hotspot_customer_on_socket(
     if disabled:
         allowed = []
     else:
-        authorized = [
-            _normalize_hotspot_mac(m)
-            for m in authorized_hotspot_macs_for_customer(customer)
-            if _normalize_hotspot_mac(m)
-        ]
-        auth_set = set(authorized)
-        known_norm = [_normalize_hotspot_mac(m) for m in known if _normalize_hotspot_mac(m)]
-        known_set = set(known_norm)
-        # Keep primary-first known order so cap drops extras, not the payer.
-        allowed = [m for m in known_norm if m in auth_set]
-        allowed.extend(m for m in authorized if m not in known_set)
+        allowed = _allowed_hotspot_macs_for_customer(customer)
     if not known and not allowed:
         # Still disable any MACs we just pruned off the account.
         for mac in pruned:
@@ -20134,12 +20473,15 @@ def _apply_hotspot_customer_on_socket(
     ]
     org = getattr(customer, "organization", None)
     upload, download = _hotspot_speeds_for_customer(customer, org)
-    rate_limit = _rate_limit_string(upload, download)
+    umin, dmin = _plan_guaranteed_mbps(getattr(customer, "plan", None))
+    rate_limit = _rate_limit_string(upload, download, umin, dmin)
     profile = _ensure_hotspot_rate_profile(
         sock,
         organization=org,
         upload_mbps=upload,
         download_mbps=download,
+        upload_min_mbps=umin,
+        download_min_mbps=dmin,
     )
     uptime = limit_uptime if not disabled else "0s"
     kick_sessions = bool(disabled or reauthenticate)
@@ -20168,9 +20510,14 @@ def _apply_hotspot_customer_on_socket(
             )
             _remove_hotspot_simple_queue(sock, mac)
         else:
-            # Soft sweep: keep the session, but pin package Mbps with a static
-            # simple queue (profile edits alone do not reshape online phones).
-            if rate_limit and not disabled:
+            # Soft sweep: keep the session. Package speed profiles already
+            # create a dynamic simple queue at login — do not add a second
+            # static queue (that half-shapes Mbps). Clear leftovers from older
+            # belt-and-suspenders deploys. Bare default profile still gets a
+            # static queue so org-default Mbps stick without a kick.
+            if profile.startswith("ispcentric-hs-") and profile != ISP_HOTSPOT_USER_PROFILE:
+                _remove_hotspot_simple_queue(sock, mac)
+            elif rate_limit and not disabled:
                 _ensure_hotspot_simple_queue(
                     sock,
                     mac=mac,

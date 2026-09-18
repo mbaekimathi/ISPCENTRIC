@@ -57,6 +57,22 @@ class BillingPlan(models.Model):
     price = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     download_speed_mbps = models.PositiveIntegerField("Download speed (Mbps)", default=10)
     upload_speed_mbps = models.PositiveIntegerField("Upload speed (Mbps)", default=5)
+    download_guaranteed_mbps = models.PositiveIntegerField(
+        "Guaranteed download (Mbps)",
+        default=0,
+        help_text=(
+            "Optional CIR reserved on MikroTik when the shared uplink is busy "
+            "(0 = best-effort only). Cannot exceed download speed."
+        ),
+    )
+    upload_guaranteed_mbps = models.PositiveIntegerField(
+        "Guaranteed upload (Mbps)",
+        default=0,
+        help_text=(
+            "Optional CIR reserved on MikroTik when the shared uplink is busy "
+            "(0 = best-effort only). Cannot exceed upload speed."
+        ),
+    )
     speed_mbps = models.PositiveIntegerField(
         "General speed (Mbps)",
         default=10,
@@ -223,11 +239,19 @@ class BillingPlan(models.Model):
     def speed_label(self) -> str:
         down = self.download_speed_mbps or self.speed_mbps or 0
         up = self.upload_speed_mbps or 0
+        g_down = int(self.download_guaranteed_mbps or 0)
+        g_up = int(self.upload_guaranteed_mbps or 0)
         if down and up:
-            return f"{down}/{up} Mbps"
-        if down:
-            return f"{down} Mbps"
-        return "—"
+            label = f"{down}/{up} Mbps"
+        elif down:
+            label = f"{down} Mbps"
+        else:
+            return "—"
+        if g_down >= 1 or g_up >= 1:
+            gd = g_down or g_up
+            gu = g_up or g_down
+            label = f"{label} (min {gd}/{gu})"
+        return label
 
     @property
     def max_devices_label(self) -> str:

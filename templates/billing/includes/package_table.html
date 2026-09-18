@@ -47,11 +47,15 @@
             {% endif %}
             <td data-label="Speed / Period">
               <div class="package-cell-stack">
-                <span class="package-speed-chip" title="{{ plan.download_speed_mbps }}↓ / {{ plan.upload_speed_mbps }}↑ Mbps">
+                <span class="package-speed-chip" title="{{ plan.download_speed_mbps }}↓ / {{ plan.upload_speed_mbps }}↑ Mbps{% if plan.download_guaranteed_mbps or plan.upload_guaranteed_mbps %} · min {{ plan.download_guaranteed_mbps|default:plan.upload_guaranteed_mbps }}↓ / {{ plan.upload_guaranteed_mbps|default:plan.download_guaranteed_mbps }}↑{% endif %}">
                   <span class="package-speed-down">{{ plan.download_speed_mbps }}</span>
                   <span class="package-speed-sep" aria-hidden="true">/</span>
                   <span class="package-speed-up">{{ plan.upload_speed_mbps }}</span>
                   <span class="package-speed-unit">Mbps</span>
+                  {% if plan.download_guaranteed_mbps or plan.upload_guaranteed_mbps %}
+                    <span class="package-speed-sep" aria-hidden="true">·</span>
+                    <span class="package-speed-min">min {{ plan.download_guaranteed_mbps|default:plan.upload_guaranteed_mbps }}/{{ plan.upload_guaranteed_mbps|default:plan.download_guaranteed_mbps }}</span>
+                  {% endif %}
                 </span>
                 <span class="package-period">{{ plan.get_duration_display }}</span>
               </div>
@@ -114,6 +118,8 @@
                     data-package-duration-unit="{{ plan.duration_unit }}"
                     data-package-download="{{ plan.download_speed_mbps }}"
                     data-package-upload="{{ plan.upload_speed_mbps }}"
+                    data-package-download-guaranteed="{{ plan.download_guaranteed_mbps|default:0 }}"
+                    data-package-upload-guaranteed="{{ plan.upload_guaranteed_mbps|default:0 }}"
                     data-package-max-devices="{{ plan.max_devices }}"
                     data-package-offer-enabled="{% if plan.offer_enabled %}1{% else %}0{% endif %}"
                     data-package-offer-pay-count="{{ plan.offer_pay_count }}"

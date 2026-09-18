@@ -99,6 +99,8 @@
       <span class="noc-kpi-chip is-readonly"><span>Fleet score</span><strong data-perf-stat="score">{% if board.summary.performance_score is not None %}{{ board.summary.performance_score }}%{% else %}—{% endif %}</strong></span>
       <span class="noc-kpi-chip is-readonly tone-ok"><span>Sessions</span><strong data-perf-stat="sessions">{{ board.summary.sessions_active }}</strong></span>
       <span class="noc-kpi-chip is-readonly sev-major"><span>Under plan</span><strong data-perf-stat="under">{{ board.summary.clients_underperforming }}</strong></span>
+      <span class="noc-kpi-chip is-readonly"><span>Sold / Cap</span><strong data-perf-stat="sold-cap">{% if board.summary.sold_download_mbps %}{{ board.summary.sold_download_mbps }}{% else %}0{% endif %}{% if board.summary.uplink_capacity_mbps %} / {{ board.summary.uplink_capacity_mbps }}{% else %} / —{% endif %}</strong><em>Mbps</em></span>
+      <span class="noc-kpi-chip is-readonly {% if board.summary.routers_oversubscribed %}sev-major{% endif %}"><span>Oversub NAS</span><strong data-perf-stat="oversub">{{ board.summary.routers_oversubscribed|default:0 }}</strong></span>
       <span class="noc-kpi-chip is-readonly"><span>Throughput</span><strong data-perf-stat="throughput">{{ board.summary.fleet_throughput_mbps }}</strong><em>Mbps</em></span>
     </div>
     <div class="noc-toolbar">
@@ -1510,6 +1512,10 @@
     setText("[data-perf-stat='under']", String(summary.clients_underperforming || 0));
     setText("[data-perf-stat='idle']", String(summary.clients_idle || 0));
     setText("[data-perf-stat='throughput']", formatMbps(summary.fleet_throughput_mbps || 0));
+    var sold = summary.sold_download_mbps || 0;
+    var cap = summary.uplink_capacity_mbps;
+    setText("[data-perf-stat='sold-cap']", String(sold) + (cap != null ? (" / " + cap) : " / —"));
+    setText("[data-perf-stat='oversub']", String(summary.routers_oversubscribed || 0));
 
     var routers = filteredPerfRouters();
     var routerCount = root.querySelector("[data-perf-router-count]");
@@ -1520,14 +1526,20 @@
         routerTable.innerHTML = '<div class="noc-empty"><p class="noc-empty-title">No routers</p><p class="noc-empty-copy">Clear filters or wait for usage samples.</p></div>';
       } else {
         routerTable.innerHTML =
-          '<table class="org-table noc-detail-table"><thead><tr><th>Router</th><th>Health</th><th>Performance</th><th>Issues</th></tr></thead><tbody>' +
+          '<table class="org-table noc-detail-table"><thead><tr><th>Router</th><th>Sold / Cap</th><th>Performance</th><th>Issues</th></tr></thead><tbody>' +
           routers.map(function (row) {
             var perf = row.performance || {};
             var selected = String(state.selectedRouterId) === String(row.id) ? " is-selected" : "";
+            var sold = perf.sold_download_mbps || 0;
+            var cap = perf.uplink_capacity_mbps;
+            var ratio = perf.oversubscription_ratio;
+            var soldCap = escapeHtml(sold) + " / " + (cap != null ? escapeHtml(cap) : "—");
+            if (ratio != null) soldCap += " (" + escapeHtml(ratio) + "×)";
             var issues = escapeHtml(perf.underperforming_count || 0) + " under · " + escapeHtml(perf.idle_count || 0) + " idle";
+            if (perf.oversubscribed) issues = "oversub · " + issues;
             return '<tr class="tone-' + escapeHtml(perf.tone || "unknown") + selected + '" data-select-router="' + escapeHtml(row.id) + '">' +
               '<td data-label="Router"><strong>' + escapeHtml(row.name) + '</strong></td>' +
-              '<td data-label="Health">' + (row.score != null ? escapeHtml(row.score) + '%' : '—') + '</td>' +
+              '<td data-label="Sold / Cap">' + soldCap + '</td>' +
               '<td data-label="Performance">' + (perf.score != null ? escapeHtml(perf.score) + '%' : '—') + '</td>' +
               '<td data-label="Issues">' + issues + '</td>' +
               '</tr>';

@@ -417,6 +417,12 @@
               {{ edit_form.location }}
               {% if edit_form.location.errors %}<div class="field-error">{{ edit_form.location.errors|striptags }}</div>{% endif %}
             </div>
+            <div class="field field-span-2">
+              <label for="{{ edit_form.uplink_capacity_mbps.id_for_label }}">{{ edit_form.uplink_capacity_mbps.label }}</label>
+              {{ edit_form.uplink_capacity_mbps }}
+              <p class="field-hint">Real WAN speed of this NAS for sold-vs-capacity checks. 0 uses multi-ISP link weights when set.</p>
+              {% if edit_form.uplink_capacity_mbps.errors %}<div class="field-error">{{ edit_form.uplink_capacity_mbps.errors|striptags }}</div>{% endif %}
+            </div>
           </div>
         </section>
 

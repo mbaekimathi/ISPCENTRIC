@@ -32,6 +32,34 @@ _PERF_UNDERPERFORM_RATIO = 0.15  # peak < 15% of plan → underperforming
 _PERF_FAIR_RATIO = 0.40
 _PERF_CLIENT_LIMIT = 80
 _PERF_IMPROVE_LIMIT = 12
+# Sold package Mbps vs real uplink: warn / act thresholds.
+_OVERSUB_WARN_RATIO = 3.0
+_OVERSUB_CRITICAL_RATIO = 5.0
+
+
+def router_uplink_capacity_mbps(router) -> int | None:
+    """Resolve NAS uplink capacity; prefer model helper when available."""
+    if router is None:
+        return None
+    resolver = getattr(router, "resolved_uplink_capacity_mbps", None)
+    if callable(resolver):
+        return resolver()
+    explicit = int(getattr(router, "uplink_capacity_mbps", 0) or 0)
+    if explicit > 0:
+        return explicit
+    weights = getattr(router, "uplink_weights", None)
+    if isinstance(weights, dict) and weights:
+        total = 0
+        for value in weights.values():
+            try:
+                mbps = int(value or 0)
+            except (TypeError, ValueError):
+                continue
+            if mbps > 0:
+                total += mbps
+        if total > 0:
+            return total
+    return None
 
 
 def _empty_board() -> dict[str, Any]:
@@ -181,6 +209,8 @@ def build_noc_board(organization, *, fault_limit: int = 60) -> dict[str, Any]:
             "model",
             "vpn_address",
             "serial_number",
+            "uplink_capacity_mbps",
+            "uplink_weights",
         )
         .order_by("name", "id")
     )
@@ -251,6 +281,7 @@ def build_noc_board(organization, *, fault_limit: int = 60) -> dict[str, Any]:
                 "customer_count": customer_count,
                 "active_customers": active_customers,
                 "suspended_customers": int(router.suspended_customers or 0),
+                "uplink_capacity_mbps": router_uplink_capacity_mbps(router),
                 "status": status,
                 "tone": tone,
                 "severity": severity,
@@ -374,6 +405,17 @@ def build_noc_board(organization, *, fault_limit: int = 60) -> dict[str, Any]:
             "performance_score": performance["summary"]["performance_score"],
             "performance_label": performance["summary"]["performance_label"],
             "has_usage_samples": performance["summary"]["has_usage_samples"],
+            "sold_download_mbps": performance["summary"].get("sold_download_mbps", 0),
+            "uplink_capacity_mbps": performance["summary"].get("uplink_capacity_mbps"),
+            "oversubscription_ratio": performance["summary"].get(
+                "oversubscription_ratio"
+            ),
+            "routers_oversubscribed": performance["summary"].get(
+                "routers_oversubscribed", 0
+            ),
+            "routers_missing_capacity": performance["summary"].get(
+                "routers_missing_capacity", 0
+            ),
         },
         "routers": routers,
         "alarms": alarms,
@@ -747,6 +789,11 @@ def _empty_router_performance() -> dict[str, Any]:
         "idle_count": 0,
         "non_optimal_count": 0,
         "avg_attainment_pct": None,
+        "sold_download_mbps": 0,
+        "uplink_capacity_mbps": None,
+        "oversubscription_ratio": None,
+        "capacity_known": False,
+        "oversubscribed": False,
         "score": None,
         "label": "No data",
         "tone": "unknown",
@@ -851,6 +898,11 @@ def _build_performance(
             "performance_score": None,
             "performance_label": "No data",
             "has_usage_samples": False,
+            "sold_download_mbps": 0,
+            "uplink_capacity_mbps": None,
+            "oversubscription_ratio": None,
+            "routers_oversubscribed": 0,
+            "routers_missing_capacity": 0,
         },
         "by_router": {},
         "non_optimal_clients": [],
@@ -872,6 +924,13 @@ def _build_performance(
         bucket["_attain_sum"] = 0
         bucket["_attain_n"] = 0
         bucket["_health_score"] = router_meta[rid].get("score")
+        capacity = router_meta[rid].get("uplink_capacity_mbps")
+        if capacity is not None and int(capacity) > 0:
+            bucket["uplink_capacity_mbps"] = int(capacity)
+            bucket["capacity_known"] = True
+        else:
+            bucket["uplink_capacity_mbps"] = None
+            bucket["capacity_known"] = False
 
     customers = list(
         Customer.objects.filter(
@@ -896,6 +955,20 @@ def _build_performance(
     )
     if not customers:
         return empty
+
+    # Sold package Mbps per NAS (active PPPoE assignments).
+    for customer in customers:
+        if not customer.router_id:
+            continue
+        rid = int(customer.router_id)
+        if rid not in by_router:
+            continue
+        plan = customer.plan
+        sold = int(getattr(plan, "download_speed_mbps", 0) or 0) if plan else 0
+        if sold > 0:
+            by_router[rid]["sold_download_mbps"] = int(
+                by_router[rid]["sold_download_mbps"] or 0
+            ) + sold
 
     customer_ids = [c.pk for c in customers]
     since = timezone.now() - timedelta(minutes=_PERF_LOOKBACK_MINUTES)
@@ -1103,6 +1176,16 @@ def _build_performance(
         else:
             rb["avg_attainment_pct"] = None
 
+        sold = int(rb.get("sold_download_mbps") or 0)
+        capacity = rb.get("uplink_capacity_mbps")
+        if capacity is not None and int(capacity) > 0 and sold > 0:
+            ratio = round(sold / float(capacity), 2)
+            rb["oversubscription_ratio"] = ratio
+            rb["oversubscribed"] = ratio >= _OVERSUB_WARN_RATIO
+        else:
+            rb["oversubscription_ratio"] = None
+            rb["oversubscribed"] = False
+
         health = rb.get("_health_score")
         sessions = int(rb["sessions_active"] or 0)
         bad = int(rb["non_optimal_count"] or 0)
@@ -1121,9 +1204,21 @@ def _build_performance(
                         penalty += 15
                     elif attain < int(_PERF_FAIR_RATIO * 100):
                         penalty += 8
+                if rb.get("oversubscribed"):
+                    ratio = float(rb.get("oversubscription_ratio") or 0)
+                    if ratio >= _OVERSUB_CRITICAL_RATIO:
+                        penalty += 20
+                    elif ratio >= _OVERSUB_WARN_RATIO:
+                        penalty += 10
                 score = max(0, min(100, base - penalty))
             else:
                 score = base
+                if rb.get("oversubscribed"):
+                    ratio = float(rb.get("oversubscription_ratio") or 0)
+                    score = max(
+                        0,
+                        score - (20 if ratio >= _OVERSUB_CRITICAL_RATIO else 10),
+                    )
             rb["score"] = score
             rb["label"] = _performance_label(score, has_data=True)
             rb["tone"] = _performance_tone(score, has_data=True)
@@ -1137,6 +1232,27 @@ def _build_performance(
         if scored_router_vals
         else None
     )
+    fleet_sold = sum(int(rb.get("sold_download_mbps") or 0) for rb in by_router.values())
+    fleet_cap_vals = [
+        int(rb["uplink_capacity_mbps"])
+        for rb in by_router.values()
+        if rb.get("capacity_known") and rb.get("uplink_capacity_mbps")
+    ]
+    fleet_cap = sum(fleet_cap_vals) if fleet_cap_vals else None
+    fleet_ratio = (
+        round(fleet_sold / float(fleet_cap), 2)
+        if fleet_cap and fleet_cap > 0 and fleet_sold > 0
+        else None
+    )
+    routers_oversubscribed = sum(
+        1 for rb in by_router.values() if rb.get("oversubscribed")
+    )
+    routers_missing_capacity = sum(
+        1
+        for rb in by_router.values()
+        if int(rb.get("sold_download_mbps") or 0) > 0 and not rb.get("capacity_known")
+    )
+
     improvements = _build_improvements(
         routers=routers,
         by_router=by_router,
@@ -1155,6 +1271,11 @@ def _build_performance(
                 fleet_score, has_data=has_samples or bool(scored_router_vals)
             ),
             "has_usage_samples": has_samples,
+            "sold_download_mbps": fleet_sold,
+            "uplink_capacity_mbps": fleet_cap,
+            "oversubscription_ratio": fleet_ratio,
+            "routers_oversubscribed": routers_oversubscribed,
+            "routers_missing_capacity": routers_missing_capacity,
         },
         "by_router": by_router,
         "non_optimal_clients": non_optimal,
@@ -1215,6 +1336,54 @@ def _build_improvements(
 
         under = int(perf.get("underperforming_count") or 0)
         idle_n = int(perf.get("idle_count") or 0)
+        sold = int(perf.get("sold_download_mbps") or 0)
+        capacity = perf.get("uplink_capacity_mbps")
+        ratio = perf.get("oversubscription_ratio")
+        if perf.get("oversubscribed") and ratio is not None:
+            severity = (
+                "critical"
+                if float(ratio) >= _OVERSUB_CRITICAL_RATIO
+                else "major"
+            )
+            items.append(
+                {
+                    "id": f"improve-oversub-{rid}",
+                    "severity": severity,
+                    "title": f"Oversubscribed uplink on {row.get('name')}",
+                    "detail": (
+                        f"Sold {sold} Mbps of packages on "
+                        f"{int(capacity) if capacity else '?'} Mbps uplink "
+                        f"({ratio}×). Peak hours will feel slow and unreliable."
+                    ),
+                    "action": (
+                        "Add backhaul, move clients, or stop selling heavy packages "
+                        "on this NAS until ratio is under 3×"
+                    ),
+                    "router_id": rid,
+                    "router_name": row.get("name") or "",
+                    "customers": customers,
+                    "href": row.get("detail_url") or "",
+                    "kind": "oversubscribed",
+                }
+            )
+        elif sold > 0 and not perf.get("capacity_known"):
+            items.append(
+                {
+                    "id": f"improve-cap-{rid}",
+                    "severity": "minor",
+                    "title": f"Set uplink capacity for {row.get('name')}",
+                    "detail": (
+                        f"{sold} Mbps sold on this NAS but uplink capacity is unknown — "
+                        "NOC cannot detect oversubscription."
+                    ),
+                    "action": "Edit MikroTik → set Uplink capacity (Mbps) to the real WAN speed",
+                    "router_id": rid,
+                    "router_name": row.get("name") or "",
+                    "customers": customers,
+                    "href": row.get("detail_url") or "",
+                    "kind": "missing_capacity",
+                }
+            )
         if under >= 2 or (under >= 1 and customers >= 5):
             items.append(
                 {

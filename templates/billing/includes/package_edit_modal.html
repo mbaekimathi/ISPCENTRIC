@@ -100,6 +100,17 @@
               {% if package_edit_form.upload_speed_mbps.errors %}<div class="field-error">{{ package_edit_form.upload_speed_mbps.errors|striptags }}</div>{% endif %}
             </div>
             <div class="field">
+              <label for="{{ package_edit_form.download_guaranteed_mbps.id_for_label }}">{{ package_edit_form.download_guaranteed_mbps.label }} <span class="pppoe-optional">optional</span></label>
+              {{ package_edit_form.download_guaranteed_mbps }}
+              {% if package_edit_form.download_guaranteed_mbps.errors %}<div class="field-error">{{ package_edit_form.download_guaranteed_mbps.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="{{ package_edit_form.upload_guaranteed_mbps.id_for_label }}">{{ package_edit_form.upload_guaranteed_mbps.label }} <span class="pppoe-optional">optional</span></label>
+              {{ package_edit_form.upload_guaranteed_mbps }}
+              {% if package_edit_form.upload_guaranteed_mbps.errors %}<div class="field-error">{{ package_edit_form.upload_guaranteed_mbps.errors|striptags }}</div>{% endif %}
+              <p class="field-hint">Reserved Mbps when the shared uplink is busy (0 = best-effort). Useful for business packages.</p>
+            </div>
+            <div class="field">
               <label for="{{ package_edit_form.max_devices.id_for_label }}">{{ package_edit_form.max_devices.label }} <span class="pppoe-optional">optional</span></label>
               {{ package_edit_form.max_devices }}
               {% if package_edit_form.max_devices.errors %}<div class="field-error">{{ package_edit_form.max_devices.errors|striptags }}</div>{% endif %}

@@ -6234,6 +6234,7 @@ class PackageSpeedLimitTests(SimpleTestCase):
             _pppoe_rate_limit_for_customer,
             _pppoe_speed_profile_name,
             _ppp_secret_profile_for_customer,
+            _rate_limit_string,
         )
 
         customer = self._customer(plan=self._plan(upload=8, download=25))
@@ -6246,6 +6247,50 @@ class PackageSpeedLimitTests(SimpleTestCase):
                 _ppp_secret_profile_for_customer(customer, disabled=False),
                 _pppoe_speed_profile_name(8, 25),
             )
+        self.assertEqual(
+            _rate_limit_string(8, 25, upload_min_mbps=4, download_min_mbps=10),
+            "8M/25M 0/0 0/0 0/0 8 4M/10M",
+        )
+        self.assertEqual(
+            _pppoe_speed_profile_name(8, 25, upload_min_mbps=4, download_min_mbps=10),
+            "ispcentric-pppoe-8u-25d-g4u-10d",
+        )
+
+    def test_guaranteed_speeds_become_rate_min_cir(self):
+        from core.mikrotik_connect import (
+            _pppoe_rate_limit_for_customer,
+            _pppoe_speed_profile_name,
+            _ppp_secret_profile_for_customer,
+            _parse_rate_limit_min_mbps,
+            _limit_at_string,
+            _max_limit_string,
+        )
+
+        plan = type(
+            "Plan",
+            (),
+            {
+                "upload_speed_mbps": 8,
+                "download_speed_mbps": 25,
+                "speed_mbps": 25,
+                "upload_guaranteed_mbps": 4,
+                "download_guaranteed_mbps": 10,
+            },
+        )()
+        customer = self._customer(plan=plan)
+        with patch(
+            "core.mikrotik_connect._customer_internet_allowed",
+            return_value=True,
+        ):
+            rate = _pppoe_rate_limit_for_customer(customer)
+            self.assertEqual(rate, "8M/25M 0/0 0/0 0/0 8 4M/10M")
+            self.assertEqual(
+                _ppp_secret_profile_for_customer(customer, disabled=False),
+                _pppoe_speed_profile_name(8, 25, 4, 10),
+            )
+        self.assertEqual(_parse_rate_limit_min_mbps(rate), (4, 10))
+        self.assertEqual(_max_limit_string(rate), "8M/25M")
+        self.assertEqual(_limit_at_string(rate), "4M/10M")
 
     def test_disable_fasttrack_so_simple_queues_can_shape(self):
         from core.mikrotik_connect import _disable_fasttrack_connection_rules
@@ -6375,10 +6420,9 @@ class PackageSpeedLimitTests(SimpleTestCase):
         self.assertTrue(rate_sets)
         self.assertEqual(rate_sets[0]["rate-limit"], "5M/10M")
 
+        # Speed profiles already shape via dynamic queues — no static ispcentric-rl-*.
         queue_adds = [props for path, props in adds if path == "/queue/simple"]
-        self.assertTrue(queue_adds)
-        self.assertEqual(queue_adds[0]["max-limit"], "5M/10M")
-        self.assertEqual(queue_adds[0]["target"], "10.20.0.50")
+        self.assertEqual(queue_adds, [])
 
     def test_rate_limit_helpers_normalize_and_match(self):
         from core.mikrotik_connect import (
@@ -6835,6 +6879,26 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
             )
         )
 
+    def test_renew_pending_does_not_kick_when_session_already_up(self):
+        from core.mikrotik_connect import (
+            mark_cpe_renew_clear_pending,
+            _pppoe_customer_needs_session_kick,
+        )
+
+        customer = self._customer(pk=77)
+        mark_cpe_renew_clear_pending(customer)
+        self.assertFalse(
+            _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile="ispcentric-pppoe-5u-10d",
+                profile="ispcentric-pppoe-5u-10d",
+                disabled=False,
+                internet_allowed=True,
+                session_was_blocked=False,
+                session_active_before=True,
+            )
+        )
+
     def test_known_profile_change_still_kicks(self):
         from core.mikrotik_connect import (
             PPPOE_BLOCKED_PROFILE_NAME,
@@ -6899,6 +6963,521 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
                 session_active_before=True,
             )
         )
+
+
+class HotspotIntermittentDropTests(SimpleTestCase):
+    """Paid Hotspot surfing must not be bounced by soft sweeps / leak repair."""
+
+    def test_isp_hotspot_bounce_clears_cookies_keeps_authorized(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import _bounce_isp_hotspot_clients
+
+        removed = []
+        wifi_macs = []
+
+        def fake_print(sock, path, **kwargs):
+            if path == "/ip/hotspot/cookie":
+                return [{".id": "*c1"}]
+            if path == "/ip/hotspot/active":
+                return [
+                    {
+                        ".id": "*a1",
+                        "authorized": "true",
+                        "mac-address": "AA:BB:CC:DD:EE:01",
+                    },
+                    {
+                        ".id": "*a2",
+                        "authorized": "false",
+                        "mac-address": "AA:BB:CC:DD:EE:02",
+                    },
+                ]
+            if path == "/ip/hotspot/host":
+                return [
+                    {
+                        ".id": "*h1",
+                        "authorized": "no",
+                        "mac-address": "AA:BB:CC:DD:EE:03",
+                    }
+                ]
+            return []
+
+        def fake_wifi_bounce(sock, macs, *, reason=""):
+            wifi_macs.extend(sorted(macs))
+            return [f"bounced {len(macs)} unpaid"]
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch(
+                "core.mikrotik_connect._remove",
+                side_effect=lambda sock, path, item_id: (
+                    removed.append((path, item_id)) or {"_reply": "!done"}
+                ),
+            ),
+            patch(
+                "core.mikrotik_connect._bounce_wifi_clients_for_macs",
+                side_effect=fake_wifi_bounce,
+            ),
+            patch(
+                "core.mikrotik_connect._bounce_wifi_clients",
+                side_effect=AssertionError("must not wipe whole AP"),
+            ),
+        ):
+            notes = _bounce_isp_hotspot_clients(MagicMock())
+
+        self.assertIn(("/ip/hotspot/cookie", "*c1"), removed)
+        self.assertIn(("/ip/hotspot/active", "*a2"), removed)
+        self.assertIn(("/ip/hotspot/host", "*h1"), removed)
+        self.assertNotIn(("/ip/hotspot/active", "*a1"), removed)
+        self.assertEqual(
+            wifi_macs,
+            ["AA:BB:CC:DD:EE:02", "AA:BB:CC:DD:EE:03"],
+        )
+        self.assertTrue(any("cookie" in n for n in notes))
+
+    def test_hotspot_soft_apply_does_not_kick_paid_session(self):
+        from core.mikrotik_connect import _apply_hotspot_customer_on_socket
+
+        expired = []
+        customer = type(
+            "Customer",
+            (),
+            {
+                "pk": 9,
+                "account_number": "H1",
+                "hotspot_mac": "AA:BB:CC:DD:EE:09",
+                "organization": type(
+                    "Org",
+                    (),
+                    {
+                        "hotspot_idle_timeout_minutes": 15,
+                        "hotspot_default_upload_mbps": 5,
+                        "hotspot_default_download_mbps": 10,
+                    },
+                )(),
+                "plan": type(
+                    "Plan",
+                    (),
+                    {
+                        "upload_speed_mbps": 5,
+                        "download_speed_mbps": 10,
+                        "speed_mbps": 10,
+                        "max_devices": 1,
+                    },
+                )(),
+            },
+        )()
+
+        with (
+            patch(
+                "core.mikrotik_connect._remove_lan_wide_hotspot_bypasses",
+                return_value=None,
+            ),
+            patch(
+                "billing.devices.prune_over_cap_hotspot_devices",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._hotspot_customer_access_fields",
+                return_value=("AA:BB:CC:DD:EE:09", False, "3600s", "tag"),
+            ),
+            patch(
+                "billing.devices.hotspot_macs_for_customer",
+                return_value=["AA:BB:CC:DD:EE:09"],
+            ),
+            patch(
+                "core.mikrotik_connect._allowed_hotspot_macs_for_customer",
+                return_value=["AA:BB:CC:DD:EE:09"],
+            ),
+            patch(
+                "billing.devices.customer_max_devices",
+                return_value=1,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_rate_profile",
+                return_value="ispcentric-hs-5u-10d",
+            ),
+            patch("core.mikrotik_connect._ensure_hotspot_user", return_value="updated"),
+            patch(
+                "core.mikrotik_connect._expire_hotspot_mac_sessions",
+                side_effect=lambda *a, **k: expired.append(k),
+            ),
+            patch("core.mikrotik_connect._remove_hotspot_simple_queue"),
+            patch("core.mikrotik_connect._ensure_hotspot_simple_queue"),
+            patch("core.mikrotik_connect._purge_hotspot_ok_list_for_mac", return_value=0),
+        ):
+            result = _apply_hotspot_customer_on_socket(
+                object(),
+                customer,
+                reauthenticate=False,
+            )
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(expired, [])
+
+    def test_hotspot_leak_repair_skips_bounce_when_only_guard_notes(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import repair_unpaid_hotspot_leaking_on_router
+        from core.models import MikroTikRouter
+
+        bounce_calls = []
+        router = type(
+            "Router",
+            (),
+            {
+                "pk": 3,
+                "host": "10.9.9.9",
+                "username": "admin",
+                "password": "x",
+                "account_status": MikroTikRouter.AccountStatus.ACTIVE,
+                "organization": type(
+                    "Org",
+                    (),
+                    {
+                        "pk": 1,
+                        "hotspot_enabled": True,
+                        "hotspot_block_tethering": True,
+                    },
+                )(),
+            },
+        )()
+
+        class _FakeCM:
+            def __enter__(self):
+                return MagicMock()
+
+            def __exit__(self, *args):
+                return False
+
+        with (
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.9.9.9"],
+            ),
+            patch("core.mikrotik_connect._api_session", return_value=_FakeCM()),
+            patch(
+                "core.mikrotik_connect._block_orphan_hotspot_users_on_socket",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._billing_portal_base_url",
+                return_value="http://billing.example",
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_pool_wan_guard",
+                side_effect=AssertionError("must not rewrite firewall without leak"),
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_tether_block",
+                side_effect=AssertionError("must not rewrite tether without leak"),
+            ),
+            patch(
+                "core.mikrotik_connect._bounce_isp_hotspot_clients",
+                side_effect=lambda sock: bounce_calls.append(1) or ["bounced"],
+            ),
+        ):
+            result = repair_unpaid_hotspot_leaking_on_router(router)
+
+        self.assertEqual(bounce_calls, [])
+        self.assertEqual(result.get("repaired"), 0)
+
+    def test_hotspot_speed_profile_disables_session_timeout_ceiling(self):
+        from core.mikrotik_connect import _ensure_hotspot_rate_profile
+
+        attempts_seen = []
+
+        def fake_add_or_set(sock, path, item_id, attempts):
+            attempts_seen.append(attempts)
+            return {"_reply": "!done"}, "*1"
+
+        org = type(
+            "Org",
+            (),
+            {
+                "hotspot_idle_timeout_minutes": 15,
+                "hotspot_voucher_validity_hours": 24,
+            },
+        )()
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add_or_set_attempts",
+                side_effect=fake_add_or_set,
+            ),
+            patch("core.mikrotik_connect._verify_profile_rate_limit"),
+            patch("core.mikrotik_connect._ensure_hotspot_profile_shared_users"),
+        ):
+            name = _ensure_hotspot_rate_profile(
+                object(),
+                organization=org,
+                upload_mbps=5,
+                download_mbps=10,
+            )
+
+        self.assertEqual(name, "ispcentric-hs-5u-10d")
+        self.assertTrue(attempts_seen)
+        self.assertEqual(attempts_seen[0][0].get("session-timeout"), "0s")
+        self.assertNotEqual(attempts_seen[0][0].get("session-timeout"), "24h")
+
+    def test_speed_profile_skips_static_pppoe_queue_to_avoid_double_shape(self):
+        from core.mikrotik_connect import _ensure_ppp_secret
+
+        ensured = []
+        removed = []
+
+        with (
+            patch(
+                "core.mikrotik_connect._print",
+                return_value=[
+                    {
+                        ".id": "*1",
+                        "name": "alice",
+                        "profile": "ispcentric-pppoe-5u-10d",
+                        "disabled": "false",
+                        "password": "secret",
+                        "service": "any",
+                        "comment": "ispcentric-pppoe",
+                        "rate-limit": "5M/10M",
+                    }
+                ],
+            ),
+            patch("core.mikrotik_connect._set", return_value={"_reply": "!done"}),
+            patch("core.mikrotik_connect._add", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_rate_profile",
+                return_value="ispcentric-pppoe-5u-10d",
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_simple_queue",
+                side_effect=lambda *a, **k: ensured.append(k),
+            ),
+            patch(
+                "core.mikrotik_connect._remove_pppoe_simple_queue",
+                side_effect=lambda sock, username: removed.append(username),
+            ),
+            patch("core.mikrotik_connect._disconnect_pppoe_sessions", return_value=0),
+            patch(
+                "core.mikrotik_connect._read_profile_rate_limit",
+                return_value="5M/10M",
+            ),
+        ):
+            _ensure_ppp_secret(
+                object(),
+                username="alice",
+                password="secret",
+                profile="ispcentric-pppoe-5u-10d",
+                comment="ispcentric-pppoe",
+                disabled=False,
+                rate_limit="5M/10M",
+                kick=False,
+            )
+
+        self.assertEqual(ensured, [])
+        self.assertEqual(removed, ["alice"])
+
+    def test_hotspot_soft_apply_removes_static_queue_on_speed_profile(self):
+        from core.mikrotik_connect import _apply_hotspot_customer_on_socket
+
+        removed = []
+        ensured = []
+        customer = type(
+            "Customer",
+            (),
+            {
+                "pk": 9,
+                "account_number": "H1",
+                "hotspot_mac": "AA:BB:CC:DD:EE:09",
+                "organization": type("Org", (), {})(),
+                "plan": type(
+                    "Plan",
+                    (),
+                    {
+                        "upload_speed_mbps": 5,
+                        "download_speed_mbps": 10,
+                        "speed_mbps": 10,
+                        "max_devices": 1,
+                    },
+                )(),
+            },
+        )()
+
+        with (
+            patch(
+                "core.mikrotik_connect._remove_lan_wide_hotspot_bypasses",
+                return_value=None,
+            ),
+            patch(
+                "billing.devices.prune_over_cap_hotspot_devices",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._hotspot_customer_access_fields",
+                return_value=("AA:BB:CC:DD:EE:09", False, "3600s", "tag"),
+            ),
+            patch(
+                "core.mikrotik_connect._allowed_hotspot_macs_for_customer",
+                return_value=["AA:BB:CC:DD:EE:09"],
+            ),
+            patch(
+                "billing.devices.hotspot_macs_for_customer",
+                return_value=["AA:BB:CC:DD:EE:09"],
+            ),
+            patch(
+                "billing.devices.customer_max_devices",
+                return_value=1,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_rate_profile",
+                return_value="ispcentric-hs-5u-10d",
+            ),
+            patch("core.mikrotik_connect._ensure_hotspot_user", return_value="updated"),
+            patch("core.mikrotik_connect._expire_hotspot_mac_sessions"),
+            patch(
+                "core.mikrotik_connect._remove_hotspot_simple_queue",
+                side_effect=lambda sock, mac: removed.append(mac),
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_simple_queue",
+                side_effect=lambda *a, **k: ensured.append(k),
+            ),
+        ):
+            result = _apply_hotspot_customer_on_socket(
+                object(),
+                customer,
+                reauthenticate=False,
+            )
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(removed, ["AA:BB:CC:DD:EE:09"])
+        self.assertEqual(ensured, [])
+
+    def test_allowed_hotspot_macs_prefer_known_order_under_cap(self):
+        from core.mikrotik_connect import _allowed_hotspot_macs_for_customer
+
+        customer = type(
+            "Customer",
+            (),
+            {
+                "hotspot_mac": "AA:BB:CC:DD:EE:01",
+                "plan": type("Plan", (), {"max_devices": 1})(),
+            },
+        )()
+        with (
+            patch(
+                "billing.services.customer_can_surf_via_hotspot",
+                return_value=True,
+            ),
+            patch(
+                "billing.devices.hotspot_macs_for_customer",
+                return_value=["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"],
+            ),
+            patch(
+                "billing.devices.authorized_hotspot_macs_for_customer",
+                return_value=["AA:BB:CC:DD:EE:02", "AA:BB:CC:DD:EE:01"],
+            ),
+            patch("billing.devices.customer_max_devices", return_value=1),
+        ):
+            allowed = _allowed_hotspot_macs_for_customer(customer)
+
+        # Known-first order keeps primary under cap (not voucher-list order).
+        self.assertEqual(allowed, ["AA:BB:CC:DD:EE:01"])
+
+    def test_pppoe_firewall_filters_are_idempotent_when_already_current(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import (
+            PPP_SECRET_TAG,
+            PPPOE_POOL_NETWORK,
+            _ensure_pppoe_firewall_filters,
+        )
+
+        rule = {
+            "chain": "forward",
+            "action": "accept",
+            "src-address": PPPOE_POOL_NETWORK,
+            "out-interface-list": "WAN",
+            "comment": f"{PPP_SECRET_TAG} PPPoE clients to internet",
+        }
+        existing = [{".id": "*1", **rule}]
+        removed = []
+        added = []
+
+        with (
+            patch(
+                "core.mikrotik_connect._print",
+                return_value=existing,
+            ),
+            patch(
+                "core.mikrotik_connect._remove",
+                side_effect=lambda *a, **k: removed.append(a) or {"_reply": "!done"},
+            ),
+            patch(
+                "core.mikrotik_connect._add_filter_rule",
+                side_effect=lambda *a, **k: added.append(a) or {"_reply": "!done"},
+            ),
+        ):
+            notes = _ensure_pppoe_firewall_filters(
+                MagicMock(),
+                rules=[rule],
+                place_before_drop="*drop",
+                place_before_input_drop="*idrop",
+            )
+
+        self.assertEqual(notes, [])
+        self.assertEqual(removed, [])
+        self.assertEqual(added, [])
+
+    def test_pppoe_firewall_filters_add_missing_without_wiping_others(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import (
+            PPP_SECRET_TAG,
+            PPPOE_POOL_NETWORK,
+            _ensure_pppoe_firewall_filters,
+        )
+
+        keep = {
+            "chain": "forward",
+            "action": "accept",
+            "src-address": PPPOE_POOL_NETWORK,
+            "out-interface-list": "WAN",
+            "comment": f"{PPP_SECRET_TAG} PPPoE clients to internet",
+        }
+        missing = {
+            "chain": "forward",
+            "action": "accept",
+            "connection-state": "established,related,untracked",
+            "comment": f"{PPP_SECRET_TAG} forward OK",
+        }
+        added = []
+
+        with (
+            patch(
+                "core.mikrotik_connect._print",
+                return_value=[{".id": "*1", **keep}],
+            ),
+            patch(
+                "core.mikrotik_connect._remove",
+                side_effect=AssertionError("must not wipe healthy rule"),
+            ),
+            patch(
+                "core.mikrotik_connect._add_filter_rule",
+                side_effect=lambda sock, rule, place_before="": (
+                    added.append(rule) or {"_reply": "!done"}
+                ),
+            ),
+        ):
+            notes = _ensure_pppoe_firewall_filters(
+                MagicMock(),
+                rules=[keep, missing],
+                place_before_drop="*drop",
+                place_before_input_drop="*idrop",
+            )
+
+        self.assertTrue(notes)
+        self.assertEqual(len(added), 1)
+        self.assertEqual(added[0]["comment"], missing["comment"])
 
 
 class ExpiredCaptivePayTests(SimpleTestCase):
@@ -9066,46 +9645,6 @@ class AccessFlowCorrectionLoopTests(TestCase):
                 for path, props in adds
             )
         )
-
-    def test_isp_hotspot_bounce_clears_cookies_keeps_authorized(self):
-        from unittest.mock import MagicMock
-
-        from core.mikrotik_connect import _bounce_isp_hotspot_clients
-
-        removed = []
-
-        def fake_print(sock, path, **kwargs):
-            if path == "/ip/hotspot/cookie":
-                return [{".id": "*c1"}]
-            if path == "/ip/hotspot/active":
-                return [
-                    {".id": "*a1", "authorized": "true"},
-                    {".id": "*a2", "authorized": "false"},
-                ]
-            if path == "/ip/hotspot/host":
-                return [{".id": "*h1", "authorized": "no"}]
-            return []
-
-        with (
-            patch("core.mikrotik_connect._print", side_effect=fake_print),
-            patch(
-                "core.mikrotik_connect._remove",
-                side_effect=lambda sock, path, item_id: (
-                    removed.append((path, item_id)) or {"_reply": "!done"}
-                ),
-            ),
-            patch(
-                "core.mikrotik_connect._bounce_wifi_clients",
-                return_value=["bounced 1"],
-            ),
-        ):
-            notes = _bounce_isp_hotspot_clients(MagicMock())
-
-        self.assertIn(("/ip/hotspot/cookie", "*c1"), removed)
-        self.assertIn(("/ip/hotspot/active", "*a2"), removed)
-        self.assertIn(("/ip/hotspot/host", "*h1"), removed)
-        self.assertNotIn(("/ip/hotspot/active", "*a1"), removed)
-        self.assertTrue(any("cookie" in n for n in notes))
 
     def test_hotspot_pool_wan_guard_installs_reject_and_drop(self):
         from unittest.mock import MagicMock

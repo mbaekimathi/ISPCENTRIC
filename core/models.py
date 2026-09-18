@@ -188,6 +188,14 @@ class MikroTikRouter(models.Model):
             "(e.g. {\"ether1\": 100, \"ether4\": 20}). Empty means equal share."
         ),
     )
+    uplink_capacity_mbps = models.PositiveIntegerField(
+        "Uplink capacity (Mbps)",
+        default=0,
+        help_text=(
+            "Total real WAN capacity for this NAS (sold-vs-capacity NOC checks). "
+            "0 = use the sum of uplink_weights when set, otherwise unknown."
+        ),
+    )
     uplink_unbridged = models.JSONField(
         default=list,
         blank=True,
@@ -232,6 +240,29 @@ class MikroTikRouter(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    def resolved_uplink_capacity_mbps(self) -> int | None:
+        """Authoritative WAN capacity for sold-vs-capacity checks.
+
+        Prefer ``uplink_capacity_mbps``. Otherwise sum ``uplink_weights``
+        (multi-ISP Mbps entries). Returns None when capacity is unknown.
+        """
+        explicit = int(getattr(self, "uplink_capacity_mbps", 0) or 0)
+        if explicit > 0:
+            return explicit
+        weights = getattr(self, "uplink_weights", None)
+        if isinstance(weights, dict) and weights:
+            total = 0
+            for value in weights.values():
+                try:
+                    mbps = int(value or 0)
+                except (TypeError, ValueError):
+                    continue
+                if mbps > 0:
+                    total += mbps
+            if total > 0:
+                return total
+        return None
 
     @property
     def api_host(self) -> str:

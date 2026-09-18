@@ -212,6 +212,8 @@
       setFieldValue("id_edit_package_duration_unit", btn.getAttribute("data-package-duration-unit") || "months");
       setFieldValue("id_edit_package_download_speed", btn.getAttribute("data-package-download") || "");
       setFieldValue("id_edit_package_upload_speed", btn.getAttribute("data-package-upload") || "");
+      setFieldValue("id_edit_package_download_guaranteed", btn.getAttribute("data-package-download-guaranteed") || "0");
+      setFieldValue("id_edit_package_upload_guaranteed", btn.getAttribute("data-package-upload-guaranteed") || "0");
       var maxDevices = btn.getAttribute("data-package-max-devices") || "";
       setFieldValue("id_edit_package_max_devices", maxDevices === "0" ? "" : maxDevices);
 

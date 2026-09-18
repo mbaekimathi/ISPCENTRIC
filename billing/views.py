@@ -234,6 +234,8 @@ def _handle_edit_package(request, org, *, success_url_name: str):
     plan = get_object_or_404(BillingPlan, pk=int(package_id), organization=org)
     previous_download = int(plan.download_speed_mbps or 0)
     previous_upload = int(plan.upload_speed_mbps or 0)
+    previous_g_download = int(plan.download_guaranteed_mbps or 0)
+    previous_g_upload = int(plan.upload_guaranteed_mbps or 0)
     previous_max_devices = int(plan.max_devices or 0)
     form = BillingPackageRegisterForm(
         request.POST,
@@ -247,6 +249,8 @@ def _handle_edit_package(request, org, *, success_url_name: str):
         speeds_changed = (
             int(plan.download_speed_mbps or 0) != previous_download
             or int(plan.upload_speed_mbps or 0) != previous_upload
+            or int(plan.download_guaranteed_mbps or 0) != previous_g_download
+            or int(plan.upload_guaranteed_mbps or 0) != previous_g_upload
         )
         devices_changed = int(plan.max_devices or 0) != previous_max_devices
         if speeds_changed or devices_changed:
