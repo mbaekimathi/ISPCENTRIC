@@ -135,6 +135,11 @@ urlpatterns = [
         name="clients_general_usage",
     ),
     path(
+        "app/clients/attempted-connections/",
+        views.clients_attempted_connections,
+        name="clients_attempted_connections",
+    ),
+    path(
         "app/clients/usage-trends/",
         views.clients_general_usage_trends,
         name="clients_general_usage_trends",

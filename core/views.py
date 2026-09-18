@@ -344,6 +344,11 @@ CLIENT_SIDEBARS = {
                 "url_name": "core:my_clients",
                 "tab": "hotspot",
             },
+            {
+                "key": "attempted_connections",
+                "label": "Attempted connections",
+                "url_name": "core:clients_attempted_connections",
+            },
         ],
     },
     "client_detail": {
@@ -11839,6 +11844,8 @@ def my_clients(request):
         status=Customer.Status.INSTALLED,
     )
     if org:
+        from billing.attempts import unpaid_hotspot_shells_q
+
         tab_counts = base_qs.aggregate(
             pending_activation=Count(
                 "id",
@@ -11856,7 +11863,9 @@ def my_clients(request):
                 "id", filter=Q(service_type=Customer.ServiceType.STATIC)
             ),
             hotspot=Count(
-                "id", filter=Q(service_type=Customer.ServiceType.HOTSPOT)
+                "id",
+                filter=Q(service_type=Customer.ServiceType.HOTSPOT)
+                & ~unpaid_hotspot_shells_q(),
             ),
         )
         pending_activation_count = tab_counts["pending_activation"] or 0
@@ -11929,6 +11938,10 @@ def my_clients(request):
         )
         if tab == "pppoe":
             tab_qs = tab_qs.exclude(status=Customer.Status.INSTALLED)
+        if tab == "hotspot":
+            from billing.attempts import unpaid_hotspot_shells_q
+
+            tab_qs = tab_qs.exclude(unpaid_hotspot_shells_q())
     if clients_router_param == "none":
         tab_qs = tab_qs.filter(router__isnull=True)
     elif clients_router_id:
@@ -14410,6 +14423,57 @@ def _clients_usage_router_filter(request, org):
         "clients_router_unassigned": unassigned_only,
         "router_filter_label": router_filter_label,
     }
+
+
+@client_workspace_required
+def clients_attempted_connections(request):
+    """Hotspot funnel analytics: visits, payment attempts, paid-not-surfing."""
+    org = resolve_organization(request.user, request)
+    from billing.attempts import EVENT_LABELS, attempt_summary_for_org
+
+    days_raw = (request.GET.get("days") or "7").strip()
+    try:
+        days = int(days_raw)
+    except (TypeError, ValueError):
+        days = 7
+    if days not in {1, 7, 14, 30}:
+        days = 7
+
+    summary = (
+        attempt_summary_for_org(org, days=days)
+        if org
+        else {
+            "days": days,
+            "portal_hits": 0,
+            "unique_devices": 0,
+            "payment_attempts": 0,
+            "payment_success": 0,
+            "payment_failed": 0,
+            "authorized": 0,
+            "paid_not_surfing": 0,
+            "recent": [],
+            "event_labels": EVENT_LABELS,
+        }
+    )
+
+    return render(
+        request,
+        "core/clients_attempted_connections.html",
+        client_page_context(
+            request,
+            active_nav="clients",
+            sidebar_active="attempted_connections",
+            page_title="Attempted connections",
+            page_kicker="My clients",
+            page_subtitle=(
+                "Hotspot portal visits, payment attempts, and devices that paid "
+                "but could not start surfing."
+            ),
+            attempt_summary=summary,
+            attempt_days=days,
+            attempt_day_choices=(1, 7, 14, 30),
+        ),
+    )
 
 
 @client_workspace_required
@@ -17783,6 +17847,24 @@ def _hotspot_payment_start_impl(request, join_code: str):
     if join_code:
         clear_auth_failures("stk_start_code", request, identifier=join_code)
 
+    try:
+        from billing.attempts import record_hotspot_attempt
+        from billing.models import StkPushRequest
+
+        stk_row = StkPushRequest.objects.filter(pk=result.get("stk_id")).first()
+        record_hotspot_attempt(
+            organization=org,
+            event="payment_started",
+            mac=mac,
+            phone=phone,
+            customer=customer,
+            plan=plan,
+            stk=stk_row,
+            router=router,
+        )
+    except Exception:
+        logger.exception("Could not record Hotspot payment_started")
+
     access_token = signing.dumps(
         {"stk": result["stk_id"], "org": org.pk, "mac": mac},
         salt="hotspot-payment-status",
@@ -17837,8 +17919,11 @@ def hotspot_payment_status(request, join_code: str, stk_id: int):
     session_mac = normalize_device_mac(payload.get("mac") or "")
     paying_mac = stk_hotspot_mac(stk)
     if session_mac and not (
-        customer_owns_hotspot_mac(stk.customer, session_mac)
-        or (paying_mac and session_mac == paying_mac)
+        (paying_mac and session_mac == paying_mac)
+        or (
+            stk.customer_id
+            and customer_owns_hotspot_mac(stk.customer, session_mac)
+        )
     ):
         return JsonResponse({"ok": False, "error": "Invalid payment session."}, status=403)
     wait_for_nas = (request.GET.get("nas") or "1").strip().lower() not in {
@@ -18091,8 +18176,11 @@ def hotspot_payment_activate(request, join_code: str, stk_id: int):
     session_mac = normalize_device_mac(payload.get("mac") or "")
     paying_mac = stk_hotspot_mac(stk)
     if session_mac and not (
-        customer_owns_hotspot_mac(stk.customer, session_mac)
-        or (paying_mac and session_mac == paying_mac)
+        (paying_mac and session_mac == paying_mac)
+        or (
+            stk.customer_id
+            and customer_owns_hotspot_mac(stk.customer, session_mac)
+        )
     ):
         return JsonResponse({"ok": False, "error": "Invalid payment session."}, status=403)
 
@@ -18481,6 +18569,18 @@ def _hotspot_captive_page(request, join_code: str, *, expected_page: str):
             hotspot_customer is not None
             and customer_can_surf_via_hotspot(hotspot_customer)
         ):
+            try:
+                from billing.attempts import record_hotspot_attempt
+
+                record_hotspot_attempt(
+                    organization=org,
+                    event="portal_hit",
+                    mac=hotspot_mac,
+                    customer=hotspot_customer,
+                    debounce_seconds=900,
+                )
+            except Exception:
+                logger.exception("Could not record Hotspot portal_hit")
             mac_for_job = hotspot_mac
             customer_pk = getattr(hotspot_customer, "pk", None)
 
@@ -20217,9 +20317,16 @@ def settings_payments(request):
             ),
             form=form,
             stk_status_url=reverse("core:settings_payments_status"),
-            production_callback_url=PaymentGateway.default_callback_url(
+            # Same callback STK Push sends to Daraja (PUBLIC_BASE_URL + /api/mpesa/stk-callback/).
+            production_callback_url=PaymentGateway.canonical_callback_url(
                 PaymentGateway.Environment.PRODUCTION,
                 request,
+                saved_url=(PaymentGateway.get_solo().callback_url or ""),
+            ),
+            stk_callback_url=(
+                org.effective_daraja_credentials().get("callback_url")
+                if org and org.daraja_enabled
+                else PaymentGateway.get_solo().resolved_callback_url(request)
             ),
             **extra,
         ),

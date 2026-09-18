@@ -674,11 +674,18 @@ class Organization(models.Model):
                 "message": "STK Push is turned off for this ISP.",
             }
 
+        platform = PaymentGateway.get_solo()
+
         if self.uses_own_daraja_gateway():
             key = (self.daraja_consumer_key or "").strip()
             secret = (self.daraja_consumer_secret or "").strip()
             passkey = (self.daraja_passkey or "").strip()
             ready = bool(key and secret and passkey and payment_type and shortcode)
+            # Same public callback as Company Payment Gateway / .env PUBLIC_BASE_URL.
+            callback = PaymentGateway.canonical_callback_url(
+                PaymentGateway.Environment.PRODUCTION,
+                saved_url=platform.callback_url or "",
+            )
             return {
                 "enabled": True,
                 "ready": ready,
@@ -690,9 +697,7 @@ class Organization(models.Model):
                 "consumer_key": key,
                 "consumer_secret": secret,
                 "passkey": passkey,
-                "callback_url": PaymentGateway.default_callback_url(
-                    PaymentGateway.Environment.PRODUCTION
-                ),
+                "callback_url": callback,
                 "message": (
                     f"Using this ISP's gateway with shortcode {shortcode}."
                     if ready
@@ -700,7 +705,6 @@ class Organization(models.Model):
                 ),
             }
 
-        platform = PaymentGateway.get_solo()
         creds = platform.as_stk_credentials()
         creds["enabled"] = True
 
@@ -716,6 +720,10 @@ class Organization(models.Model):
                 and (creds.get("consumer_secret") or "").strip()
                 and (creds.get("passkey") or "").strip()
             )
+            callback = PaymentGateway.canonical_callback_url(
+                api_env,
+                saved_url=platform.callback_url or "",
+            )
             return {
                 "enabled": True,
                 "ready": ready,
@@ -727,7 +735,7 @@ class Organization(models.Model):
                 "consumer_key": (creds.get("consumer_key") or "").strip(),
                 "consumer_secret": (creds.get("consumer_secret") or "").strip(),
                 "passkey": (creds.get("passkey") or "").strip(),
-                "callback_url": creds.get("callback_url") or "",
+                "callback_url": callback,
                 "message": (
                     f"Using company consumer key, secret, and passkey with shortcode {shortcode}."
                     if ready
@@ -1068,7 +1076,7 @@ class PaymentGateway(models.Model):
             and (self.shortcode or "").strip()
         )
 
-    def as_stk_credentials(self) -> dict:
+    def as_stk_credentials(self, request=None) -> dict:
         """Company Payment Gateway fields only — never mixed with ISP Daraja values."""
         shortcode = (self.shortcode or "").strip()
         environment = (self.environment or self.Environment.SANDBOX).strip().lower()
@@ -1086,7 +1094,7 @@ class PaymentGateway(models.Model):
             "consumer_key": (self.consumer_key or "").strip(),
             "consumer_secret": (self.consumer_secret or "").strip(),
             "passkey": (self.passkey or "").strip(),
-            "callback_url": self.resolved_callback_url() if ready else "",
+            "callback_url": self.resolved_callback_url(request) if ready else "",
             "message": (
                 f"Using Company Payment Gateway ({environment}) with shortcode {shortcode}."
                 if ready
@@ -1278,15 +1286,89 @@ class PaymentGateway(models.Model):
             return cls.normalize_callback_url(f"{base}{cls.STK_CALLBACK_PATH}")
         return ""
 
-    def resolved_callback_url(self) -> str:
-        url = (self.callback_url or "").strip()
-        if url:
-            return self.normalize_callback_url(url)
+    @classmethod
+    def _callback_host(cls, url: str) -> str:
+        try:
+            from urllib.parse import urlparse
+
+            return (urlparse((url or "").strip()).hostname or "").strip().lower()
+        except Exception:
+            return ""
+
+    @classmethod
+    def _callback_unreachable_for_safaricom(cls, url: str, environment: str) -> bool:
+        """True when Safaricom cannot POST to this callback for the given env."""
+        raw = (url or "").strip()
+        if not raw:
+            return True
+        env = (environment or "").strip().lower()
+        host = cls._callback_host(raw)
+        if host in {"localhost", "127.0.0.1", "::1"}:
+            return env == cls.Environment.PRODUCTION
+        try:
+            from core.hotspot_portal import _host_is_private_ip
+
+            private = bool(host and _host_is_private_ip(host))
+        except Exception:
+            private = False
+        if env == cls.Environment.PRODUCTION:
+            if not raw.lower().startswith("https://"):
+                return True
+            if private:
+                return True
+        return False
+
+    @classmethod
+    def canonical_callback_url(
+        cls,
+        environment: str = "",
+        request=None,
+        *,
+        saved_url: str = "",
+    ) -> str:
+        """
+        Single STK callback used by Hotspot/PPPoE STK, ISP Settings → Payments,
+        and IT Support → Payment Gateway.
+
+        Prefer PUBLIC_BASE_URL / WireGuard-derived defaults from .env so all three
+        surfaces stay aligned. A saved gateway URL is kept only when it is still
+        reachable for the selected Daraja environment.
+        """
+        env = (environment or cls.Environment.SANDBOX).strip().lower()
+        default = cls.normalize_callback_url(
+            cls.default_callback_url(env, request) or ""
+        )
+        saved = cls.normalize_callback_url((saved_url or "").strip())
+
+        if env == cls.Environment.PRODUCTION:
+            # Production must match the public host from .env whenever available.
+            if default:
+                return default
+            return saved
+
+        # Sandbox: allow an explicit local/hosted saved override for testing.
+        if saved and not cls._callback_unreachable_for_safaricom(saved, env):
+            return saved
+        return default or saved
+
+    def resolved_callback_url(self, request=None) -> str:
         shortcode = (self.shortcode or "").strip()
-        env = self.environment
+        env = (self.environment or self.Environment.SANDBOX).strip().lower()
         if shortcode and shortcode != "174379":
             env = self.Environment.PRODUCTION
-        return self.default_callback_url(env)
+        return self.canonical_callback_url(
+            env,
+            request,
+            saved_url=self.callback_url or "",
+        )
+
+    def sync_callback_url_from_env(self, request=None) -> str:
+        """Persist the canonical callback so the settings form matches STK."""
+        url = self.resolved_callback_url(request)
+        if url and (self.callback_url or "").strip() != url:
+            type(self).objects.filter(pk=self.pk).update(callback_url=url)
+            self.callback_url = url
+        return url
 
     @classmethod
     def normalize_callback_url(cls, url: str) -> str:

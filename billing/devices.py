@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 MAX_DEVICES_HARD_CAP = 50
 UNLIMITED_DEVICES = 0
@@ -266,8 +270,14 @@ def find_hotspot_customer_by_phone(org, phone: str, *, active_only: bool = False
     return qs.order_by("id").first()
 
 
-def ensure_customer_device(customer, mac: str):
-    """Create the device row if missing. Does not enforce max_devices."""
+def ensure_customer_device(customer, mac: str, *, create: bool = True):
+    """
+    Upsert the device row.
+
+    When ``create=False``, only refresh ``last_seen_at`` on an existing row —
+    used from ``Customer.save`` so unpaid Hotspot STK shells do not register a
+    durable device until payment + MikroTik authorize succeed.
+    """
     from billing.models import CustomerDevice
 
     mac = normalize_device_mac(mac)
@@ -277,6 +287,14 @@ def ensure_customer_device(customer, mac: str):
     if not org_id:
         return None
     now = timezone.now()
+    if not create:
+        device = CustomerDevice.objects.filter(organization_id=org_id, mac=mac).first()
+        if device is None:
+            return None
+        if device.customer_id == customer.pk:
+            CustomerDevice.objects.filter(pk=device.pk).update(last_seen_at=now)
+            device.last_seen_at = now
+        return device
     try:
         # Nested atomic so IntegrityError only rolls back this savepoint when
         # called under an outer transaction (e.g. attach_hotspot_device).
@@ -475,9 +493,25 @@ def reassign_unpaid_hotspot_mac(customer, mac: str) -> dict:
         device.last_seen_at = timezone.now()
         device.save(update_fields=["customer", "last_seen_at"])
     if (getattr(other, "hotspot_mac", "") or "").strip().upper() == mac:
-        other.hotspot_mac = ""
+        other.hotspot_mac = None
         other.save(update_fields=["hotspot_mac"])
+    # Drop empty never-paid shells left behind after moving the MAC.
+    if is_unpaid_hotspot_pay_shell(other):
+        try:
+            # No devices left on this stray row.
+            from billing.models import CustomerDevice
+
+            if not CustomerDevice.objects.filter(customer_id=other.pk).exists():
+                discard_unpaid_hotspot_pay_shell(other)
+        except Exception:
+            logger.exception(
+                "Could not discard reassigned Hotspot shell customer=%s",
+                getattr(other, "pk", None),
+            )
     _ensure_primary_mac(customer, mac)
+    # Hold the MAC on the surviving account so the next captive hit resolves
+    # here. My clients still hides never-paid HOT- shells; authorize remains
+    # the gate for surfing.
     return attach_hotspot_device(customer, mac, enforce_cap=True)
 
 
@@ -602,6 +636,68 @@ def maybe_set_customer_phone(customer, phone: str) -> bool:
         customer.refresh_from_db(fields=["phone", "phone_normalized"])
         return False
     return True
+
+
+def is_unpaid_hotspot_pay_shell(customer) -> bool:
+    """
+    True for Hotspot rows created only to start STK, never successfully paid.
+
+    These show up as "No phone" / "Hotspot device XX:YY" in the clients list and
+    hold the MAC so a later pay attempt can hit registration conflicts.
+    """
+    from billing.models import Customer, Payment, StkPushRequest
+    from billing.services import customer_can_surf_via_hotspot
+
+    if customer is None or not getattr(customer, "pk", None):
+        return False
+    if getattr(customer, "service_type", "") != Customer.ServiceType.HOTSPOT:
+        return False
+    if customer_can_surf_via_hotspot(customer):
+        return False
+    if getattr(customer, "package_end", None) is not None:
+        return False
+    if getattr(customer, "package_start", None) is not None:
+        return False
+    if StkPushRequest.objects.filter(
+        customer_id=customer.pk,
+        status=StkPushRequest.Status.SUCCESS,
+        subscription_applied=True,
+    ).exists():
+        return False
+    if Payment.objects.filter(invoice__customer_id=customer.pk).exists():
+        return False
+    return True
+
+
+def discard_unpaid_hotspot_pay_shell(customer, *, except_stk_id=None) -> bool:
+    """
+    Delete a never-paid Hotspot STK shell so the MAC is free for the next attempt.
+
+    Keeps the shell when another pending STK still references it.
+    """
+    from billing.models import StkPushRequest
+
+    if not is_unpaid_hotspot_pay_shell(customer):
+        return False
+    pending = StkPushRequest.objects.filter(
+        customer_id=customer.pk,
+        status=StkPushRequest.Status.PENDING,
+    )
+    if except_stk_id:
+        pending = pending.exclude(pk=except_stk_id)
+    if pending.exists():
+        return False
+    try:
+        customer_id = customer.pk
+        customer.delete()
+        logger.info("Discarded unpaid Hotspot pay shell customer=%s", customer_id)
+        return True
+    except Exception:
+        logger.exception(
+            "Could not discard unpaid Hotspot pay shell customer=%s",
+            getattr(customer, "pk", None),
+        )
+        return False
 
 
 def _locked_hotspot_customer_for_mac(org, mac: str):
@@ -748,7 +844,13 @@ def resolve_or_create_hotspot_customer(
             if plan is not None and existing.plan_id is None:
                 existing.plan = plan
                 existing.save(update_fields=["plan"])
-            attach_hotspot_device(existing, mac, enforce_cap=False)
+            # Register durable devices only for already-paid accounts. Unpaid
+            # STK shells keep hotspot_mac for identity without CustomerDevice.
+            if customer_can_surf_via_hotspot(existing):
+                attach_hotspot_device(existing, mac, enforce_cap=False)
+            elif normalize_device_mac(getattr(existing, "hotspot_mac", "") or "") != mac:
+                existing.hotspot_mac = mac
+                existing.save(update_fields=["hotspot_mac"])
             return {
                 "ok": True,
                 "customer": existing,
@@ -817,14 +919,42 @@ def resolve_or_create_hotspot_customer(
                     "attached": False,
                     "already_paid": True,
                 }
-            attach = attach_hotspot_device(by_phone, mac, enforce_cap=True)
-            if not attach.get("ok"):
+            if already_paid:
+                attach = attach_hotspot_device(by_phone, mac, enforce_cap=True)
+                if not attach.get("ok"):
+                    return {
+                        "ok": False,
+                        "error": attach.get("error") or "Could not add this device.",
+                        "status": 400,
+                        "at_cap": bool(attach.get("at_cap")),
+                    }
+                if router is not None and by_phone.router_id != router_id:
+                    by_phone.router = router
+                    by_phone.save(update_fields=["router"])
+                return {
+                    "ok": True,
+                    "customer": by_phone,
+                    "created": False,
+                    "attached": True,
+                    "already_paid": True,
+                }
+            # Unpaid account found by phone: keep MAC for STK identity only.
+            current = hotspot_macs_for_customer(by_phone)
+            cap = customer_max_devices(by_phone)
+            if cap > 0 and mac not in current and len(current) >= cap:
+                label = "1 device" if cap == 1 else f"{cap} devices"
                 return {
                     "ok": False,
-                    "error": attach.get("error") or "Could not add this device.",
+                    "error": (
+                        f"This package allows {label}. "
+                        "Remove a device or choose a package with a higher device limit."
+                    ),
                     "status": 400,
-                    "at_cap": bool(attach.get("at_cap")),
+                    "at_cap": True,
                 }
+            if not normalize_device_mac(getattr(by_phone, "hotspot_mac", "") or ""):
+                by_phone.hotspot_mac = mac
+                by_phone.save(update_fields=["hotspot_mac"])
             if router is not None and by_phone.router_id != router_id:
                 by_phone.router = router
                 by_phone.save(update_fields=["router"])
@@ -832,8 +962,8 @@ def resolve_or_create_hotspot_customer(
                 "ok": True,
                 "customer": by_phone,
                 "created": False,
-                "attached": True,
-                "already_paid": customer_can_surf_via_hotspot(by_phone),
+                "attached": False,
+                "already_paid": False,
             }
 
         account_number = f"HOT-{org.pk}-{mac.replace(':', '')}"[:40]
@@ -849,55 +979,126 @@ def resolve_or_create_hotspot_customer(
             # that path is handled above. Otherwise leave phone empty so STK
             # can still proceed, then backfill if the clash clears.
             phone_to_store = ""
-        try:
-            # Nested atomic: IntegrityError must not poison the outer
-            # transaction.atomic() or recovery queries raise
-            # TransactionManagementError and Hotspot pay fails.
-            with transaction.atomic():
-                customer = Customer.objects.create(
-                    organization=org,
-                    full_name=f"Hotspot device {mac[-5:]}",
-                    phone=phone_to_store,
-                    account_number=account_number,
-                    service_type=Customer.ServiceType.HOTSPOT,
-                    hotspot_mac=mac,
-                    status=Customer.Status.ACTIVE,
-                    plan=plan,
-                    router=router,
+
+        import secrets
+
+        mac_compact = mac.replace(":", "")
+        last_error = None
+        for attempt in range(6):
+            if attempt == 0:
+                acct = account_number
+                phone_attempt = phone_to_store
+            elif attempt == 1:
+                # Most common clash: blank phone_normalized under a non-partial
+                # unique index, or a reused HOT-{org}-{mac} account number.
+                acct = f"HOT-{org.pk}-{mac_compact}-{secrets.token_hex(2)}"[:40]
+                phone_attempt = phone_to_store
+            else:
+                acct = f"HOT-{org.pk}-{mac_compact}-{secrets.token_hex(3)}"[:40]
+                phone_attempt = ""
+            try:
+                # Nested atomic: IntegrityError must not poison the outer
+                # transaction.atomic() or recovery queries raise
+                # TransactionManagementError and Hotspot pay fails.
+                with transaction.atomic():
+                    customer = Customer.objects.create(
+                        organization=org,
+                        full_name=f"Hotspot device {mac[-5:]}",
+                        phone=phone_attempt,
+                        account_number=acct,
+                        service_type=Customer.ServiceType.HOTSPOT,
+                        hotspot_mac=mac,
+                        status=Customer.Status.ACTIVE,
+                        plan=plan,
+                        router=router,
+                    )
+                # Defer CustomerDevice until payment + MikroTik authorize succeed.
+                return {
+                    "ok": True,
+                    "customer": customer,
+                    "created": True,
+                    "attached": False,
+                    "already_paid": False,
+                }
+            except IntegrityError as exc:
+                last_error = exc
+                logger.warning(
+                    "Hotspot customer create conflict org=%s mac=%s attempt=%s: %s",
+                    getattr(org, "pk", None),
+                    mac,
+                    attempt,
+                    exc,
                 )
-        except IntegrityError:
-            again = _locked_hotspot_customer_for_mac(org, mac)
-            if again is None and phone:
-                again = find_hotspot_customer_by_phone(org, phone)
-            if again is None:
-                return {
-                    "ok": False,
-                    "error": (
-                        "Could not register this device. Rejoin the Hotspot Wi‑Fi "
-                        "and try again."
-                    ),
-                    "status": 409,
-                }
-            attach = attach_hotspot_device(again, mac, enforce_cap=True)
-            if not attach.get("ok"):
-                return {
-                    "ok": False,
-                    "error": attach.get("error") or "Could not add this device.",
-                    "status": 400,
-                    "at_cap": bool(attach.get("at_cap")),
-                }
-            return {
-                "ok": True,
-                "customer": again,
-                "created": False,
-                "attached": True,
-                "already_paid": customer_can_surf_via_hotspot(again),
-            }
-        attach_hotspot_device(customer, mac, enforce_cap=False)
+                again = _locked_hotspot_customer_for_mac(org, mac)
+                found_by = "mac" if again is not None else ""
+                if again is None and phone:
+                    again = find_hotspot_customer_by_phone(org, phone)
+                    if again is not None:
+                        found_by = "phone"
+                if again is None:
+                    again = (
+                        Customer.objects.select_for_update()
+                        .select_related("plan", "organization", "router")
+                        .filter(organization=org, account_number=acct)
+                        .first()
+                    )
+                    if again is not None:
+                        found_by = "account"
+                # Account-number squat must not steal another client's row — retry
+                # with a fresh account number instead.
+                if again is not None and found_by == "account":
+                    owns_mac = mac in set(hotspot_macs_for_customer(again)) or (
+                        normalize_device_mac(getattr(again, "hotspot_mac", "") or "")
+                        == mac
+                    )
+                    if not owns_mac:
+                        again = None
+                if again is not None:
+                    if again.status != Customer.Status.ACTIVE:
+                        return {
+                            "ok": False,
+                            "error": (
+                                "This device account is suspended. Contact your "
+                                "internet provider before making a payment."
+                            ),
+                            "status": 403,
+                        }
+                    attach = attach_hotspot_device(again, mac, enforce_cap=True)
+                    if not attach.get("ok"):
+                        return {
+                            "ok": False,
+                            "error": attach.get("error")
+                            or "Could not add this device.",
+                            "status": 400,
+                            "at_cap": bool(attach.get("at_cap")),
+                        }
+                    if plan is not None and again.plan_id is None:
+                        again.plan = plan
+                        again.save(update_fields=["plan"])
+                    if router is not None and again.router_id != router_id:
+                        again.router = router
+                        again.save(update_fields=["router"])
+                    maybe_set_customer_phone(again, phone)
+                    return {
+                        "ok": True,
+                        "customer": again,
+                        "created": False,
+                        "attached": True,
+                        "already_paid": customer_can_surf_via_hotspot(again),
+                    }
+                continue
+
+        logger.exception(
+            "Hotspot customer create exhausted retries org=%s mac=%s last=%s",
+            getattr(org, "pk", None),
+            mac,
+            last_error,
+        )
         return {
-            "ok": True,
-            "customer": customer,
-            "created": True,
-            "attached": True,
-            "already_paid": False,
+            "ok": False,
+            "error": (
+                "Could not register this device right now. Wait a moment and "
+                "try again. If it keeps failing, rejoin the Hotspot Wi‑Fi."
+            ),
+            "status": 409,
         }

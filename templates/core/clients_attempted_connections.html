@@ -1,0 +1,101 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Attempted connections — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<div class="client-detail-page clients-attempted-page">
+  <section class="clients-usage-workspace">
+    <header class="clients-usage-workspace-head">
+      <div class="clients-usage-workspace-title">
+        <p class="clients-usage-workspace-kicker">My clients</p>
+        <h1>Attempted connections</h1>
+        <p class="clients-usage-workspace-lead">
+          Captive Hotspot funnel for the last {{ attempt_days }} day{{ attempt_days|pluralize }}.
+          Devices are registered in My clients only after payment and MikroTik authorize succeed.
+        </p>
+      </div>
+      <div class="clients-usage-workspace-actions">
+        <a class="btn btn-ghost btn-sm" href="{% url 'core:my_clients' %}?tab=hotspot">Hotspot clients</a>
+      </div>
+    </header>
+
+    <nav class="clients-seg" aria-label="Time range" style="margin-bottom:1rem;">
+      {% for d in attempt_day_choices %}
+        <a
+          class="clients-seg-item{% if attempt_days == d %} is-active{% endif %}"
+          href="?days={{ d }}"
+          {% if attempt_days == d %}aria-current="page"{% endif %}
+        >
+          <span class="clients-seg-label">{% if d == 1 %}Today{% else %}{{ d }} days{% endif %}</span>
+        </a>
+      {% endfor %}
+    </nav>
+
+    <div class="account-stat-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr));gap:0.75rem;margin-bottom:1.25rem;">
+      <div class="panel account-card" style="padding:1rem;">
+        <p class="account-receive-label">Portal visits</p>
+        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.portal_hits }}</p>
+        <p class="field-hint" style="margin:0;">{{ attempt_summary.unique_devices }} unique device{{ attempt_summary.unique_devices|pluralize }}</p>
+      </div>
+      <div class="panel account-card" style="padding:1rem;">
+        <p class="account-receive-label">Payment attempts</p>
+        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.payment_attempts }}</p>
+      </div>
+      <div class="panel account-card" style="padding:1rem;">
+        <p class="account-receive-label">Payments succeeded</p>
+        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.payment_success }}</p>
+      </div>
+      <div class="panel account-card" style="padding:1rem;">
+        <p class="account-receive-label">Payments failed</p>
+        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.payment_failed }}</p>
+      </div>
+      <div class="panel account-card" style="padding:1rem;">
+        <p class="account-receive-label">Connected (surfing)</p>
+        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.authorized }}</p>
+      </div>
+      <div class="panel account-card" style="padding:1rem;">
+        <p class="account-receive-label">Paid, not surfing</p>
+        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.paid_not_surfing }}</p>
+        <p class="field-hint" style="margin:0;">Paid / package applied but MikroTik did not authorize</p>
+      </div>
+    </div>
+
+    <section class="panel account-card">
+      <header class="account-card-head">
+        <div>
+          <h3>Recent activity</h3>
+          <p>Latest portal and payment events for this ISP.</p>
+        </div>
+      </header>
+      {% if attempt_summary.recent %}
+        <div class="table-wrap" style="overflow-x:auto;">
+          <table class="data-table" style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr>
+                <th style="text-align:left;padding:0.5rem;">When</th>
+                <th style="text-align:left;padding:0.5rem;">Event</th>
+                <th style="text-align:left;padding:0.5rem;">MAC</th>
+                <th style="text-align:left;padding:0.5rem;">Phone</th>
+                <th style="text-align:left;padding:0.5rem;">Package</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in attempt_summary.recent %}
+                <tr>
+                  <td style="padding:0.5rem;white-space:nowrap;">{{ row.created_at|date:"d M Y H:i" }}</td>
+                  <td style="padding:0.5rem;">{{ row.get_event_display }}</td>
+                  <td style="padding:0.5rem;font-family:ui-monospace,monospace;">{{ row.mac|default:"—" }}</td>
+                  <td style="padding:0.5rem;">{{ row.phone|default:"—" }}</td>
+                  <td style="padding:0.5rem;">{% if row.plan %}{{ row.plan.name }}{% else %}—{% endif %}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="field-hint" style="padding:1rem;">No Hotspot connection attempts recorded in this period yet.</p>
+      {% endif %}
+    </section>
+  </section>
+</div>
+{% endblock %}

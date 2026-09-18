@@ -1636,12 +1636,14 @@ class PaymentGatewayForm(forms.ModelForm):
             "consumer_secret": "App Consumer Secret from the Safaricom Daraja developer portal.",
             "passkey": "Passkey paired with your Lipa Na M-Pesa Online shortcode.",
             "callback_url": (
-                "Sandbox: use http://localhost… when testing on this PC, or https://your-domain… "
-                "when Safaricom must reach your hosted server. Production must use public HTTPS."
+                "Same URL used for live STK Push. Production is taken from "
+                "PUBLIC_BASE_URL in .env (public HTTPS). Sandbox may use "
+                "http://localhost… for local testing or https://… when hosted."
             ),
         }
 
     def __init__(self, *args, **kwargs):
+        self._request = kwargs.pop("request", None)
         super().__init__(*args, **kwargs)
         for name in (
             "payment_type",
@@ -1652,11 +1654,19 @@ class PaymentGatewayForm(forms.ModelForm):
             "callback_url",
         ):
             self.fields[name].required = False
-        if not self.is_bound and not (self.instance.callback_url or "").strip():
+        if not self.is_bound:
             env = self.instance.environment or PaymentGateway.Environment.SANDBOX
-            self.initial["callback_url"] = PaymentGateway.default_callback_url(env)
+            shortcode = (self.instance.shortcode or "").strip()
+            if shortcode and shortcode != "174379":
+                env = PaymentGateway.Environment.PRODUCTION
             if not (self.instance.environment or "").strip():
                 self.initial["environment"] = PaymentGateway.Environment.SANDBOX
+                env = PaymentGateway.Environment.SANDBOX
+            self.initial["callback_url"] = PaymentGateway.canonical_callback_url(
+                env,
+                self._request,
+                saved_url=self.instance.callback_url or "",
+            )
 
     def clean_shortcode(self):
         return (self.cleaned_data.get("shortcode") or "").strip()
@@ -1692,8 +1702,19 @@ class PaymentGatewayForm(forms.ModelForm):
         shortcode = (cleaned.get("shortcode") or "").strip()
         callback_url = (cleaned.get("callback_url") or "").strip()
 
-        if enabled and not callback_url and environment == PaymentGateway.Environment.SANDBOX:
-            callback_url = PaymentGateway.default_callback_url(environment)
+        if enabled and not callback_url:
+            callback_url = PaymentGateway.canonical_callback_url(
+                environment or PaymentGateway.Environment.SANDBOX,
+                self._request,
+                saved_url="",
+            )
+            cleaned["callback_url"] = callback_url
+        elif callback_url:
+            callback_url = PaymentGateway.canonical_callback_url(
+                environment or PaymentGateway.Environment.SANDBOX,
+                self._request,
+                saved_url=callback_url,
+            )
             cleaned["callback_url"] = callback_url
 
         if enabled:
@@ -1749,6 +1770,19 @@ class PaymentGatewayForm(forms.ModelForm):
         # Live Paybill/Till credentials belong on the production Daraja host.
         if shortcode and shortcode != "174379":
             cleaned["environment"] = PaymentGateway.Environment.PRODUCTION
+            # Re-canonicalize after forcing production so .env PUBLIC_BASE_URL wins.
+            cb = PaymentGateway.canonical_callback_url(
+                PaymentGateway.Environment.PRODUCTION,
+                self._request,
+                saved_url=cleaned.get("callback_url") or "",
+            )
+            cleaned["callback_url"] = cb
+            if not cb or not cb.startswith("https://") or self._is_local_sandbox_url(cb):
+                self.add_error(
+                    "callback_url",
+                    "Production callback must be public HTTPS from PUBLIC_BASE_URL in .env "
+                    "(not localhost).",
+                )
         if not payment_type:
             cleaned["shortcode"] = ""
         return cleaned
@@ -1760,13 +1794,12 @@ class PaymentGatewayForm(forms.ModelForm):
         shortcode = (gateway.shortcode or "").strip()
         if shortcode and shortcode != "174379":
             gateway.environment = PaymentGateway.Environment.PRODUCTION
-        if (
-            gateway.environment == PaymentGateway.Environment.SANDBOX
-            and not (gateway.callback_url or "").strip()
-        ):
-            gateway.callback_url = PaymentGateway.default_callback_url(
-                gateway.environment
-            )
+        env = (gateway.environment or PaymentGateway.Environment.SANDBOX).strip().lower()
+        gateway.callback_url = PaymentGateway.canonical_callback_url(
+            env,
+            self._request,
+            saved_url=gateway.callback_url or "",
+        )
         if commit:
             gateway.save()
         return gateway

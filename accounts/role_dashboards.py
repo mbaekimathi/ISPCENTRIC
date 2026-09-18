@@ -3263,15 +3263,18 @@ def it_support_payment_gateway(request):
         set_role_view(request, Employee.Role.IT_SUPPORT)
 
     gateway = PaymentGateway.get_solo()
+    # Keep the saved field aligned with PUBLIC_BASE_URL / canonical STK callback.
+    gateway.sync_callback_url_from_env(request)
     if request.method == "POST":
-        form = PaymentGatewayForm(request.POST, instance=gateway)
+        form = PaymentGatewayForm(request.POST, instance=gateway, request=request)
         if form.is_valid():
             form.save()
             messages.success(request, "Payment gateway settings saved.")
             return redirect("roles:it_support_payment_gateway")
     else:
-        form = PaymentGatewayForm(instance=gateway)
+        form = PaymentGatewayForm(instance=gateway, request=request)
 
+    active_callback = gateway.resolved_callback_url(request)
     return render(
         request,
         "accounts/it_support_payment_gateway.html",
@@ -3282,6 +3285,12 @@ def it_support_payment_gateway(request):
             "dashboard_url_name": "roles:it_support",
             "form": form,
             "gateway": gateway,
+            "active_callback_url": active_callback,
+            "production_callback_url": PaymentGateway.canonical_callback_url(
+                PaymentGateway.Environment.PRODUCTION,
+                request,
+                saved_url=gateway.callback_url or "",
+            ),
             "sandbox_base_url": PaymentGateway.sandbox_base_url(request),
             "sandbox_callback_url": PaymentGateway.default_callback_url(
                 PaymentGateway.Environment.SANDBOX,

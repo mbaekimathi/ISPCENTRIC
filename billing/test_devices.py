@@ -15,6 +15,7 @@ from billing.devices import (
     customer_max_devices,
     find_hotspot_customer_for_mac,
     hotspot_macs_for_customer,
+    normalize_device_mac,
     resolve_or_create_hotspot_customer,
 )
 from billing.models import BillingPlan, Customer, CustomerDevice
@@ -278,6 +279,7 @@ class HotspotDeviceLimitTests(TestCase):
             status=Customer.Status.ACTIVE,
             plan=self.plan,
         )
+        orphan_pk = orphan.pk
         resolved = resolve_or_create_hotspot_customer(
             self.org,
             mac="AA:BB:CC:DD:EE:77",
@@ -292,11 +294,80 @@ class HotspotDeviceLimitTests(TestCase):
             "AA:BB:CC:DD:EE:77",
             hotspot_macs_for_customer(self.customer),
         )
-        orphan.refresh_from_db()
-        self.assertNotEqual(
-            (orphan.hotspot_mac or "").upper(),
-            "AA:BB:CC:DD:EE:77",
+        # Empty unpaid shell is discarded after the MAC moves to the phone account.
+        self.assertFalse(Customer.objects.filter(pk=orphan_pk).exists())
+        self.assertTrue(
+            CustomerDevice.objects.filter(
+                customer=self.customer, mac="AA:BB:CC:DD:EE:77"
+            ).exists()
         )
+
+    def test_failed_stk_discards_unpaid_hotspot_shell(self):
+        """Cancelled STK must remove the No-phone Hotspot ghost client."""
+        from billing.devices import (
+            discard_unpaid_hotspot_pay_shell,
+            is_unpaid_hotspot_pay_shell,
+        )
+        from billing.models import StkPushRequest
+        from billing.stk import mark_stk_failed
+
+        shell = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot device 2B:7C",
+            phone="",
+            account_number="HOT-SHELL-2B7C",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="02:12:39:7B:2B:7C",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        self.assertTrue(is_unpaid_hotspot_pay_shell(shell))
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=shell,
+            plan=self.plan,
+            amount=self.plan.price,
+            phone="254700000199",
+            account_reference=shell.account_number,
+            status=StkPushRequest.Status.PENDING,
+        )
+        mark_stk_failed(stk, result_code=1032, result_desc="Cancelled", cancelled=True)
+        self.assertFalse(Customer.objects.filter(pk=shell.pk).exists())
+        # MAC is free for a fresh registration.
+        resolved = resolve_or_create_hotspot_customer(
+            self.org,
+            mac="02:12:39:7B:2B:7C",
+            phone="0700000199",
+            plan=self.plan,
+        )
+        self.assertTrue(resolved["ok"])
+        self.assertTrue(resolved["created"])
+
+    def test_discard_skips_shell_with_pending_stk(self):
+        from billing.devices import discard_unpaid_hotspot_pay_shell
+        from billing.models import StkPushRequest
+
+        shell = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot device AA:01",
+            phone="",
+            account_number="HOT-SHELL-AA01",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:AA:01",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        StkPushRequest.objects.create(
+            organization=self.org,
+            customer=shell,
+            plan=self.plan,
+            amount=self.plan.price,
+            phone="254700000198",
+            account_reference=shell.account_number,
+            status=StkPushRequest.Status.PENDING,
+        )
+        self.assertFalse(discard_unpaid_hotspot_pay_shell(shell))
+        self.assertTrue(Customer.objects.filter(pk=shell.pk).exists())
 
     def test_unpaid_orphan_on_paid_account_requires_voucher(self):
         from billing.models import AccessVoucher
@@ -334,6 +405,40 @@ class HotspotDeviceLimitTests(TestCase):
                 customer=self.customer, mac="AA:BB:CC:DD:EE:77"
             ).exists()
         )
+
+    def test_create_retries_after_account_number_conflict(self):
+        """Account-number clash must retry instead of 'could not register'."""
+        from django.db import IntegrityError
+
+        mac = "AA:BB:CC:DD:EE:66"
+        # Occupy the default HOT-{org}-{mac} account number without that MAC.
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Account squat",
+            phone="254700000166",
+            account_number=f"HOT-{self.org.pk}-AABBCCDDEE66",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac=None,
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        resolved = resolve_or_create_hotspot_customer(
+            self.org,
+            mac=mac,
+            phone="0700000167",
+            plan=self.plan,
+        )
+        self.assertTrue(resolved["ok"], resolved)
+        self.assertTrue(resolved["created"])
+        self.assertEqual(
+            normalize_device_mac(resolved["customer"].hotspot_mac),
+            mac,
+        )
+        self.assertNotEqual(
+            resolved["customer"].account_number,
+            f"HOT-{self.org.pk}-AABBCCDDEE66",
+        )
+        self.assertNotEqual(resolved["customer"].phone, "254700000166")
 
     def test_create_integrity_error_recovers_without_poisoning_transaction(self):
         """Race on Customer.create must not raise TransactionManagementError."""

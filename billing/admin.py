@@ -1,6 +1,13 @@
 from django.contrib import admin
 
-from .models import BillingPlan, Customer, CustomerDevice, Invoice, Payment
+from .models import (
+    BillingPlan,
+    Customer,
+    CustomerDevice,
+    HotspotConnectionAttempt,
+    Invoice,
+    Payment,
+)
 
 
 @admin.register(BillingPlan)
@@ -97,3 +104,12 @@ class PaymentAdmin(admin.ModelAdmin):
     list_display = ("reference", "invoice", "amount", "method", "received_at")
     list_filter = ("method",)
     search_fields = ("reference", "invoice__invoice_number")
+
+
+@admin.register(HotspotConnectionAttempt)
+class HotspotConnectionAttemptAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "organization", "event", "mac", "phone", "customer")
+    list_filter = ("event",)
+    search_fields = ("mac", "phone", "organization__name")
+    readonly_fields = ("created_at",)
+    raw_id_fields = ("organization", "customer", "plan", "stk_request", "router")

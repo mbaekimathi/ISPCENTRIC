@@ -544,17 +544,63 @@ class Customer(models.Model):
 
         mac = (self.hotspot_mac or "").strip()
         self.hotspot_mac = mac or None
-        self.phone_normalized = normalize_customer_phone_key(self.phone)
+        key = normalize_customer_phone_key(self.phone)
+        if key:
+            self.phone_normalized = key
+        else:
+            # Never store "" when a unique (org, phone_normalized) index exists.
+            # MySQL/MariaDB often cannot apply the partial-index condition, so a
+            # blank key would block every later Hotspot registration.
+            existing = (self.phone_normalized or "").strip()
+            if not existing.startswith(("anon:", "a:")):
+                if self.pk:
+                    # anon:{pk} stays within max_length=20 for normal ids.
+                    self.phone_normalized = f"anon:{self.pk}"[:20]
+                else:
+                    import uuid
+
+                    self.phone_normalized = f"a:{uuid.uuid4().hex[:18]}"
+        if not (self.account_number or "").strip():
+            import secrets
+
+            org_id = self.organization_id or 0
+            mac_compact = (mac or "").replace(":", "") or secrets.token_hex(6)
+            self.account_number = f"HOT-{org_id}-{mac_compact}"[:40]
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None and "account_number" not in update_fields:
+                kwargs["update_fields"] = list(update_fields) + ["account_number"]
         update_fields = kwargs.get("update_fields")
         if update_fields is not None and "phone_normalized" not in update_fields:
             if "phone" in update_fields or "hotspot_mac" in update_fields:
                 kwargs["update_fields"] = list(update_fields) + ["phone_normalized"]
         super().save(*args, **kwargs)
+        # After first insert, pin anon phone keys to the stable primary key.
+        if (
+            not key
+            and self.pk
+            and (self.phone_normalized or "").startswith(("anon:", "a:"))
+            and self.phone_normalized != f"anon:{self.pk}"[:20]
+        ):
+            pinned = f"anon:{self.pk}"[:20]
+            type(self).objects.filter(pk=self.pk).update(phone_normalized=pinned)
+            self.phone_normalized = pinned
         mac = (self.hotspot_mac or "").strip()
         if mac and self.pk and self.organization_id:
-            from billing.devices import ensure_customer_device
+            from billing.devices import ensure_customer_device, is_unpaid_hotspot_pay_shell
 
-            ensure_customer_device(self, mac)
+            # Captive STK auto-shells keep MAC identity without CustomerDevice
+            # until payment + MikroTik authorize. Staff/paid clients still seed.
+            name = (self.full_name or "").strip()
+            acct = (self.account_number or "").strip()
+            org_id = self.organization_id
+            is_captive_shell = self.service_type == self.ServiceType.HOTSPOT and (
+                name.startswith("Hotspot device ")
+                or acct.startswith(f"HOT-{org_id}-")
+            )
+            if is_captive_shell and is_unpaid_hotspot_pay_shell(self):
+                ensure_customer_device(self, mac, create=False)
+            else:
+                ensure_customer_device(self, mac, create=True)
 
     def __str__(self):
         return f"{self.full_name} ({self.account_number})"
@@ -1044,3 +1090,72 @@ class AccessVoucher(models.Model):
     @property
     def is_redeemable(self) -> bool:
         return self.status == self.Status.VALID
+
+
+class HotspotConnectionAttempt(models.Model):
+    """Captive Hotspot funnel event (visit → pay → authorize)."""
+
+    class Event(models.TextChoices):
+        PORTAL_HIT = "portal_hit", "Portal visit"
+        PAYMENT_STARTED = "payment_started", "Payment attempted"
+        PAYMENT_SUCCESS = "payment_success", "Payment successful"
+        PAYMENT_FAILED = "payment_failed", "Payment failed"
+        PAYMENT_CANCELLED = "payment_cancelled", "Payment cancelled"
+        AUTHORIZED = "authorized", "Connected (surfing)"
+        PAID_NOT_SURFING = "paid_not_surfing", "Paid but not surfing"
+
+    organization = models.ForeignKey(
+        "accounts.Organization",
+        on_delete=models.CASCADE,
+        related_name="hotspot_connection_attempts",
+    )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hotspot_connection_attempts",
+    )
+    plan = models.ForeignKey(
+        BillingPlan,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hotspot_connection_attempts",
+    )
+    stk_request = models.ForeignKey(
+        StkPushRequest,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="connection_attempts",
+    )
+    router = models.ForeignKey(
+        "core.MikroTikRouter",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hotspot_connection_attempts",
+    )
+    mac = models.CharField(max_length=17, blank=True, db_index=True)
+    phone = models.CharField(max_length=20, blank=True)
+    event = models.CharField(max_length=32, choices=Event.choices, db_index=True)
+    detail = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "billing_hotspot_connection_attempt"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["organization", "event", "-created_at"],
+                name="bill_hs_att_org_evt_idx",
+            ),
+            models.Index(
+                fields=["organization", "mac", "-created_at"],
+                name="bill_hs_att_org_mac_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.event} {self.mac or self.phone or self.pk}"

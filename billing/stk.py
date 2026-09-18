@@ -136,8 +136,9 @@ def resolve_stk_daraja_credentials(stk: StkPushRequest) -> dict:
                 "consumer_key": key,
                 "consumer_secret": secret,
                 "passkey": passkey,
-                "callback_url": PaymentGateway.default_callback_url(
-                    PaymentGateway.Environment.PRODUCTION
+                "callback_url": PaymentGateway.canonical_callback_url(
+                    PaymentGateway.Environment.PRODUCTION,
+                    saved_url=(PaymentGateway.get_solo().callback_url or ""),
                 ),
                 "message": (
                     f"Using this ISP's gateway with shortcode {shortcode}."
@@ -635,51 +636,29 @@ def resolve_stk_callback_url(
     *,
     environment: str | None = None,
 ) -> str:
+    """
+    Callback sent to Daraja — same URL as Settings → Payments and
+    IT Support → Payment Gateway (from PUBLIC_BASE_URL / gateway canonical).
+    """
     env = (
         environment
         or creds.get("environment")
         or PaymentGateway.Environment.SANDBOX
     ).strip().lower()
 
-    url = (creds.get("callback_url") or "").strip()
-    if url:
-        url = PaymentGateway.normalize_callback_url(url)
-    else:
-        url = PaymentGateway.normalize_callback_url(
-            PaymentGateway.default_callback_url(env, request)
-        )
+    url = PaymentGateway.canonical_callback_url(
+        env,
+        request,
+        saved_url=(creds.get("callback_url") or "").strip(),
+    )
     if not url and request is not None:
-        url = request.build_absolute_uri(PaymentGateway.STK_CALLBACK_PATH)
-
-    # Production Daraja requires a public HTTPS callback (not localhost/LAN).
-    # Local confirmation still works via STK Query polling.
-    if env == PaymentGateway.Environment.PRODUCTION and _is_local_http_callback(url):
-        public = PaymentGateway.production_public_https_base_url(request)
-        if public:
-            return PaymentGateway.normalize_callback_url(
-                f"{public}{PaymentGateway.STK_CALLBACK_PATH}"
-            )
-        return url or f"{PaymentGateway.sandbox_base_url(request)}{PaymentGateway.STK_CALLBACK_PATH}"
-
-    return url or f"{PaymentGateway.sandbox_base_url(request)}{PaymentGateway.STK_CALLBACK_PATH}"
-
-
-def _is_local_http_callback(url: str) -> bool:
-    raw = (url or "").strip().lower()
-    if raw.startswith("http://localhost") or raw.startswith("http://127.0.0.1"):
-        return True
-    try:
-        from urllib.parse import urlparse
-
-        from core.hotspot_portal import _host_is_private_ip
-
-        parsed = urlparse(raw)
-        if (parsed.scheme or "").lower() != "http":
-            return False
-        host = (parsed.hostname or "").lower()
-        return bool(host and _host_is_private_ip(host))
-    except Exception:
-        return False
+        try:
+            url = request.build_absolute_uri(PaymentGateway.STK_CALLBACK_PATH)
+        except Exception:
+            url = ""
+    return url or (
+        f"{PaymentGateway.sandbox_base_url(request)}{PaymentGateway.STK_CALLBACK_PATH}"
+    )
 
 
 def _is_invalid_access_token_error(result: dict) -> bool:
@@ -812,6 +791,7 @@ def start_subscription_stk_payment(
             update_fields=["status", "result_desc", "completed_at", "raw_callback"]
         )
         from accounts.communications import notify_org_event, notify_platform_event
+        from billing.devices import discard_unpaid_hotspot_pay_shell
 
         notify_org_event(
             "isp_stk_failed",
@@ -833,6 +813,10 @@ def start_subscription_stk_payment(
             },
             subject="Daraja STK Push failed",
         )
+        # Failed initiate still created a Hotspot shell to hold the MAC — drop it
+        # so the next attempt is not blocked by "No phone" / duplicate registration.
+        if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+            discard_unpaid_hotspot_pay_shell(customer, except_stk_id=stk.pk)
         return {"ok": False, "error": error, "stk_id": stk.pk}
 
     stk.merchant_request_id = (result.get("merchant_request_id") or "")[:64]
@@ -1682,20 +1666,27 @@ def fulfill_successful_stk(
 
     customer = stk.customer
     if customer is None:
-        stk.status = StkPushRequest.Status.FAILED
-        stk.result_desc = "Missing customer for subscription STK."[:255]
-        stk.completed_at = timezone.now()
-        stk.save(
-            update_fields=[
-                "status",
-                "result_code",
-                "result_desc",
-                "mpesa_receipt",
-                "raw_callback",
-                "completed_at",
-            ]
-        )
-        return {"ok": False, "error": stk.result_desc, "stk_id": stk.pk}
+        # Ghost-shell discard after a false fail can clear the FK; rebuild from
+        # the paying MAC so money taken still activates the package.
+        recovered = _recover_hotspot_customer_for_stk(stk)
+        if recovered is None:
+            stk.status = StkPushRequest.Status.FAILED
+            stk.result_desc = "Missing customer for subscription STK."[:255]
+            stk.completed_at = timezone.now()
+            stk.save(
+                update_fields=[
+                    "status",
+                    "result_code",
+                    "result_desc",
+                    "mpesa_receipt",
+                    "raw_callback",
+                    "completed_at",
+                ]
+            )
+            return {"ok": False, "error": stk.result_desc, "stk_id": stk.pk}
+        customer = recovered
+        stk.customer = customer
+        stk.save(update_fields=["customer"])
 
     # Paid MSISDN wins for empty Hotspot/PPPoE phone fields (unique within org).
     from billing.devices import maybe_set_customer_phone
@@ -1782,6 +1773,25 @@ def fulfill_successful_stk(
         (row for row in vouchers if row.status == row.Status.VALID),
         vouchers[0] if vouchers else None,
     )
+
+    try:
+        from billing.attempts import record_hotspot_attempt
+        from billing.devices import normalize_device_mac
+
+        cust = stk.customer
+        if cust is not None and getattr(cust, "service_type", "") == Customer.ServiceType.HOTSPOT:
+            record_hotspot_attempt(
+                organization=stk.organization,
+                event="payment_success",
+                mac=normalize_device_mac(stk_hotspot_mac(stk) or "")
+                or normalize_device_mac(getattr(cust, "hotspot_mac", "") or ""),
+                phone=stk.phone or "",
+                customer=cust,
+                plan=stk.plan,
+                stk=stk,
+            )
+    except Exception:
+        logger.exception("Could not record Hotspot payment_success")
 
     from accounts.communications import notify_org_event
     from billing.services import notify_client_payment_success
@@ -1883,6 +1893,36 @@ def mark_stk_failed(
             },
             subject="Payment failed",
         )
+        # Cancelled / failed Hotspot STK: remove never-paid MAC shells so retry
+        # does not collide with HOT-… / "No phone" ghost clients.
+        customer = stk.customer
+        if (
+            customer is not None
+            and getattr(customer, "service_type", "")
+            == Customer.ServiceType.HOTSPOT
+        ):
+            try:
+                from billing.attempts import record_hotspot_attempt
+                from billing.devices import normalize_device_mac
+
+                record_hotspot_attempt(
+                    organization=stk.organization,
+                    event=(
+                        "payment_cancelled" if cancelled else "payment_failed"
+                    ),
+                    mac=normalize_device_mac(stk_hotspot_mac(stk) or "")
+                    or normalize_device_mac(getattr(customer, "hotspot_mac", "") or ""),
+                    phone=stk.phone or "",
+                    customer=customer,
+                    plan=stk.plan,
+                    stk=stk,
+                    detail={"result_desc": stk.result_desc or ""},
+                )
+            except Exception:
+                logger.exception("Could not record Hotspot payment fail attempt")
+            from billing.devices import discard_unpaid_hotspot_pay_shell
+
+            discard_unpaid_hotspot_pay_shell(customer, except_stk_id=stk.pk)
     return stk
 
 
@@ -2142,11 +2182,21 @@ _ACCEPTANCE_PHRASES = (
 )
 
 PENDING_MESSAGE = "Waiting for you to enter your M-Pesa PIN…"
+CONFIRMING_MESSAGE = "Payment received — confirming with M-Pesa…"
 
 # An unanswered STK prompt lapses on the handset well before this, but the
 # request is never marked failed on a timeout — only Daraja can tell us the
 # customer did not pay, and a late callback must still be able to activate.
 STK_PROMPT_DEADLINE_SECONDS = 150
+
+# Mirrored from accounts.mpesa_daraja — keep UI from offering a retry that
+# could double-charge while Safaricom is still settling the payment.
+_IN_PROGRESS_PENDING_PHRASES = (
+    "still under processing",
+    "being processed",
+    "is in progress",
+    "confirming",
+)
 
 
 def stk_failure_reason(result_code, result_desc: str = "") -> str:
@@ -2170,24 +2220,33 @@ def _still_pending(base: dict, stk: StkPushRequest, *, result_desc: str = "") ->
     elapsed = (
         (timezone.now() - stk.created_at).total_seconds() if stk.created_at else 0
     )
-    if elapsed > STK_PROMPT_DEADLINE_SECONDS:
+    lowered = (result_desc or "").strip().lower()
+    in_progress = any(phrase in lowered for phrase in _IN_PROGRESS_PENDING_PHRASES)
+    # Never invite a retry while Daraja says the payment is still settling —
+    # that is how customers get charged twice.
+    if elapsed > STK_PROMPT_DEADLINE_SECONDS and not in_progress:
         base["expired"] = True
         base["can_retry"] = True
         base["reason"] = (
             "The M-Pesa prompt has not been confirmed yet. "
             "If it never reached your phone, you can try again."
         )
+    elif in_progress:
+        base["expired"] = False
+        base["confirming"] = True
     return base
 
 
 def stk_pending_message(result_desc: str = "") -> str:
-    """Keep Daraja's 'request accepted' wording from looking like a success."""
+    """Keep Daraja's 'request accepted' / 'still processing' wording clear."""
     desc = (result_desc or "").strip()
     if not desc:
         return PENDING_MESSAGE
     lowered = desc.lower()
     if any(phrase in lowered for phrase in _ACCEPTANCE_PHRASES):
         return PENDING_MESSAGE
+    if any(phrase in lowered for phrase in _IN_PROGRESS_PENDING_PHRASES):
+        return CONFIRMING_MESSAGE
     return desc
 
 
@@ -2205,17 +2264,25 @@ def _apply_paid_subscription_to_status(
         return payload
     from billing.vouchers import activate_paid_subscription_stk, attach_voucher_to_stk_status
 
-    # Captive pay pages (wait_for_nas) block on one quick MikroTik restore so
-    # "Connected" / welcome only appears after the NAS can let them surf.
-    # Also wait on the *first* apply even when the client sent nas=0 — otherwise
-    # the UI pays for an extra round-trip before authorize.
+    # Captive polls use nas=0 until SUCCESS is seen, then nas=1. Never block the
+    # first success response on MikroTik — a slow/offline NAS left payers stuck
+    # on "Waiting for M-Pesa". Apply DB package immediately; authorize on the
+    # next poll (or in the background when wait_for_nas is false).
     activation = {}
     first_apply = not bool(stk.subscription_applied)
-    if first_apply or wait_for_nas:
+    if first_apply and not wait_for_nas:
         activation = activate_paid_subscription_stk(
             stk,
             mac=stk_hotspot_mac(stk),
-            wait_first=wait_for_nas or first_apply,
+            wait_first=False,
+            quick=True,
+            background=True,
+        )
+    elif first_apply or wait_for_nas:
+        activation = activate_paid_subscription_stk(
+            stk,
+            mac=stk_hotspot_mac(stk),
+            wait_first=wait_for_nas,
             quick=True,
         )
     stk.refresh_from_db()
@@ -2241,9 +2308,32 @@ def _apply_paid_subscription_to_status(
         payload["can_retry_authorize"] = not payload["authorized"]
     payload["surfing"] = bool(payload.get("authorized"))
     attach_voucher_to_stk_status(payload, stk)
-    if payload.get("subscription_applied"):
-        payload["needs_voucher"] = False
     return payload
+
+
+def _recover_hotspot_customer_for_stk(stk: StkPushRequest):
+    """Recreate / locate the Hotspot customer when the STK shell was discarded."""
+    org = stk.organization
+    mac = stk_hotspot_mac(stk)
+    if org is None or not mac:
+        return None
+    try:
+        from billing.devices import resolve_or_create_hotspot_customer
+
+        resolved = resolve_or_create_hotspot_customer(
+            org,
+            mac=mac,
+            phone=stk.phone or "",
+            plan=stk.plan,
+            router=None,
+        )
+        if resolved.get("ok"):
+            return resolved.get("customer")
+    except Exception:
+        logger.exception(
+            "Could not recover Hotspot customer for STK %s mac=%s", stk.pk, mac
+        )
+    return None
 
 
 def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> dict:
@@ -2379,7 +2469,9 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
             raw={"query": data},
         )
         stk.refresh_from_db()
-        customer.refresh_from_db()
+        customer = stk.customer
+        if customer is not None:
+            customer.refresh_from_db()
         applied = bool(fulfill.get("ok"))
         payload = {
             "ok": applied,
@@ -2391,10 +2483,18 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
             "mpesa_receipt": stk.mpesa_receipt,
             "amount": str(stk.amount),
             "phone": stk.phone,
-            "customer_name": customer.full_name,
-            "account_number": customer.account_number,
-            "package_start": customer.package_start.isoformat() if customer.package_start else "",
-            "package_end": customer.package_end.isoformat() if customer.package_end else "",
+            "customer_name": customer.full_name if customer is not None else "",
+            "account_number": customer.account_number if customer is not None else "",
+            "package_start": (
+                customer.package_start.isoformat()
+                if customer is not None and customer.package_start
+                else ""
+            ),
+            "package_end": (
+                customer.package_end.isoformat()
+                if customer is not None and customer.package_end
+                else ""
+            ),
             "subscription_applied": stk.subscription_applied,
             "error": fulfill.get("error") or "",
         }

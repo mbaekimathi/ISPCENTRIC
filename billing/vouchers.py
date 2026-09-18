@@ -764,7 +764,7 @@ def _activate_paid_subscription_stk_locked(
                     unlink_hotspot_devices(customer, keep_macs=[device_mac])
                 if device_mac:
                     set_primary_hotspot_mac(customer, device_mac)
-                    attach_hotspot_device(customer, device_mac, enforce_cap=True)
+                    # CustomerDevice is created only after MikroTik authorize.
             customer.refresh_from_db()
             if stacked:
                 notify_org_event(
@@ -791,7 +791,6 @@ def _activate_paid_subscription_stk_locked(
             and getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
         ):
             set_primary_hotspot_mac(customer, device_mac)
-            attach_hotspot_device(customer, device_mac, enforce_cap=True)
             claimed = False
             candidates = [voucher] + [
                 row
@@ -869,8 +868,29 @@ def _activate_paid_subscription_stk_locked(
                     )
                     voucher = locked
     if authorized and customer is not None:
+        from billing.devices import attach_hotspot_device
         from billing.services import notify_client_internet_reconnected
 
+        # Durable device registration only after payment + NAS authorize.
+        if (
+            device_mac
+            and getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
+        ):
+            attach_hotspot_device(customer, device_mac, enforce_cap=True)
+            try:
+                from billing.attempts import record_hotspot_attempt
+
+                record_hotspot_attempt(
+                    organization=organization,
+                    event="authorized",
+                    mac=device_mac,
+                    customer=customer,
+                    plan=getattr(customer, "plan", None),
+                    stk_id=stk_pk,
+                    detail={"mpesa_receipt": mpesa_receipt},
+                )
+            except Exception:
+                logger.exception("Could not record authorized Hotspot attempt")
         notify_client_internet_reconnected(
             organization=organization,
             customer=customer,
@@ -879,6 +899,29 @@ def _activate_paid_subscription_stk_locked(
                 "package_end": package_end,
             },
         )
+    elif (
+        not authorized
+        and customer is not None
+        and getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
+    ):
+        try:
+            from billing.attempts import record_hotspot_attempt
+
+            record_hotspot_attempt(
+                organization=organization,
+                event="paid_not_surfing",
+                mac=device_mac or "",
+                customer=customer,
+                plan=getattr(customer, "plan", None),
+                stk_id=stk_pk,
+                detail={
+                    "authorization_error": nas.get("message") or "",
+                    "offline": bool(nas.get("offline")),
+                },
+                debounce_seconds=120,
+            )
+        except Exception:
+            logger.exception("Could not record paid_not_surfing Hotspot attempt")
     siblings = list(
         AccessVoucher.objects.filter(stk_request_id=stk_pk).order_by("id")
     )

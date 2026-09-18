@@ -261,13 +261,15 @@
                     {% if form.daraja_passkey.errors %}<div class="field-error">{{ form.daraja_passkey.errors|striptags }}</div>{% endif %}
                   </div>
                 </div>
-                {% if production_callback_url %}
+                {% if production_callback_url or stk_callback_url %}
                 <div class="field" style="margin-top:0.85rem;">
-                  <span class="account-receive-label">Callback URL (production)</span>
-                  <code class="pgw-callback-code" data-production-callback-url>{{ production_callback_url }}</code>
+                  <span class="account-receive-label">STK callback URL</span>
+                  <code class="pgw-callback-code" data-production-callback-url>{% firstof stk_callback_url production_callback_url %}</code>
                   <p class="field-hint">
-                    Safaricom posts STK results here. Production requires a public HTTPS URL
-                    (not localhost). Derived from your hosted public host / WireGuard endpoint.
+                    Safaricom posts STK results here. This matches
+                    <code>PUBLIC_BASE_URL</code> in <code>.env</code> and
+                    IT Support → Payment Gateway. Production requires public HTTPS
+                    (not localhost).
                   </p>
                 </div>
                 {% endif %}

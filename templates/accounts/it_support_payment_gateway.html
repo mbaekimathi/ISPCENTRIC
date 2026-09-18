@@ -180,6 +180,14 @@
             {{ form.callback_url }}
             {% if form.callback_url.help_text %}<p class="field-hint">{{ form.callback_url.help_text }}</p>{% endif %}
             {% if form.callback_url.errors %}<div class="field-error">{{ form.callback_url.errors|striptags }}</div>{% endif %}
+            {% if production_callback_url %}
+              <p class="field-hint">
+                Production / live STK uses:
+                <code class="pgw-callback-code">{{ production_callback_url }}</code>
+                (from <code>PUBLIC_BASE_URL</code> in <code>.env</code> — same URL as
+                Settings → Payments and live STK Push).
+              </p>
+            {% endif %}
             <p class="field-hint company-settings-callback-hint pgw-callback-hint" data-sandbox-callback-hint>
               Sandbox callbacks:
               {% if sandbox_local_callback_url %}

@@ -2657,10 +2657,16 @@
                 offerRetry(data.reason || "The M-Pesa prompt was not confirmed.");
                 return;
               }
+              var pendingCopy = data.result_desc
+                || "Enter your PIN on your phone. This page updates automatically.";
+              if (data.confirming) {
+                pendingCopy = data.result_desc
+                  || "Payment received — confirming with M-Pesa…";
+              }
               setWaiting(
                 true,
-                "Waiting for M-Pesa",
-                data.result_desc || "Enter your PIN on your phone. This page updates automatically."
+                data.confirming ? "Confirming payment" : "Waiting for M-Pesa",
+                pendingCopy
               );
               if ((Date.now() - pollStartedAt) < POLL_GIVE_UP_MS) {
                 // Pending: do not wait for NAS on every tick.

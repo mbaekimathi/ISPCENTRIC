@@ -650,13 +650,10 @@ def normalize_gateway_values(raw: dict[str, Any] | None = None, gateway=None) ->
         values.get("shortcode") or "",
         values.get("environment") or "",
     )
-    if (
-        values["environment"] == PaymentGateway.Environment.SANDBOX
-        and not values["callback_url"]
-    ):
-        values["callback_url"] = PaymentGateway.default_callback_url(
-            PaymentGateway.Environment.SANDBOX
-        )
+    values["callback_url"] = PaymentGateway.canonical_callback_url(
+        values["environment"],
+        saved_url=values.get("callback_url") or "",
+    )
     return values
 
 
@@ -726,13 +723,17 @@ def stk_values_for_organization(
         }
 
     platform = PaymentGateway.get_solo()
-    platform_creds = platform.as_stk_credentials()
+    platform_creds = platform.as_stk_credentials(request)
 
     if mode == Organization.DarajaEnvironment.PRODUCTION:
         api_env = resolve_daraja_api_environment(
             shortcode, PaymentGateway.Environment.PRODUCTION
         )
-        callback = PaymentGateway.default_callback_url(api_env, request)
+        callback = PaymentGateway.canonical_callback_url(
+            api_env,
+            request,
+            saved_url=platform.callback_url or "",
+        )
         if not callback and request is not None:
             try:
                 callback = request.build_absolute_uri(PaymentGateway.STK_CALLBACK_PATH)
@@ -755,9 +756,11 @@ def stk_values_for_organization(
         api_env = (platform_creds.get("environment") or PaymentGateway.Environment.SANDBOX)
         if shortcode and shortcode != SANDBOX_TEST_SHORTCODE:
             api_env = PaymentGateway.Environment.PRODUCTION
-        callback = (platform_creds.get("callback_url") or "").strip()
-        if not callback:
-            callback = PaymentGateway.default_callback_url(api_env, request)
+        callback = PaymentGateway.canonical_callback_url(
+            api_env,
+            request,
+            saved_url=platform.callback_url or "",
+        )
         return {
             "enabled": True,
             "environment": api_env,
@@ -773,6 +776,11 @@ def stk_values_for_organization(
 
     # Use Company — platform keys and shortcode exclusively.
     values = normalize_gateway_values(None, platform)
+    values["callback_url"] = PaymentGateway.canonical_callback_url(
+        values.get("environment") or PaymentGateway.Environment.SANDBOX,
+        request,
+        saved_url=platform.callback_url or "",
+    )
     # ISP Daraja is on; verify company credentials even if the company
     # gateway toggle is off (so the page can show why STK is not ready).
     values["enabled"] = True

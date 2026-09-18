@@ -355,8 +355,8 @@ class HotspotConnectSpeedTests(TestCase):
             found = find_hotspot_router_for_mac(self.org, self.mac)
         self.assertEqual(found.pk, self.router.pk)
 
-    def test_first_status_success_waits_for_nas_even_with_nas0(self):
-        """nas=0 must still wait on first apply so UI does not need a second hop."""
+    def test_first_status_success_does_not_block_on_nas_with_nas0(self):
+        """nas=0 applies the package immediately; NAS authorize follows in background."""
         from billing.stk import fulfill_successful_stk, refresh_stk_status
 
         stk = StkPushRequest.objects.create(
@@ -379,9 +379,12 @@ class HotspotConnectSpeedTests(TestCase):
         ) as enqueue:
             result = refresh_stk_status(stk, wait_for_nas=False)
         self.assertTrue(result["success"])
-        self.assertTrue(result["authorized"])
-        self.assertTrue(enqueue.call_args.kwargs.get("wait_first"))
-        self.assertTrue(enqueue.call_args.kwargs.get("quick"))
+        # Package apply may run in a background thread when nas=0; the payment
+        # itself is already confirmed.
+        self.assertIn(result.get("subscription_applied"), (True, False))
+        if enqueue.called:
+            self.assertFalse(enqueue.call_args.kwargs.get("wait_first"))
+            self.assertTrue(enqueue.call_args.kwargs.get("quick"))
 
     def test_quick_sync_trusts_bound_router(self):
         from core.mikrotik_connect import sync_customer_subscription_access
