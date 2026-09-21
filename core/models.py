@@ -405,8 +405,14 @@ class ClientIspMovement(models.Model):
     class Meta:
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["router", "-created_at"]),
-            models.Index(fields=["organization", "-created_at"]),
+            models.Index(
+                fields=["router", "-created_at"],
+                name="core_clien_router__8a4f21_idx",
+            ),
+            models.Index(
+                fields=["organization", "-created_at"],
+                name="core_clien_organiz_91b2c3_idx",
+            ),
         ]
 
     def __str__(self) -> str:
