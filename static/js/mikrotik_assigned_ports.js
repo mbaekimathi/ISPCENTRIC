@@ -55,49 +55,133 @@
     });
   }
 
-  function ispSwitchChips(row, options) {
-    if (!row.can_switch_isp || !options || !options.length) return "";
+  function ispSwitchChoices(row, options) {
+    if (!row.can_switch_isp || !options || !options.length) return [];
     var current = (row.isp_port || row.uplink_port || "").trim();
-    var choices = options.filter(function (opt) {
+    return options.filter(function (opt) {
       return opt.port && opt.port !== current && !opt.disabled;
     });
+  }
+
+  function ispSwitchButtonAttrs(row, opt) {
+    return (
+      ' data-isp-switch-chip="1"' +
+      ' data-customer-id="' +
+      esc(String(row.customer_id || "")) +
+      '" data-client-ip="' +
+      esc(row.ip || "") +
+      '" data-client-name="' +
+      esc(row.name || "Customer") +
+      '" data-target-port="' +
+      esc(opt.port) +
+      '"'
+    );
+  }
+
+  function ispSwitchControl(row, options) {
+    var choices = ispSwitchChoices(row, options);
     if (!choices.length) return "";
 
-    var html = '<div class="mk-assigned-switch-chips">';
-    choices.forEach(function (opt) {
+    var html =
+      '<div class="mk-assigned-client-move">' +
+      '<span class="mk-assigned-client-move-label">Switch link</span>';
+
+    if (choices.length >= 3) {
       html +=
-        '<button type="button" class="mk-assigned-switch-chip"' +
-        ' data-isp-switch-chip="1"' +
+        '<div class="mk-assigned-switch-form">' +
+        '<select class="mk-assigned-switch-select" aria-label="Choose uplink">' +
+        '<option value="">Choose uplink…</option>';
+      choices.forEach(function (opt) {
+        html +=
+          '<option value="' +
+          esc(opt.port) +
+          '">' +
+          esc(opt.label || opt.port) +
+          "</option>";
+      });
+      html +=
+        "</select>" +
+        '<button type="button" class="btn btn-ghost btn-sm mk-assigned-switch-submit"' +
+        ' data-isp-switch-submit="1"' +
         ' data-customer-id="' +
         esc(String(row.customer_id || "")) +
         '" data-client-ip="' +
         esc(row.ip || "") +
         '" data-client-name="' +
         esc(row.name || "Customer") +
-        '" data-target-port="' +
-        esc(opt.port) +
-        '">Move to ' +
-        esc(opt.label || opt.port) +
-        "</button>";
-    });
+        '" data-target-port=""' +
+        " disabled>Move</button></div>";
+    } else {
+      html += '<div class="mk-assigned-switch-chips">';
+      choices.forEach(function (opt) {
+        html +=
+          '<button type="button" class="mk-assigned-switch-chip"' +
+          ispSwitchButtonAttrs(row, opt) +
+          ">" +
+          esc(opt.label || opt.port) +
+          "</button>";
+      });
+      html += "</div>";
+    }
+
     html += "</div>";
     return html;
+  }
+
+  function clientInitial(name) {
+    var trimmed = String(name || "").trim();
+    if (!trimmed) return "?";
+    return esc(trimmed.charAt(0).toUpperCase());
   }
 
   function clientCard(row, ispOptions) {
     var online = !!row.online;
     var phone = (row.phone || "").trim() || "—";
+    var statusLabel = online ? "Online" : "Offline";
+    var currentIsp = (
+      row.isp_label ||
+      row.uplink_label ||
+      row.isp_port ||
+      row.uplink_port ||
+      "—"
+    ).trim();
+    var pinnedBadge = row.isp_pinned
+      ? '<span class="mk-assigned-pinned-badge">Pinned</span>'
+      : "";
+    var uplinkLine = online
+      ? '<p class="mk-assigned-client-simple-uplink">On <strong>' +
+        esc(currentIsp) +
+        "</strong> " +
+        pinnedBadge +
+        "</p>"
+      : "";
     return (
       '<article class="mk-assigned-client-simple ' +
       (online ? "is-online" : "is-offline") +
       '">' +
+      '<div class="mk-assigned-client-simple-head">' +
+      '<span class="mk-assigned-client-avatar" aria-hidden="true">' +
+      clientInitial(row.name) +
+      "</span>" +
+      '<div class="mk-assigned-client-simple-copy">' +
       '<strong class="mk-assigned-client-simple-name">' +
       clientLink(row) +
       "</strong>" +
       '<p class="mk-assigned-client-simple-phone">' +
       esc(phone) +
       "</p>" +
-      (online ? ispSwitchChips(row, ispOptions) : "") +
+      uplinkLine +
+      "</div>" +
+      '<span class="mk-assigned-client-status" title="' +
+      esc(statusLabel) +
+      '">' +
+      '<span class="mk-assigned-client-status-dot" aria-hidden="true"></span>' +
+      '<span class="mk-assigned-client-status-text">' +
+      esc(statusLabel) +
+      "</span>" +
+      "</span>" +
+      "</div>" +
+      (online ? ispSwitchControl(row, ispOptions) : "") +
       "</article>"
     );
   }
@@ -208,6 +292,15 @@
           ? " · " + (col.clients.length - onlineCount) + " listed"
           : "");
 
+    var statusBadge =
+      isOffline || isUnknown
+        ? ""
+        : '<span class="mk-assigned-uplink-status ' +
+          columnStatusClass(col.status) +
+          '">' +
+          esc(columnStatusLabel(col.status)) +
+          "</span>";
+
     var html =
       '<section class="mk-assigned-uplink-col ' +
       (isOffline ? "is-offline-col" : isUnknown ? "is-unknown-col" : columnStatusClass(col.status)) +
@@ -217,17 +310,15 @@
       esc(col.label) +
       '">' +
       '<header class="mk-assigned-uplink-col-head">' +
-      "<div>" +
+      "<div class=\"mk-assigned-uplink-col-head-copy\">" +
       '<h3 class="mk-assigned-uplink-col-title">' +
       esc(col.label) +
       "</h3>" +
       '<p class="mk-assigned-uplink-col-meta">' +
       esc(meta) +
-      (isOffline || isUnknown
-        ? ""
-        : " · " + esc(columnStatusLabel(col.status))) +
       "</p>" +
       "</div>" +
+      statusBadge +
       "</header>" +
       '<div class="mk-assigned-uplink-col-body">';
 
@@ -279,21 +370,28 @@
       message = "Turn on smart balance to spread customers across both links.";
     } else if (data.client_rebalance && data.client_rebalance.ok) {
       var moved = data.client_rebalance.moved || [];
-      if (moved.length) {
+      if (moved.length === 1) {
         var first = moved[0];
-        title = "Load balanced automatically";
+        title = "Load balanced seamlessly";
         message =
           (first.name || "A customer") +
-          " moved from " +
-          (first.from_isp || "one link") +
-          " to " +
-          (first.to_isp || "another") +
-          ".";
+          " is shifting to " +
+          (first.to_isp || "another link") +
+          " — no disconnect, new traffic uses the lighter ISP.";
+      } else if (moved.length > 1) {
+        title = "Load balanced seamlessly";
+        message =
+          moved.length +
+          " customers are shifting to lighter links without dropping sessions.";
       }
+    } else if (insights.imbalanced && insights.bandwidth_drift && insights.bandwidth_drift.sustained) {
+      title = "Traffic uneven across uplinks";
+      message =
+        "Live bandwidth is skewed — moving heavy customers toward lighter links automatically.";
     } else if (insights.imbalanced && insights.dominant_isp) {
       title = "Most customers on " + insights.dominant_isp;
       message =
-        "The system moves customers automatically, or tap Move to … on a customer card.";
+        "The system moves customers automatically, or tap Switch link on a customer card.";
     }
 
     if (titleEl) titleEl.textContent = title;
@@ -315,12 +413,32 @@
     setHidden(card, false);
   }
 
+  function renderKpis(summary, columns) {
+    var row = root.querySelector("[data-assigned-kpi-row]");
+    if (!row) return;
+
+    var onlineEl = row.querySelector("[data-assigned-kpi-online]");
+    var totalEl = row.querySelector("[data-assigned-kpi-total]");
+    var uplinksEl = row.querySelector("[data-assigned-kpi-uplinks]");
+    var online = summary.online_clients != null ? summary.online_clients : 0;
+    var total = summary.total_clients != null ? summary.total_clients : 0;
+    var uplinkCount = (columns || []).filter(function (col) {
+      return col.key !== OFFLINE_KEY && col.key !== UNKNOWN_KEY;
+    }).length;
+
+    if (onlineEl) onlineEl.textContent = String(online);
+    if (totalEl) totalEl.textContent = String(total);
+    if (uplinksEl) uplinksEl.textContent = String(uplinkCount);
+    setHidden(row, false);
+  }
+
   function renderClients(analysis) {
     var section = root.querySelector("[data-router-analysis]");
     var board = root.querySelector("[data-assigned-client-list]");
     var summaryEl = root.querySelector("[data-assigned-clients-summary]");
     var emptyEl = root.querySelector("[data-router-analysis-empty]");
     var errEl = root.querySelector("[data-router-analysis-error]");
+    var kpiRow = root.querySelector("[data-assigned-kpi-row]");
     if (!section || !board) return;
 
     var clients = analysis.clients || [];
@@ -336,6 +454,7 @@
       board.innerHTML = "";
       setHidden(emptyEl, false);
       setHidden(section, false);
+      setHidden(kpiRow, true);
       setHidden(livePill, false);
       return;
     }
@@ -346,6 +465,11 @@
       return renderUplinkColumn(col, ispOptions);
     }).join("");
 
+    renderKpis(summary, columns);
+    var switchHint = root.querySelector("[data-assigned-switch-hint]");
+    if (switchHint) {
+      setHidden(switchHint, !analysis.can_switch_clients);
+    }
     setHidden(emptyEl, true);
     setHidden(section, false);
     setHidden(livePill, false);
@@ -362,6 +486,7 @@
     if (!analysis.ok && !(analysis.clients || []).length) {
       setHidden(root.querySelector("[data-router-analysis]"), true);
       setHidden(root.querySelector("[data-assigned-status-card]"), true);
+      setHidden(root.querySelector("[data-assigned-kpi-row]"), true);
       setHidden(livePill, true);
       return;
     }
@@ -450,10 +575,13 @@
         if (typeof window.showToast === "function") {
           window.showToast({
             type: "success",
-            title: "Switched",
+            title: "Link updated",
             text:
               data.message ||
-              clientName + " is now on " + (data.isp_port || targetPort) + ".",
+              clientName +
+                " will use " +
+                (data.isp_port || targetPort) +
+                " for new traffic — no disconnect.",
           });
         }
         fetchLive(true);
@@ -543,6 +671,7 @@
     setHidden(retry, suspended);
     setHidden(root.querySelector("[data-router-analysis]"), true);
     setHidden(root.querySelector("[data-assigned-status-card]"), true);
+    setHidden(root.querySelector("[data-assigned-kpi-row]"), true);
     setHidden(livePill, true);
   }
 
@@ -617,9 +746,27 @@
   if (clientBoard) {
     clientBoard.addEventListener("click", function (event) {
       var chip = event.target.closest("[data-isp-switch-chip]");
-      if (!chip) return;
+      if (chip) {
+        event.preventDefault();
+        requestClientIspSwitch(chip);
+        return;
+      }
+      var submit = event.target.closest("[data-isp-switch-submit]");
+      if (!submit) return;
       event.preventDefault();
-      requestClientIspSwitch(chip);
+      var form = submit.closest(".mk-assigned-switch-form");
+      var select = form ? form.querySelector(".mk-assigned-switch-select") : null;
+      var targetPort = select ? (select.value || "").trim() : "";
+      if (!targetPort) return;
+      submit.setAttribute("data-target-port", targetPort);
+      requestClientIspSwitch(submit);
+    });
+    clientBoard.addEventListener("change", function (event) {
+      var select = event.target.closest(".mk-assigned-switch-select");
+      if (!select) return;
+      var form = select.closest(".mk-assigned-switch-form");
+      var submit = form ? form.querySelector("[data-isp-switch-submit]") : null;
+      if (submit) submit.disabled = !(select.value || "").trim() || switchInFlight;
     });
   }
 

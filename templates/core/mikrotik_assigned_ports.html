@@ -17,6 +17,7 @@
         <span class="mk-live-dot" aria-hidden="true"></span>
         Live
       </span>
+      <a class="btn btn-ghost" href="{% url 'core:mikrotik_assigned_ports_movements' router.id %}">Movement history</a>
       <a class="btn btn-ghost" href="{% url 'core:mikrotik_ports' router.id %}">Port setup</a>
     </div>
   </header>
@@ -34,11 +35,18 @@
     data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
     data-router-id="{{ router.id }}"
   >
-    <div class="mk-loading" data-assigned-loading {% if not ports_loading %}hidden{% endif %}>
-      <div class="mk-loading-pulse" aria-hidden="true"></div>
-      <div>
-        <p class="mk-loading-title">Loading…</p>
-        <p class="mk-help-note">Reading customers from {{ router.name }}.</p>
+    <div class="mk-assigned-loading" data-assigned-loading {% if not ports_loading %}hidden{% endif %}>
+      <div class="mk-assigned-loading-head">
+        <div class="mk-loading-pulse" aria-hidden="true"></div>
+        <div>
+          <p class="mk-loading-title">Loading live clients…</p>
+          <p class="mk-help-note">Reading customers from {{ router.name }}.</p>
+        </div>
+      </div>
+      <div class="mk-assigned-loading-skeleton" aria-hidden="true">
+        <div class="mk-assigned-skeleton-col"></div>
+        <div class="mk-assigned-skeleton-col"></div>
+        <div class="mk-assigned-skeleton-col is-short"></div>
       </div>
     </div>
 
@@ -57,12 +65,35 @@
       </button>
     </div>
 
+    <div class="mk-assigned-kpi-row" data-assigned-kpi-row hidden aria-label="Live client summary">
+      <article class="mk-assigned-kpi">
+        <p class="mk-assigned-kpi-label">Online now</p>
+        <p class="mk-assigned-kpi-value" data-assigned-kpi-online>—</p>
+      </article>
+      <article class="mk-assigned-kpi">
+        <p class="mk-assigned-kpi-label">Total customers</p>
+        <p class="mk-assigned-kpi-value" data-assigned-kpi-total>—</p>
+      </article>
+      <article class="mk-assigned-kpi">
+        <p class="mk-assigned-kpi-label">Active uplinks</p>
+        <p class="mk-assigned-kpi-value" data-assigned-kpi-uplinks>—</p>
+      </article>
+    </div>
+
     <section class="mk-assigned-clients-section" data-router-analysis hidden aria-label="Customers by uplink">
       <header class="mk-assigned-section-head">
-        <h2 class="mk-assigned-section-title">Customers by uplink</h2>
-        <p class="mk-help-note" data-assigned-clients-summary></p>
+        <div class="mk-assigned-section-head-copy">
+          <h2 class="mk-assigned-section-title">Customers by uplink</h2>
+          <p class="mk-help-note" data-assigned-clients-summary></p>
+        </div>
+        <p class="mk-assigned-board-hint mk-help-note">Swipe to see all links on smaller screens.</p>
+        <p class="mk-help-note mk-assigned-switch-hint" data-assigned-switch-hint hidden>
+          Online customers can be moved manually — tap <strong>Switch link</strong> on their card.
+        </p>
       </header>
-      <div class="mk-assigned-uplink-board" data-assigned-client-list></div>
+      <div class="mk-assigned-uplink-board-wrap">
+        <div class="mk-assigned-uplink-board" data-assigned-client-list></div>
+      </div>
       <p class="mk-help-note mk-assigned-empty" data-router-analysis-empty hidden>
         No customers on this router yet.
       </p>

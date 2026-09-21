@@ -22220,12 +22220,15 @@ def _port_uplink_hints(
             # PPPoE wins when both somehow exist on the same parent.
             if iface in hints and hints[iface].get("kind") == "pppoe":
                 continue
+            gateway = (row.get("gateway") or "").strip()
             entry = {
                 "kind": "dhcp",
                 "uplink": iface,
                 "active": "1" if active else "0",
                 "status": status,
             }
+            if gateway:
+                entry["gateway"] = gateway
             if _is_bridge_iface_name(iface):
                 if active:
                     bound_bridge_clients.append(
@@ -22952,6 +22955,7 @@ def list_mikrotik_ports(
                         "uplink_kind": hint.get("kind") or "",
                         "uplink_iface": hint.get("uplink") or "",
                         "uplink_active": (hint.get("active") or "") == "1",
+                        "uplink_gateway": (hint.get("gateway") or "").strip(),
                         "traffic_iface": traffic_iface,
                         "rx_byte": rx_byte,
                         "tx_byte": tx_byte,
@@ -23374,6 +23378,28 @@ def build_mikrotik_recovery_script_sections(router) -> list[dict[str, str]]:
                 ),
             },
         )
+        shared_wan = next((m for m in members if m != wan), "")
+        if shared_wan:
+            sections.insert(
+                3,
+                {
+                    "key": "multi_isp_reset",
+                    "title": f"Reset multi-ISP + prep retry ({wan} + {shared_wan})",
+                    "when": (
+                        "Multi-ISP apply left no default route, dashboard shows Disconnected, "
+                        "or ether2 stuck searching while ether1 works."
+                    ),
+                    "steps": (
+                        "Clears broken PCC/routes, restores Internet on the primary WAN, "
+                        "and preps Shared ISP for a clean Apply retry. Reconnect after pasting."
+                    ),
+                    "script": build_multi_isp_reset_prepare_script(
+                        primary_wan=wan,
+                        shared_wan=shared_wan,
+                        lan_bridge=lan_bridge,
+                    ),
+                },
+            )
 
     return sections
 
@@ -23434,11 +23460,27 @@ def build_uplink_recovery_script(
                 "",
             ]
         )
+    primary = (primary_port or "").strip()
     lines.append(f':local lanBridge "{lan_bridge}"')
+    if primary:
+        lines.extend(
+            [
+                f':local primaryWan "{primary}"',
+                "/interface bridge port remove [find interface=$primaryWan]",
+                ":do { /interface enable $primaryWan } on-error={}",
+                (
+                    ":if ([:len [/ip dhcp-client find interface=$primaryWan]] > 0) do={"
+                    "  /ip dhcp-client set [find interface=$primaryWan] "
+                    "disabled=no add-default-route=yes use-peer-dns=no default-route-distance=1"
+                    "}"
+                ),
+                "",
+            ]
+        )
     for index, entry in enumerate(restore_entries, start=1):
         iface = (entry.get("interface") or "").strip()
         bridge = (entry.get("bridge") or "").strip() or lan_bridge
-        if not iface:
+        if not iface or (primary and iface == primary):
             continue
         lines.extend(
             [
@@ -23451,28 +23493,76 @@ def build_uplink_recovery_script(
                 "",
             ]
         )
-    if primary_port:
-        primary = (primary_port or "").strip()
-        if primary:
-            lines.extend(
-                [
-                    f':local primaryWan "{primary}"',
-                    ":do { /interface enable $primaryWan } on-error={}",
-                    (
-                        ":if ([:len [/ip dhcp-client find interface=$primaryWan]] > 0) do={"
-                        "  /ip dhcp-client set [find interface=$primaryWan] "
-                        "disabled=no add-default-route=yes default-route-distance=1"
-                        "}"
-                    ),
-                    "",
-                ]
-            )
     lines.extend(
         [
             ':put ("ISPCENTRIC uplink recovery done — check bridge ports, then Reconnect.")',
             ':put ("If health stays soft, wait 30s and click Reconnect again.")',
         ]
     )
+    return "\n".join(lines)
+
+
+def build_multi_isp_reset_prepare_script(
+    *,
+    primary_wan: str = "ether1",
+    shared_wan: str = "ether2",
+    lan_bridge: str = "bridgeLocal",
+) -> str:
+    """
+    Winbox recovery: clear broken multi-ISP apply, restore Internet on primary,
+    and prep Shared ISP (unbridged DHCP, no default route) for a retry.
+    """
+    primary_wan = (primary_wan or "ether1").strip() or "ether1"
+    shared_wan = (shared_wan or "ether2").strip() or "ether2"
+    lan_bridge = (lan_bridge or "bridgeLocal").strip() or "bridgeLocal"
+    lines = [
+        f"# ISPCENTRIC — reset + prepare multi-ISP ({primary_wan} + {shared_wan})",
+        "# Winbox -> New Terminal -> paste ALL lines once, press Enter",
+        "# Then Reconnect in ISPCENTRIC and Apply multi-ISP when both DHCP are bound.",
+        "",
+        f':local wan "{primary_wan}"',
+        f':local shared "{shared_wan}"',
+        f':local lanBridge "{lan_bridge}"',
+        "",
+        "# Open API + WireGuard",
+        ':do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}',
+        ':do { /interface enable [find where name=ispcentric-vpn] } on-error={}',
+        "",
+        "# Clear broken multi-ISP leftovers",
+        f'/ip route remove [find comment~"{UPLINK_TAG}"]',
+        f'/ip firewall mangle remove [find comment~"{UPLINK_TAG}"]',
+        f'/ip firewall mangle remove [find comment~"{CLIENT_ISP_PIN_TAG}"]',
+        f'/ip firewall filter remove [find comment~"{NO_BACKFLOW_TAG}"]',
+        f'/routing table remove [find comment~"{UPLINK_TAG}"]',
+        f'/system scheduler remove [find comment~"ispcentric"]',
+        f'/system script remove [find comment~"ispcentric"]',
+        f'/interface list member remove [find comment~"{UPLINK_TAG}"]',
+        f'/ip dhcp-client remove [find comment~"{UPLINK_TAG}"]',
+        "",
+        "# WAN ports off LAN bridge",
+        "/interface bridge port remove [find interface=$wan]",
+        "/interface bridge port remove [find interface=$shared]",
+        "/interface enable $wan",
+        "/interface enable $shared",
+        "",
+        "# Primary Internet — default route ON",
+        ":if ([:len [/ip dhcp-client find interface=$wan]] > 0) do={",
+        "  /ip dhcp-client set [find interface=$wan] disabled=no add-default-route=yes use-peer-dns=no default-route-distance=1",
+        "  /ip dhcp-client renew [find interface=$wan]",
+        "} else={",
+        f'  /ip dhcp-client add interface=$wan disabled=no add-default-route=yes use-peer-dns=no default-route-distance=1 comment=defconf',
+        "}",
+        "",
+        "# Shared ISP prep — no default route",
+        ":if ([:len [/ip dhcp-client find interface=$shared]] > 0) do={",
+        f'  /ip dhcp-client set [find interface=$shared] disabled=no add-default-route=no use-peer-dns=no default-route-distance=10 comment="{UPLINK_TAG}"',
+        "} else={",
+        f'  /ip dhcp-client add interface=$shared disabled=no add-default-route=no use-peer-dns=no default-route-distance=10 comment="{UPLINK_TAG}"',
+        "}",
+        "/ip dhcp-client renew [find interface=$shared]",
+        "",
+        ':put "Reset + multi-ISP prep done — Reconnect, then Apply when both ports show bound."',
+    ]
     return "\n".join(lines)
 
 
@@ -25043,6 +25133,77 @@ def _ensure_balance_routing_table(sock: socket.socket, table_name: str) -> dict[
     return terminal
 
 
+def _format_balance_gateway(gateway: str, interface: str) -> str:
+    """
+    Scope a balance next-hop to a WAN interface.
+
+    Two ISP modems often hand out the same gateway (e.g. 192.168.100.1 on ether1
+    and ether2). RouterOS needs 192.168.100.1%ether1 vs %ether2 or routes collide.
+    """
+    gateway = (gateway or "").strip()
+    interface = (interface or "").strip()
+    if not gateway or not interface:
+        return gateway
+    if "%" in gateway:
+        return gateway
+    ip = _parse_dhcp_gateway_token(gateway)
+    if ip and not any(ch.isalpha() for ch in ip):
+        return f"{ip}%{interface}"
+    return gateway
+
+
+def _balance_member_tables_ready(sock: socket.socket, member_count: int) -> list[str]:
+    """Return routing-table names still missing an active default route."""
+    missing: list[str] = []
+    for index in range(max(0, int(member_count))):
+        table = _balance_table_name(index)
+        if not _balance_table_has_active_default(sock, index):
+            missing.append(table)
+    return missing
+
+
+def _restore_primary_wan_dhcp_default(sock: socket.socket, interface: str) -> None:
+    """Emergency: put main-table Internet back on one WAN after a failed balance apply."""
+    interface = (interface or "").strip()
+    if not interface:
+        return
+    for row in _print(sock, "/ip/dhcp-client", props=".id,interface,disabled"):
+        if (row.get("interface") or "").strip() != interface:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        _set(
+            sock,
+            "/ip/dhcp-client",
+            item_id,
+            disabled="no",
+            **{
+                "add-default-route": "yes",
+                "use-peer-dns": "no",
+                "default-route-distance": "1",
+            },
+        )
+        try:
+            _command(sock, ["/ip/dhcp-client/renew", f"=.id={item_id}"])
+        except Exception:
+            pass
+        return
+
+
+def _rollback_failed_balance_apply(
+    sock: socket.socket,
+    *,
+    primary_interface: str,
+) -> None:
+    """Best-effort undo when PCC install fails mid-apply (policy already cleared)."""
+    primary_interface = (primary_interface or "").strip()
+    try:
+        _restore_primary_wan_dhcp_default(sock, primary_interface)
+    except Exception:
+        pass
+
+
 def _add_balance_default_route(
     sock: socket.socket,
     *,
@@ -25176,7 +25337,11 @@ def _install_balance_pcc(
     for rank, item in enumerate(ordered):
         index = int(item.get("index") or 0)
         table = _balance_table_name(index)
-        gateway = (item.get("gateway") or "").strip()
+        wan_iface = (item.get("wan_iface") or item.get("interface") or "").strip()
+        gateway = _format_balance_gateway(
+            (item.get("gateway") or "").strip(),
+            wan_iface,
+        )
         if not gateway:
             continue
         table_term = _ensure_balance_routing_table(sock, table)
@@ -26227,10 +26392,35 @@ def apply_mikrotik_uplink_balance(
                     _uplink_progress(progress, "Installing share + failover routes…", "pcc")
                     pcc = _install_balance_pcc(sock, balance_members)
                     if not pcc.get("ok"):
+                        _rollback_failed_balance_apply(
+                            sock,
+                            primary_interface=(
+                                balance_members[0].get("interface") if balance_members else members[0]
+                            ),
+                        )
                         return {
                             "ok": False,
                             "error": pcc.get("error")
                             or "Could not install PCC balance rules.",
+                            "unbridged": unbridged,
+                            "recovery_script": recovery_script,
+                        }
+
+                    missing_tables = _balance_member_tables_ready(
+                        sock, len(balance_members)
+                    )
+                    if missing_tables:
+                        _rollback_failed_balance_apply(
+                            sock,
+                            primary_interface=balance_members[0].get("interface") or "",
+                        )
+                        return {
+                            "ok": False,
+                            "error": (
+                                "Balance routes did not come up on every ISP port "
+                                f"({', '.join(missing_tables)}). "
+                                "Primary Internet was restored — retry Apply."
+                            ),
                             "unbridged": unbridged,
                             "recovery_script": recovery_script,
                         }
@@ -27152,9 +27342,306 @@ def read_mikrotik_uplink_multi(
 
 UPLINK_CONN_MARK_PREFIX = "ispcentric-c"
 CLIENT_ISP_PIN_TAG = "ispcentric-client-isp"
-CLIENT_REBALANCE_DOMINANT_PCT = 75
-CLIENT_REBALANCE_MAX_MOVES = 1
-CLIENT_REBALANCE_COOLDOWN_S = 90
+CLIENT_ISP_DEFAULT_WEIGHT_MBPS = 100
+CLIENT_REBALANCE_TOLERANCE_PCT = 8
+CLIENT_REBALANCE_BPS_TOLERANCE_PCT = 15
+CLIENT_REBALANCE_MIN_TOTAL_BPS = 500_000
+CLIENT_REBALANCE_MAX_MOVES = 3
+CLIENT_REBALANCE_COOLDOWN_S = 45
+CLIENT_REBALANCE_FAST_COOLDOWN_S = 20
+CLIENT_REBALANCE_IDLE_BPS = 150_000
+BALANCE_DRIFT_STREAK_THRESHOLD = 3
+BALANCE_DRIFT_ACTION_PCT = 15
+
+
+def _client_isp_capacity_weights(
+    member_ports: list[str],
+    port_weights: dict[str, Any] | None,
+    *,
+    healthy_ports: list[str] | None = None,
+) -> dict[str, int]:
+    """Per-ISP Mbps weights for client share (default 100 each = equal split)."""
+    ordered = [str(p).strip() for p in (healthy_ports or member_ports or []) if str(p).strip()]
+    weights_raw = port_weights if isinstance(port_weights, dict) else {}
+    resolved: dict[str, int] = {}
+    for port in ordered:
+        raw = weights_raw.get(port)
+        if raw is None:
+            raw = weights_raw.get(str(port))
+        try:
+            mbps = int(raw or CLIENT_ISP_DEFAULT_WEIGHT_MBPS)
+        except (TypeError, ValueError):
+            mbps = CLIENT_ISP_DEFAULT_WEIGHT_MBPS
+        resolved[port] = max(1, min(10000, mbps))
+    return resolved
+
+
+def _client_isp_target_counts(total: int, weights_by_port: dict[str, int]) -> dict[str, int]:
+    """Largest-remainder integer split of *total* clients by capacity weight."""
+    ports = list(weights_by_port.keys())
+    if not ports or total <= 0:
+        return {p: 0 for p in ports}
+    total_weight = sum(weights_by_port.values())
+    if total_weight <= 0:
+        even = total // len(ports)
+        rem = total % len(ports)
+        return {p: even + (1 if i < rem else 0) for i, p in enumerate(ports)}
+
+    raw = {p: total * weights_by_port[p] / float(total_weight) for p in ports}
+    floors = {p: int(raw[p]) for p in ports}
+    remainder = total - sum(floors.values())
+    order = sorted(
+        ports,
+        key=lambda p: (raw[p] - floors[p], weights_by_port[p], p),
+        reverse=True,
+    )
+    targets = dict(floors)
+    for idx in range(max(0, remainder)):
+        targets[order[idx % len(order)]] += 1
+    return targets
+
+
+def _client_isp_rebalance_tolerance(total_online: int) -> int:
+    """Allowable client-count drift before auto-rebalance kicks in."""
+    total = max(0, int(total_online or 0))
+    if total <= 1:
+        return 0
+    return max(1, round(total * CLIENT_REBALANCE_TOLERANCE_PCT / 100.0))
+
+
+def _client_traffic_bps(client: dict[str, Any]) -> int:
+    return max(0, int(client.get("download_bps") or 0)) + max(
+        0, int(client.get("upload_bps") or 0)
+    )
+
+
+def _client_isp_bps_imbalance(
+    bps_by_port: dict[str, int],
+    weights_by_port: dict[str, int],
+    *,
+    tolerance_pct: float = CLIENT_REBALANCE_BPS_TOLERANCE_PCT,
+    min_total_bps: int = CLIENT_REBALANCE_MIN_TOTAL_BPS,
+) -> dict[str, Any]:
+    """Detect live bandwidth skew vs capacity-weighted targets."""
+    ports = list(weights_by_port.keys())
+    counts = {p: max(0, int(bps_by_port.get(p) or 0)) for p in ports}
+    total = sum(counts.values())
+    empty = {
+        "imbalanced": False,
+        "overloaded_isp": "",
+        "underloaded_isp": "",
+        "moves_needed": 0,
+        "targets_bps": {},
+        "target_pct_bps": {},
+        "deviations_bps": {},
+        "total_bps": total,
+    }
+    if total < min_total_bps or len(ports) < 2:
+        return empty
+
+    total_weight = sum(weights_by_port.values()) or 1
+    targets = {
+        p: total * weights_by_port[p] / float(total_weight) for p in ports
+    }
+    tolerance = max(total * tolerance_pct / 100.0, 100_000.0)
+    deviations = {p: counts.get(p, 0) - targets[p] for p in ports}
+    target_pct = {p: round(100 * targets[p] / total) if total else 0 for p in ports}
+    overloaded = max(deviations, key=deviations.get)
+    underloaded = min(deviations, key=deviations.get)
+    excess = max(0.0, deviations.get(overloaded, 0.0))
+    deficit = max(0.0, -deviations.get(underloaded, 0.0))
+    imbalanced = excess >= tolerance and deficit >= tolerance
+    moves = 0
+    if imbalanced:
+        moves = min(
+            CLIENT_REBALANCE_MAX_MOVES,
+            max(1, int(round(excess / max(targets.get(overloaded, 1.0), 1.0)))),
+        )
+    return {
+        "imbalanced": imbalanced,
+        "overloaded_isp": overloaded if imbalanced else "",
+        "underloaded_isp": underloaded if imbalanced else "",
+        "moves_needed": moves,
+        "targets_bps": {p: int(round(targets[p])) for p in ports},
+        "target_pct_bps": target_pct,
+        "deviations_bps": {p: int(round(deviations[p])) for p in ports},
+        "total_bps": total,
+        "tolerance_bps": int(round(tolerance)),
+    }
+
+
+def detect_bandwidth_share_drift(
+    wan_share: dict[str, Any] | None,
+    port_weights: dict[str, Any] | None,
+    *,
+    threshold_pct: int = BALANCE_DRIFT_ACTION_PCT,
+    min_total_bps: int = CLIENT_REBALANCE_MIN_TOTAL_BPS,
+) -> dict[str, Any]:
+    """Compare live WAN share % to configured Mbps weights."""
+    share = wan_share if isinstance(wan_share, dict) else {}
+    shares = list(share.get("shares") or [])
+    total_bps = int(share.get("total_bps") or 0)
+    if not share.get("ok") or len(shares) < 2 or total_bps < min_total_bps:
+        return {
+            "drifted": False,
+            "drifted_ports": [],
+            "overloaded_isp": "",
+            "underloaded_isp": "",
+            "total_bps": total_bps,
+        }
+
+    weights: dict[str, int] = {}
+    for row in shares:
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        raw = (port_weights or {}).get(name)
+        if raw is None:
+            raw = (port_weights or {}).get(str(name))
+        try:
+            weights[name] = max(1, int(raw or CLIENT_ISP_DEFAULT_WEIGHT_MBPS))
+        except (TypeError, ValueError):
+            weights[name] = CLIENT_ISP_DEFAULT_WEIGHT_MBPS
+    if len(weights) < 2:
+        return {
+            "drifted": False,
+            "drifted_ports": [],
+            "overloaded_isp": "",
+            "underloaded_isp": "",
+            "total_bps": total_bps,
+        }
+
+    total_weight = sum(weights.values()) or 1
+    bps_by_port = {
+        str(row.get("name") or "").strip(): max(0, int(row.get("bps") or 0))
+        for row in shares
+        if str(row.get("name") or "").strip()
+    }
+    drifted_ports: list[str] = []
+    for name, weight in weights.items():
+        actual = bps_by_port.get(name, 0)
+        actual_pct = round(100 * actual / total_bps) if total_bps else 0
+        target_pct = round(100 * weight / total_weight)
+        if abs(actual_pct - target_pct) >= threshold_pct:
+            drifted_ports.append(f"{name} ~{actual_pct}% (target ~{target_pct}%)")
+
+    bps_plan = _client_isp_bps_imbalance(
+        bps_by_port,
+        weights,
+        tolerance_pct=float(threshold_pct),
+        min_total_bps=min_total_bps,
+    )
+
+    return {
+        "drifted": bool(drifted_ports) or bool(bps_plan.get("imbalanced")),
+        "drifted_ports": drifted_ports,
+        "overloaded_isp": bps_plan.get("overloaded_isp") or "",
+        "underloaded_isp": bps_plan.get("underloaded_isp") or "",
+        "total_bps": total_bps,
+        "bps_plan": bps_plan,
+    }
+
+
+def plan_client_isp_distribution(
+    *,
+    member_ports: list[str],
+    port_weights: dict[str, Any] | None,
+    counts_by_port: dict[str, int],
+    healthy_ports: list[str] | None = None,
+    bps_by_port: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """
+    Capacity-weighted client distribution plan.
+
+    Uses online client counts and, when enough live traffic exists, bandwidth
+    share to decide whether ISPs are overloaded.
+    """
+    ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
+    healthy = [
+        str(p).strip()
+        for p in (healthy_ports or ordered)
+        if str(p).strip() and str(p).strip() in ordered
+    ]
+    if not healthy:
+        healthy = list(ordered)
+
+    weights = _client_isp_capacity_weights(ordered, port_weights, healthy_ports=healthy)
+    counts = {p: max(0, int(counts_by_port.get(p) or 0)) for p in healthy}
+    total = sum(counts.values())
+    targets = _client_isp_target_counts(total, weights)
+    tolerance = _client_isp_rebalance_tolerance(total)
+    deviations = {p: counts.get(p, 0) - targets.get(p, 0) for p in healthy}
+    target_pct = {
+        p: round(100 * targets[p] / total) if total else 0 for p in healthy
+    }
+
+    count_overloaded = ""
+    count_underloaded = ""
+    count_moves = 0
+    count_imbalanced = False
+    if len(healthy) >= 2 and total >= 2:
+        count_overloaded = max(deviations, key=deviations.get)
+        count_underloaded = min(deviations, key=deviations.get)
+        excess = max(0, deviations.get(count_overloaded, 0))
+        deficit = max(0, -deviations.get(count_underloaded, 0))
+        drift_limit = max(1, tolerance)
+        if excess >= drift_limit and deficit >= drift_limit:
+            count_imbalanced = True
+            count_moves = min(excess, deficit)
+
+    bps_input = {
+        p: max(0, int((bps_by_port or {}).get(p) or 0)) for p in healthy
+    }
+    bps_plan = _client_isp_bps_imbalance(bps_input, weights)
+
+    imbalance_reason = ""
+    overloaded = ""
+    underloaded = ""
+    moves_needed = 0
+    if bps_plan.get("imbalanced"):
+        imbalance_reason = "bandwidth"
+        overloaded = bps_plan.get("overloaded_isp") or ""
+        underloaded = bps_plan.get("underloaded_isp") or ""
+        moves_needed = max(moves_needed, int(bps_plan.get("moves_needed") or 1))
+    if count_imbalanced:
+        imbalance_reason = (
+            "bandwidth_and_clients"
+            if imbalance_reason
+            else "clients"
+        )
+        if not overloaded:
+            overloaded = count_overloaded
+            underloaded = count_underloaded
+        moves_needed = max(moves_needed, count_moves)
+
+    dominant_isp = overloaded or (
+        max(counts, key=counts.get) if counts else ""
+    )
+    dominant_pct = round(100 * counts.get(dominant_isp, 0) / total) if total else 0
+    imbalanced = bool(moves_needed)
+
+    return {
+        "healthy_ports": healthy,
+        "weights": weights,
+        "counts": counts,
+        "targets": targets,
+        "target_pct": target_pct,
+        "deviations": deviations,
+        "tolerance": tolerance,
+        "bps_by_port": bps_input,
+        "bps_targets": bps_plan.get("targets_bps") or {},
+        "bps_target_pct": bps_plan.get("target_pct_bps") or {},
+        "bps_deviations": bps_plan.get("deviations_bps") or {},
+        "total_bps": int(bps_plan.get("total_bps") or 0),
+        "imbalanced": imbalanced,
+        "imbalance_reason": imbalance_reason,
+        "overloaded_isp": overloaded,
+        "underloaded_isp": underloaded,
+        "moves_needed": moves_needed,
+        "dominant_isp": dominant_isp,
+        "dominant_pct": dominant_pct,
+        "total_online": total,
+    }
 
 
 def _client_isp_pin_comment(customer_id: int | str, client_ip: str) -> str:
@@ -27258,14 +27745,46 @@ def clear_all_client_isp_pins(sock: socket.socket) -> dict[str, Any]:
     }
 
 
+def _rebalance_candidate_sort_key(
+    client: dict[str, Any],
+    *,
+    imbalance_reason: str = "",
+    seamless: bool = True,
+) -> tuple:
+    """Order clients for ISP moves — seamless mode avoids disrupting active sessions."""
+    pinned_rank = 1 if client.get("isp_pinned") else 0
+    bps = _client_traffic_bps(client)
+    name = (client.get("name") or "").lower()
+    if seamless and imbalance_reason == "clients":
+        # Count-only skew: move quiet clients first (invisible to the user).
+        return (pinned_rank, bps, name)
+    if seamless and imbalance_reason in {"bandwidth", "bandwidth_and_clients"}:
+        # Bandwidth skew: pin heavy users so their *new* flows shift — no disconnect.
+        return (pinned_rank, -bps, name)
+    if seamless:
+        return (pinned_rank, bps, name)
+    return (
+        pinned_rank,
+        -bps,
+        -(int(client.get("connection_count") or 0)),
+        name,
+    )
+
+
 def pin_client_to_isp_mark(
     sock: socket.socket,
     *,
     client_ip: str,
     mark_index: int,
     customer_id: int | str = "",
+    seamless: bool = True,
 ) -> dict[str, Any]:
-    """Pin a LAN client IP to a PCC ISP slot (brief session refresh)."""
+    """
+    Pin a LAN client IP to a PCC ISP slot.
+
+    Seamless (default): only new connections use the target ISP — active browsing,
+    streams, and PPPoE sessions stay up until they finish naturally.
+    """
     ip = _parse_connection_address(client_ip)
     if not ip or not _is_likely_lan_ip(ip):
         return {"ok": False, "error": "Invalid client IP."}
@@ -27310,12 +27829,15 @@ def pin_client_to_isp_mark(
                 "error": _trap_message(terminal, "Could not pin client to ISP."),
             }
 
-    cleared = _kill_firewall_connections_for_addresses(sock, [ip])
+    cleared = 0
+    if not seamless:
+        cleared = _kill_firewall_connections_for_addresses(sock, [ip])
     return {
         "ok": True,
         "client_ip": ip,
         "mark_index": mark_index,
         "connections_cleared": cleared,
+        "seamless": bool(seamless),
     }
 
 
@@ -27327,8 +27849,9 @@ def switch_client_to_isp_port(
     member_ports: list[str],
     customer_id: int | str = "",
     slow_ports: list[str] | None = None,
+    seamless: bool = True,
 ) -> dict[str, Any]:
-    """Move one online client to a chosen ISP member port."""
+    """Move one online client to a chosen ISP member port without dropping sessions."""
     ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
     ordered = list(dict.fromkeys(ordered))
     target = (target_port or "").strip()
@@ -27345,6 +27868,7 @@ def switch_client_to_isp_port(
         client_ip=client_ip,
         mark_index=mark_index,
         customer_id=customer_id,
+        seamless=seamless,
     )
     if result.get("ok"):
         result["isp_port"] = target
@@ -27357,13 +27881,17 @@ def auto_rebalance_client_isps(
     member_ports: list[str],
     clients: list[dict[str, Any]],
     slow_ports: list[str] | None = None,
-    dominant_pct: int = CLIENT_REBALANCE_DOMINANT_PCT,
+    port_weights: dict[str, Any] | None = None,
     max_moves: int = CLIENT_REBALANCE_MAX_MOVES,
+    preferred_overloaded_isp: str = "",
+    preferred_underloaded_isp: str = "",
+    seamless: bool = True,
 ) -> dict[str, Any]:
     """
-    Move a few online clients off an overloaded ISP onto a lighter one.
+    Move online clients toward capacity-weighted ISP targets.
 
-    Uses pinned mangle rules so the shift sticks across reconnects.
+    Seamless by default: pins apply to new connections only — clients keep
+    surfing while traffic gradually shifts to the lighter ISP link.
     """
     ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
     ordered = list(dict.fromkeys(ordered))
@@ -27383,33 +27911,55 @@ def auto_rebalance_client_isps(
             by_isp[port].append(client)
 
     counts = {p: len(by_isp.get(p) or []) for p in healthy}
-    if not counts or max(counts.values()) <= 1:
-        return {"ok": False, "skipped": True, "reason": "already_balanced"}
-
-    total = sum(counts.values())
-    dominant = max(counts, key=counts.get)
-    dominant_pct_val = round(100 * counts[dominant] / total) if total else 0
-    if dominant_pct_val < dominant_pct:
+    bps_by_port = {
+        p: sum(_client_traffic_bps(c) for c in (by_isp.get(p) or [])) for p in healthy
+    }
+    plan = plan_client_isp_distribution(
+        member_ports=ordered,
+        port_weights=port_weights,
+        counts_by_port=counts,
+        healthy_ports=healthy,
+        bps_by_port=bps_by_port,
+    )
+    dominant = (plan.get("overloaded_isp") or "").strip()
+    target = (plan.get("underloaded_isp") or "").strip()
+    forced = False
+    if not plan.get("imbalanced"):
+        pref_over = (preferred_overloaded_isp or "").strip()
+        pref_under = (preferred_underloaded_isp or "").strip()
+        if (
+            pref_over
+            and pref_under
+            and pref_over in healthy
+            and pref_under in healthy
+            and pref_over != pref_under
+            and pref_over not in slow
+            and pref_under not in slow
+        ):
+            dominant = pref_over
+            target = pref_under
+            forced = True
+        else:
+            return {"ok": False, "skipped": True, "reason": "already_balanced"}
+    if not dominant or not target or dominant == target:
         return {"ok": False, "skipped": True, "reason": "not_imbalanced"}
 
-    target = min(
-        (p for p in healthy if p != dominant),
-        key=lambda p: (counts.get(p, 0), p),
+    move_limit = min(
+        max(1, int(max_moves)),
+        max(1, int(plan.get("moves_needed") or 1)) if not forced else max(1, int(max_moves)),
     )
-    if counts.get(target, 0) >= counts.get(dominant, 0):
-        return {"ok": False, "skipped": True, "reason": "no_lighter_isp"}
-
+    imbalance_reason = str(plan.get("imbalance_reason") or "")
     candidates = sorted(
         by_isp.get(dominant) or [],
-        key=lambda c: (
-            0 if not c.get("isp_pinned") else 1,
-            -(int(c.get("connection_count") or 0)),
-            (c.get("name") or "").lower(),
+        key=lambda c: _rebalance_candidate_sort_key(
+            c,
+            imbalance_reason=imbalance_reason,
+            seamless=seamless,
         ),
     )
     moved: list[dict[str, Any]] = []
     for client in candidates:
-        if len(moved) >= max(1, int(max_moves)):
+        if len(moved) >= move_limit:
             break
         ip = (client.get("ip") or "").strip()
         if not ip:
@@ -27424,6 +27974,7 @@ def auto_rebalance_client_isps(
             member_ports=ordered,
             customer_id=client.get("customer_id") or "",
             slow_ports=list(slow),
+            seamless=seamless,
         )
         if switch.get("ok"):
             moved.append(
@@ -27440,7 +27991,121 @@ def auto_rebalance_client_isps(
         "moved": moved,
         "dominant_isp": dominant,
         "target_isp": target,
-        "dominant_pct": dominant_pct_val,
+        "dominant_pct": plan.get("dominant_pct") or 0,
+        "target_counts": plan.get("targets") or {},
+        "target_pct": plan.get("target_pct") or {},
+        "moves_needed": plan.get("moves_needed") or 0,
+        "imbalance_reason": plan.get("imbalance_reason") or "",
+        "total_bps": plan.get("total_bps") or 0,
+        "seamless": bool(seamless),
+    }
+
+
+def maintain_router_smart_balance(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    member_ports: list[str],
+    port_weights: dict[str, Any] | None = None,
+    primary_wan: str = "",
+    bond_interface: str = "",
+    rebalance: bool = True,
+    timeout: float = 12.0,
+) -> dict[str, Any]:
+    """
+    Background smart-balance maintenance: ping monitor + optional client rebalance.
+
+    Intended for scheduled runs so link health and load spreading work without
+    the assigned-ports page open.
+    """
+    host = (host or "").strip()
+    ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
+    ordered = list(dict.fromkeys(ordered))
+    if not host or len(ordered) < 2:
+        return {"ok": False, "error": "Need host and at least two ISP ports."}
+
+    weights = _client_isp_capacity_weights(ordered, port_weights, healthy_ports=ordered)
+    monitor_members = [
+        {
+            "interface": name,
+            "index": str(index),
+            "wan_iface": name,
+            "weight": str(weights.get(name) or CLIENT_ISP_DEFAULT_WEIGHT_MBPS),
+        }
+        for index, name in enumerate(ordered)
+    ]
+
+    monitor_result: dict[str, Any] = {}
+    smart_status: dict[str, Any] = {}
+    rebalance_result: dict[str, Any] = {}
+    try:
+        with _api_session(host, username, password or "", timeout=timeout) as sock:
+            monitor_result = run_smart_balance_monitor_via_api(
+                sock,
+                monitor_members,
+                force=True,
+                host=host,
+            )
+            smart_status = read_smart_balance_status(sock, ordered)
+            slow_ports = list(smart_status.get("slow_ports") or [])
+
+            if rebalance:
+                usage = read_client_wan_usage(
+                    host,
+                    username,
+                    password or "",
+                    uplink_mode="smart_balance",
+                    member_ports=ordered,
+                    primary_wan=primary_wan or (ordered[0] if ordered else ""),
+                    bond_interface=bond_interface or "",
+                    timeout=timeout,
+                )
+                if usage.get("uses_connection_marks") or usage.get("mark_to_port"):
+                    clients: list[dict[str, Any]] = []
+                    pins = usage.get("client_pins") if isinstance(usage.get("client_pins"), dict) else {}
+                    mark_to_port = usage.get("mark_to_port") if isinstance(usage.get("mark_to_port"), dict) else {}
+                    for ip, row in (usage.get("ip_usage") or {}).items():
+                        if not ip:
+                            continue
+                        pin = pins.get(ip) if isinstance(pins, dict) else {}
+                        mark_index = row.get("mark_index")
+                        isp_port = (row.get("isp_port") or "").strip()
+                        if not isp_port and mark_index is not None:
+                            isp_port = str(
+                                mark_to_port.get(str(mark_index))
+                                or mark_to_port.get(mark_index)
+                                or ""
+                            ).strip()
+                        clients.append(
+                            {
+                                "online": True,
+                                "ip": ip,
+                                "isp_port": isp_port,
+                                "isp_pinned": bool((pin or {}).get("pinned")),
+                                "connection_count": int(row.get("connections") or 0),
+                                "download_bps": int(row.get("download_bps") or 0),
+                                "upload_bps": int(row.get("upload_bps") or 0),
+                                "customer_id": (pin or {}).get("customer_id") or "",
+                                "name": ip,
+                            }
+                        )
+                    if len(clients) >= 2:
+                        rebalance_result = auto_rebalance_client_isps(
+                            sock,
+                            member_ports=ordered,
+                            clients=clients,
+                            slow_ports=slow_ports,
+                            port_weights=port_weights,
+                        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc) or "Smart balance maintenance failed."}
+
+    return {
+        "ok": True,
+        "monitor": monitor_result,
+        "smart_balance_status": smart_status,
+        "rebalance": rebalance_result,
     }
 
 

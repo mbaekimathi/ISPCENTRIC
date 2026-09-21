@@ -236,6 +236,285 @@ def ensure_usage_sampling(*, max_age_sec: float | None = None) -> bool:
     return True
 
 
+def _smart_balance_monitor_enabled() -> bool:
+    if "--no-smart-balance-monitor" in sys.argv:
+        return False
+    return os.getenv("SMART_BALANCE_MONITOR_ENABLED", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+
+def _smart_balance_monitor_interval_sec() -> float:
+    try:
+        return max(45.0, float(os.getenv("SMART_BALANCE_MONITOR_INTERVAL_SEC", "60")))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _smart_balance_monitor_startup_delay_sec() -> float:
+    try:
+        return max(0.0, float(os.getenv("SMART_BALANCE_MONITOR_STARTUP_DELAY_SEC", "40")))
+    except (TypeError, ValueError):
+        return 40.0
+
+
+_SMART_BALANCE_LOCK_KEY = "smart_balance_monitor_bg_lock"
+
+
+def run_smart_balance_monitor_fleet(
+    *,
+    organization_id: int = 0,
+    router_id: int = 0,
+    rebalance: bool = True,
+    workers: int = 4,
+    use_lock: bool = True,
+    label: str = "interval",
+) -> dict:
+    """Ping-check smart-balance routers and optionally rebalance heavy clients."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from django.core.cache import cache
+
+    from core.mikrotik_connect import maintain_router_smart_balance
+    from core.models import MikroTikRouter
+    from core.views import _ports_live_payload, _router_api_host
+
+    interval = int(_smart_balance_monitor_interval_sec())
+    lock_ttl = max(180, interval * 3)
+    if use_lock and not cache.add(_SMART_BALANCE_LOCK_KEY, 1, timeout=lock_ttl):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "locked",
+            "label": label,
+        }
+
+    qs = MikroTikRouter.objects.filter(
+        account_status=MikroTikRouter.AccountStatus.ACTIVE,
+        uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+    ).exclude(host="")
+    if organization_id:
+        qs = qs.filter(organization_id=organization_id)
+    if router_id:
+        qs = qs.filter(pk=router_id)
+
+    routers = list(
+        qs.only(
+            "pk",
+            "name",
+            "host",
+            "username",
+            "password",
+            "vpn_address",
+            "uplink_ports",
+            "uplink_weights",
+            "wan_interface",
+            "bond_interface",
+        )
+    )
+
+    ok_count = 0
+    moved_total = 0
+    slow_total = 0
+    errors: list[str] = []
+    messages: list[dict[str, str]] = []
+
+    def _maintain(router: MikroTikRouter) -> dict:
+        member_ports = [
+            str(p).strip() for p in (router.uplink_ports or []) if str(p).strip()
+        ]
+        if len(member_ports) < 2:
+            return {
+                "router_id": router.pk,
+                "name": router.name,
+                "ok": False,
+                "skipped": True,
+                "reason": "need_two_ports",
+            }
+        api_host = _router_api_host(router)
+        result = maintain_router_smart_balance(
+            api_host,
+            router.username,
+            router.password or "",
+            member_ports=member_ports,
+            port_weights=(
+                dict(router.uplink_weights)
+                if isinstance(router.uplink_weights, dict)
+                else {}
+            ),
+            primary_wan=(router.wan_interface or "").strip(),
+            bond_interface=(router.bond_interface or "").strip(),
+            rebalance=rebalance,
+        )
+        result["router_id"] = router.pk
+        result["name"] = router.name
+        return result
+
+    try:
+        if not routers:
+            return {
+                "ok": True,
+                "skipped": False,
+                "routers": 0,
+                "ok_count": 0,
+                "slow_total": 0,
+                "moved_total": 0,
+                "errors": [],
+                "messages": [],
+                "label": label,
+            }
+
+        worker_count = max(1, min(int(workers or 4), len(routers)))
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures = {pool.submit(_maintain, router): router for router in routers}
+            for future in as_completed(futures):
+                router = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    errors.append(f"{router.name}: {exc}")
+                    continue
+                if result.get("ok"):
+                    ok_count += 1
+                    slow_ports = list(
+                        (result.get("smart_balance_status") or {}).get("slow_ports")
+                        or []
+                    )
+                    slow_total += len(slow_ports)
+                    moved = list((result.get("rebalance") or {}).get("moved") or [])
+                    moved_total += len(moved)
+                    if moved:
+                        from core.client_isp_movements import record_client_isp_movements
+                        from core.models import ClientIspMovement
+
+                        rebalance = result.get("rebalance") or {}
+                        record_client_isp_movements(
+                            router,
+                            moved,
+                            source=ClientIspMovement.Source.BACKGROUND,
+                            seamless=True,
+                            imbalance_reason=str(rebalance.get("imbalance_reason") or ""),
+                        )
+                    monitor = result.get("monitor") or {}
+                    if monitor.get("skipped"):
+                        messages.append(
+                            {
+                                "level": "info",
+                                "text": (
+                                    f"{router.name}: monitor throttled "
+                                    f"({monitor.get('reason')})"
+                                ),
+                            }
+                        )
+                    elif slow_ports:
+                        messages.append(
+                            {
+                                "level": "warn",
+                                "text": (
+                                    f"{router.name}: sidelined "
+                                    f"{', '.join(slow_ports)}"
+                                ),
+                            }
+                        )
+                    if moved:
+                        messages.append(
+                            {
+                                "level": "success",
+                                "text": (
+                                    f"{router.name}: rebalanced "
+                                    f"{len(moved)} client(s)"
+                                ),
+                            }
+                        )
+                    try:
+                        _ports_live_payload(router)
+                    except Exception:
+                        pass
+                elif result.get("skipped"):
+                    messages.append(
+                        {
+                            "level": "info",
+                            "text": (
+                                f"{router.name}: skipped "
+                                f"({result.get('reason') or 'unknown'})"
+                            ),
+                        }
+                    )
+                else:
+                    errors.append(
+                        f"{router.name}: {result.get('error') or 'maintenance failed'}"
+                    )
+                if use_lock:
+                    cache.set(_SMART_BALANCE_LOCK_KEY, 1, timeout=lock_ttl)
+
+        if routers:
+            logger.info(
+                "smart balance %s: routers=%s ok=%s sidelined=%s moved=%s",
+                label,
+                len(routers),
+                ok_count,
+                slow_total,
+                moved_total,
+            )
+        return {
+            "ok": True,
+            "skipped": False,
+            "routers": len(routers),
+            "ok_count": ok_count,
+            "slow_total": slow_total,
+            "moved_total": moved_total,
+            "errors": errors,
+            "messages": messages,
+            "label": label,
+        }
+    finally:
+        if use_lock:
+            cache.delete(_SMART_BALANCE_LOCK_KEY)
+
+
+def _start_smart_balance_monitor_loop() -> None:
+    if not _smart_balance_monitor_enabled():
+        logger.info(
+            "Smart balance monitor disabled "
+            "(SMART_BALANCE_MONITOR_ENABLED=false or --no-smart-balance-monitor)."
+        )
+        return
+    interval = _smart_balance_monitor_interval_sec()
+
+    def _loop() -> None:
+        delay = _smart_balance_monitor_startup_delay_sec()
+        delay += float(os.getpid() % 7)
+        if delay:
+            logger.info(
+                "Smart balance monitor startup delayed %.0fs so boot traffic stays light.",
+                delay,
+            )
+            time.sleep(delay)
+        try:
+            run_smart_balance_monitor_fleet(label="startup")
+        except Exception:
+            logger.exception("smart balance monitor startup failed")
+        while True:
+            time.sleep(interval)
+            try:
+                run_smart_balance_monitor_fleet(label="interval")
+            except Exception:
+                logger.exception("smart balance monitor interval failed")
+
+    threading.Thread(
+        target=_loop,
+        name="smart-balance-monitor",
+        daemon=True,
+    ).start()
+    logger.info(
+        "Smart balance monitor armed (every %.0fs) — ping health + client rebalance "
+        "without the ports page open. Disable with SMART_BALANCE_MONITOR_ENABLED=false.",
+        interval,
+    )
+
+
 def _start_usage_sample_loop() -> None:
     if not _usage_sample_enabled():
         logger.info(
@@ -607,5 +886,6 @@ def start_runtime_tasks() -> None:
             logger.exception("NAS config sync boot hook failed")
         _start_subscription_sweep_loop()
         _start_usage_sample_loop()
+        _start_smart_balance_monitor_loop()
 
     threading.Thread(target=_boot, name="ispcentric-boot", daemon=True).start()

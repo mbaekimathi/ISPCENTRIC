@@ -353,6 +353,67 @@ class MikroTikStatusSample(models.Model):
         return f"{self.router_id} {self.status}@{self.sampled_at}"
 
 
+class ClientIspMovement(models.Model):
+    """History of a customer moved between ISP uplink ports on a MikroTik."""
+
+    class Source(models.TextChoices):
+        MANUAL = "manual", "Manual"
+        AUTO_REBALANCE = "auto_rebalance", "Auto balance"
+        BACKGROUND = "background", "Background monitor"
+
+    organization = models.ForeignKey(
+        "accounts.Organization",
+        on_delete=models.CASCADE,
+        related_name="client_isp_movements",
+    )
+    router = models.ForeignKey(
+        MikroTikRouter,
+        on_delete=models.CASCADE,
+        related_name="client_isp_movements",
+    )
+    customer = models.ForeignKey(
+        "billing.Customer",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="isp_movements",
+    )
+    customer_name = models.CharField(max_length=255, blank=True)
+    client_ip = models.CharField(max_length=45, blank=True)
+    from_isp_port = models.CharField(max_length=64, blank=True)
+    to_isp_port = models.CharField(max_length=64, blank=True)
+    source = models.CharField(
+        max_length=32,
+        choices=Source.choices,
+        default=Source.MANUAL,
+        db_index=True,
+    )
+    seamless = models.BooleanField(
+        default=True,
+        help_text="True when existing sessions were left connected.",
+    )
+    imbalance_reason = models.CharField(max_length=32, blank=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="client_isp_movements",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["router", "-created_at"]),
+            models.Index(fields=["organization", "-created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        label = self.customer_name or self.client_ip or "Client"
+        return f"{label}: {self.from_isp_port} → {self.to_isp_port}"
+
+
 class WireGuardReservation(models.Model):
     """
     A tunnel peer for a router that has not been onboarded yet.

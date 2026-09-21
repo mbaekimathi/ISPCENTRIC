@@ -34,6 +34,11 @@ urlpatterns = [
         name="mikrotik_suspend",
     ),
     path("app/mikrotik/<int:router_id>/", views.mikrotik_detail, name="mikrotik_detail"),
+    path(
+        "app/mikrotik/<int:router_id>/analytics/",
+        views.mikrotik_detail_analytics,
+        name="mikrotik_detail_analytics",
+    ),
     path("app/mikrotik/<int:router_id>/ports/", views.mikrotik_ports, name="mikrotik_ports"),
     path(
         "app/mikrotik/<int:router_id>/setup/",
@@ -59,6 +64,11 @@ urlpatterns = [
         "app/mikrotik/<int:router_id>/assigned-ports/apply/",
         views.mikrotik_assigned_ports_apply,
         name="mikrotik_assigned_ports_apply",
+    ),
+    path(
+        "app/mikrotik/<int:router_id>/assigned-ports/movements/",
+        views.mikrotik_assigned_ports_movements,
+        name="mikrotik_assigned_ports_movements",
     ),
     path(
         "app/mikrotik/<int:router_id>/ports/live/",

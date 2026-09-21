@@ -1,4 +1,5 @@
 {% extends "core/client_base.html" %}
+{% load static %}
 
 {% block title %}{{ router.name }} — MikroTik — ISPCENTRIC{% endblock %}
 
@@ -331,9 +332,103 @@
       <p class="mk-detail-uplink-hint" data-live="wan-address-hint" hidden></p>
     </section>
   </section>
+
+  <section
+    class="mk-surface mk-detail-analytics"
+    id="mk-detail-analytics"
+    data-detail-analytics-url="{{ detail_analytics_url }}"
+    data-ports-setup-url="{{ ports_setup_url }}"
+    data-assigned-ports-url="{{ assigned_ports_url }}"
+    data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
+    aria-label="Router analytics"
+  >
+    <section class="mk-detail-analytics-block" data-detail-health-analytics>
+      <header class="mk-detail-analytics-head">
+        <div>
+          <h2 class="mk-detail-section-title">MikroTik analytics</h2>
+          <p class="mk-help-note">Health score over the last 24 hours from saved probes.</p>
+        </div>
+        <div class="mk-detail-analytics-chips">
+          <span class="mk-detail-analytics-chip">
+            Score <strong data-detail-health-score>—</strong>
+          </span>
+          <span class="mk-detail-analytics-chip" data-detail-health-samples hidden>
+            <span data-detail-health-sample-count>0</span> samples
+          </span>
+        </div>
+      </header>
+      <div class="mk-detail-chart-wrap">
+        <canvas id="mk-detail-health-chart" height="180" aria-label="MikroTik health trend"></canvas>
+      </div>
+      <div class="mk-detail-health-drops" data-detail-health-drops hidden>
+        <h3 class="mk-detail-analytics-subtitle">Recent drops</h3>
+        <ul class="mk-detail-drop-list" data-detail-drop-list></ul>
+      </div>
+    </section>
+
+    <section class="mk-detail-analytics-block" data-detail-internet-setup>
+      <header class="mk-detail-analytics-head">
+        <div>
+          <h2 class="mk-detail-section-title">Internet setup</h2>
+          <p class="mk-help-note" data-detail-setup-lead>How this router connects to the upstream ISP.</p>
+        </div>
+        <a class="btn btn-ghost btn-sm" href="{{ ports_setup_url }}">Port setup</a>
+      </header>
+      <div class="mk-detail-setup-card">
+        <div class="mk-detail-setup-main">
+          <p class="mk-stat-label">Mode</p>
+          <p class="mk-detail-setup-mode" data-detail-setup-mode>{{ router.get_uplink_mode_display|default:"Single WAN" }}</p>
+          <p class="mk-help-note" data-detail-setup-meta></p>
+        </div>
+        <p class="mk-banner is-info mk-detail-setup-status" data-detail-setup-status hidden role="status"></p>
+        <p class="mk-detail-setup-health" data-detail-setup-health hidden role="status"></p>
+      </div>
+    </section>
+
+    <section class="mk-detail-analytics-block" data-detail-internet-analytics {% if is_suspended %}hidden{% endif %}>
+      <header class="mk-detail-analytics-head">
+        <div>
+          <h2 class="mk-detail-section-title">Internet analytics</h2>
+          <p class="mk-help-note" data-detail-internet-note>Live ISP usage and customers on each uplink.</p>
+        </div>
+        <a class="btn btn-ghost btn-sm" href="{{ assigned_ports_url }}">Live clients</a>
+      </header>
+
+      <div class="mk-detail-analytics-loading" data-detail-analytics-loading {% if is_suspended %}hidden{% endif %}>
+        <span class="mikrotik-page-spinner" aria-hidden="true"></span>
+        <p>Loading internet analytics…</p>
+      </div>
+
+      <div class="mk-assigned-kpi-row mk-detail-kpi-row" data-detail-kpi-row hidden aria-label="Internet usage summary">
+        <article class="mk-assigned-kpi">
+          <p class="mk-assigned-kpi-label">Online clients</p>
+          <p class="mk-assigned-kpi-value" data-detail-kpi-online>—</p>
+        </article>
+        <article class="mk-assigned-kpi">
+          <p class="mk-assigned-kpi-label">Download</p>
+          <p class="mk-assigned-kpi-value" data-detail-kpi-download>—</p>
+        </article>
+        <article class="mk-assigned-kpi">
+          <p class="mk-assigned-kpi-label">Upload</p>
+          <p class="mk-assigned-kpi-value" data-detail-kpi-upload>—</p>
+        </article>
+        <article class="mk-assigned-kpi">
+          <p class="mk-assigned-kpi-label">Active ISPs</p>
+          <p class="mk-assigned-kpi-value" data-detail-kpi-isps>—</p>
+        </article>
+      </div>
+
+      <div class="mk-router-isp-grid" data-detail-isp-grid hidden aria-label="ISP link analytics"></div>
+      <p class="mk-help-note mk-detail-analytics-empty" data-detail-analytics-empty hidden>
+        No ISP analytics yet — assign Internet ports in Port setup.
+      </p>
+      <p class="mk-help-note mk-detail-analytics-error" data-detail-analytics-error hidden role="alert"></p>
+    </section>
+  </section>
 </div>
 
 {% if initial_live %}{{ initial_live|json_script:"mikrotik-initial-live" }}{% endif %}
+{% if initial_detail_analytics %}{{ initial_detail_analytics|json_script:"mikrotik-initial-detail-analytics" }}{% endif %}
 
 <div class="role-modal mikrotik-action-modal pppoe-modal mikrotik-restart-modal" id="mikrotik-restart-modal" hidden aria-hidden="true">
   <div class="role-modal-backdrop" data-close-restart-modal></div>
@@ -1354,4 +1449,9 @@
 })();
 </script>
 {% endif %}
+{% endblock %}
+
+{% block client_extra_js %}
+<script src="{% static 'vendor/chart.umd.min.js' %}"></script>
+<script src="{% static 'js/mikrotik_detail_analytics.js' %}" defer></script>
 {% endblock %}

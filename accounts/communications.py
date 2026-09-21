@@ -29,6 +29,11 @@ ORG_MIKROTIK_CLIENT_RECIPIENT_OPTIONS = (
     "dpo",
     "organization_owner",
 )
+ORG_ISP_CLIENT_RECIPIENT_OPTIONS = (
+    "isp_client",
+    "organization_owner",
+    "dpo",
+)
 
 CLIENT_COMMUNICATION_EVENTS = (
     {
@@ -327,6 +332,24 @@ ISP_COMMUNICATION_EVENTS = (
         "default_message": (
             "Alert: MikroTik “{router_name}” is offline ({status_label}). "
             "{status_reason} Open MikroTik in ISPCENTRIC to investigate."
+        ),
+    },
+    {
+        "key": "isp_mikrotik_link_no_internet",
+        "title": "ISP link without internet",
+        "category": "mikrotik",
+        "when": (
+            "A configured WAN / ISP port loses link, ISP connectivity, or is "
+            "sidelined as slow or unstable."
+        ),
+        "includes": "Router name and a list of affected ports with reasons.",
+        "channels": ("sms", "email", "whatsapp"),
+        "recipient": "ISP Client",
+        "recipient_options": ORG_ISP_CLIENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Alert: MikroTik “{router_name}” has ISP link(s) without internet:\n"
+            "{affected_links}\n"
+            "Open Assigned ports to investigate."
         ),
     },
     {
@@ -1328,6 +1351,19 @@ def resolve_org_event_contacts(
             }
         )
 
+    if "isp_client" in selected and organization is not None:
+        owner = getattr(organization, "owner", None)
+        owner_name = ""
+        owner_email = ""
+        if owner is not None:
+            owner_name = owner.get_full_name() or owner.username or ""
+            owner_email = (owner.email or "").strip()
+        _add(
+            name=owner_name or getattr(organization, "name", "") or "ISP Client",
+            email=owner_email,
+            phone=getattr(organization, "phone", "") or "",
+        )
+
     if "organization_owner" in selected and organization is not None:
         owner = getattr(organization, "owner", None)
         owner_name = ""
@@ -1818,6 +1854,107 @@ def format_pppoe_not_surfing_client_list(rows: list[dict], *, limit: int = 25) -
                 lines.append(f"- …and {remaining} more")
             break
     return "\n".join(lines) if lines else "- (none listed)"
+
+
+def format_mikrotik_link_no_internet_list(rows: list[dict], *, limit: int = 8) -> str:
+    """Readable list of WAN ports without internet for notification bodies."""
+    lines: list[str] = []
+    for row in rows or []:
+        port = (row.get("port") or row.get("name") or "").strip()
+        reason = (row.get("reason") or row.get("message") or "").strip()
+        if not port:
+            continue
+        lines.append(f"- {port}: {reason}" if reason else f"- {port}")
+        if len(lines) >= limit:
+            remaining = sum(
+                1
+                for item in (rows or [])
+                if (item.get("port") or item.get("name") or "").strip()
+            ) - len(lines)
+            if remaining > 0:
+                lines.append(f"- …and {remaining} more")
+            break
+    return "\n".join(lines) if lines else "- (none listed)"
+
+
+def maybe_notify_mikrotik_link_no_internet(
+    *,
+    organization,
+    router_id: int,
+    router_name: str = "",
+    affected_links: list[dict],
+) -> dict:
+    """
+    Notify the ISP client when configured uplink ports lose internet.
+
+    Fires when new ports enter a bad state (deduped per port for ~12h).
+    Clears episode flags when the port recovers.
+    """
+    from django.core.cache import cache
+
+    if organization is None or not router_id:
+        return {"ok": False, "skipped": True, "reason": "missing"}
+
+    try:
+        from core.mikrotik_status_samples import is_mikrotik_post_uplink_grace
+
+        if is_mikrotik_post_uplink_grace(int(router_id)):
+            return {"ok": False, "skipped": True, "reason": "uplink_grace"}
+    except Exception:
+        pass
+
+    affected: list[dict] = []
+    seen_ports: set[str] = set()
+    for row in affected_links or []:
+        port = (row.get("port") or row.get("name") or "").strip()
+        reason = (row.get("reason") or row.get("message") or "").strip()
+        if not port or port in seen_ports:
+            continue
+        seen_ports.add(port)
+        affected.append({"port": port, "reason": reason or "No verified internet."})
+
+    prefix = f"comms:link_no_inet:{organization.pk}:{int(router_id)}:"
+    open_key = f"{prefix}open"
+    previously_open = {
+        str(p).strip()
+        for p in (cache.get(open_key) or [])
+        if str(p or "").strip()
+    }
+    current_ports = {row["port"] for row in affected}
+
+    for port in previously_open - current_ports:
+        cache.delete(f"{prefix}{port}")
+
+    if not affected:
+        cache.delete(open_key)
+        return {"ok": False, "skipped": True, "reason": "none_affected"}
+
+    new_episodes: list[dict] = []
+    for row in affected:
+        episode_key = f"{prefix}{row['port']}"
+        if cache.add(episode_key, 1, timeout=60 * 60 * 12):
+            new_episodes.append(row)
+
+    cache.set(open_key, sorted(current_ports), timeout=60 * 60 * 24)
+
+    if not new_episodes:
+        return {"ok": False, "skipped": True, "reason": "already_alerted"}
+
+    listing = format_mikrotik_link_no_internet_list(affected)
+    router_label = (router_name or "").strip() or f"Router #{router_id}"
+    return notify_org_event(
+        "isp_mikrotik_link_no_internet",
+        organization=organization,
+        context={
+            "router_name": router_label,
+            "affected_count": str(len(affected)),
+            "affected_links": listing,
+        },
+        subject=(
+            f"ISP link without internet — {router_label} "
+            f"({len(affected)} port(s))"
+        ),
+    )
 
 
 def maybe_notify_pppoe_connected_not_surfing(

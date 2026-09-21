@@ -11,6 +11,11 @@
     {% if mikrotik_quicknav_active == 'assigned_ports' %}aria-current="page"{% endif %}
   >Live clients</a>
   <a
+    class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'movements' %} is-active{% endif %}"
+    href="{% url 'core:mikrotik_assigned_ports_movements' router.id %}"
+    {% if mikrotik_quicknav_active == 'movements' %}aria-current="page"{% endif %}
+  >Movement history</a>
+  <a
     class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'clean_uplink' %} is-active{% endif %}"
     href="{% url 'core:mikrotik_clean_uplink' router.id %}"
     {% if mikrotik_quicknav_active == 'clean_uplink' %}aria-current="page"{% endif %}

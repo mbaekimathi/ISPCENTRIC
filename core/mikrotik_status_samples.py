@@ -1550,3 +1550,164 @@ def mikrotik_performance_drops(
         "events": events,
         "current_count": len(current),
     }
+
+
+def router_mikrotik_health_trend(
+    organization,
+    router_id: int,
+    *,
+    hours: int = 24,
+    live_score: int | None = None,
+) -> dict[str, Any]:
+    """Single-router health score trend for the MikroTik detail page."""
+    empty = {
+        "ok": False,
+        "hours": hours,
+        "router_id": router_id,
+        "labels": [],
+        "datasets": [],
+        "current_score": None,
+    }
+    if not organization or not router_id:
+        return empty
+
+    router = (
+        MikroTikRouter.objects.filter(pk=router_id, organization=organization)
+        .only("id", "name", "host")
+        .first()
+    )
+    if not router:
+        return empty
+
+    hours = max(1, min(int(hours or 24), 168))
+    cache_key = f"mikrotik_router_health_trend:{organization.pk}:{router_id}:{hours}"
+    if live_score is None:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    now = timezone.now()
+    since = now - timedelta(hours=hours)
+    bucket_secs = _bucket_seconds(hours)
+    window_start = int(since.timestamp() // bucket_secs) * bucket_secs
+    window_end = int(now.timestamp() // bucket_secs) * bucket_secs
+    bucket_keys = list(range(window_start, window_end + bucket_secs, bucket_secs))
+    if not bucket_keys:
+        bucket_keys = [window_start]
+
+    samples = list(
+        MikroTikStatusSample.objects.filter(
+            organization=organization,
+            router_id=router_id,
+            sampled_at__gte=since,
+        )
+        .order_by("sampled_at")
+        .values("sampled_at", "score", "status")[:8000]
+    )
+
+    by_bucket: dict[int, int] = {}
+    for row in samples:
+        stamp = row["sampled_at"]
+        bucket = int(stamp.timestamp() // bucket_secs) * bucket_secs
+        if bucket < window_start:
+            bucket = window_start
+        if bucket > window_end:
+            bucket = window_end
+        by_bucket[bucket] = int(row["score"] or 0)
+
+    if live_score is not None and bucket_keys:
+        by_bucket[bucket_keys[-1]] = int(live_score)
+
+    labels: list[str] = []
+    for key in bucket_keys:
+        stamp = timezone.localtime(datetime.fromtimestamp(key, tz=dt_timezone.utc))
+        labels.append(stamp.strftime("%H:%M" if hours <= 48 else "%b %d %H:%M"))
+
+    series: list[int | None] = []
+    last: int | None = None
+    fill_age = 0
+    for key in bucket_keys:
+        value = by_bucket.get(key)
+        if value is None:
+            if last is not None and fill_age < _MAX_FORWARD_FILL_BUCKETS:
+                series.append(last)
+                fill_age += 1
+            else:
+                series.append(None)
+                if fill_age >= _MAX_FORWARD_FILL_BUCKETS:
+                    last = None
+        else:
+            last = value
+            fill_age = 0
+            series.append(value)
+
+    color = _CHART_COLORS[router.pk % len(_CHART_COLORS)]
+    datasets = [
+        {
+            "label": router.name,
+            "router_id": router.pk,
+            "data": series,
+            "borderColor": color,
+            "backgroundColor": color + "33",
+            "tension": 0.3,
+            "spanGaps": True,
+            "pointRadius": 0 if len(bucket_keys) > 40 else 2,
+            "borderWidth": 2.5,
+            "fill": True,
+        }
+    ]
+
+    current_score = series[-1] if series else None
+    payload = {
+        "ok": True,
+        "hours": hours,
+        "router_id": router.pk,
+        "router_name": router.name,
+        "labels": labels,
+        "datasets": datasets,
+        "current_score": current_score,
+        "sample_count": len(samples),
+    }
+    cache.set(cache_key, payload, _TREND_CACHE_TTL)
+    return payload
+
+
+def router_mikrotik_health_drops(
+    organization,
+    router_id: int,
+    *,
+    hours: int = 24,
+    live_status: str | None = None,
+    live_error: str | None = None,
+    max_events: int = 6,
+) -> dict[str, Any]:
+    """Health drop events for one MikroTik on the detail page."""
+    empty = {"ok": False, "hours": hours, "events": [], "current_count": 0}
+    if not organization or not router_id:
+        return empty
+
+    all_drops = mikrotik_performance_drops(
+        organization,
+        hours=hours,
+        live_routers=(
+            [{"id": router_id, "status": live_status, "error": live_error}]
+            if live_status
+            else None
+        ),
+        max_events=max(12, int(max_events or 6) * 3),
+    )
+    if not all_drops.get("ok"):
+        return empty
+
+    events = [
+        event
+        for event in (all_drops.get("events") or [])
+        if int(event.get("router_id") or 0) == int(router_id)
+    ][: max(1, int(max_events or 6))]
+    current_count = sum(1 for event in events if event.get("current"))
+    return {
+        "ok": True,
+        "hours": hours,
+        "events": events,
+        "current_count": current_count,
+    }

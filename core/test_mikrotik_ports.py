@@ -17,8 +17,12 @@ from core.mikrotik_connect import (
     _resolve_wan_to_physical,
     apply_mikrotik_single_wan,
     auto_rebalance_client_isps,
+    plan_client_isp_distribution,
+    detect_bandwidth_share_drift,
+    _client_traffic_bps,
     clear_all_client_isp_pins,
     switch_client_to_isp_port,
+    pin_client_to_isp_mark,
     switch_mikrotik_single_wan,
     apply_mikrotik_uplink_bond,
     apply_mikrotik_uplink_failover,
@@ -1438,11 +1442,83 @@ class AssessUplinkModeApplyRiskTests(SimpleTestCase):
                 {"interface": "ether1", "bridge": "bridgeLocal"},
                 {"interface": "ether4", "bridge": "bridgeLocal"},
             ],
+            primary_port="ether1",
         )
         self.assertIn("ispcentric-bond", script)
-        self.assertIn("ether1", script)
+        self.assertIn("ether4", script)
         self.assertIn("bridgeLocal", script)
         self.assertIn("/interface bridge port add", script)
+        self.assertIn("/interface bridge port remove [find interface=$primaryWan]", script)
+        self.assertNotIn(':local port1 "ether1"', script)
+
+    def test_uplink_recovery_primary_wan_stays_unbridged(self):
+        from core.mikrotik_connect import build_uplink_recovery_script
+
+        script = build_uplink_recovery_script(
+            "balance",
+            members=["ether1", "ether2"],
+            primary_port="ether1",
+            unbridged=[{"interface": "ether2", "bridge": "bridgeLocal"}],
+        )
+        self.assertIn(':local port1 "ether2"', script)
+        self.assertNotIn(':local port1 "ether1"', script)
+        self.assertIn("add-default-route=yes", script)
+
+    def test_format_balance_gateway_scopes_same_modem_ip(self):
+        from core.mikrotik_connect import _format_balance_gateway
+
+        self.assertEqual(
+            _format_balance_gateway("192.168.100.1", "ether2"),
+            "192.168.100.1%ether2",
+        )
+        self.assertEqual(
+            _format_balance_gateway("192.168.100.1%ether1", "ether2"),
+            "192.168.100.1%ether1",
+        )
+
+    def test_balance_member_tables_ready_detects_missing_routes(self):
+        from core.mikrotik_connect import _balance_member_tables_ready
+
+        sock = object()
+        with patch(
+            "core.mikrotik_connect._balance_table_has_active_default",
+            side_effect=[True, False],
+        ):
+            missing = _balance_member_tables_ready(sock, 2)
+        self.assertEqual(missing, ["ispcentric-w1"])
+
+    def test_multi_isp_reset_prepare_script_clears_and_restores(self):
+        from core.mikrotik_connect import build_multi_isp_reset_prepare_script
+
+        script = build_multi_isp_reset_prepare_script(
+            primary_wan="ether1",
+            shared_wan="ether2",
+        )
+        self.assertIn("ether1", script)
+        self.assertIn("ether2", script)
+        self.assertIn("add-default-route=yes", script)
+        self.assertIn("add-default-route=no", script)
+        self.assertIn("ispcentric", script)
+
+    def test_duplicate_balance_gateway_ports_from_live_routes(self):
+        from core.views import _duplicate_balance_gateway_ports
+
+        physical = [
+            {"name": "ether1", "uplink_gateway": "192.168.100.1"},
+            {"name": "ether2", "uplink_gateway": "192.168.100.1"},
+        ]
+        dup = _duplicate_balance_gateway_ports(
+            ["ether1", "ether2"],
+            physical,
+            {
+                "ok": True,
+                "checked_routes": [
+                    {"gateway": "192.168.100.1%ether1"},
+                    {"gateway": "192.168.100.1%ether2"},
+                ],
+            },
+        )
+        self.assertEqual(dup, ["ether1", "ether2"])
 
 
 class CheckRouterTunnelManagementTests(SimpleTestCase):
@@ -1641,6 +1717,25 @@ class UplinkModeRoleRulesTests(SimpleTestCase):
         )
         self.assertEqual(roles["ether4"], MikroTikRouter.PortRole.WAN)
         self.assertEqual(roles["ether1"], MikroTikRouter.PortRole.UNUSED)
+
+
+class UplinkLinkNotificationTests(SimpleTestCase):
+    def test_collect_links_without_internet(self):
+        from core.views import _collect_mikrotik_links_without_internet
+
+        affected = _collect_mikrotik_links_without_internet(
+            physical_ports=[
+                _port("ether1", running=False),
+                _port("ether2", running=True, uplink_kind="dhcp"),
+            ],
+            primary_wan_ports=["ether1"],
+            backup_wan_ports=["ether2"],
+            bond_member_ports=[],
+            smart_balance_status={"slow_ports": ["ether2"]},
+        )
+        ports = {row["port"] for row in affected}
+        self.assertIn("ether1", ports)
+        self.assertIn("ether2", ports)
 
 
 class UplinkHealthAlertTests(SimpleTestCase):
@@ -4080,6 +4175,67 @@ class BalanceGatewayLearningTests(SimpleTestCase):
         self.assertEqual(resolved["ether2"][1], "10.0.0.2")
 
 
+class ClientIspDistributionTests(SimpleTestCase):
+    def test_equal_capacity_targets_even_split(self):
+        plan = plan_client_isp_distribution(
+            member_ports=["ether1", "ether2"],
+            port_weights={},
+            counts_by_port={"ether1": 3, "ether2": 1},
+        )
+        self.assertTrue(plan["imbalanced"])
+        self.assertEqual(plan["targets"], {"ether1": 2, "ether2": 2})
+        self.assertEqual(plan["moves_needed"], 1)
+
+    def test_weighted_capacity_targets_proportional_split(self):
+        plan = plan_client_isp_distribution(
+            member_ports=["ether1", "ether2"],
+            port_weights={"ether1": 100, "ether2": 20},
+            counts_by_port={"ether1": 6, "ether2": 0},
+        )
+        self.assertTrue(plan["imbalanced"])
+        self.assertEqual(plan["targets"], {"ether1": 5, "ether2": 1})
+        self.assertEqual(plan["moves_needed"], 1)
+
+    def test_balanced_within_tolerance_skips_rebalance(self):
+        plan = plan_client_isp_distribution(
+            member_ports=["ether1", "ether2"],
+            port_weights={"ether1": 100, "ether2": 100},
+            counts_by_port={"ether1": 2, "ether2": 2},
+        )
+        self.assertFalse(plan["imbalanced"])
+        self.assertEqual(plan["moves_needed"], 0)
+
+    def test_bandwidth_imbalance_even_when_counts_match(self):
+        plan = plan_client_isp_distribution(
+            member_ports=["ether1", "ether2"],
+            port_weights={"ether1": 100, "ether2": 100},
+            counts_by_port={"ether1": 2, "ether2": 2},
+            bps_by_port={"ether1": 8_000_000, "ether2": 500_000},
+        )
+        self.assertTrue(plan["imbalanced"])
+        self.assertEqual(plan["imbalance_reason"], "bandwidth")
+        self.assertEqual(plan["overloaded_isp"], "ether1")
+        self.assertEqual(plan["underloaded_isp"], "ether2")
+
+    def test_detect_bandwidth_share_drift(self):
+        drift = detect_bandwidth_share_drift(
+            {
+                "ok": True,
+                "total_bps": 10_000_000,
+                "shares": [
+                    {"name": "ether1", "bps": 8_500_000, "pct": 85},
+                    {"name": "ether2", "bps": 1_500_000, "pct": 15},
+                ],
+            },
+            {"ether1": 100, "ether2": 100},
+            threshold_pct=15,
+            min_total_bps=500_000,
+        )
+        self.assertTrue(drift["drifted"])
+        self.assertEqual(drift["overloaded_isp"], "ether1")
+        self.assertEqual(drift["underloaded_isp"], "ether2")
+
+
 class ClientIspSwitchTests(SimpleTestCase):
     def test_auto_rebalance_moves_one_client_off_dominant_isp(self):
         sock = object()
@@ -4159,6 +4315,195 @@ class ClientIspSwitchTests(SimpleTestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result.get("reason"), "already_balanced")
 
+    def test_auto_rebalance_moves_multiple_when_heavily_skewed(self):
+        sock = object()
+        clients = [
+            {
+                "customer_id": i,
+                "name": f"User{i}",
+                "online": True,
+                "ip": f"10.10.0.{i}",
+                "isp_port": "ether1",
+                "connection_count": 1,
+            }
+            for i in range(1, 7)
+        ]
+        with patch(
+            "core.mikrotik_connect.switch_client_to_isp_port",
+            return_value={"ok": True, "isp_port": "ether2"},
+        ) as switch_mock:
+            result = auto_rebalance_client_isps(
+                sock,
+                member_ports=["ether1", "ether2"],
+                clients=clients,
+                slow_ports=[],
+                port_weights={"ether1": 100, "ether2": 100},
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["moved"]), 3)
+        self.assertEqual(switch_mock.call_count, 3)
+        self.assertEqual(result["target_isp"], "ether2")
+
+    def test_auto_rebalance_prefers_idle_client_for_count_skew(self):
+        sock = object()
+        clients = [
+            {
+                "customer_id": 1,
+                "name": "Light",
+                "online": True,
+                "ip": "10.10.0.1",
+                "isp_port": "ether1",
+                "download_bps": 20_000,
+                "upload_bps": 5_000,
+                "connection_count": 1,
+            },
+            {
+                "customer_id": 2,
+                "name": "Quiet",
+                "online": True,
+                "ip": "10.10.0.2",
+                "isp_port": "ether1",
+                "download_bps": 80_000,
+                "upload_bps": 10_000,
+                "connection_count": 1,
+            },
+            {
+                "customer_id": 3,
+                "name": "Calm",
+                "online": True,
+                "ip": "10.10.0.3",
+                "isp_port": "ether1",
+                "download_bps": 40_000,
+                "upload_bps": 5_000,
+                "connection_count": 1,
+            },
+            {
+                "customer_id": 4,
+                "name": "Other",
+                "online": True,
+                "ip": "10.10.0.4",
+                "isp_port": "ether2",
+                "download_bps": 50_000,
+                "upload_bps": 10_000,
+                "connection_count": 1,
+            },
+        ]
+        with patch(
+            "core.mikrotik_connect.switch_client_to_isp_port",
+            return_value={"ok": True, "isp_port": "ether2"},
+        ) as switch_mock:
+            auto_rebalance_client_isps(
+                sock,
+                member_ports=["ether1", "ether2"],
+                clients=clients,
+                port_weights={"ether1": 100, "ether2": 100},
+            )
+        self.assertEqual(switch_mock.call_args.kwargs["client_ip"], "10.10.0.1")
+        self.assertTrue(switch_mock.call_args.kwargs.get("seamless"))
+
+    def test_auto_rebalance_prefers_heavy_client_for_bandwidth_skew(self):
+        sock = object()
+        clients = [
+            {
+                "customer_id": 1,
+                "name": "Light",
+                "online": True,
+                "ip": "10.10.0.1",
+                "isp_port": "ether1",
+                "download_bps": 100_000,
+                "upload_bps": 0,
+            },
+            {
+                "customer_id": 2,
+                "name": "Heavy",
+                "online": True,
+                "ip": "10.10.0.2",
+                "isp_port": "ether1",
+                "download_bps": 8_000_000,
+                "upload_bps": 0,
+            },
+            {
+                "customer_id": 3,
+                "name": "Other",
+                "online": True,
+                "ip": "10.10.0.3",
+                "isp_port": "ether2",
+                "download_bps": 100_000,
+                "upload_bps": 0,
+            },
+        ]
+        with patch(
+            "core.mikrotik_connect.switch_client_to_isp_port",
+            return_value={"ok": True, "isp_port": "ether2"},
+        ) as switch_mock:
+            auto_rebalance_client_isps(
+                sock,
+                member_ports=["ether1", "ether2"],
+                clients=clients,
+                port_weights={"ether1": 100, "ether2": 100},
+            )
+        self.assertEqual(switch_mock.call_args.kwargs["client_ip"], "10.10.0.2")
+
+    def test_pin_client_seamless_skips_connection_kill(self):
+        sock = object()
+        with patch("core.mikrotik_connect._remove_client_isp_pins"), patch(
+            "core.mikrotik_connect._add",
+            return_value={"_reply": "ok"},
+        ), patch(
+            "core.mikrotik_connect._kill_firewall_connections_for_addresses",
+        ) as kill_mock:
+            result = pin_client_to_isp_mark(
+                sock,
+                client_ip="10.10.0.5",
+                mark_index=1,
+                customer_id=9,
+                seamless=True,
+            )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["seamless"])
+        self.assertEqual(result["connections_cleared"], 0)
+        kill_mock.assert_not_called()
+
+    def test_auto_rebalance_forced_by_bandwidth_drift(self):
+        clients = [
+            {
+                "customer_id": 1,
+                "online": True,
+                "ip": "10.10.0.1",
+                "isp_port": "ether1",
+                "download_bps": 100_000,
+                "upload_bps": 0,
+            },
+            {
+                "customer_id": 2,
+                "online": True,
+                "ip": "10.10.0.2",
+                "isp_port": "ether2",
+                "download_bps": 100_000,
+                "upload_bps": 0,
+            },
+        ]
+        with patch(
+            "core.mikrotik_connect.switch_client_to_isp_port",
+            return_value={"ok": True, "isp_port": "ether2"},
+        ) as switch_mock:
+            result = auto_rebalance_client_isps(
+                object(),
+                member_ports=["ether1", "ether2"],
+                clients=clients,
+                preferred_overloaded_isp="ether1",
+                preferred_underloaded_isp="ether2",
+            )
+        self.assertTrue(result["ok"])
+        switch_mock.assert_called_once()
+
+    def test_client_traffic_bps_sums_download_and_upload(self):
+        self.assertEqual(
+            _client_traffic_bps({"download_bps": 1000, "upload_bps": 250}),
+            1250,
+        )
+
     def test_switch_client_rejects_slow_target(self):
         result = switch_client_to_isp_port(
             object(),
@@ -4224,6 +4569,59 @@ class ClientIspSwitchTests(SimpleTestCase):
         self.assertTrue(client["can_switch_isp"])
         self.assertEqual(client["ip"], "10.10.0.5")
 
+    def test_can_switch_when_balance_rules_exist_without_live_marks(self):
+        from core.views import _build_router_client_analysis
+
+        router = MikroTikRouter(
+            name="edge",
+            host="10.0.0.1",
+            username="admin",
+            password="x",
+            uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+            uplink_ports=["ether1", "ether2"],
+        )
+        customer = MagicMock()
+        customer.pk = 7
+        customer.full_name = "Jane Doe"
+        customer.account_number = "ACC-7"
+        customer.pppoe_username = "jane"
+        customer.hotspot_mac = None
+        customer.cpe_ip = ""
+        customer.cpe_mac = ""
+        customer.service_type = "pppoe"
+        customer.status = "active"
+
+        usage = {
+            "ok": True,
+            "uses_connection_marks": False,
+            "mark_to_port": {"0": "ether1", "1": "ether2"},
+            "default_isp_port": "ether1",
+            "client_pins": {},
+            "ip_usage": {
+                "10.10.0.5": {
+                    "isp_port": "ether1",
+                    "connections": 0,
+                    "source": "default_wan",
+                }
+            },
+            "sessions": {"10.10.0.5": {"pppoe_username": "jane", "source": "pppoe"}},
+        }
+        with patch("billing.models.Customer.objects") as customer_qs:
+            customer_qs.filter.return_value.only.return_value = [customer]
+            analysis = _build_router_client_analysis(
+                router,
+                uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+                uplink_live={},
+                wan_share={"ok": True, "shares": []},
+                smart_balance_status={"slow_ports": []},
+                primary_wan_ports=["ether1"],
+                backup_wan_ports=["ether2"],
+                usage=usage,
+            )
+
+        self.assertTrue(analysis["can_switch_clients"])
+        self.assertTrue(analysis["clients"][0]["can_switch_isp"])
+
     def test_perform_client_isp_switch_delegates_to_router_api(self):
         router = MikroTikRouter(
             pk=7,
@@ -4244,6 +4642,10 @@ class ClientIspSwitchTests(SimpleTestCase):
         def fake_session(*args, **kwargs):
             yield object()
 
+        cached_live = {
+            "router_analysis": {"can_switch_clients": True},
+            "smart_balance_status": {"slow_ports": []},
+        }
         with patch(
             "core.views.Customer.objects.filter",
             return_value=MagicMock(first=MagicMock(return_value=customer)),
@@ -4252,7 +4654,11 @@ class ClientIspSwitchTests(SimpleTestCase):
         ), patch(
             "core.views.switch_client_to_isp_port",
             return_value={"ok": True, "isp_port": "ether2"},
-        ) as switch_mock, patch("core.views.cache.delete") as cache_delete:
+        ) as switch_mock, patch(
+            "core.views.cache.get", return_value=cached_live
+        ), patch("core.views.cache.delete") as cache_delete, patch(
+            "core.views.record_client_isp_movement"
+        ) as record_mock:
             result = _perform_client_isp_switch(
                 router,
                 org,
@@ -4265,6 +4671,7 @@ class ClientIspSwitchTests(SimpleTestCase):
         self.assertIn("Jane Doe", result["message"])
         switch_mock.assert_called_once()
         self.assertEqual(cache_delete.call_count, 2)
+        record_mock.assert_called_once()
 
     def test_clear_all_client_isp_pins_removes_rules_and_refreshes_sessions(self):
         sock = object()

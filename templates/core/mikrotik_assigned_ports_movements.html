@@ -1,0 +1,117 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Movement history — {{ router.name }} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<div class="mk-page mk-assigned-ports-page mk-movements-page">
+  <header class="mk-page-hero mk-ports-hero mk-assigned-hero">
+    <div class="mk-page-hero-copy">
+      <p class="mk-page-kicker">{{ router.name }}</p>
+      <h1 class="mk-page-title">Movement history</h1>
+      <p class="mk-page-lead">
+        Client ISP link changes for this router
+        {% if range_label %}· {{ range_label }}{% endif %}.
+      </p>
+    </div>
+    <div class="mk-ports-hero-actions">
+      <a class="btn btn-ghost" href="{% url 'core:mikrotik_assigned_ports' router.id %}">Live clients</a>
+      <a class="btn btn-ghost" href="{% url 'core:mikrotik_ports' router.id %}">Port setup</a>
+    </div>
+  </header>
+
+  {% include "core/includes/mikrotik_detail_quicknav.html" %}
+
+  <section class="mk-surface mk-movements-surface">
+    <div class="mk-movements-toolbar">
+      <nav class="clients-seg mk-movements-source-tabs" aria-label="Movement source">
+        {% for link in source_links %}
+          <a
+            class="clients-seg-item{% if link.active %} is-active{% endif %}"
+            href="?{{ link.qs }}"
+            {% if link.active %}aria-current="page"{% endif %}
+          >
+            <span class="clients-seg-label">{{ link.label }}</span>
+          </a>
+        {% endfor %}
+      </nav>
+
+      <div class="clients-usage-range-wrap mk-movements-range-wrap">
+        {% include "core/includes/usage_range_filter.html" with usage_filter=usage_filter usage_filter_id="movements-range-filter" usage_filter_action=usage_filter_action usage_filter_hidden=usage_filter_hidden %}
+      </div>
+    </div>
+
+    <div class="mk-movements-summary">
+      <p class="mk-help-note">
+        {% if movements_total %}
+          {{ movements_total }} movement{{ movements_total|pluralize }} in this window.
+        {% else %}
+          No movements recorded for this filter.
+        {% endif %}
+      </p>
+    </div>
+
+    {% if movements_page.object_list %}
+      <div class="org-table-shell mk-movements-table-shell">
+        <table class="org-table mk-movements-table">
+          <thead>
+            <tr>
+              <th scope="col">When</th>
+              <th scope="col">Customer</th>
+              <th scope="col">From</th>
+              <th scope="col">To</th>
+              <th scope="col">Source</th>
+              <th scope="col">By</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in movements_page.object_list %}
+              <tr>
+                <td>
+                  <time datetime="{{ row.created_at|date:'c' }}">{{ row.created_at|date:"M j, Y H:i" }}</time>
+                </td>
+                <td>
+                  <strong>{{ row.customer_name|default:"—" }}</strong>
+                  {% if row.client_ip %}
+                    <span class="mk-host-chip">{{ row.client_ip }}</span>
+                  {% endif %}
+                </td>
+                <td>{{ row.from_isp_port|default:"—" }}</td>
+                <td>{{ row.to_isp_port|default:"—" }}</td>
+                <td>
+                  {{ row.get_source_display }}
+                  {% if row.imbalance_reason %}
+                    <span class="mk-help-note">({{ row.imbalance_reason }})</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if row.actor %}
+                    {{ row.actor.get_full_name|default:row.actor.username }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% if movements_page.has_other_pages %}
+        <nav class="mk-movements-pagination" aria-label="Movement history pages">
+          {% if movements_page.has_previous %}
+            <a class="btn btn-ghost btn-sm" href="?{{ pagination_qs }}&amp;page={{ movements_page.previous_page_number }}">Previous</a>
+          {% endif %}
+          <span class="mk-help-note">Page {{ movements_page.number }} of {{ movements_page.paginator.num_pages }}</span>
+          {% if movements_page.has_next %}
+            <a class="btn btn-ghost btn-sm" href="?{{ pagination_qs }}&amp;page={{ movements_page.next_page_number }}">Next</a>
+          {% endif %}
+        </nav>
+      {% endif %}
+    {% else %}
+      <div class="mk-banner is-info mk-movements-empty" role="status">
+        <p>No client ISP movements match this filter. Switches from live clients and smart balance appear here automatically.</p>
+      </div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

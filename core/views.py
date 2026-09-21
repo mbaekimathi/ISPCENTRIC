@@ -182,6 +182,11 @@ from core.mikrotik_connect import (
     reconcile_uplink_route_gateways,
     read_client_wan_usage,
     auto_rebalance_client_isps,
+    plan_client_isp_distribution,
+    detect_bandwidth_share_drift,
+    BALANCE_DRIFT_STREAK_THRESHOLD,
+    CLIENT_REBALANCE_COOLDOWN_S,
+    CLIENT_REBALANCE_FAST_COOLDOWN_S,
     switch_client_to_isp_port,
     build_wan_traffic_share,
     build_api_enable_terminal_script,
@@ -214,7 +219,8 @@ from core.mikrotik_jobs import (
     touch_job,
 )
 from core.mikrotik_discovery import annotate_onboarded, discover_mikrotik_devices, guess_model
-from core.models import MikroTikRouter, WireGuardReservation
+from core.client_isp_movements import record_client_isp_movement, record_client_isp_movements
+from core.models import ClientIspMovement, MikroTikRouter, WireGuardReservation
 from core.places import resolve_location, search_locations
 
 
@@ -1239,6 +1245,106 @@ def mikrotik_assigned_ports(request, router_id: int):
     )
 
 
+@client_workspace_required
+@require_GET
+def mikrotik_assigned_ports_movements(request, router_id: int):
+    """Filtered history of client ISP link moves for this MikroTik."""
+    from billing.usage_samples import parse_usage_filter, usage_filter_querystring
+
+    org = resolve_organization(request.user, request)
+    if not org:
+        messages.error(request, "No organization is linked to this workspace.")
+        return redirect("core:mikrotik")
+
+    router = get_object_or_404(MikroTikRouter, pk=router_id, organization=org)
+    is_suspended = router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
+    detail_nav = build_mikrotik_detail_nav(
+        router,
+        is_suspended=is_suspended,
+        include_modals=False,
+        nav_set="ports",
+    )
+
+    usage_filter = parse_usage_filter(request, default_range="day")
+    usage_filter = {**usage_filter, "modes": ["day", "period", "month"]}
+
+    source_filter = (request.GET.get("source") or "").strip().lower()
+    valid_sources = {choice[0] for choice in ClientIspMovement.Source.choices}
+    if source_filter and source_filter not in valid_sources:
+        source_filter = ""
+
+    movements_qs = ClientIspMovement.objects.filter(
+        organization=org,
+        router=router,
+    ).select_related("customer", "actor")
+    since = usage_filter.get("since")
+    until = usage_filter.get("until")
+    if since is not None:
+        movements_qs = movements_qs.filter(created_at__gte=since)
+    if until is not None:
+        movements_qs = movements_qs.filter(created_at__lte=until)
+    if source_filter:
+        movements_qs = movements_qs.filter(source=source_filter)
+
+    paginator = Paginator(movements_qs, 50)
+    page = paginator.get_page(request.GET.get("page"))
+
+    def _filter_qs(*, source: str = "", page_num: int | None = None) -> str:
+        extra: dict[str, str] = {}
+        if source:
+            extra["source"] = source
+        if page_num and page_num > 1:
+            extra["page"] = str(page_num)
+        return usage_filter_querystring(usage_filter, extra=extra or None)
+
+    source_links = [
+        {
+            "key": "",
+            "label": "All sources",
+            "qs": _filter_qs(),
+            "active": not source_filter,
+        },
+    ]
+    for key, label in ClientIspMovement.Source.choices:
+        source_links.append(
+            {
+                "key": key,
+                "label": label,
+                "qs": _filter_qs(source=key),
+                "active": source_filter == key,
+            }
+        )
+
+    ctx = client_page_context(
+        request,
+        active_nav="mikrotik_detail",
+        sidebar_active="assigned_ports",
+        page_title=f"{router.name} — Movement history",
+        page_subtitle="Client ISP link changes for this router.",
+        router=router,
+        is_suspended=is_suspended,
+        usage_filter=usage_filter,
+        usage_filter_action=reverse(
+            "core:mikrotik_assigned_ports_movements",
+            args=[router.pk],
+        ),
+        usage_filter_hidden={"source": source_filter} if source_filter else None,
+        movements_page=page,
+        movements_total=paginator.count,
+        range_label=usage_filter.get("label") or "",
+        source_filter=source_filter,
+        source_links=source_links,
+        pagination_qs=_filter_qs(source=source_filter),
+        mikrotik_quicknav_set="ports",
+        mikrotik_quicknav_active="movements",
+    )
+    return render(
+        request,
+        "core/mikrotik_assigned_ports_movements.html",
+        apply_mikrotik_detail_sidebar(ctx, router, detail_nav=detail_nav),
+    )
+
+
 def get_org_router(request, router_id: int):
     """Return (org, router) for the active workspace, or (org, None)."""
     org = resolve_organization(request.user, request)
@@ -2093,10 +2199,14 @@ def _build_router_client_analysis(
     client_pins = (
         usage.get("client_pins") if isinstance(usage.get("client_pins"), dict) else {}
     )
+    mark_to_port = (
+        usage.get("mark_to_port") if isinstance(usage.get("mark_to_port"), dict) else {}
+    )
+    balance_routing_ready = bool(usage.get("uses_connection_marks") or mark_to_port)
     can_switch_clients = bool(
         _is_multi_isp_mode(mode)
         and len(member_ports) >= 2
-        and usage.get("uses_connection_marks")
+        and balance_routing_ready
     )
     default_isp = (usage.get("default_isp_port") or "").strip()
     if not default_isp:
@@ -2496,6 +2606,34 @@ def _build_router_client_analysis(
     }
 
 
+def _bandwidth_drift_streak_cache_key(router_pk: int) -> str:
+    return f"balance_drift_streak:{router_pk}"
+
+
+def _track_bandwidth_drift_streak(
+    router_pk: int,
+    wan_share: dict | None,
+    port_weights: dict | None,
+) -> dict:
+    """Count consecutive polls where live Mbps share drifts from weights."""
+    drift = detect_bandwidth_share_drift(wan_share, port_weights)
+    cache_key = _bandwidth_drift_streak_cache_key(router_pk)
+    streak = 0
+    if drift.get("drifted"):
+        try:
+            streak = int(cache.get(cache_key) or 0) + 1
+        except (TypeError, ValueError):
+            streak = 1
+        cache.set(cache_key, streak, 120)
+    else:
+        cache.delete(cache_key)
+    return {
+        **drift,
+        "streak": streak,
+        "sustained": streak >= BALANCE_DRIFT_STREAK_THRESHOLD,
+    }
+
+
 def _build_client_balance_insights(
     router: MikroTikRouter,
     analysis: dict,
@@ -2505,6 +2643,7 @@ def _build_client_balance_insights(
     balance_ready: bool,
     balance_router_applied: bool,
     smart_balance_applied: bool | None,
+    wan_share: dict | None = None,
 ) -> dict:
     """Operator hints for spreading clients across ISP links."""
     mode = (uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
@@ -2517,13 +2656,59 @@ def _build_client_balance_insights(
             continue
         online_by_isp[port_name] = online_by_isp.get(port_name, 0) + 1
 
+    member_ports = [
+        str(row.get("port") or "").strip()
+        for row in isps
+        if str(row.get("port") or "").strip()
+    ]
+    healthy_ports = [
+        str(row.get("port") or "").strip()
+        for row in isps
+        if str(row.get("port") or "").strip()
+        and (row.get("status") or "active") not in {"slow", "sidelined"}
+    ]
+    port_weights = (
+        dict(router.uplink_weights)
+        if isinstance(router.uplink_weights, dict)
+        else {}
+    )
+    share_by_port = {
+        str(row.get("name") or "").strip(): row
+        for row in ((wan_share or {}).get("shares") or [])
+        if str(row.get("name") or "").strip()
+    }
+    bps_by_isp: dict[str, int] = {}
+    for row in isps:
+        port_name = str(row.get("port") or "").strip()
+        if not port_name:
+            continue
+        share_row = share_by_port.get(port_name) or {}
+        bps = max(0, int(share_row.get("bps") or 0))
+        if not bps:
+            bps = max(0, int(row.get("download_bps_clients") or 0)) + max(
+                0, int(row.get("upload_bps_clients") or 0)
+            )
+        if not bps:
+            bps = max(0, int(row.get("download_bps") or 0)) + max(
+                0, int(row.get("upload_bps") or 0)
+            )
+        bps_by_isp[port_name] = bps
+
+    distribution = plan_client_isp_distribution(
+        member_ports=member_ports,
+        port_weights=port_weights,
+        counts_by_port=online_by_isp,
+        healthy_ports=healthy_ports or member_ports,
+        bps_by_port=bps_by_isp,
+    )
+    bandwidth_drift = _track_bandwidth_drift_streak(router.pk, wan_share, port_weights)
+
     member_count = len(isps)
     total_online = len(clients)
-    dominant_isp = ""
-    dominant_pct = 0
-    if total_online and online_by_isp:
-        dominant_isp = max(online_by_isp, key=online_by_isp.get)
-        dominant_pct = round(100 * online_by_isp[dominant_isp] / total_online)
+    dominant_isp = distribution.get("dominant_isp") or ""
+    dominant_pct = int(distribution.get("dominant_pct") or 0)
+    target_by_isp = distribution.get("targets") or {}
+    target_pct_by_isp = distribution.get("target_pct") or {}
 
     uses_marks = bool(analysis.get("uses_connection_marks"))
     applied = bool(balance_router_applied) and (
@@ -2539,11 +2724,17 @@ def _build_client_balance_insights(
 
     imbalanced = bool(
         member_count >= 2
-        and total_online >= 1
-        and (
-            (uses_marks and dominant_pct >= 75 and len(online_by_isp) >= 1)
-            or (applied and len(online_by_isp) == 1 and member_count >= 2)
-        )
+        and total_online >= 2
+        and uses_marks
+        and distribution.get("imbalanced")
+    ) or bool(
+        applied
+        and uses_marks
+        and bandwidth_drift.get("sustained")
+        and bandwidth_drift.get("overloaded_isp")
+        and bandwidth_drift.get("underloaded_isp")
+    ) or bool(
+        applied and len(online_by_isp) == 1 and member_count >= 2 and total_online >= 1
     )
 
     mode_can_balance = _is_multi_isp_mode(mode) or mode == MikroTikRouter.UplinkMode.BOND
@@ -2577,10 +2768,35 @@ def _build_client_balance_insights(
             "Balance is active — per-client ISP mapping appears once connections "
             "use PCC marks (may take a few seconds after apply)."
         )
-    elif imbalanced and dominant_isp:
+    elif imbalanced and bandwidth_drift.get("sustained"):
+        drift_ports = bandwidth_drift.get("drifted_ports") or []
+        drift_hint = "; ".join(drift_ports[:2]) if drift_ports else "live bandwidth skew"
         recommendations.append(
-            f"{dominant_pct}% of online clients currently use {dominant_isp}. "
-            "The system auto-moves clients to lighter ISPs, or use Switch ISP on a customer."
+            f"Live traffic is uneven ({drift_hint}). "
+            "Moving heavy customers toward lighter ISP links automatically."
+        )
+    elif imbalanced and dominant_isp:
+        target_pct = target_pct_by_isp.get(dominant_isp)
+        target_hint = (
+            f" (target ~{target_pct}% by capacity)"
+            if target_pct is not None and target_pct != dominant_pct
+            else ""
+        )
+        reason = distribution.get("imbalance_reason") or "clients"
+        load_hint = (
+            " (bandwidth-heavy links detected)"
+            if reason in {"bandwidth", "bandwidth_and_clients"}
+            else ""
+        )
+        recommendations.append(
+            f"{dominant_pct}% of online clients currently use {dominant_isp}{target_hint}{load_hint}. "
+            "The system auto-moves clients toward capacity-weighted share, "
+            "or use Switch link on a customer."
+        )
+    elif applied and analysis.get("can_switch_clients") and member_count >= 2:
+        recommendations.append(
+            "Clients are tracked per ISP link — Switch link moves customers without "
+            "disconnecting active browsing."
         )
     elif applied and uses_marks and member_count >= 2:
         recommendations.append(
@@ -2598,17 +2814,22 @@ def _build_client_balance_insights(
         "applied": applied,
         "uses_connection_marks": uses_marks,
         "online_by_isp": online_by_isp,
+        "target_by_isp": target_by_isp,
+        "target_pct_by_isp": target_pct_by_isp,
         "dominant_isp": dominant_isp,
         "dominant_pct": dominant_pct,
         "imbalanced": imbalanced,
+        "moves_needed": int(distribution.get("moves_needed") or 0),
+        "imbalance_reason": distribution.get("imbalance_reason") or "",
+        "bps_by_isp": bps_by_isp,
+        "bps_target_pct_by_isp": distribution.get("bps_target_pct") or {},
+        "bandwidth_drift": bandwidth_drift,
         "can_auto_enable": can_auto_enable,
         "auto_enable_label": "Auto-enable smart balance",
         "recommendation": " ".join(recommendations),
         "recommendations": recommendations,
         "verified_member_count": len(verified_members),
-        "can_switch_clients": bool(
-            applied and member_count >= 2 and uses_marks
-        ),
+        "can_switch_clients": bool(analysis.get("can_switch_clients")),
         "auto_rebalance": bool(imbalanced and applied and uses_marks),
     }
 
@@ -2626,7 +2847,7 @@ def _try_auto_rebalance_client_isps(
     member_ports: list[str],
     smart_balance_status: dict | None = None,
 ) -> dict:
-    """Move one or two clients off an overloaded ISP when share is skewed."""
+    """Move clients toward capacity-weighted ISP targets when share is skewed."""
     if not balance_insights.get("auto_rebalance"):
         return {}
     if not router_analysis.get("can_switch_clients"):
@@ -2647,6 +2868,18 @@ def _try_auto_rebalance_client_isps(
             if str(p).strip()
         ]
 
+    port_weights = (
+        dict(router.uplink_weights)
+        if isinstance(router.uplink_weights, dict)
+        else {}
+    )
+    moves_needed = int(balance_insights.get("moves_needed") or 1)
+    cooldown = (
+        CLIENT_REBALANCE_FAST_COOLDOWN_S
+        if moves_needed > 1
+        else CLIENT_REBALANCE_COOLDOWN_S
+    )
+
     try:
         with _api_session(
             api_host,
@@ -2654,20 +2887,31 @@ def _try_auto_rebalance_client_isps(
             router.password or "",
             timeout=12.0,
         ) as sock:
+            drift = balance_insights.get("bandwidth_drift") or {}
             result = auto_rebalance_client_isps(
                 sock,
                 member_ports=ordered,
                 clients=list(router_analysis.get("clients") or []),
                 slow_ports=slow_ports,
+                port_weights=port_weights,
+                preferred_overloaded_isp=str(drift.get("overloaded_isp") or ""),
+                preferred_underloaded_isp=str(drift.get("underloaded_isp") or ""),
             )
     except Exception as exc:
         return {"ok": False, "error": str(exc) or "Could not rebalance clients."}
 
     if result.get("ok"):
-        cache.set(cache_key, 1, 90)
+        cache.set(cache_key, 1, cooldown)
         cache.delete(f"mikrotik_assigned_ports_live:{router.organization_id}:{router.pk}")
+        record_client_isp_movements(
+            router,
+            result.get("moved") or [],
+            source=ClientIspMovement.Source.AUTO_REBALANCE,
+            seamless=True,
+            imbalance_reason=str(result.get("imbalance_reason") or ""),
+        )
     elif result.get("skipped"):
-        cache.set(cache_key, 1, 45)
+        cache.set(cache_key, 1, max(15, cooldown // 2))
     return result
 
 
@@ -2839,6 +3083,49 @@ def _wan_share_ports_with_traffic(wan_share: dict | None) -> set[str]:
         elif total_bps > 0 and pct is not None and int(pct or 0) > 0:
             out.add(name)
     return out
+
+
+def _duplicate_balance_gateway_ports(
+    members: list[str],
+    physical_ports: list[dict],
+    uplink_live: dict | None,
+) -> list[str]:
+    """WAN ports that share the same modem gateway IP (common with dual Safaricom modems)."""
+    from core.mikrotik_connect import _parse_dhcp_gateway_token
+
+    by_name = {
+        (p.get("name") or "").strip(): p
+        for p in physical_ports
+        if (p.get("name") or "").strip()
+    }
+    gw_by_port: dict[str, str] = {}
+    if isinstance(uplink_live, dict) and uplink_live.get("ok"):
+        for route in uplink_live.get("checked_routes") or []:
+            raw_gw = (route.get("gateway") or "").strip()
+            if not raw_gw or "%" not in raw_gw:
+                continue
+            ip_part, _, iface = raw_gw.partition("%")
+            gw_ip = _parse_dhcp_gateway_token(ip_part) or ip_part
+            iface = iface.strip()
+            if iface and gw_ip:
+                gw_by_port[iface] = gw_ip
+    for name in members:
+        if name in gw_by_port:
+            continue
+        row = by_name.get(name) or {}
+        raw = (row.get("uplink_gateway") or "").strip()
+        if raw:
+            gw_by_port[name] = _parse_dhcp_gateway_token(raw) or raw
+    by_gw: dict[str, list[str]] = {}
+    for name in members:
+        gw = gw_by_port.get(name)
+        if gw:
+            by_gw.setdefault(gw, []).append(name)
+    dup: list[str] = []
+    for ports in by_gw.values():
+        if len(ports) >= 2:
+            dup.extend(ports)
+    return sorted(set(dup))
 
 
 def _uplink_live_isp_ready(port_name: str, uplink_live: dict | None) -> bool:
@@ -6333,6 +6620,19 @@ def _build_uplink_health_alerts(
                     ),
                 }
             )
+        dup_gw = _duplicate_balance_gateway_ports(members, physical_ports, uplink_live)
+        if dup_gw and not balance_router_applied:
+            names = ", ".join(dup_gw)
+            alerts.append(
+                {
+                    "level": "info",
+                    "code": "balance_shared_gateway",
+                    "message": (
+                        f"{names} share the same modem gateway IP — OK for multi-ISP, "
+                        "but put modems in bridge mode when possible for cleaner routing."
+                    ),
+                }
+            )
         if len(members) >= 2 and not balance_router_applied:
             label = (
                 "Smart balance"
@@ -6428,6 +6728,130 @@ def _build_uplink_health_alerts(
                     )
 
     return alerts
+
+
+def _monitored_uplink_port_names(
+    *,
+    primary_wan_ports: list[str],
+    backup_wan_ports: list[str],
+    bond_member_ports: list[str],
+) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for group in (primary_wan_ports, backup_wan_ports, bond_member_ports):
+        for raw in group or []:
+            name = str(raw or "").strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+    return names
+
+
+def _link_without_internet_reason(
+    row: dict,
+    *,
+    smart_balance_slow: bool = False,
+) -> str:
+    name = (row.get("name") or "Port").strip() or "Port"
+    if row.get("disabled"):
+        return f"{name} is disabled"
+    if not row.get("running"):
+        return f"{name} has no cable link"
+    if smart_balance_slow:
+        return (
+            f"{name} is slow or unstable — sidelined from new connections"
+        )
+    inet = assess_port_internet_readiness(row)
+    if inet.get("verified"):
+        return ""
+    level = (inet.get("level") or "").strip()
+    if level == "warn":
+        return ""
+    return (inet.get("message") or "").strip() or f"{name} has no verified internet"
+
+
+def _collect_mikrotik_links_without_internet(
+    *,
+    physical_ports: list[dict],
+    primary_wan_ports: list[str],
+    backup_wan_ports: list[str],
+    bond_member_ports: list[str],
+    smart_balance_status: dict | None = None,
+) -> list[dict]:
+    """Configured uplink ports that currently lack usable internet."""
+    by_name = {
+        (p.get("name") or "").strip(): p
+        for p in physical_ports or []
+        if (p.get("name") or "").strip()
+    }
+    slow_ports = {
+        str(p).strip()
+        for p in (
+            (smart_balance_status or {}).get("slow_ports")
+            if isinstance(smart_balance_status, dict)
+            else []
+        )
+        if str(p or "").strip()
+    }
+    affected: list[dict] = []
+    for port_name in _monitored_uplink_port_names(
+        primary_wan_ports=primary_wan_ports,
+        backup_wan_ports=backup_wan_ports,
+        bond_member_ports=bond_member_ports,
+    ):
+        row = by_name.get(port_name) or {"name": port_name}
+        reason = _link_without_internet_reason(
+            row,
+            smart_balance_slow=port_name in slow_ports,
+        )
+        if reason:
+            affected.append({"port": port_name, "reason": reason})
+    return affected
+
+
+def _maybe_notify_mikrotik_link_no_internet(
+    router: MikroTikRouter,
+    *,
+    physical_ports: list[dict],
+    primary_wan_ports: list[str],
+    backup_wan_ports: list[str],
+    bond_member_ports: list[str],
+    smart_balance_status: dict | None = None,
+) -> None:
+    organization = getattr(router, "organization", None)
+    if organization is None:
+        return
+    affected = _collect_mikrotik_links_without_internet(
+        physical_ports=physical_ports,
+        primary_wan_ports=primary_wan_ports,
+        backup_wan_ports=backup_wan_ports,
+        bond_member_ports=bond_member_ports,
+        smart_balance_status=smart_balance_status,
+    )
+    if not affected:
+        try:
+            from accounts.communications import maybe_notify_mikrotik_link_no_internet
+
+            maybe_notify_mikrotik_link_no_internet(
+                organization=organization,
+                router_id=int(router.pk),
+                router_name=(router.name or router.host or "").strip(),
+                affected_links=[],
+            )
+        except Exception:
+            pass
+        return
+    try:
+        from accounts.communications import maybe_notify_mikrotik_link_no_internet
+
+        maybe_notify_mikrotik_link_no_internet(
+            organization=organization,
+            router_id=int(router.pk),
+            router_name=(router.name or router.host or "").strip(),
+            affected_links=affected,
+        )
+    except Exception:
+        pass
 
 
 def _suppress_redundant_health_alerts(
@@ -8547,6 +8971,253 @@ def sync_router_wifi_from_live(router: MikroTikRouter) -> tuple[MikroTikRouter, 
     return router, live
 
 
+def _static_internet_setup_summary(router: MikroTikRouter) -> dict:
+    """DB-backed internet setup summary when live ports data is unavailable."""
+    uplink_mode = router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE
+    uplink_ports = [str(p).strip() for p in (router.uplink_ports or []) if str(p).strip()]
+    wan = (router.wan_interface or "").strip()
+    bond = (router.bond_interface or "").strip()
+    meta_parts: list[str] = []
+    if uplink_mode == MikroTikRouter.UplinkMode.BOND and bond:
+        meta_parts.append(bond)
+        if router.bond_mode:
+            meta_parts.append(router.bond_mode)
+        if uplink_ports:
+            meta_parts.append(" + ".join(uplink_ports))
+    elif uplink_mode in {
+        MikroTikRouter.UplinkMode.SMART_BALANCE,
+        MikroTikRouter.UplinkMode.BALANCE,
+        MikroTikRouter.UplinkMode.FAILOVER,
+    }:
+        if uplink_ports:
+            meta_parts.append(" + ".join(uplink_ports))
+        else:
+            meta_parts.append("Assign ISP links in Port setup")
+    elif wan:
+        meta_parts.append(f"WAN {wan}")
+    return {
+        "mode": uplink_mode,
+        "mode_label": dict(MikroTikRouter.UplinkMode.choices).get(uplink_mode, uplink_mode),
+        "meta": " · ".join(meta_parts),
+        "wan_interface": wan,
+        "bond_interface": bond,
+        "bond_mode": (router.bond_mode or "").strip(),
+        "uplink_ports": uplink_ports,
+        "primary_wan_ports": [wan] if wan else ([uplink_ports[0]] if uplink_ports else []),
+        "backup_wan_ports": uplink_ports[1:] if len(uplink_ports) > 1 else [],
+        "applied": bool(wan or uplink_ports or bond),
+        "status_level": "info",
+        "status_title": "",
+        "status_message": "",
+        "health_message": "",
+        "health_level": "",
+    }
+
+
+def _internet_setup_from_ports_payload(router: MikroTikRouter, live_data: dict) -> dict:
+    """Merge stored router fields with live ports/uplink payload for the detail page."""
+    summary = _static_internet_setup_summary(router)
+    if not isinstance(live_data, dict):
+        return summary
+
+    mode = (live_data.get("uplink_mode") or summary["mode"] or "").strip()
+    summary["mode"] = mode
+    summary["mode_label"] = (
+        live_data.get("uplink_mode_label")
+        or live_data.get("ui_uplink_goal_label")
+        or dict(MikroTikRouter.UplinkMode.choices).get(mode, mode)
+    )
+    summary["wan_interface"] = (
+        live_data.get("wan_interface") or summary["wan_interface"] or ""
+    ).strip()
+    summary["bond_interface"] = (
+        live_data.get("bond_interface") or summary["bond_interface"] or ""
+    ).strip()
+    summary["bond_mode"] = (live_data.get("bond_mode") or summary["bond_mode"] or "").strip()
+    summary["uplink_ports"] = list(live_data.get("uplink_ports") or summary["uplink_ports"])
+    summary["primary_wan_ports"] = list(
+        live_data.get("primary_wan_ports") or summary["primary_wan_ports"]
+    )
+    summary["backup_wan_ports"] = list(
+        live_data.get("backup_wan_ports") or summary["backup_wan_ports"]
+    )
+    summary["applied"] = bool(
+        live_data.get("balance_router_applied")
+        or live_data.get("bond_router_applied")
+        or summary["wan_interface"]
+        or summary["uplink_ports"]
+    )
+
+    meta_parts: list[str] = []
+    if mode == MikroTikRouter.UplinkMode.BOND and summary["bond_interface"]:
+        meta_parts.append(summary["bond_interface"])
+        if summary["bond_mode"]:
+            meta_parts.append(summary["bond_mode"])
+        if summary["uplink_ports"]:
+            meta_parts.append(", ".join(summary["uplink_ports"]))
+    elif mode in {
+        MikroTikRouter.UplinkMode.SMART_BALANCE,
+        MikroTikRouter.UplinkMode.BALANCE,
+        MikroTikRouter.UplinkMode.FAILOVER,
+    }:
+        if summary["uplink_ports"]:
+            meta_parts.append(" + ".join(summary["uplink_ports"]))
+        elif summary["primary_wan_ports"]:
+            meta_parts.append(summary["primary_wan_ports"][0])
+    elif summary["wan_interface"]:
+        meta_parts.append(f"WAN {summary['wan_interface']}")
+    summary["meta"] = " · ".join(meta_parts)
+
+    setup = live_data.get("uplink_setup_status") if isinstance(live_data.get("uplink_setup_status"), dict) else {}
+    if setup.get("message"):
+        summary["status_level"] = setup.get("level") or "info"
+        summary["status_title"] = setup.get("title") or ""
+        summary["status_message"] = setup.get("message") or ""
+
+    uplink_live = live_data.get("uplink_live") if isinstance(live_data.get("uplink_live"), dict) else {}
+    wan_share = live_data.get("wan_share") if isinstance(live_data.get("wan_share"), dict) else {}
+    smart = (
+        live_data.get("smart_balance_status")
+        if isinstance(live_data.get("smart_balance_status"), dict)
+        else {}
+    )
+    slow_ports = [str(p).strip() for p in (smart.get("slow_ports") or []) if str(p).strip()]
+    if mode in {
+        MikroTikRouter.UplinkMode.SMART_BALANCE,
+        MikroTikRouter.UplinkMode.BALANCE,
+        MikroTikRouter.UplinkMode.FAILOVER,
+    }:
+        share_line = " · ".join(
+            f"{row.get('name') or '?'} {row.get('pct')}%"
+            for row in (wan_share.get("shares") or [])
+            if row.get("name")
+        )
+        if slow_ports:
+            summary["health_message"] = (
+                "Slow ISP sidelined (failover still active): " + ", ".join(slow_ports)
+            )
+            summary["health_level"] = "warn"
+        elif share_line and live_data.get("balance_router_applied"):
+            summary["health_message"] = "Failover + share · " + share_line
+            summary["health_level"] = "ok"
+        elif live_data.get("balance_router_applied"):
+            ports = summary["uplink_ports"] or summary["primary_wan_ports"]
+            summary["health_message"] = (
+                "Multi-ISP active on " + " + ".join(ports) if ports else "Multi-ISP active"
+            )
+            summary["health_level"] = "ok"
+        elif setup.get("message") and (setup.get("level") == "warn" or not setup.get("ok")):
+            summary["health_message"] = setup.get("message") or ""
+            summary["health_level"] = "warn"
+        elif live_data.get("balance_apply_hint"):
+            summary["health_message"] = live_data.get("balance_apply_hint") or ""
+            summary["health_level"] = "warn"
+    elif mode == MikroTikRouter.UplinkMode.BOND:
+        bonds = uplink_live.get("bonds") if isinstance(uplink_live.get("bonds"), list) else []
+        bond_live = bonds[0] if bonds else {}
+        if bond_live.get("running"):
+            slaves = bond_live.get("slaves") or summary["uplink_ports"]
+            summary["health_message"] = "Bond up · " + ", ".join(slaves or [])
+            summary["health_level"] = "ok"
+        elif setup.get("message"):
+            summary["health_message"] = setup.get("message") or ""
+            summary["health_level"] = "ok" if setup.get("ok") else "warn"
+
+    return summary
+
+
+def _build_mikrotik_detail_analytics_payload(
+    router: MikroTikRouter,
+    org,
+    *,
+    force: bool = False,
+    live_status: str | None = None,
+    live_error: str | None = None,
+) -> dict:
+    """Health trend + internet setup/analytics for the MikroTik detail page."""
+    from core.mikrotik_status_samples import (
+        router_mikrotik_health_drops,
+        router_mikrotik_health_trend,
+        status_score,
+    )
+
+    live_score = status_score(live_status) if live_status else None
+    payload: dict = {
+        "ok": True,
+        "router_id": router.pk,
+        "health_trend": router_mikrotik_health_trend(
+            org, router.pk, hours=24, live_score=live_score
+        ),
+        "health_drops": router_mikrotik_health_drops(
+            org,
+            router.pk,
+            hours=24,
+            live_status=live_status,
+            live_error=live_error,
+            max_events=6,
+        ),
+        "internet_setup": _static_internet_setup_summary(router),
+        "internet_analytics": {"ok": False},
+    }
+
+    if router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
+        payload["suspended"] = True
+        return payload
+
+    cache_key = f"mikrotik_detail_analytics:{org.pk}:{router.pk}"
+    if not force:
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict):
+            cached["health_trend"] = payload["health_trend"]
+            cached["health_drops"] = payload["health_drops"]
+            return cached
+
+    live_data: dict | None = None
+    for source_key in (
+        f"mikrotik_assigned_ports_live:{org.pk}:{router.pk}",
+        f"mikrotik_ports_live:{org.pk}:{router.pk}",
+    ):
+        cached_live = cache.get(source_key)
+        if isinstance(cached_live, dict) and cached_live.get("ok"):
+            live_data = cached_live
+            break
+
+    if live_data is None or force:
+        try:
+            live_data = _ports_live_payload(router, include_client_analysis=True)
+        except Exception as exc:
+            logger.exception(
+                "detail_analytics live read failed router=%s org=%s",
+                router.pk,
+                org.pk,
+            )
+            payload["live_error"] = str(exc) or "Could not read live internet analytics."
+            return payload
+
+    payload["internet_setup"] = _internet_setup_from_ports_payload(router, live_data)
+    analysis = live_data.get("router_analysis") if isinstance(live_data.get("router_analysis"), dict) else {}
+    if analysis.get("ok") or analysis.get("isps") or analysis.get("summary"):
+        payload["internet_analytics"] = {
+            "ok": bool(analysis.get("ok") or analysis.get("isps")),
+            "mode": analysis.get("mode") or payload["internet_setup"].get("mode"),
+            "mode_label": analysis.get("mode_label")
+            or payload["internet_setup"].get("mode_label"),
+            "mode_note": analysis.get("mode_note") or "",
+            "summary": analysis.get("summary") or {},
+            "isps": analysis.get("isps") or [],
+            "port_analytics": analysis.get("port_analytics") or [],
+            "error": analysis.get("error") or "",
+        }
+    elif live_data.get("error"):
+        payload["internet_analytics"] = {
+            "ok": False,
+            "error": live_data.get("error") or "Live analytics unavailable.",
+        }
+
+    cache.set(cache_key, payload, 8)
+    return payload
+
+
 @client_workspace_required
 def mikrotik_detail(request, router_id: int):
     """View onboarded MikroTik router details for the active organization."""
@@ -8631,9 +9302,73 @@ def mikrotik_detail(request, router_id: int):
         (not is_hosted_dashboard) and management_mode == "remote_only"
     )
     ctx["is_hosted_dashboard"] = is_hosted_dashboard
-    ctx["mikrotik_quicknav_set"] = "overview"
-    ctx["mikrotik_quicknav_active"] = ""
+    ctx["mikrotik_quicknav_set"] = "ports"
+    ctx["mikrotik_quicknav_active"] = "overview"
+    ctx["detail_analytics_url"] = reverse("core:mikrotik_detail_analytics", args=[router.pk])
+    ctx["ports_setup_url"] = reverse("core:mikrotik_ports", args=[router.pk])
+    ctx["assigned_ports_url"] = reverse("core:mikrotik_assigned_ports", args=[router.pk])
+    from core.mikrotik_status_samples import (
+        router_mikrotik_health_drops,
+        router_mikrotik_health_trend,
+        status_score,
+    )
+
+    live_status = None
+    live_error = None
+    if isinstance(initial_live, dict):
+        if initial_live.get("online"):
+            live_status = "connected"
+        elif initial_live.get("auth_error"):
+            live_status = "auth_failed"
+            live_error = initial_live.get("error")
+        elif initial_live.get("error"):
+            live_status = "disconnected"
+            live_error = initial_live.get("error")
+    live_score = status_score(live_status) if live_status else None
+    ctx["initial_detail_analytics"] = {
+        "ok": True,
+        "router_id": router.pk,
+        "suspended": is_suspended,
+        "health_trend": router_mikrotik_health_trend(
+            org, router.pk, hours=24, live_score=live_score
+        ),
+        "health_drops": router_mikrotik_health_drops(
+            org,
+            router.pk,
+            hours=24,
+            live_status=live_status,
+            live_error=live_error,
+            max_events=6,
+        ),
+        "internet_setup": _static_internet_setup_summary(router),
+        "internet_analytics": {"ok": False, "pending": not is_suspended},
+    }
     return render(request, "core/mikrotik_detail.html", ctx)
+
+
+@client_workspace_required
+@require_GET
+def mikrotik_detail_analytics(request, router_id: int):
+    """JSON health trend and internet analytics for the MikroTik detail page."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization."}, status=400)
+
+    router = get_object_or_404(MikroTikRouter, pk=router_id, organization=org)
+    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+    if force:
+        cache.delete(f"mikrotik_detail_analytics:{org.pk}:{router.pk}")
+
+    live_status = (request.GET.get("live_status") or "").strip().lower() or None
+    live_error = (request.GET.get("live_error") or "").strip() or None
+    payload = _build_mikrotik_detail_analytics_payload(
+        router,
+        org,
+        force=force,
+        live_status=live_status,
+        live_error=live_error,
+    )
+    return JsonResponse(payload)
 
 
 @client_workspace_required
@@ -11479,6 +12214,7 @@ def _ports_live_payload(
         saved_wan=router.wan_interface or "",
     )
 
+    applying_uplink_job = active_uplink_apply_job(router.pk)
     ports: list[dict] = []
     for row in live_ports:
         name = row.get("name") or ""
@@ -11510,28 +12246,43 @@ def _ports_live_payload(
             suggested_role=suggested,
             uplink_mode=uplink_mode,
         )
-        ports.append(
-            {
-                **row,
-                "role": role,
-                "role_label": _friendly_role_label(role, mode=uplink_mode),
-                "suggested_role": suggested,
-                "suggested_role_label": (
-                    _friendly_role_label(suggested, mode=uplink_mode) if suggested else ""
-                ),
-                "role_matches_setup": not suggested or suggested == (role or "").strip(),
-                "auto_managed": bool(suggested) and suggested == (role or "").strip(),
-                "show_bridge_warn": bool(bridge_warn.get("show")),
-                "bridge_warn_message": bridge_warn.get("message") or "",
-                "bridge_warn_level": bridge_warn.get("level") or "warn",
-                "show_internet_status": show_internet_status,
-                "is_bond_iface": _is_bond_port_row(row),
-                "is_bond_member": (role or "").strip() == MikroTikRouter.PortRole.BOND,
-                "internet_verified": bool(inet.get("verified")),
-                "internet_hint": internet_hint,
-                "internet_level": (inet.get("level") or "").strip(),
-            }
-        )
+        port_payload = {
+            **row,
+            "role": role,
+            "role_label": _friendly_role_label(role, mode=uplink_mode),
+            "suggested_role": suggested,
+            "suggested_role_label": (
+                _friendly_role_label(suggested, mode=uplink_mode) if suggested else ""
+            ),
+            "role_matches_setup": not suggested or suggested == (role or "").strip(),
+            "auto_managed": bool(suggested) and suggested == (role or "").strip(),
+            "show_bridge_warn": bool(bridge_warn.get("show")),
+            "bridge_warn_message": bridge_warn.get("message") or "",
+            "bridge_warn_level": bridge_warn.get("level") or "warn",
+            "show_internet_status": show_internet_status,
+            "is_bond_iface": _is_bond_port_row(row),
+            "is_bond_member": (role or "").strip() == MikroTikRouter.PortRole.BOND,
+            "internet_verified": bool(inet.get("verified")),
+            "internet_hint": internet_hint,
+            "internet_level": (inet.get("level") or "").strip(),
+        }
+        if (
+            applying_uplink_job
+            and show_internet_status
+            and row.get("running")
+            and not row.get("disabled")
+            and (
+                inet.get("verified")
+                or _uplink_live_isp_ready(name, uplink_live)
+                or _port_has_isp_signals(row)
+            )
+        ):
+            port_payload["internet_verified"] = True
+            port_payload["internet_level"] = "ok"
+            port_payload["internet_hint"] = (
+                "Multi-ISP apply in progress — link OK (ignore temporary Waiting labels)."
+            )
+        ports.append(port_payload)
 
     physical_ports = [p for p in ports if not p.get("is_bond_iface")]
     bond_member_ports = [
@@ -11883,6 +12634,7 @@ def _ports_live_payload(
             balance_ready=balance_ready,
             balance_router_applied=balance_router_applied,
             smart_balance_applied=smart_balance_applied,
+            wan_share=wan_share if wan_share.get("ok") else {},
         )
         if balance_insights.get("auto_rebalance"):
             client_rebalance = _try_auto_rebalance_client_isps(
@@ -11926,6 +12678,7 @@ def _ports_live_payload(
                     balance_ready=balance_ready,
                     balance_router_applied=balance_router_applied,
                     smart_balance_applied=smart_balance_applied,
+                    wan_share=wan_share if wan_share.get("ok") else {},
                 )
         if balance_insights.get("can_auto_enable"):
             balance_auto = _try_auto_enable_client_balance(
@@ -12002,6 +12755,7 @@ def _ports_live_payload(
                         balance_ready=balance_ready,
                         balance_router_applied=balance_router_applied,
                         smart_balance_applied=smart_balance_applied,
+                        wan_share=wan_share if wan_share.get("ok") else {},
                     )
                 except Exception:
                     pass
@@ -12027,6 +12781,16 @@ def _ports_live_payload(
         auto_msg = balance_auto.get("message") or "Smart balance enabled for client spreading."
 
     applying_job = active_uplink_apply_job(router.pk)
+
+    if listed.get("ok") and not applying_job:
+        _maybe_notify_mikrotik_link_no_internet(
+            router,
+            physical_ports=physical_ports,
+            primary_wan_ports=primary_wan_ports,
+            backup_wan_ports=backup_wan_ports,
+            bond_member_ports=bond_member_ports,
+            smart_balance_status=smart_balance_status,
+        )
 
     return {
         "ok": True,
@@ -12173,6 +12937,7 @@ def _perform_client_isp_switch(
     customer_id: int,
     client_ip: str,
     target_port: str,
+    actor=None,
 ) -> dict:
     """Pin an online client to a chosen ISP member port."""
     uplink_mode = (router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
@@ -12193,13 +12958,26 @@ def _perform_client_isp_switch(
     if target not in member_ports:
         return {"ok": False, "error": f"Unknown ISP port {target or '(empty)'}."}
 
+    balance_ready = False
+    cache_key = f"mikrotik_assigned_ports_live:{org.pk}:{router.pk}"
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict):
+        analysis = cached.get("router_analysis") or {}
+        balance_ready = bool(analysis.get("can_switch_clients"))
+    if not balance_ready:
+        return {
+            "ok": False,
+            "error": (
+                "Turn on smart balance first — client switching needs multi-ISP "
+                "routing on the MikroTik."
+            ),
+        }
+
     ip = _parse_connection_address(client_ip)
     if not ip:
         return {"ok": False, "error": "Client IP is required for switching."}
 
     slow_ports: list[str] = []
-    cache_key = f"mikrotik_assigned_ports_live:{org.pk}:{router.pk}"
-    cached = cache.get(cache_key)
     if isinstance(cached, dict):
         smart = cached.get("smart_balance_status") or {}
         slow_ports = [
@@ -12237,9 +13015,35 @@ def _perform_client_isp_switch(
     if result.get("ok"):
         cache.delete(cache_key)
         cache.delete(f"mikrotik_ports_live:{org.pk}:{router.pk}")
+        from_isp = ""
+        if isinstance(cached, dict):
+            analysis = cached.get("router_analysis") or {}
+            for row in analysis.get("clients") or []:
+                row_cid = row.get("customer_id")
+                try:
+                    row_cid = int(row_cid) if row_cid else 0
+                except (TypeError, ValueError):
+                    row_cid = 0
+                if row_cid == customer.pk:
+                    from_isp = (row.get("isp_port") or "").strip()
+                    break
+                row_ip = _parse_connection_address(str(row.get("ip") or ""))
+                if row_ip and row_ip == ip:
+                    from_isp = (row.get("isp_port") or "").strip()
+        record_client_isp_movement(
+            router=router,
+            customer_id=customer.pk,
+            customer_name=customer.full_name,
+            client_ip=ip,
+            from_isp_port=from_isp,
+            to_isp_port=target,
+            source=ClientIspMovement.Source.MANUAL,
+            seamless=True,
+            actor=actor,
+        )
         result["message"] = (
-            f"Moved {customer.full_name} to {target}. "
-            "Sessions refresh briefly; PPPoE clients may reconnect."
+            f"{customer.full_name} is now assigned to {target}. "
+            "Current browsing stays connected — new traffic uses that link."
         )
     return result
 
@@ -12274,6 +13078,7 @@ def mikrotik_assigned_ports_apply(request, router_id: int):
             customer_id=customer_id,
             client_ip=(request.POST.get("client_ip") or "").strip(),
             target_port=(request.POST.get("target_port") or "").strip(),
+            actor=request.user,
         )
         status = 200 if result.get("ok") else 400
         return JsonResponse(result, status=status)

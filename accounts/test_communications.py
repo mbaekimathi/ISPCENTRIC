@@ -1546,6 +1546,17 @@ class DpoRecipientResolutionTests(TestCase):
             phone="0712000000",
         )
 
+    def test_isp_client_resolves_owner_contact(self):
+        from accounts.communications import resolve_org_event_contacts
+
+        contacts = resolve_org_event_contacts(
+            ["isp_client"],
+            organization=self.org,
+        )
+        self.assertEqual(len(contacts), 1)
+        self.assertEqual(contacts[0]["email"], "owner@example.com")
+        self.assertEqual(contacts[0]["phone"], "0712000000")
+
     def test_dpo_uses_dedicated_contact(self):
         from accounts.communications import resolve_org_event_contacts
 
@@ -1593,3 +1604,64 @@ class DpoRecipientResolutionTests(TestCase):
                 continue
             self.assertEqual(event["recipient_options"][0], "dpo")
             self.assertIn("organization_owner", event["recipient_options"])
+
+    def test_mikrotik_link_no_internet_defaults_to_isp_client(self):
+        from accounts.communications import ISP_COMMUNICATION_EVENTS
+
+        event = next(
+            e for e in ISP_COMMUNICATION_EVENTS if e["key"] == "isp_mikrotik_link_no_internet"
+        )
+        self.assertEqual(event["recipient_options"][0], "isp_client")
+        self.assertIn("organization_owner", event["recipient_options"])
+
+    def test_mikrotik_link_no_internet_notifies_once_per_port(self):
+        from django.core.cache import cache
+
+        from accounts.communications import maybe_notify_mikrotik_link_no_internet
+
+        cache.clear()
+        comms = CommunicationSettings.for_organization(self.org)
+        comms.enabled_messages = {
+            "isp_mikrotik_link_no_internet": {
+                "message": "Link alert {router_name}: {affected_links}",
+                "recipients": ["isp_client"],
+                "channels": ["email"],
+            }
+        }
+        comms.save(update_fields=["enabled_messages", "updated_at"])
+
+        links = [{"port": "ether1", "reason": "ether1 has no cable link"}]
+        with patch("accounts.communications.send_email") as mock_email:
+            mock_email.return_value = {"ok": True}
+            first = maybe_notify_mikrotik_link_no_internet(
+                organization=self.org,
+                router_id=42,
+                router_name="Core-NAS",
+                affected_links=links,
+            )
+            second = maybe_notify_mikrotik_link_no_internet(
+                organization=self.org,
+                router_id=42,
+                router_name="Core-NAS",
+                affected_links=links,
+            )
+            recovered = maybe_notify_mikrotik_link_no_internet(
+                organization=self.org,
+                router_id=42,
+                router_name="Core-NAS",
+                affected_links=[],
+            )
+            again = maybe_notify_mikrotik_link_no_internet(
+                organization=self.org,
+                router_id=42,
+                router_name="Core-NAS",
+                affected_links=links,
+            )
+        self.assertTrue(first.get("ok"))
+        self.assertTrue(second.get("skipped"))
+        self.assertTrue(recovered.get("skipped"))
+        self.assertTrue(again.get("ok"))
+        self.assertEqual(mock_email.call_count, 2)
+        body = first.get("message") or ""
+        self.assertIn("Core-NAS", body)
+        self.assertIn("ether1", body)
