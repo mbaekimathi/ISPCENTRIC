@@ -138,6 +138,96 @@
     </div>
 
     <section
+      class="clients-usage-uplink-panel"
+      id="usage-uplink-settings"
+      data-router-settings-url="{{ usage_router_settings_url|default:''|escape }}"
+    >
+      <header class="clients-usage-section-head-inline">
+        <div>
+          <p class="clients-usage-section-kicker">Uplink package</p>
+          <h2 class="clients-usage-section-title">MikroTik period &amp; alerts</h2>
+        </div>
+        <p class="clients-usage-section-meta">
+          Set when each uplink package period starts so combined usage is counted from that day.
+          Adjust the alert limit per MikroTik (default 3 TB).
+        </p>
+      </header>
+
+      {% if router_usage_settings %}
+        <div class="clients-usage-uplink-grid">
+          {% for row in router_usage_settings %}
+            <article
+              class="clients-usage-uplink-card{% if row.alert_active %} is-alert{% endif %}"
+              data-router-id="{{ row.id }}"
+            >
+              <div class="clients-usage-uplink-card-head">
+                <div>
+                  <h3>{{ row.name }}</h3>
+                  {% if row.host %}<p class="clients-usage-uplink-host">{{ row.host }}</p>{% endif %}
+                </div>
+                <span class="clients-usage-uplink-badge" data-uplink-badge>
+                  {% if row.alert_active %}Over limit{% elif row.usage_tracking_label != "Not set" %}Tracking{% else %}Not started{% endif %}
+                </span>
+              </div>
+
+              <dl class="clients-usage-uplink-stats">
+                <div>
+                  <dt>Combined usage</dt>
+                  <dd>
+                    <strong data-uplink-used>{{ row.usage_total_tb }} TB</strong>
+                    <span>since period start</span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Clients</dt>
+                  <dd data-uplink-clients>{{ row.client_count }}</dd>
+                </div>
+              </dl>
+
+              <div class="clients-usage-uplink-fields">
+                <label class="clients-usage-uplink-field">
+                  <span>Period start</span>
+                  <input
+                    type="datetime-local"
+                    data-uplink-period-start
+                    value="{{ row.usage_tracking_input }}"
+                    aria-label="Uplink package period start for {{ row.name }}"
+                  >
+                  <small data-uplink-period-label>
+                    {% if row.usage_tracking_label != "Not set" %}Counting from {{ row.usage_tracking_label }}{% else %}Set a start date to begin counting usage{% endif %}
+                  </small>
+                </label>
+                <label class="clients-usage-uplink-field">
+                  <span>Alert at (TB)</span>
+                  <input
+                    type="number"
+                    min="0.1"
+                    max="1000"
+                    step="0.01"
+                    inputmode="decimal"
+                    data-uplink-threshold
+                    value="{{ row.usage_high_threshold_tb }}"
+                    aria-label="Usage alert threshold in TB for {{ row.name }}"
+                  >
+                  <small>DPO alert when combined usage exceeds this amount</small>
+                </label>
+              </div>
+
+              <div class="clients-usage-uplink-actions">
+                <button type="button" class="btn btn-primary btn-sm" data-uplink-save>Save</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-uplink-clear-period>Clear period</button>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="panel-sub clients-usage-uplink-empty">
+          Add MikroTik routers under Network to configure uplink package periods and usage alerts.
+        </p>
+      {% endif %}
+    </section>
+
+    <section
       class="clients-usage-summary-strip"
       id="usage-overview"
       data-trends-url="{{ trends_url }}"
@@ -757,9 +847,17 @@
     var bytes = Number(user && user.data_used_bytes) || 0;
     var peak = Math.max(
       Number(user && user.peak_download_bps) || 0,
-      Number(user && user.live_download_bps) || 0
+      Number(user && user.peak_upload_bps) || 0,
+      Number(user && user.live_download_bps) || 0,
+      Number(user && user.live_upload_bps) || 0
     );
-    var active = !!(user && user.latest_active);
+    var active = !!(
+      user && (
+        user.latest_active ||
+        user.live_active ||
+        user.access_state === "surfing"
+      )
+    );
     if (bytes >= 500 * 1024 * 1024 || peak >= 5000000) return "High";
     if (bytes >= 50 * 1024 * 1024 || peak >= 1000000) return "Medium";
     if (bytes > 0 || peak > 0 || active) return "Low";
@@ -1343,6 +1441,129 @@
       loadSurfing(false);
     }
   });
+
+  var uplinkPanel = document.getElementById("usage-uplink-settings");
+  var routerSettingsUrl = uplinkPanel ? uplinkPanel.getAttribute("data-router-settings-url") : "";
+
+  function uplinkCsrfToken() {
+    var match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function uplinkToast(payload) {
+    if (typeof window.showToast === "function") {
+      window.showToast({
+        type: payload && payload.ok === false ? "error" : "success",
+        title: (payload && payload.toast_title) || "Uplink settings",
+        text: (payload && (payload.message || payload.error)) || "Saved."
+      });
+    }
+  }
+
+  function uplinkBadgeText(row) {
+    if (!row) return "Not started";
+    if (row.alert_active) return "Over limit";
+    if (row.usage_tracking_label && row.usage_tracking_label !== "Not set") return "Tracking";
+    return "Not started";
+  }
+
+  function paintUplinkCard(card, row) {
+    if (!card || !row) return;
+    card.classList.toggle("is-alert", !!row.alert_active);
+    var badge = card.querySelector("[data-uplink-badge]");
+    if (badge) badge.textContent = uplinkBadgeText(row);
+    var used = card.querySelector("[data-uplink-used]");
+    if (used) used.textContent = String(row.usage_total_tb != null ? row.usage_total_tb : 0) + " TB";
+    var clients = card.querySelector("[data-uplink-clients]");
+    if (clients) clients.textContent = String(row.client_count != null ? row.client_count : 0);
+    var period = card.querySelector("[data-uplink-period-start]");
+    if (period && row.usage_tracking_input != null) period.value = row.usage_tracking_input || "";
+    var threshold = card.querySelector("[data-uplink-threshold]");
+    if (threshold && row.usage_high_threshold_tb != null) {
+      threshold.value = String(row.usage_high_threshold_tb);
+    }
+    var periodLabel = card.querySelector("[data-uplink-period-label]");
+    if (periodLabel) {
+      periodLabel.textContent = row.usage_tracking_label && row.usage_tracking_label !== "Not set"
+        ? ("Counting from " + row.usage_tracking_label)
+        : "Set a start date to begin counting usage";
+    }
+  }
+
+  function saveUplinkCard(card, opts) {
+    opts = opts || {};
+    if (!card || !routerSettingsUrl) return Promise.resolve(null);
+    var routerId = card.getAttribute("data-router-id");
+    if (!routerId) return Promise.resolve(null);
+    var saveBtn = card.querySelector("[data-uplink-save]");
+    var clearBtn = card.querySelector("[data-uplink-clear-period]");
+    if (saveBtn) saveBtn.disabled = true;
+    if (clearBtn) clearBtn.disabled = true;
+
+    var body = new URLSearchParams();
+    body.append("router", routerId);
+    if (opts.clearPeriod) {
+      body.append("clear_period", "1");
+    } else {
+      var period = card.querySelector("[data-uplink-period-start]");
+      if (period && period.value) body.append("at", period.value);
+    }
+    var threshold = card.querySelector("[data-uplink-threshold]");
+    if (threshold && threshold.value) body.append("usage_high_threshold_tb", threshold.value);
+
+    return fetch(routerSettingsUrl, {
+      method: "POST",
+      headers: {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-CSRFToken": uplinkCsrfToken(),
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      credentials: "same-origin",
+      body: body.toString()
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        var data = result.data || {};
+        if (!result.ok || !data.ok) {
+          uplinkToast({ ok: false, error: data.error || "Could not save uplink settings." });
+          return null;
+        }
+        paintUplinkCard(card, data);
+        uplinkToast(data);
+        loadTrends(true, { stampText: "Refreshing usage…" });
+        return data;
+      })
+      .catch(function () {
+        uplinkToast({ ok: false, error: "Could not save uplink settings." });
+        return null;
+      })
+      .finally(function () {
+        if (saveBtn) saveBtn.disabled = false;
+        if (clearBtn) clearBtn.disabled = false;
+      });
+  }
+
+  if (uplinkPanel && routerSettingsUrl) {
+    uplinkPanel.addEventListener("click", function (event) {
+      var target = event.target;
+      if (!target || !target.closest) return;
+      var saveBtn = target.closest("[data-uplink-save]");
+      var clearBtn = target.closest("[data-uplink-clear-period]");
+      var card = target.closest("[data-router-id]");
+      if (!card) return;
+      if (saveBtn) {
+        event.preventDefault();
+        saveUplinkCard(card, {});
+      } else if (clearBtn) {
+        event.preventDefault();
+        if (!window.confirm("Clear the uplink period start for this MikroTik? Combined usage will stop counting until you set a new start date.")) {
+          return;
+        }
+        saveUplinkCard(card, { clearPeriod: true });
+      }
+    });
+  }
 })();
 </script>
 {% endblock %}

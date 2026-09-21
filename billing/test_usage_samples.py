@@ -1835,3 +1835,77 @@ class UsageAccuracyHardeningTests(TestCase):
         self.assertEqual(exported["data_used_bytes"], trend["summary"]["data_used_bytes"])
         self.assertEqual(exported["data_used_bytes"], 1900)
         self.assertEqual(len(exported["samples"]), 2)
+
+
+class UsageLevelAndDeviceCountTests(SimpleTestCase):
+    def test_usage_level_uses_upload_peak(self):
+        from billing.usage_samples import _usage_level_label
+
+        self.assertEqual(
+            _usage_level_label(
+                data_used_bytes=0,
+                peak_download_bps=0,
+                peak_upload_bps=2_000_000,
+                latest_active=False,
+            ),
+            "Medium",
+        )
+        self.assertEqual(
+            _usage_level_label(
+                data_used_bytes=0,
+                peak_download_bps=0,
+                peak_upload_bps=0,
+                latest_active=True,
+            ),
+            "Low",
+        )
+
+    def test_live_map_gadgets_online_sums_entire_snapshot(self):
+        from django.core.cache import cache
+
+        from billing.devices import live_map_gadgets_online
+        from billing.usage_samples import (
+            _org_live_usage_cache_key,
+            apply_live_usage_overlay,
+        )
+
+        class _Org:
+            pk = 99
+
+        cache.set(
+            _org_live_usage_cache_key(99),
+            {
+                "ok": True,
+                "at": timezone.now().isoformat(),
+                "pppoe": {},
+                "hotspot": {
+                    1: {"session_active": True, "gadgets": 2},
+                    2: {"session_active": True, "gadgets": 3},
+                    3: {"session_active": False, "gadgets": 0},
+                },
+            },
+            60,
+        )
+        self.assertEqual(live_map_gadgets_online(
+            {
+                1: {"session_active": True, "gadgets": 2},
+                2: {"session_active": True, "gadgets": 3},
+                3: {"session_active": False, "gadgets": 0},
+            },
+            service="hotspot",
+        ), 5)
+        payload = apply_live_usage_overlay(
+            {
+                "ok": True,
+                "service": "hotspot",
+                "top_users": [
+                    {"customer_id": 1, "latest_active": False, "gadgets_connected": 0}
+                ],
+                "summary": {"clients_total": 3, "gadgets_online": 0},
+            },
+            _Org(),
+            service="hotspot",
+        )
+        self.assertEqual(payload["summary"]["gadgets_online"], 5)
+        self.assertEqual(payload["summary"]["clients_surfing"], 2)
+        self.assertEqual(payload["top_users"][0]["gadgets_connected"], 2)

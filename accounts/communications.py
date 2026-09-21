@@ -1712,7 +1712,23 @@ def maybe_notify_mikrotik_config_changed(
     )
 
 
-MIKROTIK_USAGE_HIGH_BYTES = 3 * (1024**4)  # 3 TB
+MIKROTIK_USAGE_HIGH_BYTES = 3 * (1024**4)  # 3 TB default
+
+
+def resolve_mikrotik_usage_high_threshold_bytes(router) -> int:
+    """Per-router usage alert limit; falls back to 3 TB when unset or invalid."""
+    if router is None:
+        return MIKROTIK_USAGE_HIGH_BYTES
+    tb = getattr(router, "usage_high_threshold_tb", None)
+    if tb is None:
+        return MIKROTIK_USAGE_HIGH_BYTES
+    try:
+        value = float(tb)
+    except (TypeError, ValueError):
+        return MIKROTIK_USAGE_HIGH_BYTES
+    if value <= 0:
+        return MIKROTIK_USAGE_HIGH_BYTES
+    return int(value * (1024**4))
 
 
 def maybe_notify_mikrotik_usage_high(
@@ -1722,8 +1738,9 @@ def maybe_notify_mikrotik_usage_high(
     total_bytes: int = 0,
     client_count: int = 0,
     usage_since=None,
+    threshold_bytes: int | None = None,
 ) -> dict:
-    """Notify once per episode when aggregate client usage on a router exceeds 3 TB."""
+    """Notify once per episode when aggregate client usage on a router exceeds its limit."""
     from django.core.cache import cache
     from django.utils import timezone
 
@@ -1736,8 +1753,9 @@ def maybe_notify_mikrotik_usage_high(
         total = int(total_bytes or 0)
     except (TypeError, ValueError):
         total = 0
+    limit = int(threshold_bytes or resolve_mikrotik_usage_high_threshold_bytes(router))
     alert_key = f"comms:mikrotik_usage:{organization.pk}:{router_id}"
-    if total < MIKROTIK_USAGE_HIGH_BYTES:
+    if total < limit:
         cache.delete(alert_key)
         return {"ok": False, "skipped": True, "reason": "below_threshold"}
     if not cache.add(alert_key, total, timeout=60 * 60 * 24 * 14):
@@ -1750,6 +1768,7 @@ def maybe_notify_mikrotik_usage_high(
         except Exception:
             since_label = str(usage_since)
     usage_tb = f"{total / float(1024**4):.2f}"
+    threshold_tb = f"{limit / float(1024**4):.2f}".rstrip("0").rstrip(".")
     return notify_org_event(
         "isp_mikrotik_usage_high",
         organization=organization,
@@ -1757,10 +1776,14 @@ def maybe_notify_mikrotik_usage_high(
             "router_name": (getattr(router, "name", "") or "").strip()
             or f"Router #{router_id}",
             "usage_tb": usage_tb,
+            "threshold_tb": threshold_tb,
             "client_count": str(int(client_count or 0)),
             "usage_since": since_label or "the usage reset",
         },
-        subject=f"MikroTik usage over 3 TB — {getattr(router, 'name', router_id)}",
+        subject=(
+            f"MikroTik usage over {threshold_tb} TB — "
+            f"{getattr(router, 'name', router_id)}"
+        ),
     )
 
 

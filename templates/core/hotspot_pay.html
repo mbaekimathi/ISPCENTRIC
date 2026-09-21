@@ -1118,6 +1118,92 @@
     .pay-overlay.is-error .loader-dots,
     .pay-overlay.is-success .loader-dots { display: none; }
 
+    .payment-steps {
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 0.35rem;
+      text-align: left;
+    }
+
+    .payment-steps[hidden] { display: none !important; }
+
+    .payment-steps li {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.38rem 0.45rem;
+      border-radius: 0.65rem;
+      font-size: 0.74rem;
+      font-weight: 700;
+      color: var(--muted);
+      border: 1px solid transparent;
+    }
+
+    .payment-steps .step-mark {
+      flex: none;
+      width: 1.15rem;
+      height: 1.15rem;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      font-size: 0.62rem;
+      font-weight: 800;
+      background: rgba(18, 35, 31, 0.06);
+      color: var(--muted);
+    }
+
+    .payment-steps li.is-done {
+      color: var(--ok);
+      background: rgba(20, 138, 74, 0.08);
+      border-color: rgba(20, 138, 74, 0.14);
+    }
+
+    .payment-steps li.is-done .step-mark {
+      background: rgba(20, 138, 74, 0.16);
+      color: var(--ok);
+    }
+
+    .payment-steps li.is-active {
+      color: var(--brand-deep);
+      background: rgba(13, 124, 114, 0.08);
+      border-color: rgba(13, 124, 114, 0.16);
+    }
+
+    .payment-steps li.is-active .step-mark {
+      background: rgba(13, 124, 114, 0.16);
+      color: var(--brand-deep);
+      animation: stepPulse 1.2s ease-in-out infinite;
+    }
+
+    @keyframes stepPulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.08); opacity: 0.75; }
+    }
+
+    .payment-receipt {
+      width: 100%;
+      margin: 0;
+      padding: 0.45rem 0.55rem;
+      border-radius: 0.65rem;
+      background: rgba(20, 138, 74, 0.08);
+      border: 1px solid rgba(20, 138, 74, 0.16);
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--muted);
+      text-align: center;
+    }
+    .payment-receipt[hidden] { display: none !important; }
+    .payment-receipt strong {
+      display: block;
+      margin-top: 0.12rem;
+      font-size: 0.95rem;
+      letter-spacing: 0.08em;
+      color: var(--ok);
+    }
+
     .payment-loader {
       position: relative;
       width: 3.4rem;
@@ -1934,6 +2020,11 @@
         <span data-waiting-live>Waiting</span>
         <span class="loader-dots" aria-hidden="true"><i></i><i></i><i></i></span>
       </p>
+      <ol class="payment-steps" data-payment-steps hidden aria-label="Connection progress">
+        <li data-step="paid"><span class="step-mark" aria-hidden="true">1</span> Payment successful</li>
+        <li data-step="connect"><span class="step-mark" aria-hidden="true">2</span> Waiting for internet to connect</li>
+      </ol>
+      <p class="payment-receipt" data-payment-receipt hidden>M-Pesa reference<strong data-receipt-code></strong></p>
       <p class="payment-waiting-title" id="pay-waiting-title" data-waiting-title>Waiting for M-Pesa</p>
       <p class="payment-waiting-copy" id="pay-waiting-copy" data-waiting-copy>
         Enter your PIN on your phone. This page updates automatically.
@@ -1956,6 +2047,7 @@
       var root = document.querySelector("[data-pay-panel]");
       if (!root) return;
       var welcomeUrl = "{{ welcome_url|escapejs }}" || "http://neverssl.com/";
+      var assistanceUrl = "{{ assistance_url|escapejs }}" || (window.location.pathname.replace(/\/pay\/?$/, "/assistance/"));
       var POLL_FAST_MS = 800;
       var POLL_SLOW_MS = 2000;
       var POLL_GIVE_UP_MS = 600000;
@@ -2040,6 +2132,11 @@
       var continueBtn = overlay && overlay.querySelector("[data-overlay-continue]");
       var overlayVouchers = overlay && overlay.querySelector("[data-overlay-vouchers]");
       var overlayVoucherList = overlay && overlay.querySelector("[data-overlay-voucher-list]");
+      var paymentSteps = overlay && overlay.querySelector("[data-payment-steps]");
+      var stepPaid = overlay && overlay.querySelector('[data-step="paid"]');
+      var stepConnect = overlay && overlay.querySelector('[data-step="connect"]');
+      var receiptEl = overlay && overlay.querySelector("[data-payment-receipt]");
+      var receiptCodeEl = overlay && overlay.querySelector("[data-receipt-code]");
       var activeCtx = null;
       var continueTarget = "";
       var rateLimitTimer = null;
@@ -2051,9 +2148,52 @@
         }
       }
 
+      function showMpesaReceipt(code) {
+        var ref = (code || "").trim();
+        if (!ref || !receiptEl || !receiptCodeEl) return;
+        receiptCodeEl.textContent = ref;
+        receiptEl.hidden = false;
+      }
+
+      function setPaymentSteps(phase) {
+        if (!paymentSteps) return;
+        if (phase === "hidden") {
+          paymentSteps.hidden = true;
+          if (receiptEl) receiptEl.hidden = true;
+          if (stepPaid) stepPaid.classList.remove("is-done", "is-active");
+          if (stepConnect) stepConnect.classList.remove("is-done", "is-active");
+          return;
+        }
+        paymentSteps.hidden = false;
+        if (phase === "connecting") {
+          if (stepPaid) {
+            stepPaid.classList.add("is-done");
+            stepPaid.classList.remove("is-active");
+          }
+          if (stepConnect) {
+            stepConnect.classList.add("is-active");
+            stepConnect.classList.remove("is-done");
+          }
+          return;
+        }
+        if (phase === "done") {
+          if (stepPaid) {
+            stepPaid.classList.add("is-done");
+            stepPaid.classList.remove("is-active");
+          }
+          if (stepConnect) {
+            stepConnect.classList.add("is-done");
+            stepConnect.classList.remove("is-active");
+          }
+        }
+      }
+
       function setWaiting(active, title, copy, isError, isSuccess) {
         if (!overlay) return;
-        if (!active) clearRateLimitTimer();
+        if (!active) {
+          clearRateLimitTimer();
+          setPaymentSteps("hidden");
+        }
         overlay.hidden = !active;
         overlay.classList.toggle("is-error", !!isError);
         overlay.classList.toggle("is-success", !!isSuccess);
@@ -2144,10 +2284,6 @@
 
       function showConnectedVouchers(codes, stkId, token) {
         continueTarget = welcomeUrl;
-        if (stkId && token) {
-          var separator = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
-          continueTarget = welcomeUrl + separator + "stk=" + encodeURIComponent(stkId) + "&token=" + encodeURIComponent(token);
-        }
         if (overlayVoucherList) {
           overlayVoucherList.innerHTML = "";
           codes.forEach(function (code) {
@@ -2170,6 +2306,7 @@
           });
         }
         if (overlayVouchers) overlayVouchers.hidden = false;
+        setPaymentSteps("done");
         setWaiting(
           true,
           "You're online",
@@ -2179,12 +2316,19 @@
         );
       }
 
-      function openInternet(stkId, token) {
-        setWaiting(true, "You're online", "MikroTik allowed surfing. Opening…", false, true);
-        var separator = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
+      function goToAssistance(stkId, token) {
+        setPaymentSteps("done");
+        setWaiting(true, "Almost there", "Opening connection help…");
+        var separator = assistanceUrl.indexOf("?") === -1 ? "?" : "&";
         window.location.replace(
-          welcomeUrl + separator + "stk=" + encodeURIComponent(stkId) + "&token=" + encodeURIComponent(token)
+          assistanceUrl + separator + "stk=" + encodeURIComponent(stkId) + "&token=" + encodeURIComponent(token)
         );
+      }
+
+      function openInternet(stkId, token) {
+        setPaymentSteps("done");
+        setWaiting(true, "You're online", "Opening internet…", false, true);
+        window.location.replace(welcomeUrl);
       }
 
       var voucherForm = root.querySelector("[data-voucher-form]");
@@ -2259,7 +2403,13 @@
       var pollTimer = null;
       var pollStartedAt = 0;
       var authTries = 0;
+      var activeStkId = "";
       var ctx = { form: form, submit: submit, status: status };
+
+      function stkIdFromStatusUrl(url) {
+        var match = String(url || "").match(/\/status\/(\d+)\/?/);
+        return match ? match[1] : "";
+      }
 
       function show(message, isError) {
         if (!status) return;
@@ -2361,7 +2511,9 @@
               offerRetry(data.error || "Could not check payment.");
               return;
             }
+            if (data.mpesa_receipt) showMpesaReceipt(data.mpesa_receipt);
             if (data.success) {
+              setPaymentSteps("connecting");
               if (data.authorized || data.surfing) {
                 var extra = extraVoucherCodes(data);
                 if (extra.length) {
@@ -2378,22 +2530,15 @@
                 (Date.now() - pollStartedAt) < POLL_GIVE_UP_MS;
               if (canRetryAuth) {
                 var authMsg = data.offline
-                  ? "Payment successful. Router is offline — checking again…"
-                  : "Payment successful. Connecting you automatically…";
-                setWaiting(true, "Restoring your connection", authMsg);
-                // Always wait for NAS on the next poll — do not waste a nas=0 hop.
+                  ? "Step 2: Router is offline — checking again…"
+                  : "Step 2: Waiting for internet to connect…";
+                setWaiting(true, "Connecting to internet", authMsg);
                 pollTimer = window.setTimeout(function () {
                   poll(url, token, true);
                 }, waitNas ? AUTH_RETRY_MS : 0);
                 return;
               }
-              showVoucherFallback(extraVoucherCodes(data));
-              show(
-                "Payment successful, but this device is not surfing yet. Use a valid voucher below.",
-                false
-              );
-              submit.disabled = false;
-              window.setTimeout(closeOverlay, 800);
+              goToAssistance(data.stk_id || activeStkId || stkIdFromStatusUrl(url), token);
               return;
             }
             if (data.pending) {
@@ -2404,8 +2549,9 @@
               var pendingCopy = data.result_desc
                 || "Enter your PIN on your phone. This page updates automatically.";
               if (data.confirming) {
-                pendingCopy = data.result_desc
-                  || "Payment received — confirming with M-Pesa…";
+                pendingCopy = data.mpesa_receipt
+                  ? ("Payment received · Ref " + data.mpesa_receipt + " — confirming…")
+                  : (data.result_desc || "Payment received — confirming with M-Pesa…");
               }
               setWaiting(
                 true,
@@ -2468,7 +2614,9 @@
         submit.disabled = true;
         pollStartedAt = Date.now();
         authTries = 0;
+        activeStkId = "";
         hideVoucherDuringPay();
+        setPaymentSteps("hidden");
         setWaiting(true, "Sending M-Pesa prompt", "Please wait while we send the payment request to your phone…");
         fetch(form.action, {
           method: "POST",
@@ -2493,6 +2641,7 @@
               }, 600);
               return;
             }
+            activeStkId = data.stk_id ? String(data.stk_id) : stkIdFromStatusUrl(data.status_url);
             setWaiting(
               true,
               "Waiting for M-Pesa",

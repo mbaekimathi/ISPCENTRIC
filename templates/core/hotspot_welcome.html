@@ -90,6 +90,90 @@
       color: #148a4a;
     }
     .check svg { width: 1.55rem; height: 1.55rem; }
+    .check[hidden] { display: none !important; }
+
+    .welcome-pulse {
+      display: flex;
+      justify-content: center;
+      gap: 0.35rem;
+      width: 3.1rem;
+      height: 3.1rem;
+      margin: 0 auto 0.75rem;
+      align-items: center;
+    }
+    .welcome-pulse[hidden] { display: none !important; }
+    .welcome-pulse i {
+      width: 0.45rem;
+      height: 0.45rem;
+      border-radius: 50%;
+      background: #0d7c72;
+      opacity: 0.35;
+      animation: welcomeDot 1s ease-in-out infinite;
+    }
+    .welcome-pulse i:nth-child(2) { animation-delay: 0.15s; }
+    .welcome-pulse i:nth-child(3) { animation-delay: 0.3s; }
+    @keyframes welcomeDot {
+      0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+      40% { opacity: 1; transform: translateY(-0.14rem); }
+    }
+
+    .wrap.is-connecting .hero-cta { opacity: 0.55; pointer-events: none; }
+
+    .voucher-share {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.85rem 0.9rem;
+      border-radius: 1rem;
+      text-decoration: none;
+      color: inherit;
+      background: rgba(13, 124, 114, 0.07);
+      border: 1px solid rgba(13, 124, 114, 0.16);
+      transition: background 0.15s ease;
+    }
+    .voucher-share[hidden] { display: none !important; }
+    .voucher-share:hover { background: rgba(13, 124, 114, 0.11); }
+    .voucher-share-icon {
+      width: 2.4rem;
+      height: 2.4rem;
+      border-radius: 0.7rem;
+      display: grid;
+      place-items: center;
+      background: rgba(13, 124, 114, 0.14);
+      color: #0d7c72;
+      font-size: 1rem;
+      font-weight: 800;
+    }
+    .voucher-share-copy { display: grid; gap: 0.12rem; text-align: left; min-width: 0; }
+    .voucher-share-kicker {
+      margin: 0;
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: #0d7c72;
+    }
+    .voucher-share-title {
+      margin: 0;
+      font-size: 0.88rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #102033;
+    }
+    [data-theme="dark"] .voucher-share-title { color: #e8f3ef; }
+    .voucher-share-meta {
+      margin: 0;
+      font-size: 0.74rem;
+      color: #5f746d;
+      line-height: 1.35;
+    }
+    [data-theme="dark"] .voucher-share-meta { color: #9bb0a8; }
+    .voucher-share-go {
+      color: #0d7c72;
+      font-size: 1.1rem;
+      font-weight: 800;
+    }
 
     .earn-hero {
       display: grid;
@@ -495,7 +579,7 @@
   </style>
 </head>
 <body>
-  <main class="wrap" role="main">
+  <main class="wrap is-connecting" data-welcome-root role="main">
     <header class="hero">
       <p class="brand">
         <span
@@ -528,16 +612,31 @@
           <span class="earn-hero-go">Tap <span aria-hidden="true">→</span></span>
         </a>
       {% else %}
-        <div class="check" aria-hidden="true">
+        <div class="welcome-pulse" data-welcome-pulse aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="check" data-welcome-check hidden aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
             <path d="M5 13l4 4L19 7"/>
           </svg>
         </div>
       {% endif %}
-      <p class="status" data-welcome-status>
-        {% if paid and activation_url %}Payment confirmed · Connecting…{% elif paid %}Payment confirmed · Connected{% else %}Connected{% endif %}
-      </p>
+      <p class="status" data-welcome-status>Checking your connection…</p>
     </header>
+
+    {% if shareable_voucher_count %}
+    <section class="panel" aria-label="Connect other devices">
+      <a class="voucher-share" href="{{ vouchers_url }}" data-welcome-vouchers hidden>
+        <span class="voucher-share-icon" aria-hidden="true">{{ shareable_voucher_count }}</span>
+        <span class="voucher-share-copy">
+          <span class="voucher-share-kicker">Multi-device package</span>
+          <span class="voucher-share-title">Connect another device</span>
+          <span class="voucher-share-meta">
+            {{ shareable_voucher_count }} unused voucher{{ shareable_voucher_count|pluralize }} · tap for codes and instructions
+          </span>
+        </span>
+        <span class="voucher-share-go" aria-hidden="true">→</span>
+      </a>
+    </section>
+    {% endif %}
 
     {% if quick_links %}
     <section class="panel" aria-label="Click for offers from partners">
@@ -590,92 +689,150 @@
     </section>
     {% endif %}
 
-    <section class="actions" data-welcome-body{% if paid and activation_url %} hidden{% endif %}>
+    <section class="actions" data-welcome-body>
       <p class="meta">Hotspot · {{ org_name }}</p>
     </section>
-
-    {% if paid and activation_url %}
-    <section class="actions" data-welcome-connecting>
-      <div class="pulse" aria-hidden="true"><i></i><i></i><i></i></div>
-      <p class="hint">Waiting for MikroTik to allow surfing on this device…</p>
-      <p class="meta">Hotspot · {{ org_name }}</p>
-    </section>
-    {% endif %}
   </main>
 
-  {% if activation_url %}
   <script>
     (function () {
-      var url = "{{ activation_url|escapejs }}";
-      var attempts = 0;
+      var checkUrl = "{{ connection_check_url|escapejs }}";
+      var activateUrl = "{{ activation_url|escapejs }}";
+      var assistanceUrl = "{{ assistance_url|escapejs }}";
+      var payUrl = "{{ pay_url|escapejs }}";
+      var stkId = "{{ stk_id|escapejs }}";
+      var statusToken = "{{ status_token|escapejs }}";
+      var hasPayment = {% if paid %}true{% else %}false{% endif %};
+      var root = document.querySelector("[data-welcome-root]");
       var statusEl = document.querySelector("[data-welcome-status]");
-      var bodyEl = document.querySelector("[data-welcome-body]");
-      var connectingEl = document.querySelector("[data-welcome-connecting]");
+      var pulseEl = document.querySelector("[data-welcome-pulse]");
+      var checkEl = document.querySelector("[data-welcome-check]");
+      var vouchersLink = document.querySelector("[data-welcome-vouchers]");
+      var attempts = 0;
+      var activateAttempts = 0;
 
-      function showConnected() {
-        if (statusEl) statusEl.textContent = "Payment confirmed · Connected";
-        if (connectingEl) connectingEl.hidden = true;
-        if (bodyEl) bodyEl.hidden = false;
+      function parseJson(response) {
+        return response.text().then(function (text) {
+          var data = {};
+          var raw = (text || "").trim();
+          if (raw) {
+            try { data = JSON.parse(raw); } catch (err) { throw new Error("Invalid response"); }
+          }
+          return { ok: response.ok, data: data };
+        });
       }
 
-      function activate() {
-        attempts += 1;
-        if (statusEl && attempts > 1) {
-          statusEl.textContent = "Payment confirmed · Still connecting… (" + attempts + "/4)";
+      function showConnected() {
+        if (root) root.classList.remove("is-connecting");
+        if (pulseEl) pulseEl.hidden = true;
+        if (checkEl) checkEl.hidden = false;
+        if (vouchersLink) vouchersLink.hidden = false;
+        if (statusEl) {
+          statusEl.textContent = hasPayment
+            ? "Payment confirmed · Connected"
+            : "Connected · You're online";
         }
-        fetch(url, {
+      }
+
+      function goAssistance() {
+        if (!assistanceUrl || !stkId || !statusToken) return false;
+        var sep = assistanceUrl.indexOf("?") === -1 ? "?" : "&";
+        window.location.replace(
+          assistanceUrl + sep + "stk=" + encodeURIComponent(stkId) +
+          "&token=" + encodeURIComponent(statusToken)
+        );
+        return true;
+      }
+
+      function goPay() {
+        if (payUrl) window.location.replace(payUrl);
+      }
+
+      function failClosed() {
+        if (goAssistance()) return;
+        if (statusEl) statusEl.textContent = "Not connected yet";
+        if (hasPayment) {
+          window.setTimeout(goPay, 1200);
+        }
+      }
+
+      function checkConnection(useSync) {
+        attempts += 1;
+        var url = checkUrl + (useSync ? "?sync=1" : "");
+        return fetch(url, {
+          headers: { "Accept": "application/json" },
+          credentials: "same-origin"
+        })
+          .then(parseJson)
+          .then(function (result) {
+            var data = result.data || {};
+            if (data.authorized) {
+              showConnected();
+              return true;
+            }
+            return false;
+          });
+      }
+
+      function tryActivate() {
+        if (!activateUrl) return Promise.resolve(false);
+        activateAttempts += 1;
+        if (statusEl && hasPayment) {
+          statusEl.textContent = "Payment confirmed · Connecting… (" + activateAttempts + "/3)";
+        }
+        return fetch(activateUrl, {
           method: "POST",
           keepalive: true,
           headers: { "Accept": "application/json" }
         })
-          .then(function (response) {
-            return response.text().then(function (text) {
-              var data = {};
-              var raw = (text || "").trim();
-              if (raw) {
-                try {
-                  data = JSON.parse(raw);
-                } catch (err) {
-                  throw new Error(
-                    response.status
-                      ? ("Server error (" + response.status + ")")
-                      : "Invalid server response"
-                  );
-                }
-              }
-              return { ok: response.ok, data: data };
-            });
-          })
+          .then(parseJson)
           .then(function (result) {
-            if (result.data.authorized) {
+            if (result.data && result.data.authorized) {
               showConnected();
-              return;
+              return true;
             }
-            if (attempts < 4 && (result.data.can_retry_authorize || result.data.offline || result.ok)) {
-              window.setTimeout(activate, attempts === 1 ? 300 : 500 * attempts);
-              return;
+            return false;
+          })
+          .catch(function () { return false; });
+      }
+
+      function delay(ms) {
+        return new Promise(function (resolve) { window.setTimeout(resolve, ms); });
+      }
+
+      function verifyLoop() {
+        checkConnection(false)
+          .then(function (connected) {
+            if (connected) return null;
+
+            if (activateUrl && activateAttempts < 3) {
+              return tryActivate().then(function (ok) {
+                if (ok) return null;
+                return delay(activateAttempts === 1 ? 250 : 400).then(verifyLoop);
+              });
             }
-            if (statusEl) statusEl.textContent = "Payment confirmed · Could not auto-connect";
-            if (connectingEl) {
-              connectingEl.innerHTML =
-                '<p class="hint">Payment succeeded, but MikroTik has not allowed surfing yet. Wait a moment, or open the pay page and enter a voucher.</p>' +
-                '<p class="meta">Hotspot · {{ org_name|escapejs }}</p>';
+
+            if (attempts < 3) {
+              return checkConnection(true).then(function (ok) {
+                if (ok) return null;
+                return delay(attempts === 1 ? 300 : 450).then(verifyLoop);
+              });
             }
+
+            failClosed();
+            return null;
           })
           .catch(function () {
-            if (attempts < 3) {
-              window.setTimeout(activate, attempts === 1 ? 300 : 500 * attempts);
-              return;
+            if (attempts < 2) {
+              return delay(350).then(verifyLoop);
             }
-            if (statusEl) statusEl.textContent = "Payment confirmed · Retrying connection…";
-            if (bodyEl) bodyEl.hidden = false;
-            if (connectingEl) connectingEl.hidden = true;
+            failClosed();
           });
       }
-      window.setTimeout(activate, 50);
+
+      verifyLoop();
     })();
   </script>
-  {% endif %}
 
   <div class="public-theme-bar" style="position:fixed;top:0.85rem;right:0.85rem;z-index:50;">
     <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme" title="Toggle light / dark mode" style="display:inline-flex;align-items:center;justify-content:center;width:2.5rem;height:2.5rem;border:1px solid rgba(16,32,51,0.15);border-radius:12px;background:rgba(255,255,255,0.9);color:#102033;cursor:pointer;">

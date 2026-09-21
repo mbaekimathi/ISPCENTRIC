@@ -14425,6 +14425,48 @@ def _clients_usage_router_filter(request, org):
     }
 
 
+def _clients_usage_router_settings(org):
+    """Per-MikroTik uplink period start and usage alert threshold for the usage page."""
+    if not org:
+        return []
+    from accounts.communications import resolve_mikrotik_usage_high_threshold_bytes
+    from billing.usage_samples import compute_router_usage_bytes_since_reset
+
+    rows = []
+    routers = MikroTikRouter.objects.filter(organization=org).order_by("name", "host")
+    for router in routers:
+        stats = compute_router_usage_bytes_since_reset(router)
+        since = getattr(router, "usage_tracking_since", None)
+        total_bytes = int(stats.get("total_bytes") or 0)
+        threshold_bytes = resolve_mikrotik_usage_high_threshold_bytes(router)
+        threshold_tb = getattr(router, "usage_high_threshold_tb", None)
+        rows.append(
+            {
+                "id": router.pk,
+                "name": router.name,
+                "host": router.host or "",
+                "usage_tracking_since": (
+                    timezone.localtime(since).isoformat() if since else ""
+                ),
+                "usage_tracking_label": (
+                    timezone.localtime(since).strftime("%b %d, %Y · %H:%M")
+                    if since
+                    else "Not set"
+                ),
+                "usage_tracking_input": (
+                    timezone.localtime(since).strftime("%Y-%m-%dT%H:%M") if since else ""
+                ),
+                "usage_total_bytes": total_bytes,
+                "usage_total_tb": round(total_bytes / float(1024**4), 3),
+                "usage_high_threshold_tb": float(threshold_tb or 3),
+                "threshold_bytes": threshold_bytes,
+                "client_count": int(stats.get("client_count") or 0),
+                "alert_active": bool(since and total_bytes >= threshold_bytes),
+            }
+        )
+    return rows
+
+
 @client_workspace_required
 def clients_attempted_connections(request):
     """Hotspot funnel analytics: visits, payment attempts, paid-not-surfing."""
@@ -14481,14 +14523,15 @@ def clients_general_usage(request):
     """Organization-wide usage analytics and highest-users ranking."""
     org = resolve_organization(request.user, request)
     from billing.usage_samples import (
+        org_live_usage_is_fresh,
         org_usage_payload,
         parse_usage_filter,
+        sample_organization_usage,
         usage_filter_querystring,
     )
 
-    # First paint stays snappy: ranked preview from DB/cache only.
-    # Live MikroTik sampling continues in the background (boot loop / systemd)
-    # so clients appear here without anyone opening per-client usage pages.
+    # Ranked preview from DB/cache; refresh NAS snapshot when stale so first
+    # paint shows current online/Idle/device chips without waiting for JS polls.
     _USAGE_PAGE_PREVIEW = 30
 
     try:
@@ -14497,6 +14540,13 @@ def clients_general_usage(request):
         ensure_usage_sampling()
     except Exception:
         pass
+
+    if org:
+        try:
+            if not org_live_usage_is_fresh(org):
+                sample_organization_usage(org, force=False)
+        except Exception:
+            pass
 
     usage_filter = parse_usage_filter(request, default_time="6")
     hours = usage_filter["hours"]
@@ -14644,6 +14694,8 @@ def clients_general_usage(request):
             surfing_url=reverse("core:clients_surfing"),
             usage_reset_url=reverse("core:clients_usage_reset"),
             usage_set_renewed_url=reverse("core:clients_usage_set_renewed"),
+            usage_router_settings_url=reverse("core:clients_usage_router_settings"),
+            router_usage_settings=_clients_usage_router_settings(org),
             **router_ctx,
         ),
     )
@@ -14933,6 +14985,122 @@ def clients_usage_set_renewed(request):
 
 
 @client_workspace_required
+@require_POST
+def clients_usage_router_settings(request):
+    """Set uplink package period start and usage alert threshold for one MikroTik."""
+    from decimal import Decimal, InvalidOperation
+
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization."}, status=400)
+
+    router_raw = (request.POST.get("router") or "").strip()
+    if not router_raw.isdigit():
+        return JsonResponse({"ok": False, "error": "Choose a MikroTik."}, status=400)
+
+    try:
+        router = MikroTikRouter.objects.get(pk=int(router_raw), organization=org)
+    except (MikroTikRouter.DoesNotExist, TypeError, ValueError):
+        return JsonResponse({"ok": False, "error": "MikroTik not found."}, status=404)
+
+    update_fields: list[str] = []
+    clear_period = (request.POST.get("clear_period") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    period_raw = (request.POST.get("at") or request.POST.get("period_start") or "").strip()
+    if clear_period:
+        router.usage_tracking_since = None
+        update_fields.append("usage_tracking_since")
+    elif period_raw:
+        stamp = _parse_usage_tracking_datetime(period_raw)
+        if stamp is None:
+            return JsonResponse(
+                {"ok": False, "error": "Choose a valid uplink period start date."},
+                status=400,
+            )
+        router.usage_tracking_since = stamp
+        update_fields.append("usage_tracking_since")
+
+    threshold_raw = (
+        request.POST.get("usage_high_threshold_tb")
+        or request.POST.get("threshold_tb")
+        or ""
+    ).strip()
+    if threshold_raw:
+        try:
+            threshold = Decimal(threshold_raw)
+        except (InvalidOperation, TypeError, ValueError):
+            return JsonResponse(
+                {"ok": False, "error": "Enter a valid usage alert limit in TB."},
+                status=400,
+            )
+        if threshold <= 0 or threshold > Decimal("1000"):
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "error": "Usage alert limit must be between 0.1 and 1000 TB.",
+                },
+                status=400,
+            )
+        router.usage_high_threshold_tb = threshold.quantize(Decimal("0.01"))
+        update_fields.append("usage_high_threshold_tb")
+
+    if not update_fields:
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "Set a period start date, alert limit, or clear the period.",
+            },
+            status=400,
+        )
+
+    from accounts.communications import resolve_mikrotik_usage_high_threshold_bytes
+    from billing.usage_samples import (
+        compute_router_usage_bytes_since_reset,
+        invalidate_org_usage_caches,
+    )
+    from django.core.cache import cache as dj_cache
+
+    update_fields.append("updated_at")
+    router.save(update_fields=update_fields)
+    dj_cache.delete(f"comms:mikrotik_usage:{org.pk}:{router.pk}")
+    invalidate_org_usage_caches(org)
+
+    stats = compute_router_usage_bytes_since_reset(router)
+    since = router.usage_tracking_since
+    total_bytes = int(stats.get("total_bytes") or 0)
+    threshold_bytes = resolve_mikrotik_usage_high_threshold_bytes(router)
+    since_label = (
+        timezone.localtime(since).strftime("%b %d, %Y · %H:%M") if since else "Not set"
+    )
+    threshold_tb = float(router.usage_high_threshold_tb or 3)
+    return JsonResponse(
+        {
+            "ok": True,
+            "router_id": router.pk,
+            "usage_tracking_since": (
+                timezone.localtime(since).isoformat() if since else ""
+            ),
+            "usage_tracking_label": since_label,
+            "usage_tracking_input": (
+                timezone.localtime(since).strftime("%Y-%m-%dT%H:%M") if since else ""
+            ),
+            "usage_high_threshold_tb": threshold_tb,
+            "usage_total_bytes": total_bytes,
+            "usage_total_tb": round(total_bytes / float(1024**4), 3),
+            "alert_active": bool(since and total_bytes >= threshold_bytes),
+            "toast_title": "Uplink settings saved",
+            "message": (
+                f"“{router.name}”: usage counts from {since_label.lower() if since else 'not set'}; "
+                f"alert at {threshold_tb:g} TB."
+            ),
+        }
+    )
+
+
+@client_workspace_required
 def client_usage_analysis(request, customer_id: int):
     """Usage analysis page: uptime, throughput and data-used trends."""
     org = resolve_organization(request.user, request)
@@ -15048,9 +15216,20 @@ def client_usage_analysis(request, customer_id: int):
             "error": error,
         }
 
-    from billing.devices import customer_account_devices
+    from billing.devices import customer_account_devices, normalize_device_mac
+    from billing.usage_samples import get_org_live_usage
 
-    account_devices = customer_account_devices(customer)
+    online_macs: set[str] = set()
+    if org and customer.service_type == Customer.ServiceType.HOTSPOT:
+        live = get_org_live_usage(org)
+        live_entry = (live.get("hotspot") or {}).get(customer.pk) or {}
+        if isinstance(live_entry, dict):
+            for mac in live_entry.get("macs") or []:
+                normalized = normalize_device_mac(str(mac or ""))
+                if normalized:
+                    online_macs.add(normalized)
+
+    account_devices = customer_account_devices(customer, online_macs=online_macs)
     devices_connected_count = sum(1 for d in account_devices if d.get("connected"))
     router_data_url = ""
     if can_access_wifi and customer.service_type == Customer.ServiceType.PPPOE:
@@ -16098,30 +16277,24 @@ def clients_surfing_status(request):
                 connection_label = "Connected"
                 connection_reason = "Active PPPoE session"
 
-        # Live device count for the usage page client meta column.
-        # Hotspot: count of linked MACs currently active/connected on MikroTik.
-        # PPPoE: one dialed CPE when the session is online.
-        devices_connected = 0
-        if use_live_snapshot:
-            live_gadgets = int(entry.get("gadgets") or 0) if isinstance(entry, dict) else 0
-            if session_online:
-                devices_connected = live_gadgets if live_gadgets > 0 else 1
-            elif service == "hotspot" and connected and live_gadgets > 0:
-                devices_connected = live_gadgets
-            else:
-                devices_connected = 0
-        elif service == "hotspot":
+        from billing.devices import customer_live_device_count
+
+        active_macs_count = 0
+        if service == "hotspot":
             macs = set(hotspot_identities)
             if not macs and identity:
                 macs = {identity}
             seen = connected_any_router | active_any_router
-            devices_connected = sum(1 for mac in macs if mac in seen)
-            if session_online and devices_connected <= 0:
-                devices_connected = 1
-        elif session_online:
-            devices_connected = 1
-        else:
-            devices_connected = 0
+            active_macs_count = sum(1 for mac in macs if mac in seen)
+        devices_connected = customer_live_device_count(
+            customer,
+            service=service,
+            session_online=session_online,
+            connected=connected,
+            live_entry=entry if use_live_snapshot else None,
+            active_macs_count=active_macs_count or None,
+            has_live=use_live_snapshot,
+        )
 
         session_uptime_seconds = None
         if service == "hotspot" and surfing:
@@ -17304,6 +17477,10 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "hotspot_payment_start_url": hotspot_start,
         "voucher_redeem_url": voucher_redeem,
         "welcome_url": urls["welcome_url"],
+        "assistance_url": public_absolute_url(
+            reverse("core:hotspot_assistance", kwargs={"join_code": org.join_code}),
+            request,
+        ),
         "error": error,
         "pppoe_option_available": False,
         "pppoe_pay_url": "",
@@ -18079,6 +18256,14 @@ def hotspot_welcome(request, join_code: str):
     if hotspot_mac:
         pay_url = f"{pay_url}?{urlencode({'mac': hotspot_mac})}"
 
+    from core.hotspot_portal import hotspot_portal_urls, public_absolute_url
+
+    portal_urls = hotspot_portal_urls(org.join_code, request)
+    assistance_url = public_absolute_url(
+        reverse("core:hotspot_assistance", kwargs={"join_code": join_code}),
+        request,
+    )
+
     earn_bits = _click_to_earn_portal_bits(
         org, request, portal="hotspot", surfing=True
     )
@@ -18086,6 +18271,13 @@ def hotspot_welcome(request, join_code: str):
     if earn_url and hotspot_mac:
         sep = "&" if "?" in earn_url else "?"
         earn_bits["click_to_earn_url"] = f"{earn_url}{sep}{urlencode({'mac': hotspot_mac})}"
+
+    from billing.vouchers import valid_hotspot_voucher_codes_for_customer
+
+    shareable_voucher_codes = valid_hotspot_voucher_codes_for_customer(customer)
+    vouchers_url = reverse("core:hotspot_vouchers", kwargs={"join_code": join_code})
+    if hotspot_mac:
+        vouchers_url = f"{vouchers_url}?{urlencode({'mac': hotspot_mac})}"
 
     response = render(
         request,
@@ -18105,7 +18297,278 @@ def hotspot_welcome(request, join_code: str):
             "offer_progress": offer_progress,
             "offer_is_dummy": offer_is_dummy,
             "pay_url": pay_url,
+            "assistance_url": assistance_url,
+            "connection_check_url": reverse(
+                "core:hotspot_connection_status", kwargs={"join_code": join_code}
+            ),
+            "stk_id": stk_id,
+            "status_token": token,
+            "hotspot_mac": hotspot_mac,
+            "vouchers_url": vouchers_url,
+            "shareable_voucher_codes": shareable_voucher_codes,
+            "shareable_voucher_count": len(shareable_voucher_codes),
             **earn_bits,
+        },
+    )
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    if hotspot_mac:
+        _set_hotspot_mac_cookie(response, hotspot_mac)
+    return response
+
+
+def hotspot_vouchers(request, join_code: str):
+    """Public page: unused Hotspot vouchers + instructions for other devices."""
+    org = get_object_or_404(Organization, join_code=join_code)
+
+    hotspot_mac = ""
+    for raw in (
+        request.GET.get("mac") or "",
+        request.COOKIES.get("hs_mac") or "",
+    ):
+        hotspot_mac = _normalize_hotspot_mac(raw)
+        if hotspot_mac:
+            break
+
+    customer = (
+        _find_hotspot_customer_for_mac(org, hotspot_mac) if hotspot_mac else None
+    )
+
+    stk_id = (request.GET.get("stk") or "").strip()
+    token = (request.GET.get("token") or "").strip()
+    if customer is None and stk_id.isdigit() and token:
+        try:
+            payload = signing.loads(
+                token,
+                salt="hotspot-payment-status",
+                max_age=60 * 60 * 24,
+            )
+            if payload.get("stk") == int(stk_id) and payload.get("org") == org.pk:
+                stk = (
+                    StkPushRequest.objects.select_related("customer", "customer__plan")
+                    .filter(pk=int(stk_id), organization=org)
+                    .first()
+                )
+                if stk is not None:
+                    customer = stk.customer
+        except signing.BadSignature:
+            pass
+
+    from billing.vouchers import valid_hotspot_voucher_codes_for_customer
+
+    voucher_codes = valid_hotspot_voucher_codes_for_customer(customer)
+    plan = getattr(customer, "plan", None) if customer else None
+    max_devices = getattr(plan, "max_devices", None) if plan else None
+
+    pay_url = reverse("core:hotspot_pay", kwargs={"join_code": join_code})
+    welcome_url = reverse("core:hotspot_welcome", kwargs={"join_code": join_code})
+    if hotspot_mac:
+        pay_url = f"{pay_url}?{urlencode({'mac': hotspot_mac})}"
+        welcome_url = f"{welcome_url}?{urlencode({'mac': hotspot_mac})}"
+
+    response = render(
+        request,
+        "core/hotspot_vouchers.html",
+        {
+            "organization": org,
+            "org_name": org.name,
+            "hotspot_mac": hotspot_mac,
+            "voucher_codes": voucher_codes,
+            "voucher_count": len(voucher_codes),
+            "max_devices": max_devices,
+            "plan_name": getattr(plan, "name", "") if plan else "",
+            "pay_url": pay_url,
+            "welcome_url": welcome_url,
+            "voucher_redeem_url": reverse(
+                "core:hotspot_voucher_redeem", kwargs={"join_code": join_code}
+            ),
+        },
+    )
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    if hotspot_mac:
+        _set_hotspot_mac_cookie(response, hotspot_mac)
+    return response
+
+
+@require_GET
+def hotspot_connection_status(request, join_code: str):
+    """
+    Fast Hotspot connection probe for the welcome page.
+
+    Default response is DB-only (no MikroTik wait). Pass sync=1 for one
+    non-blocking NAS poke when the client needs a second opinion.
+    """
+    org = get_object_or_404(Organization, join_code=join_code)
+    hotspot_mac = ""
+    for raw in (
+        request.GET.get("mac") or "",
+        request.COOKIES.get("hs_mac") or "",
+    ):
+        hotspot_mac = _normalize_hotspot_mac(raw)
+        if hotspot_mac:
+            break
+
+    if not hotspot_mac:
+        return JsonResponse(
+            {
+                "ok": True,
+                "authorized": False,
+                "paid": False,
+                "can_retry": False,
+                "reason": "no_mac",
+            }
+        )
+
+    customer = _find_hotspot_customer_for_mac(org, hotspot_mac)
+    if customer is None:
+        return JsonResponse(
+            {
+                "ok": True,
+                "authorized": False,
+                "paid": False,
+                "can_retry": False,
+            }
+        )
+
+    from billing.devices import customer_owns_hotspot_mac
+    from billing.services import customer_can_surf_via_hotspot
+
+    paid = customer_can_surf_via_hotspot(customer)
+    owns_mac = customer_owns_hotspot_mac(customer, hotspot_mac)
+    authorized = bool(paid and owns_mac)
+
+    if (
+        not authorized
+        and paid
+        and (request.GET.get("sync") or "").strip().lower() in {"1", "true", "yes"}
+    ):
+        from core.subscription_sync import (
+            enqueue_customer_subscription_sync,
+            nas_access_ready,
+        )
+
+        nas = (
+            enqueue_customer_subscription_sync(
+                customer.pk,
+                True,
+                wait_first=False,
+                quick=True,
+                reauthenticate=False,
+            )
+            or {}
+        )
+        authorized = bool(nas_access_ready(nas) and owns_mac)
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "authorized": authorized,
+            "paid": paid,
+            "can_retry": bool(paid and not authorized),
+            "offline": False,
+        }
+    )
+
+
+def hotspot_assistance(request, join_code: str):
+    """Help page when payment succeeded but this device did not connect automatically."""
+    from billing.stk import refresh_stk_status
+    from billing.vouchers import attach_voucher_to_stk_status
+    from core.hotspot_portal import hotspot_portal_urls
+
+    org = get_object_or_404(Organization, join_code=join_code)
+    urls = hotspot_portal_urls(org.join_code, request)
+    stk_id = (request.GET.get("stk") or "").strip()
+    token = (request.GET.get("token") or "").strip()
+
+    hotspot_mac = ""
+    for raw in (
+        request.GET.get("mac") or "",
+        request.COOKIES.get("hs_mac") or "",
+    ):
+        hotspot_mac = _normalize_hotspot_mac(raw)
+        if hotspot_mac:
+            break
+
+    pay_url = reverse("core:hotspot_pay", kwargs={"join_code": join_code})
+    if hotspot_mac:
+        pay_url = f"{pay_url}?{urlencode({'mac': hotspot_mac})}"
+
+    voucher_redeem_url = reverse(
+        "core:hotspot_voucher_redeem", kwargs={"join_code": join_code}
+    )
+    welcome_url = urls.get("welcome_url") or reverse(
+        "core:hotspot_welcome", kwargs={"join_code": join_code}
+    )
+
+    error = ""
+    voucher_codes: list[str] = []
+    primary_voucher_code = ""
+    activation_url = ""
+    stk = None
+
+    if stk_id.isdigit() and token:
+        try:
+            payload = signing.loads(
+                token,
+                salt="hotspot-payment-status",
+                max_age=60 * 60 * 24,
+            )
+            if payload.get("stk") == int(stk_id) and payload.get("org") == org.pk:
+                stk = (
+                    StkPushRequest.objects.filter(pk=int(stk_id), organization=org)
+                    .select_related("customer")
+                    .first()
+                )
+                if stk is None:
+                    error = "Payment record not found. Open the pay page and try your voucher."
+                elif stk.status != StkPushRequest.Status.SUCCESS:
+                    error = "Payment is not confirmed yet. Complete M-Pesa on your phone first."
+                else:
+                    status_payload = attach_voucher_to_stk_status({"ok": True}, stk)
+                    voucher_codes = [
+                        code
+                        for code in (status_payload.get("voucher_codes") or [])
+                        if code
+                    ]
+                    primary_voucher_code = (status_payload.get("voucher_code") or "").strip()
+                    if not primary_voucher_code and voucher_codes:
+                        primary_voucher_code = voucher_codes[0]
+                    live = refresh_stk_status(stk, wait_for_nas=False)
+                    if live.get("authorized") or live.get("surfing"):
+                        return redirect(welcome_url)
+                    activation_url = (
+                        reverse(
+                            "core:hotspot_payment_activate",
+                            kwargs={"join_code": join_code, "stk_id": int(stk_id)},
+                        )
+                        + "?"
+                        + urlencode({"token": token})
+                    )
+            else:
+                error = "This link is invalid. Open the pay page and try again."
+        except signing.BadSignature:
+            error = "This link has expired. Open the pay page and enter your voucher."
+    else:
+        error = "Missing payment reference. Open the pay page to continue."
+
+    response = render(
+        request,
+        "core/hotspot_assistance.html",
+        {
+            "organization": org,
+            "org_name": org.name,
+            "hotspot_mac": hotspot_mac,
+            "voucher_codes": voucher_codes,
+            "primary_voucher_code": primary_voucher_code,
+            "pay_url": pay_url,
+            "voucher_redeem_url": voucher_redeem_url,
+            "welcome_url": welcome_url,
+            "activation_url": activation_url,
+            "error": error,
         },
     )
     response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"

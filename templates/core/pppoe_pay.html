@@ -1314,6 +1314,26 @@
       letter-spacing: -0.03em;
       color: var(--ink);
     }
+    .payment-receipt {
+      width: 100%;
+      margin: 0;
+      padding: 0.45rem 0.55rem;
+      border-radius: 0.65rem;
+      background: rgba(20, 138, 74, 0.08);
+      border: 1px solid rgba(20, 138, 74, 0.16);
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--muted);
+      text-align: center;
+    }
+    .payment-receipt[hidden] { display: none !important; }
+    .payment-receipt strong {
+      display: block;
+      margin-top: 0.12rem;
+      font-size: 0.95rem;
+      letter-spacing: 0.08em;
+      color: var(--ok);
+    }
     .payment-waiting-copy {
       margin: 0;
       max-width: 34ch;
@@ -2161,6 +2181,7 @@
         <span class="loader-dots" aria-hidden="true"><i></i><i></i><i></i></span>
       </p>
       <p class="payment-waiting-title" id="pay-waiting-title" data-waiting-title>Waiting for M-Pesa</p>
+      <p class="payment-receipt" data-payment-receipt hidden>M-Pesa reference<strong data-receipt-code></strong></p>
       <p class="payment-waiting-copy" id="pay-waiting-copy" data-waiting-copy>
         Enter your PIN on your phone. This page updates automatically.
       </p>
@@ -2286,6 +2307,8 @@
       var continueBtn = overlay && overlay.querySelector("[data-overlay-continue]");
       var overlayVouchers = overlay && overlay.querySelector("[data-overlay-vouchers]");
       var overlayVoucherList = overlay && overlay.querySelector("[data-overlay-voucher-list]");
+      var receiptEl = overlay && overlay.querySelector("[data-payment-receipt]");
+      var receiptCodeEl = overlay && overlay.querySelector("[data-receipt-code]");
       var activeCtx = null;
       var continueTarget = "";
       var rateLimitTimer = null;
@@ -2297,9 +2320,19 @@
         }
       }
 
+      function showMpesaReceipt(code) {
+        var ref = (code || "").trim();
+        if (!ref || !receiptEl || !receiptCodeEl) return;
+        receiptCodeEl.textContent = ref;
+        receiptEl.hidden = false;
+      }
+
       function setWaiting(active, title, copy, isError, isSuccess) {
         if (!overlay) return;
-        if (!active) clearRateLimitTimer();
+        if (!active) {
+          clearRateLimitTimer();
+          if (receiptEl) receiptEl.hidden = true;
+        }
         overlay.hidden = !active;
         overlay.classList.toggle("is-error", !!isError);
         overlay.classList.toggle("is-success", !!isSuccess);
@@ -2617,6 +2650,7 @@
               offerRetry(data.error || "Could not check payment.");
               return;
             }
+            if (data.mpesa_receipt) showMpesaReceipt(data.mpesa_receipt);
             if (data.success) {
               if (data.authorized || data.surfing) {
                 var extra = extraVoucherCodes(data);
@@ -2660,8 +2694,9 @@
               var pendingCopy = data.result_desc
                 || "Enter your PIN on your phone. This page updates automatically.";
               if (data.confirming) {
-                pendingCopy = data.result_desc
-                  || "Payment received — confirming with M-Pesa…";
+                pendingCopy = data.mpesa_receipt
+                  ? ("Payment received · Ref " + data.mpesa_receipt + " — confirming…")
+                  : (data.result_desc || "Payment received — confirming with M-Pesa…");
               }
               setWaiting(
                 true,

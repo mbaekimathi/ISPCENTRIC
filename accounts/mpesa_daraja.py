@@ -507,6 +507,15 @@ def query_stk_push(
     )
     # 0 = success; 1032 = cancelled by user; other codes = failed / still processing
     if code_int == 0:
+        mpesa_receipt = ""
+        try:
+            from billing.stk import extract_mpesa_receipt_from_query_data
+
+            mpesa_receipt = extract_mpesa_receipt_from_query_data(data)
+        except Exception:
+            mpesa_receipt = str(
+                data.get("MpesaReceiptNumber") or data.get("mpesa_receipt") or ""
+            ).strip()
         return {
             "ok": True,
             "pending": False,
@@ -514,6 +523,7 @@ def query_stk_push(
             "result_code": code_int,
             "result_desc": desc,
             "data": data,
+            "mpesa_receipt": mpesa_receipt,
             "error": "",
         }
     if code_int is None or str(data.get("ResponseCode") or "") not in {"0", "00", ""}:

@@ -1614,6 +1614,47 @@ class FulfillIdempotencyTests(TestCase):
         self.assertEqual(payment.reference, "LATECB01")
 
     @patch("core.mikrotik_connect.sync_customer_subscription_access")
+    def test_pending_poll_backfills_receipt_before_success(self, sync_mock):
+        """Status polls must store callback receipts while STK is still pending."""
+        from billing.models import StkPushRequest
+        from billing.stk import refresh_stk_status
+
+        sync_mock.return_value = {"ok": True, "allowed": True}
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_PEND_RCPT",
+            status=StkPushRequest.Status.PENDING,
+            raw_callback={
+                "callback_receipt": "PENDRCPT1",
+                "awaiting_daraja_confirm": True,
+            },
+        )
+        with patch("billing.stk.query_stk_push", return_value={"pending": True, "data": {}}):
+            status = refresh_stk_status(stk)
+        self.assertTrue(status["pending"])
+        self.assertEqual(status["mpesa_receipt"], "PENDRCPT1")
+        stk.refresh_from_db()
+        self.assertEqual(stk.mpesa_receipt, "PENDRCPT1")
+
+    @patch("core.mikrotik_connect.sync_customer_subscription_access")
+    def test_query_payload_callback_metadata_yields_receipt(self, sync_mock):
+        from billing.stk import extract_mpesa_receipt_from_query_data
+
+        data = {
+            "ResultCode": 0,
+            "CallbackMetadata": {
+                "Item": [
+                    {"Name": "MpesaReceiptNumber", "Value": "QRYMETA1"},
+                ]
+            },
+        }
+        self.assertEqual(extract_mpesa_receipt_from_query_data(data), "QRYMETA1")
+
+    @patch("core.mikrotik_connect.sync_customer_subscription_access")
     def test_refresh_recovers_receipt_from_raw_callback(self, sync_mock):
         """Status polls copy a buried callback receipt onto Payment.reference."""
         from billing.models import Payment, StkPushRequest

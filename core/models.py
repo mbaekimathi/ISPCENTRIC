@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.conf import settings
 from django.db import models
 
@@ -235,6 +237,16 @@ class MikroTikRouter(models.Model):
         help_text=(
             "Baseline for combined client usage on this MikroTik. "
             "Historical samples are kept; totals ignore traffic before this stamp."
+        ),
+    )
+    usage_high_threshold_tb = models.DecimalField(
+        "Usage alert threshold (TB)",
+        max_digits=6,
+        decimal_places=2,
+        default=Decimal("3.00"),
+        help_text=(
+            "Notify the DPO when combined client usage on this MikroTik exceeds "
+            "this amount since the uplink package period start."
         ),
     )
 

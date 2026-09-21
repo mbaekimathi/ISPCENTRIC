@@ -38,10 +38,87 @@ def customer_devices_unlimited(customer) -> bool:
     return plan_devices_unlimited(getattr(customer, "plan", None))
 
 
+def customer_live_device_count(
+    customer,
+    *,
+    service: str = "",
+    session_online: bool = False,
+    connected: bool = False,
+    live_entry: dict | None = None,
+    recent_db_count: int = 0,
+    active_macs_count: int | None = None,
+    latest_active: bool = False,
+    sample_count: int = 0,
+    has_live: bool = False,
+) -> int:
+    """
+    Unified live device count for usage tables, overlays, and surfing status.
+
+    PPPoE counts one dialed CPE when the session is online. Hotspot prefers the
+    NAS active-session count, then linked MACs seen on the router, then recent
+    CustomerDevice rows, with a minimum of one while online.
+    """
+    from billing.models import Customer
+
+    svc = (service or getattr(customer, "service_type", "") or "").strip().lower()
+    is_hotspot = svc in {Customer.ServiceType.HOTSPOT, "hotspot"}
+    entry = live_entry if isinstance(live_entry, dict) else {}
+    live_gadgets = int(
+        entry.get("gadgets")
+        or entry.get("gadgets_connected")
+        or entry.get("active_sessions")
+        or 0
+    )
+    is_online = bool(session_online or latest_active)
+    is_connected = bool(connected or session_online or latest_active)
+
+    if is_hotspot:
+        if has_live:
+            if not is_connected and not session_online:
+                return 0
+            if live_gadgets > 0:
+                return live_gadgets
+            if active_macs_count is not None and active_macs_count > 0:
+                return active_macs_count
+            if int(recent_db_count or 0) > 0:
+                return int(recent_db_count)
+            return 1 if (session_online or connected) else 0
+        if is_online:
+            if int(recent_db_count or 0) > 0:
+                return int(recent_db_count)
+            return 1
+        if int(sample_count or 0) > 0:
+            return 0
+        return int(recent_db_count or 0)
+
+    if has_live:
+        return live_gadgets if live_gadgets > 0 else (1 if session_online else 0)
+    return 1 if is_online else 0
+
+
+def live_map_gadgets_online(live_map: dict, *, service: str = "") -> int:
+    """Sum connected device counts from an org NAS live-map bucket."""
+    if not isinstance(live_map, dict):
+        return 0
+    total = 0
+    for entry in live_map.values():
+        if not isinstance(entry, dict) or not entry.get("session_active"):
+            continue
+        total += customer_live_device_count(
+            None,
+            service=service,
+            session_online=True,
+            live_entry=entry,
+            has_live=True,
+        )
+    return total
+
+
 def customer_account_devices(
     customer,
     *,
     connected_within_minutes: int = 15,
+    online_macs: set[str] | None = None,
 ) -> list[dict]:
     """
     Linked gadgets on a customer account for UI listing.
@@ -91,12 +168,17 @@ def customer_account_devices(
 
     primary = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
     if primary and primary not in seen:
+        online_set = {
+            normalize_device_mac(mac)
+            for mac in (online_macs or set())
+            if normalize_device_mac(mac)
+        }
         rows.insert(
             0,
             {
                 "mac": primary,
                 "label": "Primary device",
-                "connected": False,
+                "connected": primary in online_set,
                 "last_seen_at": None,
                 "last_seen_label": "",
                 "source": "primary",

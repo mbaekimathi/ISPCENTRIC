@@ -767,9 +767,18 @@ def apply_live_usage_overlay(
     if not isinstance(live_map, dict):
         live_map = {}
     has_live = bool(live.get("ok"))
+    from billing.devices import customer_live_device_count, live_map_gadgets_online
 
     surfing_now = 0
     gadgets_now = 0
+    if has_live:
+        surfing_now = sum(
+            1
+            for entry in live_map.values()
+            if isinstance(entry, dict) and entry.get("session_active")
+        )
+        gadgets_now = live_map_gadgets_online(live_map, service=service_key)
+
     top_users = payload.get("top_users") or []
     for user in top_users:
         if not isinstance(user, dict):
@@ -794,42 +803,34 @@ def apply_live_usage_overlay(
                 gadgets_now += int(user.get("gadgets_connected") or 0) or 1
             continue
         active = bool(entry.get("session_active"))
-        gadgets = int(entry.get("gadgets") or 0)
         down = int(entry.get("download_bps") or 0)
         up = int(entry.get("upload_bps") or 0)
         user["live_active"] = active
         user["live_download_bps"] = down
         user["live_upload_bps"] = up
         if active:
-            surfing_now += 1
             if override_status:
                 user["latest_active"] = True
-            if service_key == Customer.ServiceType.HOTSPOT:
-                if gadgets <= 0:
-                    gadgets = 1
-                if override_gadgets:
-                    user["gadgets_connected"] = gadgets
-                    user["devices_connected"] = gadgets
-                gadgets_now += gadgets
-            else:
-                # PPPoE: one CPE dial session on the client's MikroTik.
-                devices = gadgets if gadgets > 0 else 1
-                if override_gadgets:
-                    user["gadgets_connected"] = devices
-                    user["devices_connected"] = devices
-                gadgets_now += devices
             user["live_state"] = "online"
             user["live_label"] = "Online"
         else:
             if override_status:
                 user["latest_active"] = False
-            if override_gadgets:
-                # Live snapshot says offline — clear the connected-device chip for
-                # both Hotspot and PPPoE so stale last_seen counts cannot linger.
-                user["gadgets_connected"] = 0
-                user["devices_connected"] = 0
             user["live_state"] = "offline"
             user["live_label"] = "Offline"
+        if override_gadgets:
+            devices = customer_live_device_count(
+                None,
+                service=service_key,
+                session_online=active,
+                connected=active,
+                live_entry=entry,
+                recent_db_count=int(user.get("gadgets_connected") or 0),
+                latest_active=bool(user.get("latest_active")),
+                has_live=True,
+            )
+            user["gadgets_connected"] = devices
+            user["devices_connected"] = devices
         # Presence can flip after the sample-based payload is built; keep the
         # Idle/Low/Medium/High chip in sync with live session + rates.
         user["usage_level"] = _usage_level_label(
@@ -838,13 +839,18 @@ def apply_live_usage_overlay(
                 int(user.get("peak_download_bps") or 0),
                 down,
             ),
-            latest_active=bool(user.get("latest_active")),
+            peak_upload_bps=max(
+                int(user.get("peak_upload_bps") or 0),
+                up,
+            ),
+            latest_active=bool(user.get("latest_active") or active),
         )
 
     summary = payload.setdefault("summary", {})
     clients_total = int((summary or {}).get("clients_total") or len(top_users) or 0)
     if isinstance(summary, dict) and has_live:
         summary["clients_online"] = surfing_now
+        summary["clients_surfing"] = surfing_now
         summary["clients_surfing_session"] = surfing_now
         summary["clients_offline"] = max(0, clients_total - surfing_now)
         summary["gadgets_online"] = gadgets_now
@@ -2710,7 +2716,11 @@ def check_mikrotik_usage_high_alerts(organization, *, routers=None) -> list[dict
     if routers is None:
         routers = list(
             MikroTikRouter.objects.filter(organization=organization).only(
-                "id", "name", "usage_tracking_since", "organization_id"
+                "id",
+                "name",
+                "usage_tracking_since",
+                "usage_high_threshold_tb",
+                "organization_id",
             )
         )
     results = []
@@ -2816,12 +2826,19 @@ def _normalize_usage_service(service) -> str:
     return ""
 
 
-def _usage_level_label(*, data_used_bytes: int, peak_download_bps: int, latest_active: bool) -> str:
-    if data_used_bytes >= 500 * 1024 * 1024 or peak_download_bps >= 5_000_000:
+def _usage_level_label(
+    *,
+    data_used_bytes: int,
+    peak_download_bps: int,
+    peak_upload_bps: int = 0,
+    latest_active: bool,
+) -> str:
+    peak_bps = max(int(peak_download_bps or 0), int(peak_upload_bps or 0))
+    if data_used_bytes >= 500 * 1024 * 1024 or peak_bps >= 5_000_000:
         return "High"
-    if data_used_bytes >= 50 * 1024 * 1024 or peak_download_bps >= 1_000_000:
+    if data_used_bytes >= 50 * 1024 * 1024 or peak_bps >= 1_000_000:
         return "Medium"
-    if data_used_bytes > 0 or peak_download_bps > 0 or latest_active:
+    if data_used_bytes > 0 or peak_bps > 0 or latest_active:
         return "Low"
     return "Idle"
 
@@ -3114,6 +3131,24 @@ def _build_org_usage_payload(
             ).casefold(),
         ),
     )
+    from billing.devices import customer_live_device_count
+
+    gadget_by_cid: dict[int, int] = {}
+    for item in ranked:
+        customer = customers.get(item["customer_id"])
+        if not customer:
+            continue
+        cid = int(item["customer_id"])
+        recent = int(gadget_counts.get(cid, 0) or 0)
+        svc = service or customer.service_type
+        gadget_by_cid[cid] = customer_live_device_count(
+            customer,
+            service=svc,
+            recent_db_count=recent,
+            latest_active=bool(item.get("latest_active")),
+            sample_count=int(item.get("sample_count") or 0),
+        )
+
     top_users: list[dict[str, Any]] = []
     user_limit = len(ranked) if top_n <= 0 else min(top_n, len(ranked))
     for item in ranked[:user_limit]:
@@ -3122,23 +3157,13 @@ def _build_org_usage_payload(
             continue
         sample_count = item["sample_count"] or 1
         linked = linked_counts.get(item["customer_id"], 0)
+        gadgets = gadget_by_cid.get(int(item["customer_id"]), 0)
         if service == Customer.ServiceType.PPPOE or (
             not service and customer.service_type == Customer.ServiceType.PPPOE
         ):
-            # PPPoE: one dialed CPE on the client's MikroTik (LAN hosts are CPE-side).
-            gadgets = 1 if item["latest_active"] else 0
             if linked <= 0 and gadgets > 0:
                 linked = gadgets
         else:
-            # Hotspot: recently-seen linked MACs only while the client still looks
-            # online (or has never been sampled). Offline samples clear the chip.
-            recent = gadget_counts.get(item["customer_id"], 0)
-            if item["latest_active"]:
-                gadgets = recent or 1
-            elif item["sample_count"] > 0:
-                gadgets = 0
-            else:
-                gadgets = recent
             if linked <= 0 and gadgets > 0:
                 linked = gadgets
             elif linked <= 0 and item["latest_active"]:
@@ -3189,6 +3214,7 @@ def _build_org_usage_payload(
                 "usage_level": _usage_level_label(
                     data_used_bytes=item["data_used_bytes"],
                     peak_download_bps=item["peak_download_bps"],
+                    peak_upload_bps=item["peak_upload_bps"],
                     latest_active=item["latest_active"],
                 ),
                 "prime_at_label": (
@@ -3257,7 +3283,7 @@ def _build_org_usage_payload(
         for cid in customers
         if (per_customer.get(cid) or {}).get("latest_active")
     )
-    gadgets_online = sum(int(u.get("gadgets_connected") or 0) for u in top_users)
+    gadgets_online = sum(gadget_by_cid.values())
     clients_offline = max(0, clients_total - online_now)
     # Offline / low-uptime set for the Offline clients chart (worst first).
     offline_ranked = sorted(

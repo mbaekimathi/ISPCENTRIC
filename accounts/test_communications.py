@@ -1324,6 +1324,92 @@ class MikroTikHealthAndPppoeNotSurfingNotifyTests(TestCase):
         self.assertTrue(below.get("skipped"))
         self.assertEqual(mock_notify.call_args.args[0], "isp_mikrotik_usage_high")
 
+    def test_mikrotik_usage_high_respects_custom_threshold(self):
+        from decimal import Decimal
+
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        from accounts.communications import (
+            maybe_notify_mikrotik_usage_high,
+            resolve_mikrotik_usage_high_threshold_bytes,
+        )
+        from core.models import MikroTikRouter
+
+        cache.clear()
+        router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Custom-NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.0.0.2",
+            username="admin",
+            password="x",
+            usage_tracking_since=timezone.localtime(),
+            usage_high_threshold_tb=Decimal("5.00"),
+        )
+        limit = resolve_mikrotik_usage_high_threshold_bytes(router)
+        self.assertEqual(limit, 5 * (1024**4))
+        with patch("accounts.communications.notify_org_event") as mock_notify:
+            mock_notify.return_value = {"ok": True, "sent": 1}
+            below = maybe_notify_mikrotik_usage_high(
+                organization=self.org,
+                router=router,
+                total_bytes=limit - 1,
+                client_count=2,
+                usage_since=router.usage_tracking_since,
+            )
+            above = maybe_notify_mikrotik_usage_high(
+                organization=self.org,
+                router=router,
+                total_bytes=limit + 1,
+                client_count=2,
+                usage_since=router.usage_tracking_since,
+            )
+        self.assertTrue(below.get("skipped"))
+        self.assertTrue(above.get("ok"))
+
+
+class RouterUsageSettingsTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("router-settings-owner", password="pass123")
+        self.org = Organization.objects.create(
+            name="Router Settings ISP",
+            owner=self.owner,
+            join_code="112233",
+        )
+        self.client.force_login(self.owner)
+
+    def test_router_settings_updates_period_and_threshold(self):
+        from decimal import Decimal
+
+        from django.utils import timezone
+
+        from core.models import MikroTikRouter
+
+        router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Settings-NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.2.2.2",
+            username="admin",
+            password="x",
+        )
+        stamp = timezone.localtime() - timezone.timedelta(days=2)
+        response = self.client.post(
+            reverse("core:clients_usage_router_settings"),
+            {
+                "router": str(router.pk),
+                "at": stamp.strftime("%Y-%m-%dT%H:%M"),
+                "usage_high_threshold_tb": "4.5",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.get("ok"))
+        router.refresh_from_db()
+        self.assertIsNotNone(router.usage_tracking_since)
+        self.assertEqual(router.usage_high_threshold_tb, Decimal("4.50"))
+
 
 class PackageLifecycleNotifyTests(TestCase):
     def setUp(self):

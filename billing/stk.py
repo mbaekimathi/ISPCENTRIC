@@ -37,6 +37,7 @@ _STK_RAW_PRESERVE_KEYS = (
     "initiate",
     "callback",
     "callback_receipt",
+    "callback_phone",
     "callback_rejected",
     "awaiting_daraja_confirm",
     "query",
@@ -311,11 +312,56 @@ def extract_mpesa_receipt_from_raw(raw) -> str:
 
     query = raw.get("query")
     if isinstance(query, dict):
-        from_query = _receipt_from_mapping(query)
+        from_query = extract_mpesa_receipt_from_query_data(query)
         if from_query:
             return from_query
 
     return ""
+
+
+def extract_mpesa_receipt_from_query_data(data) -> str:
+    """
+    Pull MpesaReceiptNumber from a Daraja STK Query (or similar) JSON body.
+
+    Safaricom usually omits the receipt on query, but some environments nest
+    CallbackMetadata; callbacks may also be merged under raw['query'].
+    """
+    if not isinstance(data, dict):
+        return ""
+    direct = _receipt_from_mapping(data)
+    if direct:
+        return direct
+    from_cb = _receipt_from_stk_callback_dict(data)
+    if from_cb:
+        return from_cb
+    body = data.get("Body") if isinstance(data.get("Body"), dict) else {}
+    stk_callback = body.get("stkCallback") if isinstance(body.get("stkCallback"), dict) else {}
+    if stk_callback:
+        from_nested = _receipt_from_stk_callback_dict(stk_callback)
+        if from_nested:
+            return from_nested
+    return ""
+
+
+def backfill_mpesa_receipt_for_stk(
+    stk: StkPushRequest,
+    *,
+    explicit: str = "",
+    raw: dict | None = None,
+) -> str:
+    """
+    Resolve and persist the M-Pesa SMS receipt from model, raw JSON, or query.
+
+    Cheap when already stored; safe to call on every captive status poll so a
+    late callback receipt is copied onto StkPushRequest.mpesa_receipt and
+    Payment.reference as soon as it arrives.
+    """
+    if raw is not None:
+        stk.raw_callback = _merge_stk_raw_callback(stk.raw_callback, raw)
+    hint = (explicit or "").strip()
+    if not hint and raw is not None:
+        hint = extract_mpesa_receipt_from_query_data(raw)
+    return ensure_stk_payment_receipt(stk, receipt=hint)
 
 
 def extract_mpesa_phone_from_raw(raw) -> str:
@@ -616,6 +662,7 @@ def _confirm_stk_success_with_daraja(stk: StkPushRequest) -> dict:
             "error": "",
             "result_desc": query.get("result_desc") or "",
             "data": query.get("data") or {},
+            "mpesa_receipt": (query.get("mpesa_receipt") or "").strip(),
         }
     return {
         "success": False,
@@ -1796,11 +1843,14 @@ def fulfill_successful_stk(
     from accounts.communications import notify_org_event
     from billing.services import notify_client_payment_success
 
+    final_receipt = backfill_mpesa_receipt_for_stk(stk)
+    stk.refresh_from_db()
+
     # Payment recorded here; package apply happens on voucher redeem.
     # subscription_extended / reconnect fire when the package is applied.
     pay_ctx = {
         "amount": str(stk.amount),
-        "mpesa_receipt": stk.mpesa_receipt or "",
+        "mpesa_receipt": (stk.mpesa_receipt or final_receipt or "").strip(),
         "invoice_number": invoice.invoice_number if invoice else "",
         "package_name": getattr(paid_plan, "name", "") or "",
     }
@@ -1811,6 +1861,7 @@ def fulfill_successful_stk(
         stacked=False,
         subject="Payment successful",
     )
+
     notify_org_event(
         "invoice_receipt",
         organization=stk.organization,
@@ -1983,31 +2034,24 @@ def process_stk_callback_payload(payload: dict) -> dict:
                 checkout_id,
                 amount_error,
             )
-            update_fields = ["raw_callback"]
-            stk.raw_callback = _merge_stk_raw_callback(
-                stk.raw_callback,
-                {"callback_rejected": payload, "reject_reason": amount_error},
+            reject_raw = {
+                "callback_rejected": payload,
+                "reject_reason": amount_error,
+                "callback_receipt": receipt,
+                "callback_phone": payer_phone,
+            }
+            stk.raw_callback = _merge_stk_raw_callback(stk.raw_callback, reject_raw)
+            stk.save(update_fields=["raw_callback"])
+            stored_receipt = backfill_mpesa_receipt_for_stk(
+                stk, explicit=receipt, raw=reject_raw
             )
-            # Keep the SMS receipt even when we refuse to fulfill — a later
-            # Daraja query may confirm the same CheckoutRequestID.
-            if receipt and (stk.mpesa_receipt or "").strip() != receipt:
-                stk.mpesa_receipt = receipt[:64]
-                update_fields.append("mpesa_receipt")
-            if payer_phone:
-                from billing.services import format_customer_phone_display
-
-                display_phone = format_customer_phone_display(payer_phone)[:20]
-                if display_phone and (stk.phone or "").strip() != display_phone:
-                    stk.phone = display_phone
-                    update_fields.append("phone")
-            stk.save(update_fields=update_fields)
-            if receipt:
-                ensure_stk_payment_receipt(stk, receipt=receipt)
+            ensure_stk_payment_phone(stk, phone=payer_phone or (stk.phone or ""))
             return {
                 "ok": False,
                 "error": amount_error,
                 "stk_id": stk.pk,
                 "checkout_request_id": checkout_id,
+                "mpesa_receipt": stored_receipt,
             }
 
         # Query often confirms first without a receipt. A late callback should
@@ -2028,34 +2072,20 @@ def process_stk_callback_payload(payload: dict) -> dict:
 
         confirmed = _confirm_stk_success_with_daraja(stk)
         if confirmed.get("pending"):
-            update_fields = ["raw_callback"]
-            stk.raw_callback = _merge_stk_raw_callback(
-                stk.raw_callback,
-                {
-                    "callback": payload,
-                    "awaiting_daraja_confirm": True,
-                    "callback_receipt": receipt,
-                    "callback_phone": payer_phone,
-                },
-            )
+            callback_raw = {
+                "callback": payload,
+                "awaiting_daraja_confirm": True,
+                "callback_receipt": receipt,
+                "callback_phone": payer_phone,
+            }
+            stk.raw_callback = _merge_stk_raw_callback(stk.raw_callback, callback_raw)
             stk.result_desc = (
                 result_desc or "Callback received; confirming with M-Pesa…"
             )[:255]
-            update_fields.append("result_desc")
-            if receipt:
-                stk.mpesa_receipt = receipt[:64]
-                update_fields.append("mpesa_receipt")
-            if payer_phone:
-                from billing.services import format_customer_phone_display
-
-                display_phone = format_customer_phone_display(payer_phone)[:20]
-                if display_phone and (stk.phone or "").strip() != display_phone:
-                    stk.phone = display_phone
-                    update_fields.append("phone")
-            stk.save(update_fields=update_fields)
-            if receipt:
-                # Payment may already exist if a parallel poll fulfilled first.
-                ensure_stk_payment_receipt(stk, receipt=receipt)
+            stk.save(update_fields=["raw_callback", "result_desc"])
+            stored_receipt = backfill_mpesa_receipt_for_stk(
+                stk, explicit=receipt, raw=callback_raw
+            )
             ensure_stk_payment_phone(stk, phone=payer_phone or (stk.phone or ""))
             logger.info(
                 "STK callback deferred pending Daraja confirm stk_id=%s checkout=%s",
@@ -2067,6 +2097,7 @@ def process_stk_callback_payload(payload: dict) -> dict:
                 "pending_verification": True,
                 "stk_id": stk.pk,
                 "checkout_request_id": checkout_id,
+                "mpesa_receipt": stored_receipt,
             }
 
         if not confirmed.get("success"):
@@ -2105,12 +2136,10 @@ def process_stk_callback_payload(payload: dict) -> dict:
             }
 
         if not receipt:
-            data = confirmed.get("data") or {}
-            receipt = str(
-                data.get("MpesaReceiptNumber")
-                or data.get("mpesa_receipt")
-                or ""
-            ).strip()
+            receipt = (
+                (confirmed.get("mpesa_receipt") or "").strip()
+                or extract_mpesa_receipt_from_query_data(confirmed.get("data") or {})
+            )
 
         result = fulfill_successful_stk(
             stk,
@@ -2125,6 +2154,17 @@ def process_stk_callback_payload(payload: dict) -> dict:
         )
         if result.get("ok"):
             stk.refresh_from_db()
+            final_receipt = backfill_mpesa_receipt_for_stk(
+                stk,
+                explicit=receipt,
+                raw={
+                    "callback": payload,
+                    "callback_receipt": receipt,
+                    "callback_phone": payer_phone,
+                },
+            )
+            if final_receipt:
+                result["mpesa_receipt"] = final_receipt
             if stk.purpose == StkPushRequest.Purpose.SUBSCRIPTION:
                 from billing.vouchers import activate_paid_subscription_stk
 
@@ -2346,13 +2386,16 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
     is allowed on the NAS.
     """
     stk.refresh_from_db()
+    # Capture a late callback receipt before building the response payload.
+    receipt_now = backfill_mpesa_receipt_for_stk(stk)
+    stk.refresh_from_db()
     customer = stk.customer
     base = {
         "ok": True,
         "stk_id": stk.pk,
         "status": stk.status,
         "result_desc": stk.result_desc,
-        "mpesa_receipt": stk.mpesa_receipt,
+        "mpesa_receipt": (stk.mpesa_receipt or receipt_now or "").strip(),
         "amount": str(stk.amount),
         "phone": stk.phone,
         "customer_name": customer.full_name if customer is not None else "",
@@ -2383,9 +2426,7 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
             base["cancelled"] = stk.status == StkPushRequest.Status.CANCELLED
             base["can_retry"] = True
         else:
-            # Recover receipt from a late callback stored in raw_callback, and
-            # copy it onto Payment.reference when query confirmed first.
-            recovered = ensure_stk_payment_receipt(stk)
+            recovered = backfill_mpesa_receipt_for_stk(stk)
             if recovered:
                 base["mpesa_receipt"] = recovered
             ensure_stk_payment_phone(stk)
@@ -2451,16 +2492,11 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
         # waiting on Safaricom — reload before resolving the reference code.
         stk.refresh_from_db()
         data = query.get("data") or {}
-        # Query response often lacks receipt; prefer callback_receipt already
-        # stored on the STK row / raw_callback when the callback arrived first.
-        receipt = resolve_stk_mpesa_receipt(
-            stk,
-            explicit=str(
-                data.get("MpesaReceiptNumber")
-                or data.get("mpesa_receipt")
-                or ""
-            ).strip(),
+        query_receipt = (
+            (query.get("mpesa_receipt") or "").strip()
+            or extract_mpesa_receipt_from_query_data(data)
         )
+        receipt = resolve_stk_mpesa_receipt(stk, explicit=query_receipt)
         fulfill = fulfill_successful_stk(
             stk,
             result_code=int(query.get("result_code") or 0),
@@ -2469,6 +2505,7 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
             raw={"query": data},
         )
         stk.refresh_from_db()
+        final_receipt = backfill_mpesa_receipt_for_stk(stk, raw={"query": data})
         customer = stk.customer
         if customer is not None:
             customer.refresh_from_db()
@@ -2480,7 +2517,7 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
             "stk_id": stk.pk,
             "status": stk.status,
             "result_desc": stk.result_desc,
-            "mpesa_receipt": stk.mpesa_receipt,
+            "mpesa_receipt": (final_receipt or stk.mpesa_receipt or "").strip(),
             "amount": str(stk.amount),
             "phone": stk.phone,
             "customer_name": customer.full_name if customer is not None else "",

@@ -628,6 +628,149 @@
   }
 }
 
+.clients-usage-uplink-panel {
+  margin: 0 0 1rem;
+  padding: 1rem 1.05rem 1.1rem;
+  border-radius: var(--ax-radius);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel-elev);
+  box-shadow: var(--ax-shadow);
+}
+
+.clients-usage-uplink-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.75rem;
+}
+
+.clients-usage-uplink-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.85rem 0.9rem;
+  border-radius: var(--ax-radius-sm);
+  border: 1px solid var(--ax-line);
+  background: color-mix(in srgb, var(--ax-panel) 88%, transparent);
+}
+
+.clients-usage-uplink-card.is-alert {
+  border-color: color-mix(in srgb, var(--ax-coral, #e4572e) 45%, var(--ax-line));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ax-coral, #e4572e) 18%, transparent);
+}
+
+.clients-usage-uplink-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.clients-usage-uplink-card-head h3 {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.clients-usage-uplink-host {
+  margin: 0.15rem 0 0;
+  font-size: 0.74rem;
+  color: var(--ax-muted);
+}
+
+.clients-usage-uplink-badge {
+  flex: 0 0 auto;
+  padding: 0.18rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ax-muted);
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel);
+}
+
+.clients-usage-uplink-card.is-alert .clients-usage-uplink-badge {
+  color: var(--ax-coral, #c0392b);
+  border-color: color-mix(in srgb, var(--ax-coral, #e4572e) 35%, var(--ax-line));
+  background: color-mix(in srgb, var(--ax-coral, #e4572e) 8%, var(--ax-panel));
+}
+
+.clients-usage-uplink-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0;
+}
+
+.clients-usage-uplink-stats dt {
+  margin: 0;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ax-muted);
+}
+
+.clients-usage-uplink-stats dd {
+  margin: 0.12rem 0 0;
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--ax-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.clients-usage-uplink-stats dd span {
+  display: block;
+  margin-top: 0.08rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--ax-muted);
+}
+
+.clients-usage-uplink-fields {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.clients-usage-uplink-field {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.clients-usage-uplink-field > span {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--ax-ink);
+}
+
+.clients-usage-uplink-field input {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.45rem;
+  border: 1px solid var(--ax-line);
+  background: var(--ax-panel);
+  color: var(--ax-ink);
+  font: inherit;
+}
+
+.clients-usage-uplink-field small {
+  font-size: 0.68rem;
+  color: var(--ax-muted);
+  line-height: 1.35;
+}
+
+.clients-usage-uplink-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.clients-usage-uplink-empty {
+  margin: 0;
+}
+
 @media (max-width: 520px) {
   .workspace-dash-kpis,
   .workspace-dash-stats,

@@ -71,6 +71,23 @@ def customer_unused_voucher_count(customer) -> int:
     ).count()
 
 
+def valid_hotspot_voucher_codes_for_customer(customer) -> list[str]:
+    """Unused voucher codes a Hotspot client can share with other devices."""
+    from billing.devices import customer_devices_unlimited
+
+    if customer is None or not getattr(customer, "pk", None):
+        return []
+    if customer_devices_unlimited(customer):
+        return []
+    return [
+        format_voucher_code(row.code)
+        for row in AccessVoucher.objects.filter(
+            customer_id=customer.pk,
+            status=AccessVoucher.Status.VALID,
+        ).order_by("id")
+    ]
+
+
 def _create_one_voucher(
     *,
     organization,

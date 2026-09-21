@@ -411,3 +411,77 @@ class HotspotConnectSpeedTests(TestCase):
             )
         authorize.assert_called_once()
         self.assertEqual(authorize.call_args.kwargs["router"].pk, self.router.pk)
+
+    def test_assistance_page_shows_voucher_for_successful_payment(self):
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            amount=Decimal("50.00"),
+            phone="254712345670",
+            account_reference=self.customer.account_number,
+            status=StkPushRequest.Status.SUCCESS,
+            mpesa_receipt="RCPFLOWAS",
+            subscription_applied=True,
+            raw_callback={"hotspot_mac": self.mac},
+        )
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            stk_request=stk,
+            code="4827K",
+            status=AccessVoucher.Status.VALID,
+        )
+        token = signing.dumps(
+            {"stk": stk.pk, "org": self.org.pk, "mac": self.mac},
+            salt="hotspot-payment-status",
+            compress=True,
+        )
+        url = (
+            reverse("core:hotspot_assistance", kwargs={"join_code": self.org.join_code})
+            + f"?stk={stk.pk}&token={token}"
+        )
+        with patch(
+            "billing.stk.refresh_stk_status",
+            return_value={"ok": True, "success": True, "authorized": False},
+        ):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Payment successful")
+        self.assertContains(response, "4827-K")
+        self.assertContains(response, "Activate voucher")
+
+    def test_vouchers_page_lists_unused_codes(self):
+        self.customer.package_start = timezone.now() - timedelta(hours=1)
+        self.customer.package_end = timezone.now() + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="9104K",
+            status=AccessVoucher.Status.VALID,
+        )
+        url = reverse(
+            "core:hotspot_vouchers", kwargs={"join_code": self.org.join_code}
+        )
+        response = self.client.get(url, HTTP_COOKIE=f"hs_mac={self.mac}")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "9104-K")
+        self.assertContains(response, "How to use on another device")
+
+    def test_connection_status_db_fast_path(self):
+        url = reverse(
+            "core:hotspot_connection_status",
+            kwargs={"join_code": self.org.join_code},
+        )
+        self.customer.package_start = timezone.now() - timedelta(hours=1)
+        self.customer.package_end = timezone.now() + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        response = self.client.get(url, HTTP_COOKIE=f"hs_mac={self.mac}")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["authorized"])
+        self.assertTrue(data["paid"])

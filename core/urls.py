@@ -154,6 +154,11 @@ urlpatterns = [
         views.clients_usage_set_renewed,
         name="clients_usage_set_renewed",
     ),
+    path(
+        "app/clients/usage/router-settings/",
+        views.clients_usage_router_settings,
+        name="clients_usage_router_settings",
+    ),
     path("app/clients/<int:customer_id>/", views.client_detail, name="client_detail"),
     path(
         "app/clients/<int:customer_id>/delete/",
@@ -237,6 +242,21 @@ urlpatterns = [
         "hotspot/<str:join_code>/welcome/",
         views.hotspot_welcome,
         name="hotspot_welcome",
+    ),
+    path(
+        "hotspot/<str:join_code>/assistance/",
+        views.hotspot_assistance,
+        name="hotspot_assistance",
+    ),
+    path(
+        "hotspot/<str:join_code>/connection/",
+        views.hotspot_connection_status,
+        name="hotspot_connection_status",
+    ),
+    path(
+        "hotspot/<str:join_code>/vouchers/",
+        views.hotspot_vouchers,
+        name="hotspot_vouchers",
     ),
     path(
         "hotspot/<str:join_code>/pay/",
