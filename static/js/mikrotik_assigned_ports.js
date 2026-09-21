@@ -23,6 +23,23 @@
     el.hidden = !!hidden;
   }
 
+  function loadingEl() {
+    return root.querySelector("[data-assigned-loading]");
+  }
+
+  function overviewEl() {
+    return root.querySelector("[data-assigned-uplink-overview]");
+  }
+
+  function showLoadingPanel() {
+    setHidden(loadingEl(), false);
+    setHidden(overviewEl(), true);
+  }
+
+  function hideLoadingPanel() {
+    setHidden(loadingEl(), true);
+  }
+
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;")
@@ -55,9 +72,9 @@
     });
   }
 
-  function ispSwitchChoices(row, options) {
+  function ispSwitchChoices(row, options, columnPort) {
     if (!row.can_switch_isp || !options || !options.length) return [];
-    var current = (row.isp_port || row.uplink_port || "").trim();
+    var current = (row.isp_port || row.uplink_port || columnPort || "").trim();
     return options.filter(function (opt) {
       return opt.port && opt.port !== current && !opt.disabled;
     });
@@ -78,30 +95,28 @@
     );
   }
 
-  function ispSwitchControl(row, options) {
-    var choices = ispSwitchChoices(row, options);
+  function uplinkInlineSwitch(row, options, columnPort) {
+    var choices = ispSwitchChoices(row, options, columnPort);
     if (!choices.length) return "";
 
-    var html =
-      '<div class="mk-assigned-client-move">' +
-      '<span class="mk-assigned-client-move-label">Switch link</span>';
-
     if (choices.length >= 3) {
-      html +=
-        '<div class="mk-assigned-switch-form">' +
-        '<select class="mk-assigned-switch-select" aria-label="Choose uplink">' +
-        '<option value="">Choose uplink…</option>';
-      choices.forEach(function (opt) {
-        html +=
-          '<option value="' +
-          esc(opt.port) +
-          '">' +
-          esc(opt.label || opt.port) +
-          "</option>";
-      });
-      html +=
+      return (
+        '<span class="mk-assigned-uplink-switch mk-assigned-uplink-switch-form">' +
+        '<select class="mk-assigned-switch-select mk-assigned-uplink-switch-select" aria-label="Switch internet link">' +
+        '<option value="">Switch to…</option>' +
+        choices
+          .map(function (opt) {
+            return (
+              '<option value="' +
+              esc(opt.port) +
+              '">' +
+              esc(opt.label || opt.port) +
+              "</option>"
+            );
+          })
+          .join("") +
         "</select>" +
-        '<button type="button" class="btn btn-ghost btn-sm mk-assigned-switch-submit"' +
+        '<button type="button" class="mk-assigned-uplink-switch-btn mk-assigned-switch-submit"' +
         ' data-isp-switch-submit="1"' +
         ' data-customer-id="' +
         esc(String(row.customer_id || "")) +
@@ -110,22 +125,29 @@
         '" data-client-name="' +
         esc(row.name || "Customer") +
         '" data-target-port=""' +
-        " disabled>Move</button></div>";
-    } else {
-      html += '<div class="mk-assigned-switch-chips">';
-      choices.forEach(function (opt) {
-        html +=
-          '<button type="button" class="mk-assigned-switch-chip"' +
-          ispSwitchButtonAttrs(row, opt) +
-          ">" +
-          esc(opt.label || opt.port) +
-          "</button>";
-      });
-      html += "</div>";
+        ' title="Move to selected link"' +
+        " disabled>Switch</button></span>"
+      );
     }
 
-    html += "</div>";
-    return html;
+    return (
+      '<span class="mk-assigned-uplink-switch">' +
+      choices
+        .map(function (opt) {
+          return (
+            '<button type="button" class="mk-assigned-uplink-switch-btn"' +
+            ispSwitchButtonAttrs(row, opt) +
+            ' title="Move to ' +
+            esc(opt.label || opt.port) +
+            '">' +
+            '<span class="mk-assigned-uplink-switch-arrow" aria-hidden="true">→</span> ' +
+            esc(opt.label || opt.port) +
+            "</button>"
+          );
+        })
+        .join("") +
+      "</span>"
+    );
   }
 
   function clientInitial(name) {
@@ -134,7 +156,7 @@
     return esc(trimmed.charAt(0).toUpperCase());
   }
 
-  function clientCard(row, ispOptions) {
+  function clientCard(row, ispOptions, columnPort) {
     var online = !!row.online;
     var phone = (row.phone || "").trim() || "—";
     var statusLabel = online ? "Online" : "Offline";
@@ -148,11 +170,14 @@
     var pinnedBadge = row.isp_pinned
       ? '<span class="mk-assigned-pinned-badge">Pinned</span>'
       : "";
+    var inlineSwitch = online ? uplinkInlineSwitch(row, ispOptions, columnPort) : "";
     var uplinkLine = online
-      ? '<p class="mk-assigned-client-simple-uplink">On <strong>' +
+      ? '<p class="mk-assigned-client-simple-uplink">' +
+        '<span class="mk-assigned-client-simple-uplink-current">On <strong>' +
         esc(currentIsp) +
-        "</strong> " +
+        "</strong></span> " +
         pinnedBadge +
+        inlineSwitch +
         "</p>"
       : "";
     return (
@@ -181,7 +206,6 @@
       "</span>" +
       "</span>" +
       "</div>" +
-      (online ? ispSwitchControl(row, ispOptions) : "") +
       "</article>"
     );
   }
@@ -328,7 +352,7 @@
     } else {
       html += col.clients
         .map(function (row) {
-          return clientCard(row, ispOptions);
+          return clientCard(row, ispOptions, col.port || col.key);
         })
         .join("");
     }
@@ -391,7 +415,7 @@
     } else if (insights.imbalanced && insights.dominant_isp) {
       title = "Most customers on " + insights.dominant_isp;
       message =
-        "The system moves customers automatically, or tap Switch link on a customer card.";
+        "The system moves customers automatically, or tap Switch next to their link.";
     }
 
     if (titleEl) titleEl.textContent = title;
@@ -411,6 +435,103 @@
           ? "is-action"
           : "is-info");
     setHidden(card, false);
+  }
+
+  function overviewCardClass(status) {
+    if (status === "slow") return "is-slow";
+    if (status === "sidelined") return "is-off";
+    return "is-up";
+  }
+
+  function renderUplinkOverview(analysis) {
+    var wrap = overviewEl();
+    var grid = root.querySelector("[data-assigned-uplink-overview-grid]");
+    var stamp = root.querySelector("[data-assigned-overview-stamp]");
+    if (!wrap || !grid) return;
+
+    var isps = (analysis.isps || []).filter(function (isp) {
+      return (isp.port || "").trim();
+    });
+    var summary = analysis.summary || {};
+    var cards = isps.map(function (isp, index) {
+      var status = isp.status || "active";
+      var online = Number(isp.online_clients) || 0;
+      var total = Number(isp.client_count) || 0;
+      var share =
+        isp.share_pct != null && isp.share_pct !== ""
+          ? String(isp.share_pct) + "% WAN traffic"
+          : "";
+      var traffic =
+        isp.download_label && isp.download_label !== "—"
+          ? "↓ " + isp.download_label + " · ↑ " + (isp.upload_label || "—")
+          : "";
+      var idxAttr =
+        isp.isp_index != null && isp.isp_index !== ""
+          ? ' data-uplink-index="' + esc(String(isp.isp_index)) + '"'
+          : ' data-uplink-index="' + String(index) + '"';
+
+      return (
+        '<article class="mk-assigned-overview-card ' +
+        overviewCardClass(status) +
+        '"' +
+        idxAttr +
+        ">" +
+        '<header class="mk-assigned-overview-card-head">' +
+        '<h3 class="mk-assigned-overview-card-title">' +
+        esc(isp.label || isp.port) +
+        "</h3>" +
+        '<span class="mk-assigned-uplink-status ' +
+        columnStatusClass(status) +
+        '">' +
+        esc(columnStatusLabel(status)) +
+        "</span>" +
+        "</header>" +
+        '<p class="mk-assigned-overview-card-stat">' +
+        '<strong>' +
+        String(online) +
+        "</strong> online" +
+        (total > online ? " · " + String(total) + " listed" : "") +
+        "</p>" +
+        (share
+          ? '<p class="mk-assigned-overview-card-meta">' + esc(share) + "</p>"
+          : "") +
+        (traffic
+          ? '<p class="mk-assigned-overview-card-meta">' + esc(traffic) + "</p>"
+          : "") +
+        "</article>"
+      );
+    });
+
+    var offline = Number(summary.offline_clients) || 0;
+    if (offline > 0) {
+      cards.push(
+        '<article class="mk-assigned-overview-card is-offline-summary">' +
+        '<header class="mk-assigned-overview-card-head">' +
+        '<h3 class="mk-assigned-overview-card-title">Offline</h3>' +
+        "</header>" +
+        '<p class="mk-assigned-overview-card-stat">' +
+        "<strong>" +
+        String(offline) +
+        "</strong> customers not connected now" +
+        "</p>" +
+        "</article>"
+      );
+    }
+
+    if (!cards.length) {
+      setHidden(wrap, true);
+      return;
+    }
+
+    grid.innerHTML = cards.join("");
+    if (stamp) {
+      var now = new Date();
+      stamp.textContent =
+        "Updated " +
+        now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    }
+    hideLoadingPanel();
+    setHidden(wrap, false);
   }
 
   function renderKpis(summary, columns) {
@@ -452,6 +573,7 @@
 
     if (!clients.length) {
       board.innerHTML = "";
+      renderUplinkOverview(analysis);
       setHidden(emptyEl, false);
       setHidden(section, false);
       setHidden(kpiRow, true);
@@ -466,6 +588,7 @@
     }).join("");
 
     renderKpis(summary, columns);
+    renderUplinkOverview(analysis);
     var switchHint = root.querySelector("[data-assigned-switch-hint]");
     if (switchHint) {
       setHidden(switchHint, !analysis.can_switch_clients);
@@ -666,6 +789,8 @@
     var banner = root.querySelector("[data-assigned-error]");
     var text = root.querySelector("[data-assigned-error-text]");
     var retry = root.querySelector("[data-assigned-retry]");
+    hideLoadingPanel();
+    setHidden(overviewEl(), true);
     if (text) text.textContent = message || "Could not load live data.";
     setHidden(banner, false);
     setHidden(retry, suspended);
@@ -680,11 +805,11 @@
   }
 
   function applyPayload(data) {
-    setHidden(root.querySelector("[data-assigned-loading]"), true);
     if (!data || !data.ok) {
       showError((data && data.error) || "Could not load live data.");
       return;
     }
+    hideLoadingPanel();
     clearError();
     renderPage(data);
     syncJobProgress(data);
@@ -715,7 +840,7 @@
 
   function startPolling() {
     if (!liveUrl || suspended) {
-      setHidden(root.querySelector("[data-assigned-loading]"), true);
+      hideLoadingPanel();
       if (suspended) showError("Activate this MikroTik account to view live clients.");
       return;
     }
@@ -729,7 +854,7 @@
   var retryBtn = root.querySelector("[data-assigned-retry]");
   if (retryBtn) {
     retryBtn.addEventListener("click", function () {
-      setHidden(root.querySelector("[data-assigned-loading]"), false);
+      showLoadingPanel();
       clearError();
       fetchLive(true);
     });
@@ -742,33 +867,30 @@
     });
   }
 
-  var clientBoard = root.querySelector("[data-assigned-client-list]");
-  if (clientBoard) {
-    clientBoard.addEventListener("click", function (event) {
-      var chip = event.target.closest("[data-isp-switch-chip]");
-      if (chip) {
-        event.preventDefault();
-        requestClientIspSwitch(chip);
-        return;
-      }
-      var submit = event.target.closest("[data-isp-switch-submit]");
-      if (!submit) return;
+  root.addEventListener("click", function (event) {
+    var chip = event.target.closest("[data-isp-switch-chip]");
+    if (chip) {
       event.preventDefault();
-      var form = submit.closest(".mk-assigned-switch-form");
-      var select = form ? form.querySelector(".mk-assigned-switch-select") : null;
-      var targetPort = select ? (select.value || "").trim() : "";
-      if (!targetPort) return;
-      submit.setAttribute("data-target-port", targetPort);
-      requestClientIspSwitch(submit);
-    });
-    clientBoard.addEventListener("change", function (event) {
-      var select = event.target.closest(".mk-assigned-switch-select");
-      if (!select) return;
-      var form = select.closest(".mk-assigned-switch-form");
-      var submit = form ? form.querySelector("[data-isp-switch-submit]") : null;
-      if (submit) submit.disabled = !(select.value || "").trim() || switchInFlight;
-    });
-  }
+      requestClientIspSwitch(chip);
+      return;
+    }
+    var submit = event.target.closest("[data-isp-switch-submit]");
+    if (!submit) return;
+    event.preventDefault();
+    var form = submit.closest(".mk-assigned-uplink-switch-form, .mk-assigned-switch-form");
+    var select = form ? form.querySelector(".mk-assigned-switch-select") : null;
+    var targetPort = select ? (select.value || "").trim() : "";
+    if (!targetPort) return;
+    submit.setAttribute("data-target-port", targetPort);
+    requestClientIspSwitch(submit);
+  });
+  root.addEventListener("change", function (event) {
+    var select = event.target.closest(".mk-assigned-switch-select");
+    if (!select) return;
+    var form = select.closest(".mk-assigned-uplink-switch-form, .mk-assigned-switch-form");
+    var submit = form ? form.querySelector("[data-isp-switch-submit]") : null;
+    if (submit) submit.disabled = !(select.value || "").trim() || switchInFlight;
+  });
 
   if (loading) startPolling();
   else if (suspended) showError("Activate this MikroTik account to view live clients.");

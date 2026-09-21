@@ -35,18 +35,36 @@
     data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
     data-router-id="{{ router.id }}"
   >
-    <div class="mk-assigned-loading" data-assigned-loading {% if not ports_loading %}hidden{% endif %}>
-      <div class="mk-assigned-loading-head">
-        <div class="mk-loading-pulse" aria-hidden="true"></div>
-        <div>
-          <p class="mk-loading-title">Loading live clients…</p>
-          <p class="mk-help-note">Reading customers from {{ router.name }}.</p>
+    <div class="mk-assigned-top-panel">
+      <div class="mk-assigned-loading" data-assigned-loading {% if not ports_loading %}hidden{% endif %}>
+        <div class="mk-assigned-loading-head">
+          <div class="mk-loading-pulse" aria-hidden="true"></div>
+          <div>
+            <p class="mk-loading-title">Loading live clients…</p>
+            <p class="mk-help-note">Reading customers from {{ router.name }}.</p>
+          </div>
+        </div>
+        <div class="mk-assigned-loading-skeleton" aria-hidden="true">
+          <div class="mk-assigned-skeleton-col"></div>
+          <div class="mk-assigned-skeleton-col"></div>
+          <div class="mk-assigned-skeleton-col is-short"></div>
         </div>
       </div>
-      <div class="mk-assigned-loading-skeleton" aria-hidden="true">
-        <div class="mk-assigned-skeleton-col"></div>
-        <div class="mk-assigned-skeleton-col"></div>
-        <div class="mk-assigned-skeleton-col is-short"></div>
+
+      <div
+        class="mk-assigned-uplink-overview"
+        data-assigned-uplink-overview
+        hidden
+        aria-label="Live uplink snapshot"
+      >
+        <header class="mk-assigned-uplink-overview-head">
+          <div>
+            <p class="mk-assigned-uplink-overview-kicker">Live snapshot</p>
+            <h2 class="mk-assigned-uplink-overview-title">Uplink load</h2>
+          </div>
+          <p class="mk-help-note mk-assigned-uplink-overview-stamp" data-assigned-overview-stamp></p>
+        </header>
+        <div class="mk-assigned-uplink-overview-grid" data-assigned-uplink-overview-grid></div>
       </div>
     </div>
 
@@ -88,7 +106,7 @@
         </div>
         <p class="mk-assigned-board-hint mk-help-note">Swipe to see all links on smaller screens.</p>
         <p class="mk-help-note mk-assigned-switch-hint" data-assigned-switch-hint hidden>
-          Online customers can be moved manually — tap <strong>Switch link</strong> on their card.
+          Online customers can be moved manually — tap <strong>Switch</strong> next to their link.
         </p>
       </header>
       <div class="mk-assigned-uplink-board-wrap">

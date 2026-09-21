@@ -2202,7 +2202,15 @@ def _build_router_client_analysis(
     mark_to_port = (
         usage.get("mark_to_port") if isinstance(usage.get("mark_to_port"), dict) else {}
     )
-    balance_routing_ready = bool(usage.get("uses_connection_marks") or mark_to_port)
+    balance_routing_ready = bool(
+        usage.get("uses_connection_marks")
+        or mark_to_port
+        or (
+            _is_multi_isp_mode(mode)
+            and len(member_ports) >= 2
+            and usage.get("ok")
+        )
+    )
     can_switch_clients = bool(
         _is_multi_isp_mode(mode)
         and len(member_ports) >= 2
