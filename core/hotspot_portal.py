@@ -452,3 +452,68 @@ def recall_org_portal_base(organization_id: int) -> str:
     from django.core.cache import cache
 
     return (cache.get(org_portal_base_cache_key(organization_id)) or "").strip().rstrip("/")
+
+
+STK_CALLBACK_PATH = "/api/mpesa/stk-callback/"
+
+
+def safaricom_can_reach_callback_url(url: str) -> bool:
+    """
+    True when Safaricom's servers can POST to this callback from the internet.
+
+    LAN/private origins work for captive pay pages on Wi‑Fi but not for Daraja
+    callbacks that deliver M-Pesa receipt numbers.
+    """
+    base = (url or "").strip()
+    if not base or is_loopback_url(base):
+        return False
+    host = (urlparse(base).hostname or "").strip().lower()
+    if not host or host in {"localhost"}:
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+        return not (
+            address.is_private or address.is_loopback or address.is_link_local
+        )
+    except ValueError:
+        return True
+
+
+def mpesa_stk_callback_url(request=None, organization=None) -> str:
+    """Absolute STK callback URL Safaricom is configured to POST to."""
+    try:
+        from accounts.models import PaymentGateway
+
+        if organization is not None and getattr(organization, "daraja_enabled", False):
+            creds = organization.effective_daraja_credentials()
+            url = (creds.get("callback_url") or "").strip()
+            if url:
+                return url
+        return (PaymentGateway.get_solo().resolved_callback_url(request) or "").strip()
+    except Exception:
+        return ""
+
+
+def mpesa_stk_callback_reachability(request=None, organization=None) -> dict:
+    """
+    Whether the configured STK callback can receive Safaricom payment posts.
+
+    Returns ``{url, ok, warning}``.
+    """
+    url = mpesa_stk_callback_url(request, organization)
+    if not url:
+        return {"url": "", "ok": False, "warning": ""}
+    ok = safaricom_can_reach_callback_url(url)
+    warning = ""
+    if not ok:
+        warning = (
+            "M-Pesa receipts need a public callback URL Safaricom can reach "
+            f"({STK_CALLBACK_PATH}). Set PUBLIC_BASE_URL to your public HTTPS site "
+            f"in .env — current callback: {url}"
+        )
+    elif getattr(settings, "HOSTED", False) and url.lower().startswith("http://"):
+        warning = (
+            "M-Pesa callback uses HTTP on a hosted install. Use HTTPS "
+            f"({url}) so Safaricom can deliver payment confirmations reliably."
+        )
+    return {"url": url, "ok": ok, "warning": warning}

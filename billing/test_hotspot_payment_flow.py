@@ -122,6 +122,37 @@ class HotspotPaymentConnectionFlowTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertFalse(response.json()["ok"])
 
+    def test_status_token_without_mac_returns_json_403(self):
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="No Mac Token",
+            phone="254712345682",
+            account_number="HOT-FLOW-NM",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac=self.mac,
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            router=self.router,
+        )
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=customer,
+            plan=self.plan,
+            amount=Decimal("50.00"),
+            phone="254712345682",
+            account_reference=customer.account_number,
+            status=StkPushRequest.Status.SUCCESS,
+            raw_callback={"hotspot_mac": self.mac},
+        )
+        token = signing.dumps(
+            {"stk": stk.pk, "org": self.org.pk},
+            salt="hotspot-payment-status",
+            compress=True,
+        )
+        response = self.client.get(self._status_url(stk.pk) + f"?token={token}")
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("session", response.json()["error"].lower())
+
     def test_status_success_authorizes_when_nas_ready(self):
         customer = Customer.objects.create(
             organization=self.org,
@@ -471,6 +502,15 @@ class HotspotConnectSpeedTests(TestCase):
         self.assertContains(response, "9104-K")
         self.assertContains(response, "How to use on another device")
 
+    def test_vouchers_page_without_access_hides_codes(self):
+        url = reverse(
+            "core:hotspot_vouchers", kwargs={"join_code": self.org.join_code}
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "9104-K")
+        self.assertContains(response, "welcome screen")
+
     def test_connection_status_db_fast_path(self):
         url = reverse(
             "core:hotspot_connection_status",
@@ -485,3 +525,72 @@ class HotspotConnectSpeedTests(TestCase):
         self.assertTrue(data["ok"])
         self.assertTrue(data["authorized"])
         self.assertTrue(data["paid"])
+
+    def test_connection_status_live_requires_active_session(self):
+        url = (
+            reverse(
+                "core:hotspot_connection_status",
+                kwargs={"join_code": self.org.join_code},
+            )
+            + "?live=1"
+        )
+        self.customer.package_start = timezone.now() - timedelta(hours=1)
+        self.customer.package_end = timezone.now() + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        with patch(
+            "core.mikrotik_connect.hotspot_mac_has_active_session",
+            return_value=False,
+        ) as live_mock:
+            response = self.client.get(url, HTTP_COOKIE=f"hs_mac={self.mac}")
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["live_checked"])
+        live_mock.assert_called_once()
+        self.assertFalse(data["authorized"])
+
+    def test_status_rate_limit_returns_429(self):
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            amount=Decimal("30.00"),
+            phone="254700007272",
+            account_reference=self.customer.account_number,
+            status=StkPushRequest.Status.SUCCESS,
+            raw_callback={"hotspot_mac": self.mac},
+        )
+        token = signing.dumps(
+            {"stk": stk.pk, "org": self.org.pk, "mac": self.mac},
+            salt="hotspot-payment-status",
+            compress=True,
+        )
+        status_url = reverse(
+            "core:hotspot_payment_status",
+            kwargs={"join_code": self.org.join_code, "stk_id": stk.pk},
+        )
+        from accounts.security import AuthRateLimitExceeded
+
+        with patch(
+            "accounts.security.assert_public_stk_status_allowed",
+            side_effect=AuthRateLimitExceeded(
+                30, message="Too many connection checks."
+            ),
+        ):
+            response = self.client.get(status_url + f"?token={token}")
+        self.assertEqual(response.status_code, 429)
+        self.assertIn("retry_after", response.json())
+
+
+class MpesaCallbackReachabilityTests(TestCase):
+    def test_localhost_callback_is_not_public(self):
+        from core.hotspot_portal import safaricom_can_reach_callback_url
+
+        self.assertFalse(
+            safaricom_can_reach_callback_url("http://127.0.0.1:8000/api/mpesa/stk-callback/")
+        )
+        self.assertFalse(
+            safaricom_can_reach_callback_url("http://192.168.1.10/api/mpesa/stk-callback/")
+        )
+        self.assertTrue(
+            safaricom_can_reach_callback_url("https://billing.example.com/api/mpesa/stk-callback/")
+        )

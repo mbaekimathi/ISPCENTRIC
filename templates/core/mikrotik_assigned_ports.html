@@ -1,20 +1,16 @@
 {% extends "core/client_base.html" %}
 {% load static %}
 
-{% block title %}Assigned ports — {{ router.name }} — ISPCENTRIC{% endblock %}
+{% block title %}Live clients — {{ router.name }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="mk-page mk-assigned-ports-page">
-  <header class="mk-page-hero mk-ports-hero">
+{% include "core/includes/mikrotik_job_poll.html" %}
+<div class="mk-page mk-assigned-ports-page mk-assigned-simple">
+  <header class="mk-page-hero mk-ports-hero mk-assigned-hero">
     <div class="mk-page-hero-copy">
-      <p class="mk-page-kicker">Live analysis</p>
-      <h1 class="mk-page-title">Assigned ports</h1>
-      <p class="mk-page-lead">
-        See which cable and ISP each customer uses on
-        <strong>{{ router.name }}</strong>
-        <span class="mk-host-chip">{{ router.host }}</span>
-        — with live speed and session data.
-      </p>
+      <p class="mk-page-kicker">{{ router.name }}</p>
+      <h1 class="mk-page-title">Live clients</h1>
+      <p class="mk-page-lead">Who is online and which internet link they use. Updates automatically.</p>
     </div>
     <div class="mk-ports-hero-actions">
       <span class="mk-live-pill" data-assigned-live-pill hidden>
@@ -22,7 +18,6 @@
         Live
       </span>
       <a class="btn btn-ghost" href="{% url 'core:mikrotik_ports' router.id %}">Port setup</a>
-      <a class="btn btn-ghost" href="{% url 'core:mikrotik_detail' router.id %}">Back</a>
     </div>
   </header>
 
@@ -31,7 +26,10 @@
   <section
     class="mk-surface mk-assigned-ports-surface"
     id="mikrotik-assigned-ports-root"
-    data-ports-live-url="{{ ports_live_url }}"
+    data-assigned-live-url="{{ assigned_ports_live_url }}"
+    data-assigned-apply-url="{{ assigned_ports_apply_url }}"
+    data-push-status-url="{{ push_status_url }}"
+    data-csrf-token="{{ csrf_token }}"
     data-ports-loading="{% if ports_loading %}1{% else %}0{% endif %}"
     data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
     data-router-id="{{ router.id }}"
@@ -39,8 +37,8 @@
     <div class="mk-loading" data-assigned-loading {% if not ports_loading %}hidden{% endif %}>
       <div class="mk-loading-pulse" aria-hidden="true"></div>
       <div>
-        <p class="mk-loading-title">Reading live port analytics…</p>
-        <p class="mk-help-note">Connecting to {{ router.name }} for clients, ports, and usage.</p>
+        <p class="mk-loading-title">Loading…</p>
+        <p class="mk-help-note">Reading customers from {{ router.name }}.</p>
       </div>
     </div>
 
@@ -49,65 +47,27 @@
       <button type="button" class="btn btn-ghost" data-assigned-retry hidden>Retry</button>
     </div>
 
-    <section class="mk-router-analysis" data-router-analysis hidden aria-label="Port and client analytics">
-      <header class="mk-router-analysis-head">
-        <div>
-          <p class="mk-section-step">Overview</p>
-          <h2 class="mk-router-analysis-title">Ports &amp; client usage</h2>
-          <p class="mk-help-note" data-router-analysis-note></p>
-        </div>
-        <div class="mk-router-analysis-summary" data-router-analysis-summary hidden></div>
+    <div class="mk-assigned-notice" data-assigned-status-card hidden role="status">
+      <div class="mk-assigned-notice-copy">
+        <strong data-assigned-balance-title></strong>
+        <p data-assigned-balance-message></p>
+      </div>
+      <button type="button" class="btn btn-primary btn-sm" data-assigned-balance-apply hidden>
+        Turn on smart balance
+      </button>
+    </div>
+
+    <div class="mk-assigned-isp-summary" data-assigned-isp-summary hidden aria-label="Internet links"></div>
+
+    <section class="mk-assigned-clients-section" data-router-analysis hidden aria-label="Customers">
+      <header class="mk-assigned-section-head">
+        <h2 class="mk-assigned-section-title">Customers</h2>
+        <p class="mk-help-note" data-assigned-clients-summary></p>
       </header>
-
-      <div class="mk-assigned-kpi-row" data-assigned-kpis hidden></div>
-
-      <div class="mk-assigned-section" data-router-analysis-isps hidden>
-        <div class="mk-router-analysis-clients-head">
-          <h3 class="mk-router-analysis-subtitle">ISP / WAN ports</h3>
-          <p class="mk-help-note">Live share and usage on each internet uplink.</p>
-        </div>
-        <div class="mk-router-isp-grid" data-assigned-isp-grid></div>
-      </div>
-
-      <div class="mk-assigned-section mk-assigned-lan-wrap" data-assigned-lan-wrap hidden>
-        <div class="mk-router-analysis-clients-head">
-          <h3 class="mk-router-analysis-subtitle">Customer ports</h3>
-          <p class="mk-help-note">LAN / Wi‑Fi cables with live client usage on each port.</p>
-        </div>
-        <div class="mk-assigned-lan-grid" data-assigned-lan-grid></div>
-      </div>
-
-      <div class="mk-assigned-section mk-router-analysis-clients-wrap" data-router-analysis-clients-wrap hidden>
-        <div class="mk-router-analysis-clients-head">
-          <h3 class="mk-router-analysis-subtitle">Clients</h3>
-          <p class="mk-help-note" data-assigned-clients-caption>
-            Live download / upload, session data, ISP link, and cable port for each assigned customer.
-          </p>
-        </div>
-        <div class="mk-assigned-port-groups" data-assigned-port-groups></div>
-        <div class="mk-assigned-client-cards" data-assigned-client-cards hidden></div>
-        <div class="mk-router-analysis-table-wrap" data-assigned-all-table-wrap>
-          <table class="mk-router-analysis-table mk-assigned-clients-table">
-            <thead>
-              <tr>
-                <th scope="col">Client</th>
-                <th scope="col">Account</th>
-                <th scope="col">Service</th>
-                <th scope="col">IP</th>
-                <th scope="col">Cable port</th>
-                <th scope="col">ISP / WAN</th>
-                <th scope="col">Download</th>
-                <th scope="col">Upload</th>
-                <th scope="col">Session data</th>
-                <th scope="col">Uptime</th>
-              </tr>
-            </thead>
-            <tbody data-router-analysis-clients></tbody>
-          </table>
-        </div>
-        <p class="mk-help-note" data-router-analysis-empty hidden>No customers are assigned to this MikroTik yet.</p>
-      </div>
-
+      <div class="mk-assigned-client-list" data-assigned-client-list></div>
+      <p class="mk-help-note mk-assigned-empty" data-router-analysis-empty hidden>
+        No customers on this router yet.
+      </p>
       <p class="mk-help-note mk-router-analysis-error" data-router-analysis-error hidden></p>
     </section>
   </section>

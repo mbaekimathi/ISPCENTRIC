@@ -2283,7 +2283,7 @@
       }
 
       function showConnectedVouchers(codes, stkId, token) {
-        continueTarget = welcomeUrl;
+        continueTarget = buildWelcomeUrl(stkId, token);
         if (overlayVoucherList) {
           overlayVoucherList.innerHTML = "";
           codes.forEach(function (code) {
@@ -2316,6 +2316,18 @@
         );
       }
 
+      function buildWelcomeUrl(stkId, token) {
+        var url = welcomeUrl;
+        var params = [];
+        if (stkId && token) {
+          params.push("stk=" + encodeURIComponent(stkId));
+          params.push("token=" + encodeURIComponent(token));
+        }
+        if (!params.length) return url;
+        var sep = url.indexOf("?") === -1 ? "?" : "&";
+        return url + sep + params.join("&");
+      }
+
       function goToAssistance(stkId, token) {
         setPaymentSteps("done");
         setWaiting(true, "Almost there", "Opening connection help…");
@@ -2328,7 +2340,7 @@
       function openInternet(stkId, token) {
         setPaymentSteps("done");
         setWaiting(true, "You're online", "Opening internet…", false, true);
-        window.location.replace(welcomeUrl);
+        window.location.replace(buildWelcomeUrl(stkId, token));
       }
 
       var voucherForm = root.querySelector("[data-voucher-form]");
@@ -2538,6 +2550,21 @@
                 }, waitNas ? AUTH_RETRY_MS : 0);
                 return;
               }
+              if (data.voucher_fallback) {
+                var fallbackCodes = extraVoucherCodes(data);
+                setWaiting(false);
+                showVoucherFallback(
+                  fallbackCodes.length ? fallbackCodes : (data.voucher_code || "")
+                );
+                show(
+                  fallbackCodes.length
+                    ? "Payment succeeded. Use one unused voucher below to connect this device."
+                    : (data.authorization_error || "Payment succeeded. Enter your voucher to connect."),
+                  false
+                );
+                submit.disabled = false;
+                return;
+              }
               goToAssistance(data.stk_id || activeStkId || stkIdFromStatusUrl(url), token);
               return;
             }
@@ -2594,16 +2621,6 @@
             } catch (err) {}
           }
           if (!macVal || macVal.indexOf("$(") === 0) {
-            try {
-              var cookieMatch = document.cookie.match(/(?:^|;\s*)hs_mac=([^;]+)/);
-              var fromCookie = cookieMatch ? decodeURIComponent(cookieMatch[1]).trim() : "";
-              if (fromCookie && fromCookie.indexOf("$(") !== 0) {
-                macInput.value = fromCookie;
-                macVal = fromCookie;
-              }
-            } catch (err2) {}
-          }
-          if (!macVal || macVal.indexOf("$(") === 0) {
             offerRetry("Could not identify this device. Rejoin the Hotspot Wi‑Fi and try again.");
             return;
           }
@@ -2635,10 +2652,33 @@
               throw startErr;
             }
             if (data.already_paid) {
-              setWaiting(true, "Connecting", data.message || "This device was added to your package.");
+              setWaiting(false);
+              submit.disabled = false;
+              if (data.needs_voucher) {
+                showVoucherFallback([]);
+                show(
+                  data.message
+                    || "This package is already paid. Enter a voucher for this device.",
+                  false
+                );
+                var voucherInput = root.querySelector("[data-voucher-input]");
+                if (voucherInput) {
+                  try { voucherInput.focus(); } catch (focusErr) {}
+                }
+                return;
+              }
+              var target = data.welcome_url || buildWelcomeUrl();
+              if (data.authorized) {
+                setWaiting(true, "You're online", data.message || "Opening internet…", false, true);
+                window.setTimeout(function () {
+                  window.location.replace(target);
+                }, 500);
+                return;
+              }
+              setWaiting(true, "Connecting", data.message || "Adding this device to your package…");
               window.setTimeout(function () {
-                window.location.replace(data.welcome_url || window.location.href);
-              }, 600);
+                window.location.replace(target);
+              }, 900);
               return;
             }
             activeStkId = data.stk_id ? String(data.stk_id) : stkIdFromStatusUrl(data.status_url);

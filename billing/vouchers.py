@@ -840,25 +840,48 @@ def _activate_paid_subscription_stk_locked(
 
     # Outside the row lock — MikroTik latency must not block other payers.
     nas = {"ok": False, "allowed": False}
+    nas_deduped = False
     try:
-        from core.subscription_sync import enqueue_customer_subscription_sync
+        from django.core.cache import cache
 
-        nas = (
-            enqueue_customer_subscription_sync(
-                customer_pk,
-                True,
-                wait_first=wait_first,
-                quick=quick,
-                reauthenticate=False,
+        nas_lock = f"stk:nas-sync:{stk_pk}"
+        if not cache.add(nas_lock, 1, 20):
+            nas_deduped = True
+    except Exception:
+        nas_deduped = False
+
+    if not nas_deduped:
+        try:
+            from core.subscription_sync import enqueue_customer_subscription_sync
+
+            nas = (
+                enqueue_customer_subscription_sync(
+                    customer_pk,
+                    True,
+                    wait_first=wait_first,
+                    quick=quick,
+                    reauthenticate=False,
+                )
+                or nas
             )
-            or nas
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "STK %s package applied but MikroTik sync failed for customer %s",
+                stk_pk,
+                customer_pk,
+            )
+    else:
+        from billing.devices import customer_owns_hotspot_mac
+        from billing.services import customer_receives_internet
+
+        customer = Customer.objects.filter(pk=customer_pk).first()
+        paid = bool(customer and customer_receives_internet(customer))
+        mac_ok = bool(
+            device_mac
+            and customer
+            and customer_owns_hotspot_mac(customer, device_mac)
         )
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "STK %s package applied but MikroTik sync failed for customer %s",
-            stk_pk,
-            customer_pk,
-        )
+        nas = {"ok": paid, "allowed": paid and mac_ok}
     from core.subscription_sync import nas_access_ready
 
     authorized = nas_access_ready(nas)

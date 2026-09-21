@@ -249,12 +249,29 @@
   };
   var goalSelectHints = {
     single: "Move one cable between ports anytime — tap Internet on the new port.",
-    bond: "Same provider: plug two cables, then Detect & apply bonding.",
-    multi: "Different providers: traffic is shared; if any link dies or slows, failover covers the rest.",
-    failover: "Different providers: traffic is shared; failover covers every link.",
-    balance: "Different providers: traffic is shared; failover covers every link.",
-    smart_balance: "Different providers: traffic is shared; failover covers every link."
+    bond: "Same provider: plug two cables, then Detect & apply bonding. Pick One internet link to go back.",
+    multi: "Different providers: traffic is shared with failover. Pick One internet link to use a single cable again.",
+    failover: "Different providers: traffic is shared with failover. Pick One internet link to use a single cable again.",
+    balance: "Different providers: traffic is shared with failover. Pick One internet link to use a single cable again.",
+    smart_balance: "Different providers: traffic is shared with failover. Pick One internet link to use a single cable again."
   };
+
+  function currentUiGoal(data) {
+    if (data && data.ui_uplink_goal) return uiGoalFromMode(data.ui_uplink_goal);
+    if (data && data.uplink_mode) return uiGoalFromMode(data.uplink_mode);
+    return selectedGoal || "single";
+  }
+
+  function submitClearSingleWanForm() {
+    var clearForm = root.querySelector("[data-clear-uplink-form]");
+    if (!clearForm) return false;
+    if (typeof clearForm.requestSubmit === "function") {
+      clearForm.requestSubmit();
+    } else {
+      clearForm.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+    }
+    return true;
+  }
 
   var ROLE_LABELS = {
     wan: "Internet",
@@ -404,7 +421,29 @@
   }
 
   function portInternetBadge(port) {
-    if (!port || port.is_bond_iface) return "";
+    if (!port) return "";
+    if (port.is_bond_member) return "";
+    if (port.show_internet_status === false && !port.is_bond_iface) return "";
+    var role = (port.role || "").toLowerCase();
+    if (role === "lan" || role === "unused" || role === "none") return "";
+    if (port.sharing_traffic) {
+      return (
+        '<span class="mk-port-inet is-ok" title="This port is sharing live internet traffic">' +
+        "Sharing traffic</span>"
+      );
+    }
+    if (port.failover_primary_stood_down && port.internet_verified) {
+      return (
+        '<span class="mk-port-inet is-warn" title="ISP is online but traffic is using another port">' +
+        "Not routing</span>"
+      );
+    }
+    if (port.failover_carrying && (role === "wan_backup" || role === "wan")) {
+      return (
+        '<span class="mk-port-inet is-ok" title="This port is carrying internet traffic now">' +
+        "Carrying traffic</span>"
+      );
+    }
     if (port.internet_verified) {
       return '<span class="mk-port-inet is-ok" title="ISP internet verified">ISP online</span>';
     }
@@ -412,13 +451,21 @@
     if (!hint) return "";
     var level = (port.internet_level || "warn").toLowerCase();
     var cls = level === "block" ? "is-block" : "is-warn";
+    var label =
+      role === "wan_backup" || role === "wan"
+        ? level === "block"
+          ? "No ISP"
+          : "Waiting for ISP"
+        : level === "block"
+          ? "No ISP"
+          : "ISP pending";
     return (
       '<span class="mk-port-inet ' +
       cls +
       '" title="' +
       esc(hint) +
       '">' +
-      esc(level === "block" ? "No ISP" : "ISP pending") +
+      esc(label) +
       "</span>"
     );
   }
@@ -705,7 +752,7 @@
         .join(" · ");
       if (!data.balance_router_applied) {
         health = data.can_apply_balance || data.can_apply_smart_balance
-          ? (mode === "smart_balance" ? "Configured — applying smart balance…" : "Configured — click Apply load balance")
+          ? (mode === "smart_balance" ? "Ready to apply multi-ISP" : "Configured — click Apply load balance")
           : (mode === "smart_balance" ? "Smart balance setup — waiting for links" : "Balance setup — not on MikroTik yet");
       } else if (mode === "smart_balance" && !data.smart_balance_applied) {
         health = "PCC active — installing slow-link monitor…";
@@ -864,7 +911,11 @@
       var p = byName[name];
       var sub = "";
       if (p) {
-        if (p.disabled) sub = "disabled";
+        if (chipClass === "is-bond" || p.is_bond_member) {
+          if (p.disabled) sub = "disabled";
+          else if (p.running) sub = "link up";
+          else sub = "no link";
+        } else if (p.disabled) sub = "disabled";
         else if (p.internet_verified) sub = "ISP online";
         else if (p.running && (p.uplink_kind === "dhcp" || p.internet_level === "warn"))
           sub = p.uplink_kind === "dhcp" ? "waiting DHCP" : "link up";
@@ -887,6 +938,33 @@
     var panel = root.querySelector("[data-uplink-recommendation]");
     if (!panel) return;
     if (!rec || !rec.applies) {
+      setHidden(panel, true);
+      return;
+    }
+    if (lastPortsData && lastPortsData.balance_router_applied) {
+      setHidden(panel, true);
+      return;
+    }
+    if (
+      lastPortsData &&
+      lastPortsData.wan_share &&
+      lastPortsData.wan_share.ok &&
+      (lastPortsData.wan_share.total_bps || 0) > 0
+    ) {
+      setHidden(panel, true);
+      return;
+    }
+    if (
+      rec.accepted &&
+      !rec.can_accept &&
+      !rec.ready_to_apply &&
+      rec.phase === "applied" &&
+      rec.level === "ok"
+    ) {
+      setHidden(panel, true);
+      return;
+    }
+    if (rec.ready_to_apply && rec.accepted && !rec.can_accept) {
       setHidden(panel, true);
       return;
     }
@@ -1141,12 +1219,7 @@
     }
     var title = root.querySelector("[data-ports-assign-title]");
     if (title) {
-      var titles = {
-        single: "Cables labeled automatically",
-        bond: "Cables labeled automatically",
-        multi: "Cables labeled automatically"
-      };
-      title.textContent = titles[mode] || titles.single;
+        title.textContent = "Ports";
     }
   }
 
@@ -1181,80 +1254,107 @@
     var autoClass = port.auto_managed ? " is-auto-managed" : "";
     var stateClass = port.disabled ? " is-disabled" : port.running ? " is-up" : " is-down";
     var bondClass = port.is_bond_iface ? " is-bond" : "";
+    var compactClass = port.auto_managed ? " is-compact" : "";
     var statusHtml = port.disabled
-      ? '<span class="mk-status-pill is-off"><span class="mk-status-dot" aria-hidden="true"></span>Disabled</span>'
+      ? '<span class="mk-status-pill is-off"><span class="mk-status-dot" aria-hidden="true"></span>Off</span>'
       : port.running
-        ? '<span class="mk-status-pill is-on"><span class="mk-status-dot" aria-hidden="true"></span>Link up</span>'
-        : '<span class="mk-status-pill is-muted"><span class="mk-status-dot" aria-hidden="true"></span>No link</span>';
+        ? '<span class="mk-status-pill is-on"><span class="mk-status-dot" aria-hidden="true"></span>Up</span>'
+        : '<span class="mk-status-pill is-muted"><span class="mk-status-dot" aria-hidden="true"></span>Down</span>';
+    var rolePill =
+      '<span class="mk-port-role-pill role-' +
+      esc(role) +
+      '">' +
+      esc(port.role_label || role) +
+      "</span>";
     var body;
     if (port.is_bond_iface) {
-      body = '<p class="mk-help-note">Bond interface — managed by multi-uplink settings.</p>';
+      body = '<p class="mk-help-note">Bond interface — managed by internet setup above.</p>';
     } else {
       var roles = rolesForGoal(mode, allowedRoles);
       var moreValues = roles.more.map(function (pair) { return pair[0]; });
       var advOpen = moreValues.indexOf(role) >= 0 ? " open" : "";
       var bridgeWarn = "";
-      // Only warn when this port would leave the bridge (Internet / bond / shared ISP).
       if (port.show_bridge_warn) {
+        var bwLevel = (port.bridge_warn_level || "warn").toLowerCase();
+        var bwCls = bwLevel === "info" ? "is-info" : "is-warn";
         bridgeWarn =
-          '<p class="mk-help-note is-warn">On bridge ' +
-          esc(port.bridge || "LAN") +
-          " — kept bridged for customers until Internet is confirmed on this port.</p>";
-      }
-      var autoHtml = "";
-      if (port.auto_managed) {
-        autoHtml =
-          '<p class="mk-help-note is-ok mk-port-auto-note">Automatic from live link · ' +
-          esc(port.role_label || role) +
+          '<p class="mk-help-note ' +
+          bwCls +
+          '">' +
+          esc(
+            port.bridge_warn_message ||
+              "On bridge — kept bridged for customers until ISP is confirmed on this port."
+          ) +
           "</p>";
       }
       var suggestedHtml = "";
       if (port.suggested_role && port.suggested_role !== role && port.suggested_role_label) {
         suggestedHtml =
-          '<p class="mk-help-note is-suggest">Updating automatically to <strong>' +
+          '<p class="mk-help-note is-suggest">Updating to <strong>' +
           esc(port.suggested_role_label) +
           "</strong> when ISP is confirmed…</p>";
       }
-      body =
-        autoHtml +
+      var controlsHtml =
         bridgeWarn +
         suggestedHtml +
         '<div class="mk-role-picks' + (port.auto_managed ? " is-auto" : "") + '" role="group" aria-label="Role for ' + esc(port.name) + '">' +
         rolePickForms(port.name, role, roles.main) +
         "</div>" +
         '<details class="mk-port-more"' + advOpen + ">" +
-        "<summary>Override role</summary>" +
+        "<summary>More roles</summary>" +
         '<div class="mk-role-picks is-advanced">' +
         rolePickForms(port.name, role, roles.more) +
         "</div></details>";
+      var needsAttention =
+        port.role_matches_setup === false ||
+        !!port.show_bridge_warn ||
+        !!(port.suggested_role && port.suggested_role !== role) ||
+        !!port.failover_primary_stood_down;
+      if (port.auto_managed && !needsAttention) {
+        body =
+          '<details class="mk-port-controls">' +
+          "<summary>Change role</summary>" +
+          '<div class="mk-port-controls-body">' +
+          controlsHtml +
+          "</div></details>";
+      } else {
+        body = controlsHtml;
+      }
+    }
+    var metaParts = [];
+    if (port.uplink_kind === "pppoe") {
+      metaParts.push(
+        '<span class="mk-port-uplink">PPPoE' +
+          (port.uplink_iface ? " · " + esc(port.uplink_iface) : "") +
+          "</span>"
+      );
+    } else if (port.uplink_kind === "dhcp") {
+      metaParts.push('<span class="mk-port-uplink">DHCP</span>');
+    }
+    var inetBadge = portInternetBadge(port);
+    if (inetBadge) metaParts.push(inetBadge);
+    if (port.bridge && (role === "lan" || role === "unused")) {
+      metaParts.push('<span class="mk-port-bridge">' + esc(port.bridge) + "</span>");
     }
     return (
-      '<article class="mk-port-card role-' + esc(role) + stateClass + bondClass + pendingClass + autoClass + '"' +
+      '<article class="mk-port-card role-' + esc(role) + stateClass + bondClass + pendingClass + autoClass + compactClass + '"' +
       ' data-port-name="' + esc(port.name) + '" id="port-card-' + esc(port.name).replace(/[^a-zA-Z0-9_-]/g, "-") + '">' +
-      '<header class="mk-port-card-head"><div>' +
+      '<header class="mk-port-card-head"><div class="mk-port-card-title">' +
+      '<div class="mk-port-card-name-row">' +
       '<strong class="mk-port-name">' + esc(port.name) + "</strong>" +
-      '<div class="mk-port-meta">' +
-      '<span class="mk-port-type">' + esc(port.type || "") + "</span>" +
-      (port.bridge ? '<span class="mk-port-bridge">on ' + esc(port.bridge) + "</span>" : "") +
-      (port.uplink_kind === "pppoe"
-        ? '<span class="mk-port-uplink">PPPoE' + (port.uplink_iface ? " · " + esc(port.uplink_iface) : "") + "</span>"
-        : port.uplink_kind === "dhcp"
-          ? '<span class="mk-port-uplink">DHCP</span>'
-          : "") +
-      (port.comment ? '<span class="mk-port-comment">' + esc(port.comment) + "</span>" : "") +
-      portInternetBadge(port) +
-      (port.auto_managed ? '<span class="mk-port-auto">Auto</span>' : "") +
-      "</div></div>" + statusHtml + "</header>" +
+      rolePill +
+      "</div>" +
+      (metaParts.length ? '<div class="mk-port-meta">' + metaParts.join("") + "</div>" : "") +
+      "</div>" + statusHtml + "</header>" +
       body +
       '<footer class="mk-port-card-foot">' +
-      '<span class="mk-port-role-label">' + esc(port.role_label || role) + "</span>" +
       '<form method="post">' +
       '<input type="hidden" name="csrfmiddlewaretoken" value="' + esc(csrf) + '">' +
       '<input type="hidden" name="action" value="toggle_port">' +
       '<input type="hidden" name="port_name" value="' + esc(port.name) + '">' +
       (port.disabled
         ? '<button type="submit" class="btn btn-primary btn-sm"' + (suspended ? " disabled" : "") + ">Enable</button>"
-        : '<button type="submit" class="btn btn-ghost btn-sm"' + (suspended ? " disabled" : "") + ">Disable</button>") +
+        : '<button type="submit" class="btn btn-ghost btn-sm mk-port-disable"' + (suspended ? " disabled" : "") + ">Disable</button>") +
       "</form></footer></article>"
     );
   }
@@ -1475,15 +1575,151 @@
     });
   }
 
-  function renderBackupUplinkPrompt(prompt) {
-    var banner = root.querySelector("[data-backup-uplink-prompt]");
+  function filterHealthAlerts(alerts, data) {
+    var list = alerts || [];
+    var backup = data && data.backup_uplink_prompt;
+    var uplink = data && data.uplink_prompt;
+    var rec = (data && data.uplink_recommendation) || {};
+    var hasAction =
+      (backup && backup.port && !backupPromptRedundant(backup, data)) ||
+      (uplink && uplink.port) ||
+      rec.can_accept ||
+      rec.ready_to_apply;
+    var codes = {};
+    list.forEach(function (a) {
+      if (a && a.code) codes[a.code] = true;
+    });
+    return list.filter(function (a) {
+      if (!a) return false;
+      if (hasAction && a.code === "balance_not_applied") return false;
+      if (backup && backup.port && !backupPromptRedundant(backup, data)) {
+        if (a.code === "balance_share_drift" || a.code === "smart_balance_monitor_off") {
+          return false;
+        }
+      }
+      if (codes.failover_on_backup) {
+        if (a.code === "balance_share_drift" || a.code === "smart_balance_monitor_off") {
+          return false;
+        }
+      }
+      if (a.code === "smart_balance_monitor_off") return false;
+      return true;
+    });
+  }
+
+  function renderHealthBanner(alerts, data) {
+    var banner = root.querySelector("[data-ports-health]");
     if (!banner) return;
-    if (!prompt || !prompt.port || isBackupDismissed(prompt.port)) {
+    var list = filterHealthAlerts(alerts, data);
+    if (!list.length) {
+      banner.innerHTML = "";
       setHidden(banner, true);
       return;
     }
+    var warns = list.filter(function (a) { return a && a.level === "warn"; });
+    var primary = warns[0] || list[0];
+    var rest = list.filter(function (a) { return a !== primary; });
+    var html = "";
+    if (primary && primary.title) {
+      html +=
+        '<p class="mk-ports-health-title"><strong>' +
+        esc(primary.title) +
+        "</strong></p>";
+    }
+    html +=
+      '<p class="mk-ports-health-primary">' +
+      esc((primary && primary.message) || "") +
+      "</p>";
+    if (primary && primary.action === "set_multi_isp") {
+      html +=
+        '<div class="mk-ports-health-actions">' +
+        '<button type="button" class="btn btn-primary btn-sm" data-health-action="set_multi_isp">' +
+        esc(primary.action_label || "Set up multiple ISPs") +
+        "</button>" +
+        '<button type="button" class="btn btn-ghost btn-sm" data-health-action="scroll_setup">' +
+        "Show setup" +
+        "</button></div>";
+    }
+    if (rest.length) {
+      html +=
+        '<details class="mk-ports-health-more">' +
+        "<summary>" +
+        rest.length +
+        " more notice" +
+        (rest.length === 1 ? "" : "s") +
+        "</summary>" +
+        rest
+          .map(function (a) {
+            return "<p>" + esc((a && a.message) || "") + "</p>";
+          })
+          .join("") +
+        "</details>";
+    }
+    banner.innerHTML = html;
+    banner.className =
+      "mk-banner mk-ports-health " + (warns.length ? "is-warn" : "is-info");
+    setHidden(banner, false);
+  }
+
+  function scrollToInternetSetup() {
+    var setup = root.querySelector("#ports-step-setup");
+    if (setup) setup.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function submitUplinkGoal(goal) {
+    var goalForm = root.querySelector("[data-uplink-goal-form]");
+    var goalInput = root.querySelector("[data-uplink-goal-input]");
+    var select = root.querySelector("[data-uplink-goal-select]");
+    if (select) select.value = goal;
+    setSelectedGoal(goal, { skipRerender: true });
+    if (goalForm && goalInput) {
+      goalInput.value = goal;
+      goalForm.submit();
+      return true;
+    }
+    scrollToInternetSetup();
+    return false;
+  }
+
+  function backupPromptRedundant(prompt, data) {
+    if (!prompt || !prompt.port) return true;
+    var row = portByName((data && data.ports) || [], prompt.port);
+    if (row && row.is_bond_iface) return true;
+    var role = ((row && row.role) || "").toLowerCase();
+    if (role === "wan_backup" || role === "bond" || role === "lan" || role === "unused") {
+      return true;
+    }
+    var primary = data.primary_wan_ports || [];
+    var backups = data.backup_wan_ports || [];
+    if (primary.indexOf(prompt.port) >= 0 || backups.indexOf(prompt.port) >= 0) {
+      return true;
+    }
+    if (primary.length >= 1 && backups.length >= 1) return true;
+    if (data && (data.balance_router_applied || data.applying_uplink)) return true;
+    var rec = data && data.uplink_recommendation;
+    if (!rec || !rec.applies) return false;
+    var ports = (rec.recommended_ports || []).concat(rec.backups || []);
+    if (rec.can_accept && ports.indexOf(prompt.port) >= 0) return true;
+    if (rec.accepted && (rec.backups || []).indexOf(prompt.port) >= 0) return true;
+    return false;
+  }
+
+  function renderBackupUplinkPrompt(prompt, data) {
+    var banner = root.querySelector("[data-backup-uplink-prompt]");
+    if (!banner) return;
+    if (
+      !prompt ||
+      !prompt.port ||
+      isBackupDismissed(prompt.port) ||
+      backupPromptRedundant(prompt, data)
+    ) {
+      setHidden(banner, true);
+      return;
+    }
+    var title = root.querySelector("[data-backup-uplink-prompt-title]");
+    if (title) title.textContent = "New ISP on " + (prompt.port || "port");
     var body = root.querySelector("[data-backup-uplink-prompt-body]");
-    if (body) body.textContent = " " + (prompt.message || "");
+    if (body) body.textContent = prompt.message ? " — " + prompt.message : "";
     if (prompt.risk && (prompt.risk.blocking || prompt.risk.needs_tunnel)) {
       banner.classList.remove("is-info");
       banner.classList.add("is-warn");
@@ -1581,6 +1817,10 @@
       var err = root.querySelector("[data-ports-error]");
       var errText = root.querySelector("[data-ports-error-text]");
       var errorMsg = (data && data.error) || "Could not read ports.";
+      if (lastPortsData && lastPortsData.applying_uplink) {
+        apply(lastPortsData);
+        return;
+      }
       if (errText) errText.textContent = errorMsg;
       var script = isApiConnectivityError(errorMsg) ? apiRecoveryScript(data) : "";
       setPortsApiRecovery(script);
@@ -1594,8 +1834,8 @@
       maybeShowWanRecoveryModal(data);
       setHidden(root.querySelector("[data-ports-grid]"), true);
       setHidden(root.querySelector("[data-ports-empty]"), true);
+      setHidden(root.querySelector("[data-ports-overview]"), true);
       setHidden(root.querySelector("[data-ports-summary]"), true);
-      setHidden(root.querySelector("[data-ports-hint]"), true);
       setHidden(root.querySelector("[data-ports-map]"), true);
       setHidden(root.querySelector("[data-uplink-config]"), true);
       setHidden(root.querySelector("[data-ports-assign]"), true);
@@ -1641,13 +1881,17 @@
     var sumInternet = root.querySelector("[data-sum-internet]");
     var sumInternetMeta = root.querySelector("[data-sum-internet-meta]");
     if (sumInternet) {
-      if (primary.length) sumInternet.textContent = primary.join(", ");
+      if (mode === "bond" && data.bond_router_applied && data.bond_interface) {
+        sumInternet.textContent = data.bond_interface;
+      } else if (primary.length) sumInternet.textContent = primary.join(", ");
       else if (bond.length) sumInternet.textContent = "Bond " + bond.join(" + ");
       else sumInternet.textContent = "Not set";
     }
     if (sumInternetMeta) {
       if (mode === "bond") {
-        sumInternetMeta.textContent = "Bonded uplink";
+        sumInternetMeta.textContent = data.bond_router_applied
+          ? "Bond up · " + bond.join(" + ")
+          : "Bonded uplink";
       } else if (mode === "failover") {
         sumInternetMeta.textContent = "Failover uplink";
       } else if (mode === "balance" || mode === "smart_balance") {
@@ -1677,8 +1921,8 @@
     if (sumUnusedMeta) sumUnusedMeta.textContent = unused.length ? unused.join(", ") : "No unused ports";
 
     var physical = data.physical_ports || [];
+    setHidden(root.querySelector("[data-ports-overview]"), !physical.length);
     setHidden(root.querySelector("[data-ports-summary]"), !physical.length);
-    setHidden(root.querySelector("[data-ports-hint]"), !physical.length);
     var sugWrap = root.querySelector("[data-suggested-wan-wrap]");
     var sug = root.querySelector("[data-suggested-wan]");
     if (data.suggested_wan) {
@@ -1716,12 +1960,19 @@
         modeMeta.textContent = "";
       }
     }
-    setHidden(root.querySelector("[data-clear-uplink-form]"), mode === "single" || suspended);
+    var hideSingleSwitch = mode === "single" || suspended;
+    root.querySelectorAll("[data-clear-uplink-form]").forEach(function (form) {
+      setHidden(form, hideSingleSwitch);
+    });
+    setHidden(root.querySelector("[data-single-wan-switch]"), hideSingleSwitch);
 
     var healthEl = root.querySelector("[data-uplink-health]");
     if (healthEl) {
       var live = data.uplink_live || {};
       var setup = data.uplink_setup_status || {};
+      var hasFailoverBanner = (data.uplink_health_alerts || []).some(function (a) {
+        return a && a.code === "failover_on_backup";
+      });
       if (mode === "balance" || mode === "smart_balance" || mode === "failover") {
         var shareLine = ((data.wan_share && data.wan_share.shares) || [])
           .map(function (s) {
@@ -1730,7 +1981,11 @@
           .join(" · ");
         var memberCount = (data.primary_wan_ports || []).length + (data.backup_wan_ports || []).length;
         var slowPorts = ((data.smart_balance_status && data.smart_balance_status.slow_ports) || []);
-        if (setup.message && (setup.level === "warn" || !setup.ok)) {
+        if (
+          setup.message &&
+          (setup.level === "warn" || !setup.ok) &&
+          !hasFailoverBanner
+        ) {
           healthEl.textContent = setup.message;
           healthEl.className = "mk-uplink-health is-warn";
         } else if (!data.balance_router_applied && mode !== "failover") {
@@ -1794,7 +2049,23 @@
     if (setupStatusEl) {
       var status = data.uplink_setup_status || {};
       var problems = status.problems || [];
-      var showStatus = !!status.applies || (status.message && status.level);
+      var recForStatus = data.uplink_recommendation || {};
+      var healthAlerts = data.uplink_health_alerts || [];
+      var hasFailoverBanner = healthAlerts.some(function (a) {
+        return a && a.code === "failover_on_backup";
+      });
+      var hideSetupStatus =
+        hasFailoverBanner ||
+        (status.applied && status.ok) ||
+        !!(data.balance_router_applied && status.applied) ||
+        (recForStatus.ready_to_apply && recForStatus.accepted && !recForStatus.can_accept) ||
+        (!problems.length &&
+          recForStatus.applies &&
+          ((recForStatus.can_accept && status.ready) ||
+            (recForStatus.ready_to_apply && status.ok) ||
+            (recForStatus.accepted && status.ok && status.level === "ok")));
+      var showStatus =
+        !hideSetupStatus && (!!status.applies || (status.message && status.level));
       if (showStatus && status.message) {
         var titleEl = setupStatusEl.querySelector("[data-uplink-setup-status-title]");
         var msgEl = setupStatusEl.querySelector("[data-uplink-setup-status-message]");
@@ -1832,22 +2103,7 @@
 
     renderUplinkRecommendation(data.uplink_recommendation);
 
-    var healthBanner = root.querySelector("[data-ports-health]");
-    if (healthBanner) {
-      var alerts = data.uplink_health_alerts || [];
-      if (alerts.length) {
-        healthBanner.innerHTML = alerts.map(function (a) {
-          return "<p>" + esc((a && a.message) || "") + "</p>";
-        }).join("");
-        healthBanner.className =
-          "mk-banner mk-ports-health " +
-          (alerts.some(function (a) { return a && a.level === "warn"; }) ? "is-warn" : "is-info");
-        setHidden(healthBanner, false);
-      } else {
-        healthBanner.innerHTML = "";
-        setHidden(healthBanner, true);
-      }
-    }
+    renderHealthBanner(data.uplink_health_alerts, data);
 
     var uplinkConfig = root.querySelector("[data-uplink-config]");
     if (!suspended && physical.length) {
@@ -1855,9 +2111,27 @@
       chipList(root.querySelector("[data-bond-list]"), bond, "is-bond", data.ports);
       setHidden(root.querySelector("[data-bond-empty]"), !!bond.length);
       setHidden(root.querySelector("[data-bond-list]"), !bond.length);
+      var bondApplied = !!data.bond_router_applied;
+      var bondMembersBlock = root.querySelector("[data-bond-members-block]");
+      var bondFields = root.querySelector("[data-bond-fields]");
+      var bondAppliedNote = root.querySelector("[data-bond-applied-note]");
+      if (bondMembersBlock) setHidden(bondMembersBlock, bondApplied);
+      if (bondFields) setHidden(bondFields, bondApplied);
+      if (bondAppliedNote) {
+        bondAppliedNote.textContent = bondApplied
+          ? (data.bond_interface || "Bond") +
+            " is active — ISP status is on the bond interface below. Re-apply only if you changed cables or bond settings."
+          : "";
+        setHidden(bondAppliedNote, !bondApplied);
+      }
       var canBond = !!data.can_apply_bond;
       var bondBtn = root.querySelector("[data-apply-bond]");
-      if (bondBtn) bondBtn.disabled = !canBond;
+      if (bondBtn) {
+        bondBtn.disabled = !canBond;
+        bondBtn.textContent = bondApplied ? "Re-apply bonding" : "Apply bonding";
+      }
+      var bondActions = root.querySelector("[data-bond-actions]");
+      if (bondActions) setHidden(bondActions, false);
       var bondReadiness = root.querySelector("[data-bond-readiness]");
       if (bondReadiness) {
         var bondHintText = data.bond_apply_hint || "";
@@ -1869,23 +2143,47 @@
       setHidden(root.querySelector("[data-bond-hint]"), canBond || !!(data.bond_apply_hint));
       var autoBondForm = root.querySelector("[data-bond-auto-form]");
       if (autoBondForm) {
-        setHidden(autoBondForm, !data.can_auto_setup_bond);
+        setHidden(autoBondForm, !data.can_auto_setup_bond || bondApplied);
       }
 
       var smartMembers = primary.concat(data.backup_wan_ports || []);
+      var linksBlock = root.querySelector("[data-smart-balance-links]");
+      if (linksBlock) {
+        setHidden(
+          linksBlock,
+          smartMembers.length < 2 ||
+            (!!data.balance_router_applied && smartMembers.length >= 2) ||
+            (!!data.bond_router_applied && mode === "bond")
+        );
+      }
       chipList(root.querySelector("[data-smart-balance-list]"), smartMembers, "is-balance", data.ports);
       setHidden(root.querySelector("[data-smart-balance-list]"), smartMembers.length < 2);
       setHidden(root.querySelector("[data-smart-balance-empty]"), smartMembers.length >= 2);
       renderBalanceWeights(smartMembers, data.uplink_weights || {}, "smart-balance");
       var canSmart = !!(data.can_apply_smart_balance || data.can_apply_multi);
       var smartBtn = root.querySelector("[data-apply-smart-balance]");
-      if (smartBtn) smartBtn.disabled = !canSmart;
+      if (smartBtn) {
+        smartBtn.disabled = !canSmart;
+        setHidden(
+          smartBtn,
+          !!data.balance_router_applied ||
+            !!data.applying_uplink ||
+            (!!data.smart_balance_applied && canSmart)
+        );
+      }
+      var smartActions = root.querySelector("[data-smart-balance-actions]");
+      if (smartActions) {
+        setHidden(
+          smartActions,
+          !!data.balance_router_applied || !!data.applying_uplink
+        );
+      }
       var smartHint = root.querySelector("[data-smart-balance-hint]");
       if (smartHint) {
         smartHint.textContent =
           data.balance_apply_hint ||
           "Need 1 Internet + at least 1 Shared ISP with ISP online. Failover covers every link.";
-        setHidden(smartHint, false);
+        setHidden(smartHint, canSmart || !smartHint.textContent);
       }
       var autoSmartForm = root.querySelector("[data-smart-balance-auto-form]");
       if (autoSmartForm) {
@@ -1893,7 +2191,8 @@
         var showAuto =
           uiGoal === "multi" &&
           !!data.can_auto_setup_smart_balance &&
-          !data.smart_balance_applied;
+          !data.smart_balance_applied &&
+          !canSmart;
         setHidden(autoSmartForm, !showAuto);
       }
     } else {
@@ -1902,17 +2201,22 @@
     }
 
     renderUplinkPrompt(data.uplink_prompt);
-    renderBackupUplinkPrompt(data.backup_uplink_prompt);
+    renderBackupUplinkPrompt(data.backup_uplink_prompt, data);
   }
 
   function refresh(options) {
     var opts = options || {};
     var silent = !!opts.silent;
+    var force = !!opts.force;
     if (!silent) {
       setHidden(root.querySelector("[data-ports-loading-ui]"), false);
       setHidden(root.querySelector("[data-ports-error]"), true);
     }
-    return fetch(liveUrl + "?refresh=1", {
+    var url = liveUrl;
+    if (force || !silent) {
+      url += (liveUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+    }
+    return fetch(url, {
       headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin"
     })
@@ -1922,6 +2226,10 @@
         return data;
       })
       .catch(function () {
+        if (lastPortsData && lastPortsData.applying_uplink) {
+          apply(lastPortsData);
+          return lastPortsData;
+        }
         apply({
           ok: false,
           error: "Could not load ports from the MikroTik.",
@@ -1947,7 +2255,7 @@
 
   document.addEventListener("visibilitychange", function () {
     if (document.hidden) return;
-    refresh({ silent: true });
+    refresh({ silent: true, force: true });
   });
   window.addEventListener("beforeunload", stopLivePolling);
 
@@ -1955,6 +2263,13 @@
     var select = event.target.closest("[data-uplink-goal-select]");
     if (!select || !root.contains(select)) return;
     var goal = select.value || "single";
+    var current = currentUiGoal(lastPortsData);
+    if (goal === "single" && current !== "single") {
+      select.value = current;
+      setSelectedGoal(current, { skipRerender: true });
+      submitClearSingleWanForm();
+      return;
+    }
     setSelectedGoal(goal, { skipRerender: true });
     var goalForm = root.querySelector("[data-uplink-goal-form]");
     var goalInput = root.querySelector("[data-uplink-goal-input]");
@@ -1968,6 +2283,17 @@
   });
 
   root.addEventListener("click", function (event) {
+    var healthAction = event.target.closest("[data-health-action]");
+    if (healthAction && root.contains(healthAction)) {
+      event.preventDefault();
+      var action = healthAction.getAttribute("data-health-action") || "";
+      if (action === "set_multi_isp") {
+        submitUplinkGoal("multi");
+      } else if (action === "scroll_setup") {
+        scrollToInternetSetup();
+      }
+      return;
+    }
     var dismissBtn = event.target.closest("[data-uplink-prompt-dismiss]");
     if (dismissBtn && root.contains(dismissBtn)) {
       event.preventDefault();
@@ -2255,6 +2581,6 @@
   }
 
   var retry = root.querySelector("[data-ports-retry]");
-  if (retry) retry.addEventListener("click", function () { refresh(); });
-  refresh().then(function () { startLivePolling(); });
+  if (retry) retry.addEventListener("click", function () { refresh({ force: true }); });
+  refresh({ force: true }).then(function () { startLivePolling(); });
 })();

@@ -44,6 +44,13 @@ def public_pay_rate_limit_message(retry_after: int) -> str:
     )
 
 
+def public_stk_status_rate_limit_message(retry_after: int) -> str:
+    return (
+        "Too many connection checks. Try again in "
+        f"{format_retry_after(retry_after)}."
+    )
+
+
 # Gateway / network faults must not burn the captive STK rate-limit budget.
 _PAY_START_INFRA_ERROR_MARKERS = (
     "daraja",
@@ -215,6 +222,56 @@ def assert_public_pay_allowed(request, join_code: str = "") -> None:
         raise AuthRateLimitExceeded(
             retry_after,
             message=public_pay_rate_limit_message(retry_after),
+        )
+
+
+def assert_public_stk_status_allowed(
+    request,
+    stk_id: int,
+    *,
+    join_code: str = "",
+) -> None:
+    """
+    Rate-limit captive STK status polls and activate retries.
+
+    Limits are generous (≈1 poll/s for 15 minutes) so normal pay flows stay
+    fast while token-guessing and runaway loops are capped.
+    """
+    retry_after = auth_rate_limit_retry_after(
+        "stk_status_ip", request, limit=1500, window=900
+    )
+    stk_retry = auth_rate_limit_retry_after(
+        "stk_status_stk",
+        request,
+        identifier=str(stk_id),
+        limit=900,
+        window=900,
+    )
+    if join_code:
+        code_retry = auth_rate_limit_retry_after(
+            "stk_status_code",
+            request,
+            identifier=f"{join_code}:{stk_id}",
+            limit=900,
+            window=900,
+        )
+        retry_after = max(retry_after, stk_retry, code_retry)
+    else:
+        retry_after = max(retry_after, stk_retry)
+    if retry_after:
+        raise AuthRateLimitExceeded(
+            retry_after,
+            message=public_stk_status_rate_limit_message(retry_after),
+        )
+    record_auth_failure("stk_status_ip", request, limit=1500, window=900)
+    record_auth_failure("stk_status_stk", request, identifier=str(stk_id), limit=900, window=900)
+    if join_code:
+        record_auth_failure(
+            "stk_status_code",
+            request,
+            identifier=f"{join_code}:{stk_id}",
+            limit=900,
+            window=900,
         )
 
 

@@ -577,27 +577,55 @@ def _collect_interface_networks(sock: socket.socket, *interfaces: str) -> list[i
     return nets
 
 
+def _parse_dhcp_gateway_token(raw: str) -> str:
+    """Normalize RouterOS gateway tokens like 192.168.1.1%ether1."""
+    token = (raw or "").split("%", 1)[0].strip()
+    if not token:
+        return ""
+    try:
+        return str(ipaddress.IPv4Address(token))
+    except ValueError:
+        return ""
+
+
+def _infer_gateway_from_dhcp_row(row: dict[str, str]) -> str:
+    """Best-effort ISP gateway from one /ip/dhcp-client row."""
+    gateway = _parse_dhcp_gateway_token(row.get("gateway") or "")
+    if gateway:
+        return gateway
+    status = (row.get("status") or "").strip().lower()
+    if status not in {"bound", "renewing", "rebinding"}:
+        return ""
+    addr_raw = (row.get("address") or "").strip()
+    if not addr_raw or "/" not in addr_raw:
+        return ""
+    try:
+        iface = ipaddress.ip_interface(addr_raw)
+        if iface.ip.version != 4:
+            return ""
+        candidate = str(iface.network.network_address + 1)
+        if candidate != str(iface.ip):
+            return candidate
+    except ValueError:
+        return ""
+    return ""
+
+
 def _detect_dhcp_gateways(sock: socket.socket, wan_interface: str) -> list[str]:
     """Best-effort ISP gateway from DHCP client status / gateway fields."""
     gateways: list[str] = []
     for row in _print(
         sock,
         "/ip/dhcp-client",
-        props="interface,gateway,status,disabled",
+        props="interface,gateway,status,disabled,address",
     ):
         if (row.get("interface") or "").strip() != wan_interface:
             continue
         if (row.get("disabled") or "").lower() in {"true", "yes"}:
             continue
-        raw = (row.get("gateway") or "").strip()
-        if not raw:
-            continue
-        # RouterOS may show "192.168.1.1%ether1"
-        token = raw.split("%", 1)[0].strip()
-        try:
-            gateways.append(str(ipaddress.IPv4Address(token)))
-        except ValueError:
-            continue
+        gateway = _infer_gateway_from_dhcp_row(row)
+        if gateway and gateway not in gateways:
+            gateways.append(gateway)
     return gateways
 
 
@@ -17294,6 +17322,48 @@ def _hotspot_router_sees_mac(sock: socket.socket, compact_mac: str) -> bool:
     return False
 
 
+def hotspot_mac_has_active_session(customer, mac_address: str) -> bool:
+    """
+    True when MikroTik reports an active Hotspot session for this MAC.
+
+    Used by the welcome connection probe so "Connected" reflects live surfing,
+    not only DB package + MAC ownership heuristics.
+    """
+    from core.models import MikroTikRouter
+
+    compact = _mac_compact(mac_address)
+    if len(compact) != 12 or customer is None:
+        return False
+    router = getattr(customer, "router", None)
+    if router is None:
+        org = getattr(customer, "organization", None)
+        if org is None:
+            return False
+        router = find_hotspot_router_for_mac(org, mac_address, live_walk=False)
+    if router is None:
+        return False
+    host = router.api_host
+    username = (router.username or "").strip()
+    if not host or not username:
+        return False
+    if is_mikrotik_host_cooling_down(host):
+        return False
+    try:
+        with _api_session(
+            host,
+            username,
+            router.password or "",
+            timeout=_CAPTIVE_API_TIMEOUT,
+        ) as sock:
+            for row in _print(sock, "/ip/hotspot/active", props="mac-address,user"):
+                row_mac = _mac_compact(row.get("mac-address") or row.get("user") or "")
+                if row_mac == compact:
+                    return True
+    except Exception:
+        return False
+    return False
+
+
 def find_pppoe_router_for_username(organization, pppoe_username: str):
     """
     Return the org MikroTik that owns this PPPoE username (active session or secret).
@@ -22157,17 +22227,15 @@ def _port_uplink_hints(
                 "status": status,
             }
             if _is_bridge_iface_name(iface):
-                # Keep bridge hint for diagnostics; prefer attributing to a member.
                 if active:
                     bound_bridge_clients.append(
                         (iface, (row.get("gateway") or "").strip())
                     )
                 continue
-            # Ignore stale/unbound DHCP clients — they look like WANs but aren't live.
             if not active:
-                continue
-            # Prefer an already-active hint; don't let a stale unbound client
-            # overwrite a live one.
+                comment = (row.get("comment") or "")
+                if UPLINK_TAG not in comment and "ispcentric" not in comment.lower():
+                    continue
             existing = hints.get(iface) or {}
             if existing.get("active") == "1" and not active:
                 continue
@@ -22296,8 +22364,8 @@ def assess_port_internet_readiness(row: dict | None) -> dict[str, Any]:
                 "verified": False,
                 "level": "warn",
                 "message": (
-                    f"{name} is linked but DHCP has no lease yet — wait for internet "
-                    "before applying or you may lose connection."
+                    f"{name} DHCP client running — waiting for ISP lease "
+                    "(Shared ISP will show online when bound)."
                 ),
             }
         return {
@@ -22425,18 +22493,19 @@ def assess_bond_members_readiness(
             }
             blocking.append(msg)
             continue
-        status = assess_port_internet_readiness(row)
-        per_port[port_name] = status
-        if status.get("level") == "warn":
-            msg = (status.get("message") or "").strip()
-            if msg and msg not in warnings:
-                warnings.append(msg)
+        verified = bool(assess_port_internet_readiness(row).get("verified"))
+        per_port[port_name] = {
+            "ok": True,
+            "verified": verified,
+            "level": "ok",
+            "message": f"{name} link up",
+        }
 
     any_verified = any(s.get("verified") for s in per_port.values())
     if touch and not blocking and not any_verified:
         warnings.append(
-            "No bond member shows DHCP/PPPoE yet — links are up. Confirm ISP "
-            "is on these cables before applying or you may lose connection."
+            "Both links are up — ISP is checked on the bond after you apply. "
+            "Confirm your provider supports bonded links."
         )
 
     return {
@@ -23104,6 +23173,209 @@ def build_single_wan_recovery_script(
         ]
     )
     return "\n".join(lines)
+
+
+def build_pppoe_open_surfing_script() -> str:
+    """
+    RouterOS terminal script to disable PPPoE compulsory enforcement and stop
+    blocking out-of-period clients — emergency open surfing on the NAS.
+    """
+    tag = PPP_SECRET_TAG
+    blocked_list = PPPOE_BLOCKED_ADDRESS_LIST
+    active_profile = PPPOE_PROFILE_NAME
+    blocked_profile = PPPOE_BLOCKED_PROFILE_NAME
+    lines = [
+        "# ISPCENTRIC — allow all clients to surf (disable PPPoE enforcement)",
+        "# Winbox → New Terminal → paste ALL lines once, press Enter",
+        "# Temporary fix when billing is down or clients cannot browse.",
+        "",
+        f':local tag "{tag}"',
+        "",
+        "# 1) Remove compulsory LAN drop — free DHCP devices can reach the internet",
+        '/ip firewall filter remove [find comment~($tag . " PPPoE compulsory")]',
+        "",
+        "# 2) Ensure LAN → WAN forward accept exists",
+        ':if ([:len [/ip firewall filter find where chain=forward and comment=($tag . " LAN to internet")]] = 0) do={',
+        '  :do { /ip firewall filter add chain=forward action=accept in-interface-list=LAN out-interface-list=WAN comment=($tag . " LAN to internet") place-before=([find where chain=forward and action=drop]->0) } on-error={',
+        '    /ip firewall filter add chain=forward action=accept in-interface-list=LAN out-interface-list=WAN comment=($tag . " LAN to internet")',
+        "  }",
+        "}",
+        "",
+        "# 3) Stop blocking expired / unpaid PPPoE sessions at the NAS",
+        '/ip firewall filter remove [find comment~($tag . " block expired")]',
+        '/ip firewall filter remove [find comment~($tag . " reject https fast")]',
+        '/ip firewall filter remove [find comment~($tag . " block quic")]',
+        '/ip firewall filter remove [find comment~($tag . " blocked to billing")]',
+        f'/ip firewall address-list remove [find list={blocked_list}]',
+        f':foreach s in=[/ppp/secret find where profile="{blocked_profile}"] do={{',
+        f'  /ppp/secret set $s profile="{active_profile}"',
+        "}",
+        "",
+        ':put ("Open surfing enabled — LAN and PPPoE clients can browse. Re-push billing settings from ISPCENTRIC when the system is fixed.")',
+    ]
+    return "\n".join(lines)
+
+
+def _recovery_retire_wan_ports(router, *, primary_wan: str) -> list[str]:
+    """Other WAN/uplink ports to retire when resetting to single Internet."""
+    primary = (primary_wan or "").strip()
+    roles = router.port_roles if isinstance(getattr(router, "port_roles", None), dict) else {}
+    wan_roles = {
+        "wan",
+        "wan_primary",
+        "wan_backup",
+        "bond",
+    }
+    retire: list[str] = []
+    for name, role in roles.items():
+        iface = (name or "").strip()
+        if not iface or iface == primary:
+            continue
+        if (role or "").strip().lower() in wan_roles and iface not in retire:
+            retire.append(iface)
+    uplink_ports = getattr(router, "uplink_ports", None)
+    if isinstance(uplink_ports, list):
+        for raw in uplink_ports:
+            iface = str(raw).strip()
+            if iface and iface != primary and iface not in retire:
+                retire.append(iface)
+    bond_name = (getattr(router, "bond_interface", None) or "").strip()
+    if bond_name and bond_name != primary and bond_name not in retire:
+        retire.append(bond_name)
+    return retire
+
+
+def _recovery_uplink_members(router) -> list[str]:
+    merged: list[str] = []
+    unbridged = getattr(router, "uplink_unbridged", None)
+    if isinstance(unbridged, list):
+        for entry in unbridged:
+            if isinstance(entry, dict):
+                iface = (entry.get("interface") or "").strip()
+            else:
+                iface = str(entry).strip()
+            if iface and iface not in merged:
+                merged.append(iface)
+    uplink_ports = getattr(router, "uplink_ports", None)
+    if isinstance(uplink_ports, list):
+        for raw in uplink_ports:
+            iface = str(raw).strip()
+            if iface and iface not in merged:
+                merged.append(iface)
+    bond_name = (getattr(router, "bond_interface", None) or "").strip()
+    if bond_name and bond_name not in merged:
+        merged.append(bond_name)
+    return merged
+
+
+def _recovery_unbridged_entries(router) -> list[dict[str, str]]:
+    lan_bridge = (getattr(router, "lan_bridge", None) or "bridgeLocal").strip() or "bridgeLocal"
+    entries: list[dict[str, str]] = []
+    raw = getattr(router, "uplink_unbridged", None)
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                iface = (item.get("interface") or "").strip()
+                bridge = (item.get("bridge") or "").strip() or lan_bridge
+            else:
+                iface = str(item).strip()
+                bridge = lan_bridge
+            if iface:
+                entries.append({"interface": iface, "bridge": bridge})
+    return entries
+
+
+def build_mikrotik_recovery_script_sections(router) -> list[dict[str, str]]:
+    """
+    Copy-paste RouterOS scripts for on-site Winbox emergency recovery.
+
+    Each section includes title, when-to-use hint, and the terminal script body.
+    """
+    wan = (getattr(router, "wan_interface", None) or "ether1").strip() or "ether1"
+    lan_bridge = (getattr(router, "lan_bridge", None) or "bridgeLocal").strip() or "bridgeLocal"
+    uplink_mode = (getattr(router, "uplink_mode", None) or "single").strip() or "single"
+    retire_ports = _recovery_retire_wan_ports(router, primary_wan=wan)
+
+    sections: list[dict[str, str]] = [
+        {
+            "key": "management",
+            "title": "Restore management connection",
+            "when": (
+                "ISPCENTRIC cannot reach this router — Reconnect fails, live data "
+                "is offline, or remote management dropped after an uplink change."
+            ),
+            "steps": (
+                "Plug into a customer LAN port (ether2–ether5), open Winbox → "
+                "New Terminal, paste the script, press Enter, then click Reconnect "
+                "in ISPCENTRIC."
+            ),
+            "script": build_api_enable_terminal_script(),
+        },
+        {
+            "key": "single_wan",
+            "title": f"Reset Internet to single WAN ({wan})",
+            "when": (
+                "Clients lost internet after switching the Internet port, or multi-ISP "
+                "setup left the wrong link active."
+            ),
+            "steps": (
+                f"Paste in Winbox → New Terminal. Restores one Internet link on {wan}"
+                + (
+                    f" and retires {', '.join(retire_ports)}."
+                    if retire_ports
+                    else "."
+                )
+            ),
+            "script": build_single_wan_recovery_script(wan, retire_ports=retire_ports),
+        },
+        {
+            "key": "open_surfing",
+            "title": "Allow all clients to surf (disable PPPoE enforcement)",
+            "when": (
+                "Billing is unreachable, PPPoE enforcement blocks free LAN browsing, "
+                "or paid clients still cannot browse after a system issue."
+            ),
+            "steps": (
+                "Temporary open access — removes compulsory PPPoE blocks and unblocks "
+                "expired sessions. Re-push billing settings from ISPCENTRIC when fixed."
+            ),
+            "script": build_pppoe_open_surfing_script(),
+        },
+    ]
+
+    if uplink_mode != "single":
+        mode_label = {
+            "bond": "Bonded uplinks",
+            "failover": "Failover",
+            "balance": "Load balance",
+            "smart_balance": "Smart balance",
+        }.get(uplink_mode, uplink_mode.replace("_", " ").title())
+        members = _recovery_uplink_members(router)
+        sections.insert(
+            2,
+            {
+                "key": "uplink",
+                "title": f"Undo {mode_label} uplink setup",
+                "when": (
+                    "Bond, failover, or load-balance left ports unbridged or management "
+                    "unreachable after combining ISP links."
+                ),
+                "steps": (
+                    "Restores bridge ports, clears ISPCENTRIC multi-uplink leftovers, "
+                    "and re-opens API access. Click Reconnect in ISPCENTRIC after pasting."
+                ),
+                "script": build_uplink_recovery_script(
+                    uplink_mode,
+                    members=members,
+                    bond_name=(getattr(router, "bond_interface", None) or "").strip(),
+                    unbridged=_recovery_unbridged_entries(router),
+                    primary_port=wan,
+                    lan_bridge=lan_bridge,
+                ),
+            },
+        )
+
+    return sections
 
 
 def build_uplink_recovery_script(
@@ -23883,27 +24155,59 @@ def _default_route_gateway_for_interface(sock: socket.socket, interface: str) ->
     return ""
 
 
+def _connected_gateway_for_interface(sock: socket.socket, interface: str) -> str:
+    """Next-hop from any active route scoped to a WAN interface."""
+    interface = (interface or "").strip()
+    if not interface:
+        return ""
+    marker = f"%{interface}"
+    for row in _print(
+        sock,
+        "/ip/route",
+        props="dst-address,gateway,immediate-gw,active,disabled",
+    ):
+        if _flag_yes(row.get("disabled")):
+            continue
+        if not _flag_yes(row.get("active")):
+            continue
+        for raw in (
+            (row.get("gateway") or "").strip(),
+            (row.get("immediate-gw") or "").strip(),
+        ):
+            if not raw:
+                continue
+            if raw == interface:
+                continue
+            if raw.endswith(marker):
+                token = raw.split("%", 1)[0].strip()
+                if token and not any(ch.isalpha() for ch in token):
+                    return token
+    return ""
+
+
 def _ensure_failover_checked_route(
     sock: socket.socket,
     *,
     gateway: str,
     distance: int,
 ) -> dict[str, str]:
-    """Install a tagged default route with check-gateway=ping for real failover."""
+    """Install or refresh a tagged main-table default route with check-gateway=ping."""
     gateway = (gateway or "").strip()
     if not gateway:
         return {"_reply": "!trap", "message": "Missing failover gateway."}
-    distance_s = str(distance)
+    distance_s = str(max(1, int(distance)))
     for row in _print(
         sock,
         "/ip/route",
-        props=".id,dst-address,gateway,distance,comment",
+        props=".id,dst-address,gateway,distance,comment,routing-table",
     ):
         if UPLINK_TAG not in (row.get("comment") or ""):
             continue
         if (row.get("dst-address") or "").strip() not in {"0.0.0.0/0", "::/0"}:
             continue
-        if (row.get("gateway") or "").strip() != gateway:
+        if (row.get("routing-table") or "").strip():
+            continue
+        if (row.get("distance") or "").strip() != distance_s:
             continue
         item_id = (row.get(".id") or "").strip()
         if not item_id:
@@ -23912,6 +24216,7 @@ def _ensure_failover_checked_route(
             sock,
             "/ip/route",
             item_id,
+            gateway=gateway,
             distance=distance_s,
             comment=UPLINK_TAG,
             **{"check-gateway": "ping"},
@@ -23943,6 +24248,61 @@ def _ensure_failover_checked_route(
             if last.get("_reply") not in {"!trap", "!fatal"}:
                 return last
     return last
+
+
+def reconcile_uplink_route_gateways(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    failover_clients: list[dict[str, Any]] | None = None,
+    port: int = 8728,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    """
+    Refresh tagged default-route gateways when ISP DHCP/PPPoE gateways change.
+
+    Lightweight repair — does not rebuild PCC or failover policy.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    clients = [
+        c for c in (failover_clients or []) if isinstance(c, dict) and not c.get("disabled")
+    ]
+    if not host or not username or not clients:
+        return {"ok": False, "error": "Missing router credentials or WAN clients."}
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            updated: list[str] = []
+            for client in clients:
+                iface = (client.get("interface") or "").strip()
+                if not iface:
+                    continue
+                try:
+                    distance = int(client.get("distance") or 1)
+                except (TypeError, ValueError):
+                    distance = 1
+                kind = (client.get("kind") or "dhcp").strip().lower()
+                pppoe_name = (client.get("pppoe") or "").strip()
+                gateway = ""
+                if kind == "pppoe":
+                    gateway = pppoe_name or _find_pppoe_client_for_wan(sock, iface)
+                else:
+                    gateways = _detect_dhcp_gateways(sock, iface)
+                    gateway = gateways[0] if gateways else ""
+                    if not gateway:
+                        gateway = _default_route_gateway_for_interface(sock, iface)
+                if not gateway:
+                    continue
+                terminal = _ensure_failover_checked_route(
+                    sock, gateway=gateway, distance=distance
+                )
+                if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                    updated.append(iface)
+            return {"ok": True, "updated": list(dict.fromkeys(updated))}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def _disable_client_default_route(
@@ -24225,6 +24585,89 @@ def _ensure_failover_dhcp_client(
             "default-route-distance": str(distance),
         },
     )
+
+
+def probe_mikrotik_shared_isp_port(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port_name: str,
+    port: int = 8728,
+    timeout: float = 10.0,
+    dhcp_distance: int = 10,
+) -> dict[str, Any]:
+    """
+    Prepare one Shared ISP port for DHCP verification.
+
+    Removes the port from the LAN bridge (other bridge members stay connected),
+    adds a DHCP client with add-default-route=no so ether1 keeps the default
+    route until multi-ISP apply.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    port_name = (port_name or "").strip()
+    if not host or not username or not port_name:
+        return {"ok": False, "error": "Missing router credentials or port name."}
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            if port_name not in _iface_names(sock):
+                return {"ok": False, "error": f"Port {port_name} not found on the MikroTik."}
+            for row in _print(
+                sock,
+                "/ip/dhcp-client",
+                props="interface,disabled,status",
+            ):
+                if (row.get("interface") or "").strip() != port_name:
+                    continue
+                if _flag_yes(row.get("disabled")):
+                    continue
+                status = (row.get("status") or "").strip().lower()
+                if status in {"bound", "renewing", "rebinding"}:
+                    return {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": "already_bound",
+                        "port": port_name,
+                    }
+            unbridged = _unbridge_interfaces(sock, [port_name])
+            terminal = _ensure_failover_dhcp_client(
+                sock,
+                port_name,
+                distance=dhcp_distance,
+                add_default_route=False,
+            )
+            if terminal.get("_reply") in {"!trap", "!fatal"}:
+                if unbridged:
+                    _restore_bridged_interfaces(sock, unbridged)
+                return {
+                    "ok": False,
+                    "error": _trap_message(
+                        terminal,
+                        f"Could not start DHCP on Shared ISP port {port_name}.",
+                    ),
+                }
+            return {
+                "ok": True,
+                "probed": True,
+                "port": port_name,
+                "unbridged": unbridged,
+                "message": (
+                    f"DHCP started on {port_name} (no default route) — "
+                    "waiting for ISP lease."
+                ),
+            }
+    except TimeoutError:
+        return {
+            "ok": False,
+            "error": f"Timed out preparing DHCP on {port_name}.",
+        }
+    except (ConnectionError, OSError) as exc:
+        return {
+            "ok": False,
+            "error": str(exc) or f"Could not reach the MikroTik to probe {port_name}.",
+        }
 
 
 def _ensure_bond_dhcp_client(sock: socket.socket, interface: str) -> dict[str, str]:
@@ -24814,14 +25257,243 @@ SMART_BALANCE_SLOW_RTT_MS = 250
 SMART_BALANCE_RECOVER_RTT_MS = 180
 SMART_BALANCE_SLOW_LOSS_PCT = 25
 SMART_BALANCE_RECOVER_LOSS_PCT = 10
+SMART_BALANCE_PING_TARGETS = ("1.1.1.1", "8.8.8.8")
+
+
+def _smart_balance_api_cache_key(host: str) -> str:
+    host = (host or "").strip()
+    return f"smart_balance_api_ping:{host or 'unknown'}"
+
+
+def _parse_routeros_rtt_ms(value: str) -> float | None:
+    """Parse RouterOS duration strings like ``10ms227us`` into milliseconds."""
+    raw = (value or "").strip().lower()
+    if not raw:
+        return None
+    ms_part = 0.0
+    us_part = 0.0
+    if "ms" in raw:
+        head, _, tail = raw.partition("ms")
+        try:
+            ms_part = float(head or 0)
+        except ValueError:
+            return None
+        raw = tail
+    if raw.endswith("us"):
+        try:
+            us_part = float(raw[:-2] or 0)
+        except ValueError:
+            us_part = 0.0
+    if ms_part or us_part:
+        return ms_part + (us_part / 1000.0)
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _ping_wan_via_api(
+    sock: socket.socket,
+    interface: str,
+    *,
+    targets: tuple[str, ...] = SMART_BALANCE_PING_TARGETS,
+) -> dict[str, int | float]:
+    """Ping targets out a specific WAN using the RouterOS API (not scripts)."""
+    iface = (interface or "").strip()
+    total_sent = 0
+    total_recv = 0
+    max_rtt_ms = 0.0
+    for target in targets:
+        target = (target or "").strip()
+        if not target or not iface:
+            continue
+        rows, terminal = _command(
+            sock,
+            [
+                "/ping",
+                f"=address={target}",
+                "=count=3",
+                "=interval=200ms",
+                f"=interface={iface}",
+            ],
+        )
+        total_sent += 3
+        if terminal.get("_reply") in {"!trap", "!fatal"}:
+            continue
+        last = rows[-1] if rows else {}
+        try:
+            total_recv += int(last.get("received") or 0)
+        except (TypeError, ValueError):
+            pass
+        rtt = _parse_routeros_rtt_ms(str(last.get("avg-rtt") or ""))
+        if rtt is not None:
+            max_rtt_ms = max(max_rtt_ms, rtt)
+    loss = 100
+    if total_sent > 0:
+        loss = 100 - ((total_recv * 100) // total_sent)
+    return {
+        "sent": total_sent,
+        "recv": total_recv,
+        "loss": loss,
+        "max_rtt_ms": max_rtt_ms,
+    }
+
+
+def _set_smart_balance_member_active(
+    sock: socket.socket,
+    index: int,
+    *,
+    active: bool,
+) -> None:
+    """Enable or sideline one PCC pool member (mangle slots + WAN table routes)."""
+    table = _balance_table_name(index)
+    mark = f"ispcentric-c{index}"
+    disabled = "no" if active else "yes"
+    try:
+        for row in _print(
+            sock,
+            "/ip/firewall/mangle",
+            props=".id,chain,action,new-connection-mark,per-connection-classifier,disabled,comment",
+        ):
+            if UPLINK_TAG not in (row.get("comment") or ""):
+                continue
+            if (row.get("chain") or "").strip() != "prerouting":
+                continue
+            if (row.get("new-connection-mark") or "").strip() != mark:
+                continue
+            if not (row.get("per-connection-classifier") or "").strip():
+                continue
+            item_id = (row.get(".id") or "").strip()
+            if item_id:
+                _set(sock, "/ip/firewall/mangle", item_id, disabled=disabled)
+    except Exception:
+        pass
+    try:
+        for row in _print(
+            sock,
+            "/ip/route",
+            props=".id,routing-table,comment,disabled",
+        ):
+            if UPLINK_TAG not in (row.get("comment") or ""):
+                continue
+            if (row.get("routing-table") or "").strip() != table:
+                continue
+            item_id = (row.get(".id") or "").strip()
+            if item_id:
+                _set(sock, "/ip/route", item_id, disabled=disabled)
+    except Exception:
+        pass
+
+
+def run_smart_balance_monitor_via_api(
+    sock: socket.socket,
+    members: list[dict[str, str]],
+    *,
+    force: bool = False,
+    host: str = "",
+) -> dict[str, Any]:
+    """
+    Ping each WAN via the RouterOS API and sideline slow PCC slots.
+
+    RouterOS scripts cannot reliably run ``/ping`` on some boards (e.g. RB951
+    on 7.12.x), so health checks run from the billing server over the API.
+    """
+    ordered = sorted(
+        members,
+        key=lambda m: (-int(m.get("weight") or 1), str(m.get("interface") or "")),
+    )
+    for index, item in enumerate(ordered):
+        item["index"] = str(index)
+    if len(ordered) < 2:
+        return {"ok": False, "error": "Need at least two WAN members for smart balance."}
+
+    cache_key = _smart_balance_api_cache_key(host)
+    if not force:
+        try:
+            from django.core.cache import cache
+
+            if cache.get(cache_key):
+                return {"ok": True, "skipped": True, "reason": "throttled"}
+        except Exception:
+            pass
+
+    prior = read_smart_balance_status(
+        sock, [str(m.get("interface") or "").strip() for m in ordered]
+    )
+    prior_state = prior.get("members") if isinstance(prior.get("members"), dict) else {}
+
+    member_results: dict[str, str] = {}
+    slow_ports: list[str] = []
+    for item in ordered:
+        index = int(item.get("index") or 0)
+        port_name = (item.get("interface") or "").strip()
+        wan_iface = (item.get("wan_iface") or port_name).strip()
+        if not port_name or not wan_iface:
+            continue
+        stats = _ping_wan_via_api(sock, wan_iface)
+        try:
+            recv = int(stats.get("recv") if stats.get("recv") is not None else 0)
+        except (TypeError, ValueError):
+            recv = 0
+        try:
+            loss = int(stats.get("loss") if stats.get("loss") is not None else 100)
+        except (TypeError, ValueError):
+            loss = 100
+        try:
+            max_rtt = float(stats.get("max_rtt_ms") if stats.get("max_rtt_ms") is not None else 0.0)
+        except (TypeError, ValueError):
+            max_rtt = 0.0
+        bad = (
+            recv <= 0
+            or max_rtt > SMART_BALANCE_SLOW_RTT_MS
+            or loss > SMART_BALANCE_SLOW_LOSS_PCT
+        )
+        good = (
+            recv > 0
+            and max_rtt < SMART_BALANCE_RECOVER_RTT_MS
+            and loss < SMART_BALANCE_RECOVER_LOSS_PCT
+        )
+        if bad and not good:
+            _set_smart_balance_member_active(sock, index, active=False)
+            member_results[port_name] = "slow"
+            slow_ports.append(port_name)
+        elif good:
+            _set_smart_balance_member_active(sock, index, active=True)
+            member_results[port_name] = "ok"
+        else:
+            member_results[port_name] = prior_state.get(port_name) or "ok"
+            if member_results[port_name] == "slow":
+                slow_ports.append(port_name)
+
+    try:
+        from django.core.cache import cache
+
+        cache.set(cache_key, "1", 55)
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "members": member_results,
+        "slow_ports": slow_ports,
+        "via": "api",
+    }
+
+
+def _build_smart_balance_marker_script() -> str:
+    """RouterOS placeholder — real ping monitor runs via billing server API."""
+    return (
+        "# ISPCENTRIC smart balance — link health checked via billing server API\n"
+        ":return"
+    )
 
 
 def _build_smart_balance_ros_script(members: list[dict[str, str]]) -> str:
     """RouterOS script: ping each WAN table and disable PCC slots when slow."""
     lines = [
         "# ISPCENTRIC smart balance — avoid slow ISP links",
-        f":local slowRtt {SMART_BALANCE_SLOW_RTT_MS}",
-        f":local recoverRtt {SMART_BALANCE_RECOVER_RTT_MS}",
+        f":local slowRtt {SMART_BALANCE_SLOW_RTT_MS}ms",
+        f":local recoverRtt {SMART_BALANCE_RECOVER_RTT_MS}ms",
         f":local slowLoss {SMART_BALANCE_SLOW_LOSS_PCT}",
         f":local recoverLoss {SMART_BALANCE_RECOVER_LOSS_PCT}",
         ':local targets {"1.1.1.1";"8.8.8.8"}',
@@ -24830,6 +25502,7 @@ def _build_smart_balance_ros_script(members: list[dict[str, str]]) -> str:
     for item in members:
         index = int(item.get("index") or 0)
         iface = (item.get("interface") or "").strip()
+        wan_iface = (item.get("wan_iface") or iface).strip()
         table = _balance_table_name(index)
         mark = f"ispcentric-c{index}"
         lines.extend(
@@ -24841,23 +25514,27 @@ def _build_smart_balance_ros_script(members: list[dict[str, str]]) -> str:
                     f'{{ :set ispcentricSmart{index} "ok" }}'
                 ),
                 f':local tbl{index} "{table}"',
+                f':local wan{index} "{wan_iface}"',
                 f':local mark{index} "{mark}"',
                 f":local sent{index} 0",
                 f":local recv{index} 0",
-                f":local rttSum{index} 0",
+                f":local maxRtt{index} 0ms",
                 f":foreach target in=$targets do={{",
                 "  :do {",
                 (
-                    f"    :local pingOut [/ping address=$target count=3 interval=200ms "
-                    f'routing-table=$tbl{index} as-value]'
+                    f"    :local got [/ping address=$target count=3 interval=200ms "
+                    f"interface=$wan{index}]"
                 ),
-                f"    :local got ($pingOut->\"received\")",
-                f"    :local avg ($pingOut->\"avg-rtt\")",
-                f"    :if ([:len $avg] > 0) do={{",
-                f"      :set rttSum{index} ($rttSum{index} + $avg)",
-                f"      :set recv{index} ($recv{index} + $got)",
-                f"    }}",
+                f"    :set recv{index} ($recv{index} + $got)",
                 f"    :set sent{index} ($sent{index} + 3)",
+                f"    :if ($got > 0) do={{",
+                (
+                    f"      :local pingOut [/ping address=$target count=1 interval=200ms "
+                    f"interface=$wan{index} as-value]"
+                ),
+                f"      :local avg ($pingOut->\"avg-rtt\")",
+                f"      :if ($avg > $maxRtt{index}) do={{ :set maxRtt{index} $avg }}",
+                "    }",
                 "  } on-error={",
                 f"    :set sent{index} ($sent{index} + 3)",
                 "  }",
@@ -24866,18 +25543,14 @@ def _build_smart_balance_ros_script(members: list[dict[str, str]]) -> str:
                 f":if ($sent{index} > 0) do={{",
                 f"  :set loss{index} (100 - (($recv{index} * 100) / $sent{index}))",
                 "}",
-                f":local avgRtt{index} 999",
-                f":if ($recv{index} > 0) do={{",
-                f"  :set avgRtt{index} ($rttSum{index} / $recv{index})",
-                "}",
                 f":local bad{index} false",
                 (
-                    f":if ($recv{index} = 0 or $avgRtt{index} > $slowRtt "
+                    f":if ($recv{index} = 0 or $maxRtt{index} > $slowRtt "
                     f"or $loss{index} > $slowLoss) do={{ :set bad{index} true }}"
                 ),
                 f":local good{index} false",
                 (
-                    f":if ($recv{index} > 0 and $avgRtt{index} < $recoverRtt "
+                    f":if ($recv{index} > 0 and $maxRtt{index} < $recoverRtt "
                     f"and $loss{index} < $recoverLoss) do={{ :set good{index} true }}"
                 ),
                 (
@@ -24951,7 +25624,7 @@ def _install_smart_balance_monitor(
     if len(ordered) < 2:
         return {"ok": False, "error": "Need at least two WAN members for smart balance."}
 
-    script_body = _build_smart_balance_ros_script(ordered)
+    script_body = _build_smart_balance_marker_script()
     _remove_named_routeros_items(sock, "/system/scheduler", SMART_BALANCE_SCHEDULER_NAME)
     _remove_named_routeros_items(sock, "/system/script", SMART_BALANCE_SCRIPT_NAME)
 
@@ -24964,6 +25637,19 @@ def _install_smart_balance_monitor(
         policy="read,write,policy,test,sniff,sensitive,romon",
     )
     if script_terminal.get("_reply") in {"!trap", "!fatal"}:
+        script_terminal, _ = _add_or_set_attempts(
+            sock,
+            "/system/script",
+            "",
+            [
+                {
+                    "name": SMART_BALANCE_SCRIPT_NAME,
+                    "source": script_body,
+                    "comment": UPLINK_TAG,
+                }
+            ],
+        )
+    if script_terminal.get("_reply") in {"!trap", "!fatal"}:
         return {
             "ok": False,
             "error": _trap_message(
@@ -24971,14 +25657,31 @@ def _install_smart_balance_monitor(
             ),
         }
 
-    sched_terminal = _add(
-        sock,
-        "/system/scheduler",
-        name=SMART_BALANCE_SCHEDULER_NAME,
-        interval=interval,
-        on_event=SMART_BALANCE_SCRIPT_NAME,
-        comment=UPLINK_TAG,
-        policy="read,write,policy,test,sniff,sensitive,romon",
+    sched_attempts = [
+        {
+            "name": SMART_BALANCE_SCHEDULER_NAME,
+            "interval": interval,
+            "on-event": SMART_BALANCE_SCRIPT_NAME,
+            "start-time": "startup",
+            "comment": UPLINK_TAG,
+            "policy": "read,write,policy,test,sniff,sensitive,romon",
+        },
+        {
+            "name": SMART_BALANCE_SCHEDULER_NAME,
+            "interval": interval,
+            "on-event": SMART_BALANCE_SCRIPT_NAME,
+            "start-time": "startup",
+            "comment": UPLINK_TAG,
+        },
+        {
+            "name": SMART_BALANCE_SCHEDULER_NAME,
+            "interval": interval,
+            "on-event": SMART_BALANCE_SCRIPT_NAME,
+            "comment": UPLINK_TAG,
+        },
+    ]
+    sched_terminal, _ = _add_or_set_attempts(
+        sock, "/system/scheduler", "", sched_attempts
     )
     if sched_terminal.get("_reply") in {"!trap", "!fatal"}:
         return {
@@ -24988,19 +25691,16 @@ def _install_smart_balance_monitor(
             ),
         }
 
-    run_rows, run_terminal = _command(
-        sock, ["/system/script/run", f"=number={SMART_BALANCE_SCRIPT_NAME}"]
+    monitor = run_smart_balance_monitor_via_api(
+        sock, ordered, force=True, host=""
     )
-    _ = run_rows
-    if run_terminal.get("_reply") in {"!trap", "!fatal"}:
-        # Non-fatal: scheduler will run on interval.
-        pass
 
     return {
         "ok": True,
         "script": SMART_BALANCE_SCRIPT_NAME,
         "scheduler": SMART_BALANCE_SCHEDULER_NAME,
         "members": [m.get("interface") for m in ordered],
+        "monitor": monitor,
     }
 
 
@@ -25061,12 +25761,107 @@ def read_smart_balance_status(
     }
 
 
+def _extract_balance_gateway_hints(
+    sock: socket.socket,
+    members: list[str],
+) -> dict[str, str]:
+    """Capture per-port gateways before hot apply clears bond/bridge paths."""
+    hints: dict[str, str] = {}
+    for name in members:
+        iface = (name or "").strip()
+        if not iface:
+            continue
+        for gw in _detect_dhcp_gateways(sock, iface):
+            hints[iface] = gw
+            break
+        if iface in hints:
+            continue
+        for resolver in (
+            _default_route_gateway_for_interface,
+            _connected_gateway_for_interface,
+        ):
+            gw = resolver(sock, iface)
+            if gw:
+                hints[iface] = _parse_dhcp_gateway_token(gw) or gw
+                break
+    return hints
+
+
+def _renew_balance_member_dhcp(
+    sock: socket.socket,
+    uplink_results: list[dict[str, str]],
+) -> None:
+    """Renew DHCP on balance members that still lack a learned gateway."""
+    notes: list[str] = []
+    for item in uplink_results:
+        if (item.get("_kind") or "dhcp").strip() == "pppoe":
+            continue
+        iface = (item.get("_interface") or "").strip()
+        if not iface or _detect_dhcp_gateways(sock, iface):
+            continue
+        _renew_dhcp_on_port(sock, iface, notes)
+
+
+def _wait_for_balance_member_gateways(
+    sock: socket.socket,
+    uplink_results: list[dict[str, str]],
+    gateway_hints: dict[str, str] | None = None,
+    *,
+    timeout: float = 14.0,
+    interval: float = 0.65,
+    progress: Callable[[str, str], None] | None = None,
+) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """Poll RouterOS until each balance member has a usable gateway."""
+    hints = gateway_hints if isinstance(gateway_hints, dict) else {}
+    resolved: dict[str, tuple[str, str]] = {}
+    deadline = time.monotonic() + max(2.0, float(timeout))
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        missing: list[str] = []
+        for item in uplink_results:
+            iface = (item.get("_interface") or "").strip()
+            if not iface:
+                continue
+            kind = (item.get("_kind") or "dhcp").strip()
+            pppoe_name = (item.get("_pppoe") or "").strip()
+            wan_iface, gateway = _resolve_balance_member_gateway(
+                sock,
+                interface=iface,
+                kind=kind,
+                pppoe_name=pppoe_name,
+                gateway_hint=(hints.get(iface) or "").strip(),
+            )
+            if gateway:
+                resolved[iface] = (wan_iface, gateway)
+            else:
+                missing.append(iface)
+        if len(resolved) >= 2 and not missing:
+            return resolved, []
+        if attempt == 1:
+            _uplink_progress(
+                progress,
+                "Waiting for ISP gateways on WAN ports…",
+                "gateways",
+            )
+        if attempt in {1, 3, 5}:
+            _renew_balance_member_dhcp(sock, uplink_results)
+        time.sleep(interval)
+    still_missing = [
+        (item.get("_interface") or "").strip()
+        for item in uplink_results
+        if (item.get("_interface") or "").strip() not in resolved
+    ]
+    return resolved, still_missing
+
+
 def _resolve_balance_member_gateway(
     sock: socket.socket,
     *,
     interface: str,
     kind: str,
     pppoe_name: str = "",
+    gateway_hint: str = "",
 ) -> tuple[str, str]:
     """Return (wan_iface_for_mangle, gateway) for one balance member."""
     interface = (interface or "").strip()
@@ -25078,6 +25873,10 @@ def _resolve_balance_member_gateway(
     gateway = gateways[0] if gateways else ""
     if not gateway:
         gateway = _default_route_gateway_for_interface(sock, interface)
+    if not gateway:
+        gateway = _connected_gateway_for_interface(sock, interface)
+    if not gateway:
+        gateway = _parse_dhcp_gateway_token(gateway_hint)
     return interface, gateway or ""
 
 
@@ -25144,6 +25943,15 @@ def apply_mikrotik_uplink_balance(
             return 100
 
     try:
+        gateway_hints: dict[str, str] = {}
+        try:
+            with _api_session_on_any(
+                dial_hosts, username, password, port=port, timeout=timeout
+            ) as (hint_sock, _):
+                gateway_hints = _extract_balance_gateway_hints(hint_sock, members)
+        except (TimeoutError, ConnectionError, OSError):
+            gateway_hints = {}
+
         _uplink_progress(progress, f"Preparing {mode_label} on the MikroTik…", "prepare")
         unbridged, phase_error = _phase1_prepare_uplink_ports(
             dial_hosts,
@@ -25207,23 +26015,24 @@ def apply_mikrotik_uplink_balance(
                         if pppoe_name and pppoe_name != iface:
                             _ensure_uplink_list_member(sock, pppoe_name)
 
-                    time.sleep(1.2)
+                    resolved_gw, missing_gw = _wait_for_balance_member_gateways(
+                        sock,
+                        uplink_results,
+                        gateway_hints,
+                        progress=progress,
+                    )
 
                     balance_members: list[dict[str, str]] = []
-                    missing_gw: list[str] = []
                     for item in uplink_results:
                         iface = (item.get("_interface") or "").strip()
                         kind = (item.get("_kind") or "dhcp").strip()
                         pppoe_name = (item.get("_pppoe") or "").strip()
                         index = int(item.get("_index") or "0")
-                        wan_iface, gateway = _resolve_balance_member_gateway(
-                            sock,
-                            interface=iface,
-                            kind=kind,
-                            pppoe_name=pppoe_name,
-                        )
+                        pair = resolved_gw.get(iface)
+                        if not pair:
+                            continue
+                        wan_iface, gateway = pair
                         if not gateway:
-                            missing_gw.append(iface)
                             continue
                         # Keep client default routes until PCC is installed —
                         # retiring them first black-holes WireGuard mid-apply.
@@ -26152,6 +26961,16 @@ def read_mikrotik_uplink_multi(
                 str(p).strip() for p in (member_ports or []) if str(p).strip()
             ]
             if mode == "smart_balance" and len(ports_for_status) >= 2:
+                monitor_members = [
+                    {"interface": name, "index": str(i), "wan_iface": name}
+                    for i, name in enumerate(ports_for_status)
+                ]
+                run_smart_balance_monitor_via_api(
+                    sock,
+                    monitor_members,
+                    force=False,
+                    host=host,
+                )
                 smart_balance_status = read_smart_balance_status(sock, ports_for_status)
 
             return {
@@ -26170,6 +26989,278 @@ def read_mikrotik_uplink_multi(
 
 
 UPLINK_CONN_MARK_PREFIX = "ispcentric-c"
+CLIENT_ISP_PIN_TAG = "ispcentric-client-isp"
+CLIENT_REBALANCE_DOMINANT_PCT = 75
+CLIENT_REBALANCE_MAX_MOVES = 1
+CLIENT_REBALANCE_COOLDOWN_S = 90
+
+
+def _client_isp_pin_comment(customer_id: int | str, client_ip: str) -> str:
+    ip = _parse_connection_address(client_ip)
+    cid = str(customer_id or "").strip() or "0"
+    return f"{CLIENT_ISP_PIN_TAG}|c{cid}|{ip}"
+
+
+def read_client_isp_pins(
+    sock: socket.socket,
+    mark_to_port: dict[int, str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return pinned client IPs → {customer_id, mark_index, isp_port, pinned}."""
+    mapping = mark_to_port if isinstance(mark_to_port, dict) else {}
+    pins: dict[str, dict[str, Any]] = {}
+    try:
+        rows = _print(
+            sock,
+            "/ip/firewall/mangle",
+            props="chain,action,src-address,new-connection-mark,comment",
+        )
+    except Exception:
+        return pins
+    for row in rows:
+        comment = (row.get("comment") or "").strip()
+        if CLIENT_ISP_PIN_TAG not in comment:
+            continue
+        if (row.get("chain") or "").strip() != "prerouting":
+            continue
+        if (row.get("action") or "").strip() != "mark-connection":
+            continue
+        ip = _parse_connection_address(row.get("src-address") or "")
+        if not ip:
+            continue
+        mark_index = _parse_ispcentric_mark_index(row.get("new-connection-mark") or "")
+        customer_id = ""
+        for part in comment.split("|"):
+            if part.startswith("c") and part[1:].isdigit():
+                customer_id = part[1:]
+                break
+        pins[ip] = {
+            "customer_id": customer_id,
+            "mark_index": mark_index,
+            "isp_port": mapping.get(mark_index or -1, "") if mark_index is not None else "",
+            "pinned": True,
+        }
+    return pins
+
+
+def _remove_client_isp_pins(
+    sock: socket.socket,
+    *,
+    client_ip: str = "",
+    customer_id: int | str = "",
+) -> int:
+    removed = 0
+    ip = _parse_connection_address(client_ip)
+    cid = str(customer_id or "").strip()
+    try:
+        rows = _print(sock, "/ip/firewall/mangle", props=".id,comment,src-address")
+    except Exception:
+        return 0
+    for row in rows:
+        comment = (row.get("comment") or "").strip()
+        if CLIENT_ISP_PIN_TAG not in comment:
+            continue
+        row_ip = _parse_connection_address(row.get("src-address") or "")
+        if ip and row_ip and row_ip != ip:
+            if f"|{ip}" not in comment:
+                continue
+        if cid and f"|c{cid}|" not in comment and f"|c{cid}" not in comment:
+            if ip and row_ip != ip:
+                continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        if _remove(sock, "/ip/firewall/mangle", item_id).get("_reply") not in {
+            "!trap",
+            "!fatal",
+        }:
+            removed += 1
+    return removed
+
+
+def pin_client_to_isp_mark(
+    sock: socket.socket,
+    *,
+    client_ip: str,
+    mark_index: int,
+    customer_id: int | str = "",
+) -> dict[str, Any]:
+    """Pin a LAN client IP to a PCC ISP slot (brief session refresh)."""
+    ip = _parse_connection_address(client_ip)
+    if not ip or not _is_likely_lan_ip(ip):
+        return {"ok": False, "error": "Invalid client IP."}
+    if mark_index < 0:
+        return {"ok": False, "error": "Invalid ISP slot."}
+
+    _remove_client_isp_pins(sock, client_ip=ip, customer_id=customer_id)
+
+    conn_mark = f"{UPLINK_CONN_MARK_PREFIX}{mark_index}"
+    table = _balance_table_name(mark_index)
+    comment = _client_isp_pin_comment(customer_id, ip)
+
+    for props in (
+        {
+            "chain": "prerouting",
+            "src-address": ip,
+            "connection-mark": "no-mark",
+            "action": "mark-connection",
+            "new-connection-mark": conn_mark,
+            "passthrough": "yes",
+            "comment": comment,
+            "place-before": "0",
+        },
+        {
+            "chain": "prerouting",
+            "src-address": ip,
+            "connection-mark": conn_mark,
+            "action": "mark-routing",
+            "new-routing-mark": table,
+            "passthrough": "yes",
+            "comment": comment,
+            "place-before": "0",
+        },
+    ):
+        terminal = _add(sock, "/ip/firewall/mangle", **props)
+        if terminal.get("_reply") in {"!trap", "!fatal"}:
+            fallback = {k: v for k, v in props.items() if k != "place-before"}
+            terminal = _add(sock, "/ip/firewall/mangle", **fallback)
+        if terminal.get("_reply") in {"!trap", "!fatal"}:
+            return {
+                "ok": False,
+                "error": _trap_message(terminal, "Could not pin client to ISP."),
+            }
+
+    cleared = _kill_firewall_connections_for_addresses(sock, [ip])
+    return {
+        "ok": True,
+        "client_ip": ip,
+        "mark_index": mark_index,
+        "connections_cleared": cleared,
+    }
+
+
+def switch_client_to_isp_port(
+    sock: socket.socket,
+    *,
+    client_ip: str,
+    target_port: str,
+    member_ports: list[str],
+    customer_id: int | str = "",
+    slow_ports: list[str] | None = None,
+) -> dict[str, Any]:
+    """Move one online client to a chosen ISP member port."""
+    ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
+    ordered = list(dict.fromkeys(ordered))
+    target = (target_port or "").strip()
+    if target not in ordered:
+        return {"ok": False, "error": f"Unknown ISP port {target or '(empty)'}."}
+    if target in set(slow_ports or []):
+        return {
+            "ok": False,
+            "error": f"{target} is sidelined (slow or unstable) — pick another ISP.",
+        }
+    mark_index = ordered.index(target)
+    result = pin_client_to_isp_mark(
+        sock,
+        client_ip=client_ip,
+        mark_index=mark_index,
+        customer_id=customer_id,
+    )
+    if result.get("ok"):
+        result["isp_port"] = target
+    return result
+
+
+def auto_rebalance_client_isps(
+    sock: socket.socket,
+    *,
+    member_ports: list[str],
+    clients: list[dict[str, Any]],
+    slow_ports: list[str] | None = None,
+    dominant_pct: int = CLIENT_REBALANCE_DOMINANT_PCT,
+    max_moves: int = CLIENT_REBALANCE_MAX_MOVES,
+) -> dict[str, Any]:
+    """
+    Move a few online clients off an overloaded ISP onto a lighter one.
+
+    Uses pinned mangle rules so the shift sticks across reconnects.
+    """
+    ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
+    ordered = list(dict.fromkeys(ordered))
+    slow = {str(p).strip() for p in (slow_ports or []) if str(p).strip()}
+    healthy = [p for p in ordered if p not in slow]
+    if len(healthy) < 2:
+        return {"ok": False, "skipped": True, "reason": "need_two_healthy_isps"}
+
+    online = [c for c in (clients or []) if c.get("online") and (c.get("ip") or "").strip()]
+    if len(online) < 2:
+        return {"ok": False, "skipped": True, "reason": "need_two_online_clients"}
+
+    by_isp: dict[str, list[dict[str, Any]]] = {p: [] for p in healthy}
+    for client in online:
+        port = (client.get("isp_port") or "").strip()
+        if port in by_isp:
+            by_isp[port].append(client)
+
+    counts = {p: len(by_isp.get(p) or []) for p in healthy}
+    if not counts or max(counts.values()) <= 1:
+        return {"ok": False, "skipped": True, "reason": "already_balanced"}
+
+    total = sum(counts.values())
+    dominant = max(counts, key=counts.get)
+    dominant_pct_val = round(100 * counts[dominant] / total) if total else 0
+    if dominant_pct_val < dominant_pct:
+        return {"ok": False, "skipped": True, "reason": "not_imbalanced"}
+
+    target = min(
+        (p for p in healthy if p != dominant),
+        key=lambda p: (counts.get(p, 0), p),
+    )
+    if counts.get(target, 0) >= counts.get(dominant, 0):
+        return {"ok": False, "skipped": True, "reason": "no_lighter_isp"}
+
+    candidates = sorted(
+        by_isp.get(dominant) or [],
+        key=lambda c: (
+            0 if not c.get("isp_pinned") else 1,
+            -(int(c.get("connection_count") or 0)),
+            (c.get("name") or "").lower(),
+        ),
+    )
+    moved: list[dict[str, Any]] = []
+    for client in candidates:
+        if len(moved) >= max(1, int(max_moves)):
+            break
+        ip = (client.get("ip") or "").strip()
+        if not ip:
+            continue
+        current = (client.get("isp_port") or "").strip()
+        if current == target:
+            continue
+        switch = switch_client_to_isp_port(
+            sock,
+            client_ip=ip,
+            target_port=target,
+            member_ports=ordered,
+            customer_id=client.get("customer_id") or "",
+            slow_ports=list(slow),
+        )
+        if switch.get("ok"):
+            moved.append(
+                {
+                    "customer_id": client.get("customer_id"),
+                    "name": client.get("name") or "",
+                    "from_isp": current,
+                    "to_isp": target,
+                    "client_ip": ip,
+                }
+            )
+    return {
+        "ok": bool(moved),
+        "moved": moved,
+        "dominant_isp": dominant,
+        "target_isp": target,
+        "dominant_pct": dominant_pct_val,
+    }
 
 
 def _parse_connection_address(addr: str) -> str:
@@ -26667,12 +27758,14 @@ def read_client_wan_usage(
                     **_session_analytics(ip),
                 }
 
+            client_pins = read_client_isp_pins(sock, mark_to_port)
             mark_to_port_out = {str(k): v for k, v in sorted(mark_to_port.items())}
             return {
                 "ok": True,
                 "mark_to_port": mark_to_port_out,
                 "ip_usage": ip_usage,
                 "sessions": sessions,
+                "client_pins": client_pins,
                 "default_isp_port": default_port,
                 "uses_connection_marks": uses_marks,
                 "error": "",

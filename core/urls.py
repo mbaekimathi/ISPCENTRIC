@@ -41,9 +41,24 @@ urlpatterns = [
         name="mikrotik_setup",
     ),
     path(
+        "app/mikrotik/<int:router_id>/recovery-scripts/",
+        views.mikrotik_recovery_scripts,
+        name="mikrotik_recovery_scripts",
+    ),
+    path(
         "app/mikrotik/<int:router_id>/assigned-ports/",
         views.mikrotik_assigned_ports,
         name="mikrotik_assigned_ports",
+    ),
+    path(
+        "app/mikrotik/<int:router_id>/assigned-ports/live/",
+        views.mikrotik_assigned_ports_live,
+        name="mikrotik_assigned_ports_live",
+    ),
+    path(
+        "app/mikrotik/<int:router_id>/assigned-ports/apply/",
+        views.mikrotik_assigned_ports_apply,
+        name="mikrotik_assigned_ports_apply",
     ),
     path(
         "app/mikrotik/<int:router_id>/ports/live/",

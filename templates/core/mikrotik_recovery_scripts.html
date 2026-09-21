@@ -1,0 +1,142 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}{{ router.name }} — Winbox recovery — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<div class="mk-page mk-recovery-page" data-recovery-page>
+  <header class="mk-page-hero mk-recovery-hero">
+    <div class="mk-page-hero-copy">
+      <p class="mk-page-kicker mk-recovery-kicker">{{ page_kicker|default:"Emergency" }}</p>
+      <h1 class="mk-page-title">Winbox recovery</h1>
+      <p class="mk-page-lead">
+        <strong>{{ router.name }}</strong>
+        <span class="mk-host-chip">{{ router.host }}</span>
+      </p>
+    </div>
+    <p class="mk-recovery-count">{{ recovery_sections|length }} script{{ recovery_sections|length|pluralize }}</p>
+  </header>
+
+  {% include "core/includes/mikrotik_detail_quicknav.html" %}
+
+  <ol class="mk-recovery-steps" aria-label="How to run a script">
+    <li><span>LAN port</span></li>
+    <li><span>Winbox Terminal</span></li>
+    <li><span>Copy script</span></li>
+    <li><span>Paste &amp; Enter</span></li>
+  </ol>
+
+  <ol class="mk-recovery-list">
+    {% for section in recovery_sections %}
+    <li class="mk-recovery-item mk-recovery-item--{{ section.key }}" id="mk-recovery-{{ section.key }}">
+      <article class="mk-recovery-card">
+        <header class="mk-recovery-card-head">
+          <span class="mk-recovery-num" aria-hidden="true">{{ forloop.counter }}</span>
+          <h2 class="mk-recovery-title">{{ section.title }}</h2>
+          <button
+            type="button"
+            class="btn mk-recovery-copy"
+            data-copy-recovery-script
+            data-copy-target="mk-recovery-script-{{ section.key }}"
+            aria-label="Copy {{ section.title }} script"
+          >
+            <span class="mk-recovery-copy-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </span>
+            <span class="mk-recovery-copy-label">Copy</span>
+          </button>
+        </header>
+
+        <div class="mk-recovery-code" data-recovery-code>
+          <pre
+            class="mk-recovery-script"
+            id="mk-recovery-script-{{ section.key }}"
+            tabindex="0"
+            role="textbox"
+            aria-readonly="true"
+            aria-label="{{ section.title }} RouterOS script"
+            data-recovery-pre
+          >{{ section.script }}</pre>
+        </div>
+      </article>
+    </li>
+    {% endfor %}
+  </ol>
+</div>
+
+<script>
+(function () {
+  var root = document.querySelector("[data-recovery-page]");
+  if (!root) return;
+
+  function copyText(text) {
+    if (!text) return Promise.reject();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      return Promise.resolve();
+    } catch (e) {
+      document.body.removeChild(ta);
+      return Promise.reject(e);
+    }
+  }
+
+  function setCopied(btn) {
+    var label = btn.querySelector(".mk-recovery-copy-label");
+    var original = btn.getAttribute("data-copy-label") || (label ? label.textContent : "Copy");
+    if (!btn.getAttribute("data-copy-label") && label) {
+      btn.setAttribute("data-copy-label", original);
+    }
+    btn.classList.add("is-copied");
+    if (label) label.textContent = "Copied";
+    if (typeof window.showToast === "function") {
+      window.showToast({ type: "success", text: "Script copied — paste in Winbox Terminal.", ms: 3200 });
+    }
+    setTimeout(function () {
+      btn.classList.remove("is-copied");
+      if (label) label.textContent = original;
+    }, 2400);
+  }
+
+  function copyFromTarget(btn) {
+    var targetId = btn.getAttribute("data-copy-target");
+    var pre = targetId ? document.getElementById(targetId) : null;
+    var text = pre ? (pre.textContent || "") : "";
+    return copyText(text)
+      .then(function () { setCopied(btn); })
+      .catch(function () {
+        if (typeof window.showToast === "function") {
+          window.showToast({ type: "warning", text: "Could not copy — select the script and copy manually.", ms: 5000 });
+        }
+      });
+  }
+
+  root.querySelectorAll("[data-copy-recovery-script]").forEach(function (btn) {
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      copyFromTarget(btn);
+    });
+  });
+
+  root.querySelectorAll("[data-recovery-pre]").forEach(function (pre) {
+    pre.addEventListener("dblclick", function () {
+      var card = pre.closest(".mk-recovery-card");
+      var btn = card ? card.querySelector("[data-copy-recovery-script]") : null;
+      if (btn) copyFromTarget(btn);
+    });
+  });
+})();
+</script>
+{% endblock %}

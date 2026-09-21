@@ -2,12 +2,19 @@
   var root = document.getElementById("mikrotik-assigned-ports-root");
   if (!root) return;
 
-  var liveUrl = root.getAttribute("data-ports-live-url") || "";
+  var liveUrl = root.getAttribute("data-assigned-live-url") || "";
+  var applyUrl = root.getAttribute("data-assigned-apply-url") || "";
+  var pushStatusUrl = root.getAttribute("data-push-status-url") || "";
+  var csrf = root.getAttribute("data-csrf-token") || "";
   var suspended = root.getAttribute("data-is-suspended") === "1";
   var loading = root.getAttribute("data-ports-loading") === "1";
   var pollTimer = null;
-  var pollMs = 4000;
+  var pollMs = 5000;
   var livePill = document.querySelector("[data-assigned-live-pill]");
+  var jobWatcher = null;
+  var applyInFlight = false;
+  var switchInFlight = false;
+  var SMART_BALANCE_JOB = "uplink_smart_balance";
 
   function setHidden(el, hidden) {
     if (!el) return;
@@ -35,390 +42,228 @@
     );
   }
 
-  function usageBar(pct) {
-    var width = Math.max(0, Math.min(100, Number(pct) || 0));
-    return (
-      '<div class="mk-assigned-usage-bar" aria-hidden="true">' +
-      '<span style="width:' +
-      width +
-      '%"></span>' +
-      "</div>"
-    );
+  function ispLabel(row) {
+    return row.uplink_label || row.isp_label || row.uplink_port || row.isp_port || "—";
   }
 
-  function cell(label, html) {
-    return (
-      '<td data-label="' +
-      esc(label) +
-      '">' +
-      html +
-      "</td>"
-    );
+  function ispSwitchChips(row, options) {
+    if (!row.can_switch_isp || !options || !options.length) return "";
+    var current = (row.isp_port || row.uplink_port || "").trim();
+    var choices = options.filter(function (opt) {
+      return opt.port && opt.port !== current && !opt.disabled;
+    });
+    if (!choices.length) return "";
+
+    var html = '<div class="mk-assigned-switch-chips">';
+    choices.forEach(function (opt) {
+      html +=
+        '<button type="button" class="mk-assigned-switch-chip"' +
+        ' data-isp-switch-chip="1"' +
+        ' data-customer-id="' +
+        esc(String(row.customer_id || "")) +
+        '" data-client-ip="' +
+        esc(row.ip || "") +
+        '" data-client-name="' +
+        esc(row.name || "Customer") +
+        '" data-target-port="' +
+        esc(opt.port) +
+        '">Use ' +
+        esc(opt.label || opt.port) +
+        "</button>";
+    });
+    html += "</div>";
+    return html;
   }
 
-  function clientRowHtml(row, analysis) {
-    var onlineClass = row.online ? "is-online" : "is-offline";
-    var ispClass = "";
-    if ((row.isp_port || "") && analysis.isps) {
-      analysis.isps.forEach(function (isp) {
-        if (isp.port === row.isp_port && isp.status === "slow") ispClass = " is-slow-isp";
-      });
-    }
-    return (
-      '<tr class="' +
-      onlineClass +
-      ispClass +
-      '">' +
-      cell("Client", clientLink(row)) +
-      cell("Account", esc(row.account_number || "—")) +
-      cell("Service", esc((row.service_type || "").toUpperCase())) +
-      cell(
-        "IP",
-        row.online && row.ip
-          ? esc(row.ip)
-          : '<span class="mk-muted">Offline</span>'
-      ) +
-      cell(
-        "Cable",
-        row.online
-          ? esc(row.lan_port || "—")
-          : '<span class="mk-muted">—</span>'
-      ) +
-      cell(
-        "ISP",
-        row.online
-          ? esc(row.isp_label || row.isp_port || "—")
-          : '<span class="mk-muted">—</span>'
-      ) +
-      cell("Download", '<span class="mk-assigned-num">' + esc(row.download_label || "—") + "</span>") +
-      cell("Upload", '<span class="mk-assigned-num">' + esc(row.upload_label || "—") + "</span>") +
-      cell("Data", '<span class="mk-assigned-num">' + esc(row.data_label || "—") + "</span>") +
-      cell(
-        "Uptime",
-        row.online && row.uptime
-          ? esc(row.uptime)
-          : '<span class="mk-muted">—</span>'
-      ) +
-      "</tr>"
-    );
-  }
+  function clientRow(row, ispOptions) {
+    var online = !!row.online;
+    var isp = ispLabel(row);
+    var pinned = online && row.isp_pinned;
 
-  function clientCardHtml(row) {
-    var status = row.online ? "Online" : "Offline";
-    var statusClass = row.online ? "is-online" : "is-offline";
     return (
-      '<article class="mk-assigned-client-card ' +
-      statusClass +
+      '<article class="mk-assigned-client-row ' +
+      (online ? "is-online" : "is-offline") +
       '">' +
-      '<div class="mk-assigned-client-card-head">' +
-      "<div>" +
-      '<strong class="mk-assigned-client-card-name">' +
+      '<div class="mk-assigned-client-row-head">' +
+      '<div class="mk-assigned-client-row-id">' +
+      '<strong class="mk-assigned-client-row-name">' +
       clientLink(row) +
       "</strong>" +
-      '<p class="mk-help-note">' +
-      esc(row.account_number || "—") +
-      " · " +
-      esc((row.service_type || "").toUpperCase() || "—") +
-      "</p>" +
+      (row.account_number
+        ? '<span class="mk-assigned-client-row-account">' +
+          esc(row.account_number) +
+          "</span>"
+        : "") +
       "</div>" +
       '<span class="mk-assigned-status-chip">' +
-      status +
+      (online ? "Online" : "Offline") +
       "</span>" +
       "</div>" +
-      '<dl class="mk-assigned-client-meta">' +
-      "<div><dt>IP</dt><dd>" +
-      (row.online && row.ip ? esc(row.ip) : "—") +
-      "</dd></div>" +
-      "<div><dt>Cable</dt><dd>" +
-      esc(row.lan_port || "—") +
-      "</dd></div>" +
-      "<div><dt>ISP</dt><dd>" +
-      esc(row.isp_label || row.isp_port || "—") +
-      "</dd></div>" +
-      "<div><dt>Down</dt><dd>" +
-      esc(row.download_label || "—") +
-      "</dd></div>" +
-      "<div><dt>Up</dt><dd>" +
-      esc(row.upload_label || "—") +
-      "</dd></div>" +
-      "<div><dt>Data</dt><dd>" +
-      esc(row.data_label || "—") +
-      "</dd></div>" +
-      "</dl>" +
-      (row.online && row.uptime
-        ? '<p class="mk-help-note">Uptime ' + esc(row.uptime) + "</p>"
+      (online
+        ? '<p class="mk-assigned-client-row-isp">' +
+          (pinned ? "Pinned on " : "Using ") +
+          "<strong>" +
+          esc(isp) +
+          "</strong></p>" +
+          ispSwitchChips(row, ispOptions)
         : "") +
       "</article>"
     );
   }
 
-  function portCardHtml(port, indexLabel) {
-    var statusClass = "is-active";
-    var statusLabel = "Active";
-    if (port.status === "slow") {
-      statusClass = "is-slow";
-      statusLabel = "Slow — sidelined";
-    } else if (port.status === "sidelined") {
-      statusClass = "is-sidelined";
-      statusLabel = "Sidelined";
+  function renderNotice(data) {
+    var card = root.querySelector("[data-assigned-status-card]");
+    if (!card) return;
+
+    var insights = data.balance_insights || {};
+    var titleEl = card.querySelector("[data-assigned-balance-title]");
+    var msgEl = card.querySelector("[data-assigned-balance-message]");
+    var applyBtn = card.querySelector("[data-assigned-balance-apply]");
+
+    var needsAttention =
+      !!data.applying_uplink ||
+      !!insights.can_auto_enable ||
+      !!insights.imbalanced ||
+      !!(data.client_rebalance && data.client_rebalance.ok);
+
+    if (!needsAttention) {
+      setHidden(card, true);
+      return;
     }
-    var kind = port.kind === "lan" ? "Customer port" : indexLabel || "ISP";
-    var pct = port.share_pct != null ? port.share_pct : null;
-    var metaBits = [];
-    if (pct != null) metaBits.push(pct + "% live share");
-    if (port.weight != null && port.weight !== "") metaBits.push(port.weight + " Mbps weight");
-    if (port.rate_label && port.rate_label !== "—") metaBits.push(port.rate_label);
-    var footBits = [];
-    var online = port.online_clients != null ? port.online_clients : port.client_count;
-    if (online != null) footBits.push(online + " online");
-    if (port.connection_count > 0) footBits.push(port.connection_count + " conn.");
-    if (port.data_label && port.data_label !== "—") footBits.push(port.data_label + " session");
-    return (
-      '<article class="mk-router-isp-card mk-assigned-port-card ' +
-      statusClass +
-      (port.kind === "lan" ? " is-lan" : "") +
-      '">' +
-      '<div class="mk-router-isp-card-head">' +
-      '<span class="mk-router-isp-index">' +
-      esc(kind) +
-      "</span>" +
-      '<span class="mk-router-isp-status">' +
-      esc(statusLabel) +
-      "</span>" +
-      "</div>" +
-      '<strong class="mk-router-isp-name">' +
-      esc(port.port || port.label || "—") +
-      "</strong>" +
-      '<div class="mk-assigned-port-rates">' +
-      "<span><em>Down</em> " +
-      esc(port.download_label || "—") +
-      "</span>" +
-      "<span><em>Up</em> " +
-      esc(port.upload_label || "—") +
-      "</span>" +
-      "</div>" +
-      (pct != null ? usageBar(pct) : "") +
-      (metaBits.length
-        ? '<p class="mk-help-note">' + esc(metaBits.join(" · ")) + "</p>"
-        : "") +
-      (footBits.length
-        ? '<p class="mk-router-isp-foot">' + esc(footBits.join(" · ")) + "</p>"
-        : "") +
-      "</article>"
-    );
+
+    var title = "";
+    var message = "";
+
+    if (data.applying_uplink) {
+      title = "Setting up smart balance…";
+      message =
+        (data.uplink_apply_job && data.uplink_apply_job.message) ||
+        "Keep this page open for a moment.";
+    } else if (insights.can_auto_enable) {
+      title = "Two internet links ready";
+      message = "Turn on smart balance to spread customers across both links.";
+    } else if (data.client_rebalance && data.client_rebalance.ok) {
+      var moved = data.client_rebalance.moved || [];
+      if (moved.length) {
+        var first = moved[0];
+        title = "Load balanced automatically";
+        message =
+          (first.name || "A customer") +
+          " moved from " +
+          (first.from_isp || "one link") +
+          " to " +
+          (first.to_isp || "another") +
+          ".";
+      }
+    } else if (insights.imbalanced && insights.dominant_isp) {
+      title = "Most customers on " + insights.dominant_isp;
+      message =
+        "The system moves customers automatically, or tap Use … on a customer below.";
+    }
+
+    if (titleEl) titleEl.textContent = title;
+    if (msgEl) msgEl.textContent = message;
+
+    if (applyBtn) {
+      applyBtn.textContent = insights.auto_enable_label || "Turn on smart balance";
+      applyBtn.disabled = !!applyInFlight;
+      setHidden(applyBtn, !insights.can_auto_enable || !!data.applying_uplink);
+    }
+
+    card.className =
+      "mk-assigned-notice " +
+      (data.applying_uplink
+        ? "is-applying"
+        : insights.can_auto_enable
+          ? "is-action"
+          : "is-info");
+    setHidden(card, false);
   }
 
-  function renderPortGroups(analysis) {
-    var wrap = root.querySelector("[data-assigned-port-groups]");
+  function renderIspSummary(analysis) {
+    var wrap = root.querySelector("[data-assigned-isp-summary]");
     if (!wrap) return;
-    var groups = [];
-    (analysis.lan_ports || []).forEach(function (port) {
-      if ((port.clients || []).length) {
-        groups.push({
-          title: "Cable " + (port.port || ""),
-          note: (port.online_clients || 0) + " online · " + (port.rate_label || "—"),
-          clients: port.clients,
-        });
-      }
+
+    var isps = (analysis.isps || []).filter(function (isp) {
+      return (isp.port || "").trim();
     });
-    var hasLanGroups = groups.length > 0;
-    (analysis.isps || []).forEach(function (port, index) {
-      if ((port.clients || []).length && !hasLanGroups) {
-        groups.push({
-          title: port.label || "ISP " + (index + 1),
-          note:
-            (port.online_clients || port.client_count || 0) +
-            " on this ISP · " +
-            (port.rate_label || "—"),
-          clients: port.clients,
-        });
-      }
-    });
-    if (!groups.length) {
+    if (isps.length < 2) {
       wrap.innerHTML = "";
       setHidden(wrap, true);
       return;
     }
-    wrap.innerHTML = groups
-      .map(function (group) {
+
+    wrap.innerHTML = isps
+      .map(function (isp, index) {
+        var statusClass = "is-up";
+        var statusLabel = "Up";
+        if (isp.status === "slow") {
+          statusClass = "is-slow";
+          statusLabel = "Slow";
+        } else if (isp.status === "sidelined") {
+          statusClass = "is-off";
+          statusLabel = "Off";
+        }
+        var online = isp.online_clients != null ? isp.online_clients : isp.client_count;
         return (
-          '<section class="mk-assigned-port-group">' +
-          '<header class="mk-assigned-port-group-head">' +
-          "<div><h4>" +
-          esc(group.title) +
-          "</h4>" +
-          '<p class="mk-help-note">' +
-          esc(group.note) +
-          "</p></div>" +
-          "</header>" +
-          '<div class="mk-assigned-client-cards is-group">' +
-          group.clients
-            .map(function (row) {
-              return clientCardHtml(row);
-            })
-            .join("") +
-          "</div>" +
-          '<div class="mk-router-analysis-table-wrap mk-assigned-group-table">' +
-          '<table class="mk-router-analysis-table mk-assigned-clients-table">' +
-          "<thead><tr>" +
-          "<th>Client</th><th>Account</th><th>Service</th><th>IP</th>" +
-          "<th>Cable</th><th>ISP</th><th>Down</th><th>Up</th><th>Data</th><th>Uptime</th>" +
-          "</tr></thead>" +
-          "<tbody>" +
-          group.clients
-            .map(function (row) {
-              return clientRowHtml(row, analysis);
-            })
-            .join("") +
-          "</tbody></table></div></section>"
+          '<div class="mk-assigned-isp-pill ' +
+          statusClass +
+          '">' +
+          '<span class="mk-assigned-isp-pill-name">' +
+          esc(isp.label || isp.port || "ISP " + (index + 1)) +
+          "</span>" +
+          '<span class="mk-assigned-isp-pill-meta">' +
+          esc(String(online != null ? online : 0)) +
+          " online · " +
+          esc(statusLabel) +
+          "</span>" +
+          "</div>"
         );
       })
       .join("");
     setHidden(wrap, false);
   }
 
-  function renderRouterAnalysis(data) {
+  function renderClients(analysis) {
     var section = root.querySelector("[data-router-analysis]");
-    if (!section) return;
-    var analysis = data.router_analysis || {};
-    var physical = data.physical_ports || [];
-    if (!physical.length && !(analysis.clients || []).length && !(analysis.isps || []).length) {
-      setHidden(section, true);
-      setHidden(livePill, true);
+    var list = root.querySelector("[data-assigned-client-list]");
+    var summaryEl = root.querySelector("[data-assigned-clients-summary]");
+    var emptyEl = root.querySelector("[data-router-analysis-empty]");
+    var errEl = root.querySelector("[data-router-analysis-error]");
+    if (!section || !list) return;
+
+    var clients = analysis.clients || [];
+    var summary = analysis.summary || {};
+
+    if (summaryEl) {
+      var online = summary.online_clients != null ? summary.online_clients : 0;
+      var total = summary.total_clients != null ? summary.total_clients : clients.length;
+      summaryEl.textContent = online + " online · " + total + " total";
+    }
+
+    if (!clients.length) {
+      list.innerHTML = "";
+      setHidden(emptyEl, false);
+      setHidden(section, false);
+      setHidden(livePill, false);
       return;
     }
+
+    var sorted = clients.slice().sort(function (a, b) {
+      if (!!a.online !== !!b.online) return a.online ? -1 : 1;
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
+
+    var ispOptions = analysis.isp_switch_options || [];
+    list.innerHTML = sorted
+      .map(function (row) {
+        return clientRow(row, ispOptions);
+      })
+      .join("");
+    setHidden(emptyEl, true);
     setHidden(section, false);
     setHidden(livePill, false);
 
-    var noteEl = section.querySelector("[data-router-analysis-note]");
-    if (noteEl) noteEl.textContent = analysis.mode_note || "";
-
-    var summary = analysis.summary || {};
-    var summaryEl = section.querySelector("[data-router-analysis-summary]");
-    if (summaryEl) {
-      var bits = [];
-      if (summary.online_clients != null) bits.push(summary.online_clients + " online");
-      if (summary.offline_clients != null && summary.offline_clients > 0) {
-        bits.push(summary.offline_clients + " offline");
-      }
-      if (summary.total_connections != null && summary.total_connections > 0) {
-        bits.push(summary.total_connections + " connections");
-      }
-      summaryEl.textContent = bits.join(" · ");
-      setHidden(summaryEl, !bits.length);
-    }
-
-    var kpis = section.querySelector("[data-assigned-kpis]");
-    if (kpis) {
-      var cards = [
-        {
-          label: "Online clients",
-          value: summary.online_clients != null ? String(summary.online_clients) : "—",
-        },
-        { label: "Live download", value: summary.download_label || "—" },
-        { label: "Live upload", value: summary.upload_label || "—" },
-        { label: "Session data", value: summary.session_data_label || "—" },
-      ];
-      kpis.innerHTML = cards
-        .map(function (card) {
-          return (
-            '<div class="mk-assigned-kpi">' +
-            '<p class="mk-assigned-kpi-label">' +
-            esc(card.label) +
-            "</p>" +
-            '<p class="mk-assigned-kpi-value">' +
-            esc(card.value) +
-            "</p>" +
-            "</div>"
-          );
-        })
-        .join("");
-      setHidden(kpis, false);
-    }
-
-    var ispsSection = section.querySelector("[data-router-analysis-isps]");
-    var ispGrid = section.querySelector("[data-assigned-isp-grid]");
-    var isps = analysis.isps || [];
-    if (ispsSection && ispGrid) {
-      if (!isps.length) {
-        ispGrid.innerHTML = "";
-        setHidden(ispsSection, true);
-      } else {
-        ispGrid.innerHTML = isps
-          .map(function (isp, index) {
-            return portCardHtml(isp, "ISP " + (index + 1));
-          })
-          .join("");
-        setHidden(ispsSection, false);
-      }
-    }
-
-    var lanWrap = section.querySelector("[data-assigned-lan-wrap]");
-    var lanGrid = section.querySelector("[data-assigned-lan-grid]");
-    var lanPorts = (analysis.lan_ports || []).filter(function (port) {
-      return (port.client_count || 0) > 0 || (port.role || "") === "lan";
-    });
-    if (lanWrap && lanGrid) {
-      if (!lanPorts.length) {
-        lanGrid.innerHTML = "";
-        setHidden(lanWrap, true);
-      } else {
-        lanGrid.innerHTML = lanPorts
-          .map(function (port) {
-            return portCardHtml(port, "Cable");
-          })
-          .join("");
-        setHidden(lanWrap, false);
-      }
-    }
-
-    renderPortGroups(analysis);
-
-    var clientsWrap = section.querySelector("[data-router-analysis-clients-wrap]");
-    var clientsBody = section.querySelector("[data-router-analysis-clients]");
-    var clientCards = section.querySelector("[data-assigned-client-cards]");
-    var emptyEl = section.querySelector("[data-router-analysis-empty]");
-    var tableWrap = section.querySelector("[data-assigned-all-table-wrap]");
-    var caption = section.querySelector("[data-assigned-clients-caption]");
-    var clients = analysis.clients || [];
-    var hasGroups = !!(
-      root.querySelector("[data-assigned-port-groups]") &&
-      !root.querySelector("[data-assigned-port-groups]").hidden
-    );
-    if (clientsWrap && clientsBody) {
-      if (!clients.length) {
-        clientsBody.innerHTML = "";
-        if (clientCards) clientCards.innerHTML = "";
-        setHidden(tableWrap, true);
-        setHidden(clientCards, true);
-        setHidden(emptyEl, false);
-        setHidden(clientsWrap, false);
-      } else {
-        clientsBody.innerHTML = clients
-          .map(function (row) {
-            return clientRowHtml(row, analysis);
-          })
-          .join("");
-        if (clientCards) {
-          clientCards.innerHTML = clients
-            .map(function (row) {
-              return clientCardHtml(row);
-            })
-            .join("");
-          setHidden(clientCards, hasGroups);
-        }
-        setHidden(tableWrap, false);
-        if (caption) {
-          caption.textContent = hasGroups
-            ? "Grouped by cable above — full client list below."
-            : "Live download / upload, session data, ISP link, and cable port for each assigned customer.";
-        }
-        setHidden(emptyEl, true);
-        setHidden(clientsWrap, false);
-      }
-    }
-
-    var errEl = section.querySelector("[data-router-analysis-error]");
     if (errEl) {
       var err = (analysis.error || "").trim();
       errEl.textContent = err;
@@ -426,14 +271,195 @@
     }
   }
 
+  function renderPage(data) {
+    var analysis = data.router_analysis || {};
+    if (!analysis.ok && !(analysis.clients || []).length) {
+      setHidden(root.querySelector("[data-router-analysis]"), true);
+      setHidden(root.querySelector("[data-assigned-isp-summary]"), true);
+      setHidden(root.querySelector("[data-assigned-status-card]"), true);
+      setHidden(livePill, true);
+      return;
+    }
+
+    renderNotice(data);
+    renderIspSummary(analysis);
+    renderClients(analysis);
+  }
+
+  function startJobProgress(onComplete) {
+    if (!pushStatusUrl || !window.MikrotikJobProgress) return;
+    if (jobWatcher && jobWatcher.stop) jobWatcher.stop();
+    jobWatcher = window.MikrotikJobProgress.watch({
+      jobType: SMART_BALANCE_JOB,
+      statusUrl: pushStatusUrl + "?job=" + encodeURIComponent(SMART_BALANCE_JOB),
+      onComplete: function () {
+        applyInFlight = false;
+        if (typeof onComplete === "function") onComplete();
+        fetchLive(true);
+      },
+      onFail: function () {
+        applyInFlight = false;
+        fetchLive(true);
+      },
+    });
+  }
+
+  function syncJobProgress(data) {
+    if (!data) return;
+    var scheduled =
+      !!(data.balance_auto && (data.balance_auto.scheduled || data.balance_auto.ok)) ||
+      !!data.applying_uplink;
+    if (scheduled && window.MikrotikJobProgress && !jobWatcher) {
+      startJobProgress();
+    }
+  }
+
+  function requestClientIspSwitch(btn) {
+    if (!applyUrl || switchInFlight || !btn) return Promise.resolve(null);
+    var customerId = btn.getAttribute("data-customer-id") || "";
+    var clientIp = btn.getAttribute("data-client-ip") || "";
+    var clientName = btn.getAttribute("data-client-name") || "Customer";
+    var targetPort = btn.getAttribute("data-target-port") || "";
+    if (!customerId || !clientIp || !targetPort) {
+      return Promise.resolve(null);
+    }
+
+    switchInFlight = true;
+    btn.disabled = true;
+    var body = new URLSearchParams();
+    body.set("action", "switch_client_isp");
+    body.set("customer_id", customerId);
+    body.set("client_ip", clientIp);
+    body.set("target_port", targetPort);
+    if (csrf) body.set("csrfmiddlewaretoken", csrf);
+
+    return fetch(applyUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: body.toString(),
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          data._status = res.status;
+          return data;
+        });
+      })
+      .then(function (data) {
+        switchInFlight = false;
+        btn.disabled = false;
+        if (!data || !data.ok) {
+          if (typeof window.showToast === "function") {
+            window.showToast({
+              type: "error",
+              title: "Could not switch",
+              text: (data && data.error) || "Try again in a moment.",
+              sticky: true,
+            });
+          }
+          return data;
+        }
+        if (typeof window.showToast === "function") {
+          window.showToast({
+            type: "success",
+            title: "Switched",
+            text:
+              data.message ||
+              clientName + " is now on " + (data.isp_port || targetPort) + ".",
+          });
+        }
+        fetchLive(true);
+        return data;
+      })
+      .catch(function (err) {
+        switchInFlight = false;
+        btn.disabled = false;
+        if (typeof window.showToast === "function") {
+          window.showToast({
+            type: "error",
+            title: "Could not switch",
+            text: (err && err.message) || "Network error.",
+            sticky: true,
+          });
+        }
+        return null;
+      });
+  }
+
+  function requestSmartBalanceApply() {
+    if (!applyUrl || applyInFlight) return Promise.resolve(null);
+    applyInFlight = true;
+    var body = new URLSearchParams();
+    body.set("action", "auto_enable_smart_balance");
+    if (csrf) body.set("csrfmiddlewaretoken", csrf);
+    return fetch(applyUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: body.toString(),
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          data._status = res.status;
+          return data;
+        });
+      })
+      .then(function (data) {
+        if (!data || !data.ok) {
+          applyInFlight = false;
+          if (typeof window.showToast === "function") {
+            window.showToast({
+              type: "error",
+              title: "Setup failed",
+              text: (data && data.error) || "Could not start smart balance.",
+              sticky: true,
+            });
+          }
+          return data;
+        }
+        startJobProgress();
+        fetchLive(true);
+        return data;
+      })
+      .catch(function (err) {
+        applyInFlight = false;
+        if (typeof window.showToast === "function") {
+          window.showToast({
+            type: "error",
+            title: "Setup failed",
+            text: (err && err.message) || "Network error.",
+            sticky: true,
+          });
+        }
+        return null;
+      });
+  }
+
+  function maybeAutoApply(data) {
+    if (!data) return;
+    if (data.applying_uplink || (data.balance_auto && data.balance_auto.scheduled)) {
+      syncJobProgress(data);
+    }
+  }
+
   function showError(message) {
     var banner = root.querySelector("[data-assigned-error]");
     var text = root.querySelector("[data-assigned-error-text]");
     var retry = root.querySelector("[data-assigned-retry]");
-    if (text) text.textContent = message || "Could not load assigned ports data.";
+    if (text) text.textContent = message || "Could not load live data.";
     setHidden(banner, false);
     setHidden(retry, suspended);
     setHidden(root.querySelector("[data-router-analysis]"), true);
+    setHidden(root.querySelector("[data-assigned-status-card]"), true);
+    setHidden(root.querySelector("[data-assigned-isp-summary]"), true);
     setHidden(livePill, true);
   }
 
@@ -444,37 +470,48 @@
   function applyPayload(data) {
     setHidden(root.querySelector("[data-assigned-loading]"), true);
     if (!data || !data.ok) {
-      showError((data && data.error) || "Could not load assigned ports data.");
+      showError((data && data.error) || "Could not load live data.");
       return;
     }
     clearError();
-    renderRouterAnalysis(data);
+    renderPage(data);
+    syncJobProgress(data);
+    maybeAutoApply(data);
   }
 
-  function fetchLive() {
+  function fetchLive(force) {
     if (!liveUrl || suspended) return;
-    fetch(liveUrl, { credentials: "same-origin", headers: { Accept: "application/json" } })
+    var url = liveUrl;
+    if (force) url += (url.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+    fetch(url, { credentials: "same-origin", headers: { Accept: "application/json" } })
       .then(function (res) {
-        return res.json().then(function (data) {
-          data._status = res.status;
-          return data;
-        });
+        return res
+          .json()
+          .catch(function () {
+            return { ok: false, error: "Invalid response (HTTP " + res.status + ")." };
+          })
+          .then(function (data) {
+            data._status = res.status;
+            return data;
+          });
       })
       .then(applyPayload)
-      .catch(function () {
-        showError("Network error while reading live ISP data.");
+      .catch(function (err) {
+        showError((err && err.message) || "Network error while loading live data.");
       });
   }
 
   function startPolling() {
     if (!liveUrl || suspended) {
       setHidden(root.querySelector("[data-assigned-loading]"), true);
-      if (suspended) showError("Activate this MikroTik account to view assigned ports.");
+      if (suspended) showError("Activate this MikroTik account to view live clients.");
       return;
     }
-    fetchLive();
+    fetchLive(false);
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(fetchLive, pollMs);
+    pollTimer = setInterval(function () {
+      fetchLive(false);
+    }, pollMs);
   }
 
   var retryBtn = root.querySelector("[data-assigned-retry]");
@@ -482,10 +519,27 @@
     retryBtn.addEventListener("click", function () {
       setHidden(root.querySelector("[data-assigned-loading]"), false);
       clearError();
-      fetchLive();
+      fetchLive(true);
+    });
+  }
+
+  var applyBtn = root.querySelector("[data-assigned-balance-apply]");
+  if (applyBtn) {
+    applyBtn.addEventListener("click", function () {
+      requestSmartBalanceApply();
+    });
+  }
+
+  var clientList = root.querySelector("[data-assigned-client-list]");
+  if (clientList) {
+    clientList.addEventListener("click", function (event) {
+      var chip = event.target.closest("[data-isp-switch-chip]");
+      if (!chip) return;
+      event.preventDefault();
+      requestClientIspSwitch(chip);
     });
   }
 
   if (loading) startPolling();
-  else if (suspended) showError("Activate this MikroTik account to view assigned ports.");
+  else if (suspended) showError("Activate this MikroTik account to view live clients.");
 })();

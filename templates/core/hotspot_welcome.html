@@ -317,6 +317,18 @@
       letter-spacing: 0.06em;
       text-transform: uppercase;
     }
+    .status-help {
+      margin: 0.55rem 0 0;
+      font-size: 0.78rem;
+      color: #5f746d;
+    }
+    .status-help[hidden] { display: none !important; }
+    .status-help a {
+      color: #0d7c72;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .status-help a:hover { text-decoration: underline; }
     .status::before {
       content: "";
       width: 0.4rem;
@@ -620,6 +632,10 @@
         </div>
       {% endif %}
       <p class="status" data-welcome-status>Checking your connection…</p>
+      <p class="status-help" data-welcome-help hidden>
+        <a href="{{ assistance_url|escapejs }}" data-welcome-help-link>Get connection help</a>
+        · <a href="{{ pay_url|escapejs }}">Back to pay</a>
+      </p>
     </header>
 
     {% if shareable_voucher_count %}
@@ -750,15 +766,20 @@
 
       function failClosed() {
         if (goAssistance()) return;
+        var helpEl = document.querySelector("[data-welcome-help]");
         if (statusEl) statusEl.textContent = "Not connected yet";
-        if (hasPayment) {
-          window.setTimeout(goPay, 1200);
+        if (helpEl) helpEl.hidden = false;
+        if (payUrl) {
+          window.setTimeout(goPay, hasPayment ? 2500 : 1800);
         }
       }
 
-      function checkConnection(useSync) {
+      function checkConnection(useSync, useLive) {
         attempts += 1;
-        var url = checkUrl + (useSync ? "?sync=1" : "");
+        var params = [];
+        if (useSync) params.push("sync=1");
+        if (useLive) params.push("live=1");
+        var url = checkUrl + (params.length ? "?" + params.join("&") : "");
         return fetch(url, {
           headers: { "Accept": "application/json" },
           credentials: "same-origin"
@@ -801,7 +822,8 @@
       }
 
       function verifyLoop() {
-        checkConnection(false)
+        var useLive = attempts >= 2;
+        checkConnection(false, useLive)
           .then(function (connected) {
             if (connected) return null;
 
@@ -813,7 +835,7 @@
             }
 
             if (attempts < 3) {
-              return checkConnection(true).then(function (ok) {
+              return checkConnection(true, true).then(function (ok) {
                 if (ok) return null;
                 return delay(attempts === 1 ? 300 : 450).then(verifyLoop);
               });

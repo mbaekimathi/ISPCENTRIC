@@ -1,3 +1,4 @@
+{% load static %}
 <div
   id="mikrotik-job-banner"
   class="mk-banner mk-job-banner is-info"
@@ -9,169 +10,51 @@
   <strong data-mikrotik-job-title>MikroTik update</strong>
   <span data-mikrotik-job-text></span>
 </div>
+
+<div
+  id="mikrotik-job-progress"
+  class="mk-job-progress"
+  hidden
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="mikrotik-job-progress-title"
+  aria-live="polite"
+  data-mikrotik-job-progress
+>
+  <div class="mk-job-progress-card">
+    <header class="mk-job-progress-head">
+      <div class="mk-job-progress-head-copy">
+        <strong id="mikrotik-job-progress-title" data-mikrotik-job-progress-title>
+          MikroTik update
+        </strong>
+        <p class="mk-job-progress-sub" data-mikrotik-job-progress-sub>
+          Working in the background — keep this page open.
+        </p>
+      </div>
+      <span class="mk-job-progress-spinner" aria-hidden="true" data-mikrotik-job-spinner></span>
+    </header>
+    <ol class="mk-job-progress-steps" data-mikrotik-job-steps></ol>
+    <p class="mk-job-progress-detail" data-mikrotik-job-progress-detail></p>
+  </div>
+</div>
+
+<script src="{% static 'js/mikrotik_job_progress.js' %}"></script>
 <script>
 (function () {
   var params = new URLSearchParams(window.location.search);
   var jobType = (params.get("job") || "").trim();
-  if (!jobType) return;
+  if (!jobType || !window.MikrotikJobProgress) return;
 
-  var banner = document.querySelector("[data-mikrotik-job-banner]");
-  var titleEl = document.querySelector("[data-mikrotik-job-title]");
-  var textEl = document.querySelector("[data-mikrotik-job-text]");
-  if (!banner || !textEl) return;
-
-  var statusUrl = "{% url 'core:mikrotik_push_status' router_id=router.pk %}?job=" + encodeURIComponent(jobType);
-  var recoverUrl = "{% url 'core:mikrotik_push_status' router_id=router.pk %}?job=" + encodeURIComponent(jobType) + "&recover=1";
-  var labels = {
-    credentials: "Updating credentials",
-    wifi: "Updating Wi‑Fi",
-    clean_uplink: "Applying clean uplink",
-    port_toggle: "Updating port",
-    port_role: "Syncing WAN port",
-    uplink_bond: "Applying bond uplink",
-    uplink_failover: "Applying failover uplink",
-    uplink_balance: "Applying load balance",
-    uplink_smart_balance: "Applying smart balance",
-    pppoe_push: "Pushing PPPoE policy",
-    hotspot_push: "Pushing Hotspot policy",
-    nas_refresh: "Applying billing settings"
-  };
-    phaseText = {
-    queued: "Queued — waiting for background worker…",
-    start: "Starting background push…",
-    prepare: "Preparing uplink on the MikroTik…",
-    unbridge: "Moving ISP cables off the LAN bridge…",
-    reconnect: "Waiting for management API (brief flap is normal)…",
-    configure: "Configuring uplink on the MikroTik…",
-    bond_wan: "Starting WAN on the bond interface…",
-    retire_members: "Retiring old member DHCP clients…",
-    pcc: "Installing share + failover routes…",
-    smart_monitor: "Installing slow-link monitor…",
-    working: "Still applying — keep this page open…",
-    push: "Pushing PPPoE / Hotspot billing rules to the MikroTik…",
-    verify: "Verifying MikroTik management access…",
-    done: "Finishing up…"
-  };
-
-  var startedAt = Date.now();
-  var unknownPolls = 0;
-  var recoverAttempted = false;
-  var maxWaitMs = jobType.indexOf("uplink_") === 0 || jobType === "clean_uplink"
-    ? 600000
-    : 240000;
-
-  function setBanner(kind, title, text) {
-    banner.hidden = false;
-    banner.classList.remove("is-info", "is-success", "is-danger", "is-warn");
-    banner.classList.add(kind);
-    if (titleEl) titleEl.textContent = title;
-    textEl.textContent = text;
-  }
-
-  function jobDetail(job) {
-    var phase = (job.phase || "").toLowerCase();
-    if (job.message) return job.message;
-    if (phase && phaseText[phase]) return phaseText[phase];
-    return "Working over the billing tunnel — brief management flaps are normal for uplink changes.";
-  }
-
-  function poll(recover) {
-    var url = recover ? recoverUrl : statusUrl;
-    fetch(url, {
-      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
-      credentials: "same-origin"
-    })
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        var job = (data && data.job) || {};
-        var status = (job.status || "").toLowerCase();
-        var label = labels[jobType] || "MikroTik update";
-        var elapsedMs = Date.now() - startedAt;
-
-        if (status === "unknown") {
-          unknownPolls += 1;
-          if (!recoverAttempted && unknownPolls >= 3) {
-            recoverAttempted = true;
-            setBanner(
-              "is-warn",
-              label + "…",
-              "Job status was lost — restarting the billing settings push…"
-            );
-            window.setTimeout(function () { poll(true); }, 800);
-            return;
-          }
-          setBanner(
-            "is-warn",
-            label + "…",
-            unknownPolls < 3
-              ? "Waiting for background push to register…"
-              : "Still waiting for job status. Check that the Django server is running."
-          );
-          if (elapsedMs < maxWaitMs) {
-            window.setTimeout(function () { poll(false); }, 2000);
-          } else {
-            setBanner(
-              "is-danger",
-              label + " failed",
-              "Billing settings push never started. Refresh this page or use MikroTik → Reconnect."
-            );
-          }
-          return;
-        }
-
-        if (status === "pending" || status === "running") {
-          setBanner("is-info", label + "…", jobDetail(job));
-          if (elapsedMs >= maxWaitMs) {
-            setBanner(
-              "is-danger",
-              label + " timed out",
-              "The push is taking too long. Check MikroTik connectivity, use Reconnect, then try again."
-            );
-            if (typeof window.showToast === "function") {
-              window.showToast({
-                type: "error",
-                title: label + " timed out",
-                text: "Open MikroTik → Reconnect, confirm the router is online, then retry.",
-                sticky: true
-              });
-            }
-            return;
-          }
-          window.setTimeout(function () { poll(false); }, 2000);
-          return;
-        }
-        if (status === "ok") {
-          setBanner("is-success", label + " complete", job.message || "Settings applied on the MikroTik.");
-          if (window.history && window.history.replaceState) {
-            window.history.replaceState({}, "", window.location.pathname);
-          }
-          return;
-        }
-        if (status === "failed") {
-          var detail = job.error || "Could not apply settings on the MikroTik.";
-          if (job.hint && detail.indexOf(job.hint) < 0) {
-            detail = detail + " " + job.hint;
-          }
-          setBanner("is-danger", label + " failed", detail);
-          if (typeof window.showToast === "function") {
-            window.showToast({
-              type: "error",
-              title: label + " failed",
-              text: detail,
-              sticky: true
-            });
-          }
-          return;
-        }
-        window.setTimeout(function () { poll(false); }, 2500);
-      })
-      .catch(function () {
-        setBanner("is-warn", "Checking update status…", "Retrying in a few seconds.");
-        window.setTimeout(function () { poll(false); }, 3000);
-      });
-  }
-
-  setBanner("is-info", (labels[jobType] || "MikroTik update") + "…", "Starting background push…");
-  poll(false);
+  window.MikrotikJobProgress.watch({
+    jobType: jobType,
+    statusUrl:
+      "{% url 'core:mikrotik_push_status' router_id=router.pk %}?job=" +
+      encodeURIComponent(jobType),
+    onComplete: function () {
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+    },
+  });
 })();
 </script>

@@ -216,6 +216,8 @@
           <li><span class="num">3</span><span>Enter one unused code above and tap <strong>Activate voucher</strong>.</span></li>
           <li><span class="num">4</span><span>Wait a few seconds — that device will connect automatically.</span></li>
         </ol>
+      {% elif access_error %}
+        <p class="empty">{{ access_error }}</p>
       {% else %}
         <p class="empty">
           No unused vouchers right now. If you bought a multi-device package, codes appear here after payment.

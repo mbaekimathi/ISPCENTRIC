@@ -105,3 +105,48 @@ def check_hosted_production_secrets(app_configs, **kwargs):
             )
         )
     return warnings
+
+
+@register()
+def check_mpesa_stk_callback_public(app_configs, **kwargs):
+    """Daraja STK callbacks must use a public HTTPS URL Safaricom can POST to."""
+    try:
+        from accounts.models import PaymentGateway
+        from core.hotspot_portal import (
+            mpesa_stk_callback_reachability,
+            mpesa_stk_callback_url,
+        )
+
+        gateway = PaymentGateway.get_solo()
+        if not gateway.is_stk_ready():
+            return []
+        reach = mpesa_stk_callback_reachability()
+        url = reach.get("url") or mpesa_stk_callback_url()
+        if not url:
+            return []
+        issues = []
+        if not reach.get("ok"):
+            issues.append(
+                Warning(
+                    reach.get("warning")
+                    or (
+                        "M-Pesa STK callback URL is not reachable from Safaricom. "
+                        f"Configure PUBLIC_BASE_URL so {url} is a public HTTPS origin."
+                    ),
+                    id="core.W005",
+                )
+            )
+        elif getattr(settings, "HOSTED", False) and url.lower().startswith("http://"):
+            issues.append(
+                Warning(
+                    reach.get("warning")
+                    or (
+                        "M-Pesa STK callback uses HTTP on a hosted install. "
+                        "Use HTTPS in PUBLIC_BASE_URL for reliable payment receipts."
+                    ),
+                    id="core.W006",
+                )
+            )
+        return issues
+    except Exception:
+        return []

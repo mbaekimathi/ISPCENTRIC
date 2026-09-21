@@ -9,7 +9,7 @@
     class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'assigned_ports' %} is-active{% endif %}"
     href="{% url 'core:mikrotik_assigned_ports' router.id %}"
     {% if mikrotik_quicknav_active == 'assigned_ports' %}aria-current="page"{% endif %}
-  >Assigned ports</a>
+  >Live clients</a>
   <a
     class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'clean_uplink' %} is-active{% endif %}"
     href="{% url 'core:mikrotik_clean_uplink' router.id %}"
@@ -33,5 +33,10 @@
     href="{% url 'core:mikrotik_setup' router.id %}"
     {% if mikrotik_quicknav_active == 'setup' %}aria-current="page"{% endif %}
   >MikroTik setup</a>
+  <a
+    class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'recovery_scripts' %} is-active{% endif %}"
+    href="{% url 'core:mikrotik_recovery_scripts' router.id %}"
+    {% if mikrotik_quicknav_active == 'recovery_scripts' %}aria-current="page"{% endif %}
+  >Winbox recovery</a>
 </nav>
 {% endif %}

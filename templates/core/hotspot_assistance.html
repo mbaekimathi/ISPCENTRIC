@@ -333,6 +333,18 @@
   <script>
     (function () {
       var welcomeUrl = "{{ welcome_url|escapejs }}";
+      var stkId = "{{ stk_id|escapejs }}";
+      var statusToken = "{{ status_token|escapejs }}";
+
+      function buildWelcomeUrl() {
+        if (!stkId || !statusToken) return welcomeUrl;
+        var sep = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
+        return (
+          welcomeUrl + sep +
+          "stk=" + encodeURIComponent(stkId) +
+          "&token=" + encodeURIComponent(statusToken)
+        );
+      }
       var statusEl = document.querySelector("[data-voucher-status]");
       var connectingEl = document.querySelector("[data-connecting]");
       var form = document.querySelector("[data-voucher-form]");
@@ -399,7 +411,7 @@
                   statusEl.className = "meta ok";
                 }
                 window.setTimeout(function () {
-                  window.location.replace(data.welcome_url || welcomeUrl);
+                  window.location.replace(data.welcome_url || buildWelcomeUrl());
                 }, 400);
                 return;
               }
@@ -434,7 +446,7 @@
                   statusEl.textContent = "Connected! Opening internet…";
                   statusEl.className = "meta ok";
                 }
-                window.setTimeout(function () { window.location.replace(welcomeUrl); }, 300);
+                window.setTimeout(function () { window.location.replace(buildWelcomeUrl()); }, 300);
                 return;
               }
               if (attempts < 4) {

@@ -2290,6 +2290,37 @@ def stk_pending_message(result_desc: str = "") -> str:
     return desc
 
 
+def _rebind_hotspot_router_after_payment(stk: StkPushRequest, mac: str) -> None:
+    """
+    One live NAS lookup after payment on multi-router sites.
+
+    Pay-start skips live walks for speed; rebinding here ensures MikroTik sync
+    targets the router that actually sees the paying device.
+    """
+    customer = stk.customer
+    org = stk.organization
+    if customer is None or org is None or not (mac or "").strip():
+        return
+    try:
+        from core.mikrotik_connect import find_hotspot_router_for_mac
+
+        live_router = find_hotspot_router_for_mac(org, mac, live_walk=True)
+        if live_router is None or customer.router_id == live_router.pk:
+            return
+        customer.router = live_router
+        customer.save(update_fields=["router"])
+        logger.info(
+            "Rebound Hotspot customer %s to router %s after STK %s payment",
+            customer.pk,
+            live_router.pk,
+            stk.pk,
+        )
+    except Exception:
+        logger.exception(
+            "Could not rebind Hotspot router after STK %s mac=%s", stk.pk, mac
+        )
+
+
 def _apply_paid_subscription_to_status(
     payload: dict,
     stk: StkPushRequest,
@@ -2310,6 +2341,10 @@ def _apply_paid_subscription_to_status(
     # next poll (or in the background when wait_for_nas is false).
     activation = {}
     first_apply = not bool(stk.subscription_applied)
+    pay_mac = stk_hotspot_mac(stk)
+    if first_apply and pay_mac and stk.customer_id:
+        _rebind_hotspot_router_after_payment(stk, pay_mac)
+        stk.customer.refresh_from_db()
     if first_apply and not wait_for_nas:
         activation = activate_paid_subscription_stk(
             stk,
