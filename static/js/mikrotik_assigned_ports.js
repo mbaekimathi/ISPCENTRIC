@@ -14,6 +14,8 @@
   var jobWatcher = null;
   var applyInFlight = false;
   var switchInFlight = false;
+  var autoBalanceInFlight = false;
+  var pollInFlight = false;
   var SMART_BALANCE_JOB = "uplink_smart_balance";
   var OFFLINE_KEY = "__offline__";
   var UNKNOWN_KEY = "__unknown__";
@@ -396,26 +398,28 @@
       var moved = data.client_rebalance.moved || [];
       if (moved.length === 1) {
         var first = moved[0];
-        title = "Load balanced seamlessly";
+        title = "Auto balance adjusted";
         message =
           (first.name || "A customer") +
           " is shifting to " +
           (first.to_isp || "another link") +
-          " — no disconnect, new traffic uses the lighter ISP.";
+          " — active streams stay up; new traffic uses the lighter ISP.";
       } else if (moved.length > 1) {
-        title = "Load balanced seamlessly";
+        title = "Auto balance adjusted";
         message =
           moved.length +
-          " customers are shifting to lighter links without dropping sessions.";
+          " customers are shifting to lighter links — active browsing stays connected.";
       }
     } else if (insights.imbalanced && insights.bandwidth_drift && insights.bandwidth_drift.sustained) {
       title = "Traffic uneven across uplinks";
-      message =
-        "Live bandwidth is skewed — moving heavy customers toward lighter links automatically.";
+      message = data.smart_auto_balance_enabled
+        ? "Live bandwidth is skewed — auto balance may move heavy customers to lighter links."
+        : "Live bandwidth is skewed — tap Switch next to heavy customers to move them to a lighter link.";
     } else if (insights.imbalanced && insights.dominant_isp) {
       title = "Most customers on " + insights.dominant_isp;
-      message =
-        "The system moves customers automatically, or tap Switch next to their link.";
+      message = data.smart_auto_balance_enabled
+        ? "Auto balance may move customers toward lighter links, or tap Switch manually."
+        : "Tap Switch next to a customer to move them to another ISP link.";
     }
 
     if (titleEl) titleEl.textContent = title;
@@ -604,8 +608,87 @@
     }
   }
 
+  function renderAutoBalanceToggle(data) {
+    var wrap = document.querySelector("[data-auto-balance-toggle-wrap]");
+    var input = wrap ? wrap.querySelector("[data-auto-balance-toggle]") : null;
+    if (!wrap || !input) return;
+    var show = !!data.can_toggle_auto_balance && !suspended;
+    setHidden(wrap, !show);
+    if (!show) return;
+    input.checked = !!data.smart_auto_balance_enabled;
+    input.disabled = autoBalanceInFlight;
+    wrap.classList.toggle("is-on", !!data.smart_auto_balance_enabled);
+  }
+
+  function setAutoBalance(enabled) {
+    if (!applyUrl || autoBalanceInFlight || suspended) return Promise.resolve(null);
+    autoBalanceInFlight = true;
+    renderAutoBalanceToggle({
+      can_toggle_auto_balance: true,
+      smart_auto_balance_enabled: enabled,
+    });
+    var body = new URLSearchParams();
+    body.set("action", "set_auto_balance");
+    body.set("enabled", enabled ? "1" : "0");
+    if (csrf) body.set("csrfmiddlewaretoken", csrf);
+    return fetch(applyUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: body.toString(),
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          data._status = res.status;
+          return data;
+        });
+      })
+      .then(function (data) {
+        autoBalanceInFlight = false;
+        if (!data || !data.ok) {
+          fetchLive(true);
+          if (typeof window.showToast === "function") {
+            window.showToast({
+              type: "error",
+              title: "Could not update",
+              text: (data && data.error) || "Try again in a moment.",
+              sticky: true,
+            });
+          }
+          return data;
+        }
+        if (typeof window.showToast === "function") {
+          window.showToast({
+            type: "success",
+            title: enabled ? "Auto balance on" : "Auto balance off",
+            text: data.message || "",
+          });
+        }
+        fetchLive(true);
+        return data;
+      })
+      .catch(function (err) {
+        autoBalanceInFlight = false;
+        fetchLive(true);
+        if (typeof window.showToast === "function") {
+          window.showToast({
+            type: "error",
+            title: "Could not update",
+            text: (err && err.message) || "Network error.",
+            sticky: true,
+          });
+        }
+        return null;
+      });
+  }
+
   function renderPage(data) {
     var analysis = data.router_analysis || {};
+    renderAutoBalanceToggle(data || {});
     if (!analysis.ok && !(analysis.clients || []).length) {
       setHidden(root.querySelector("[data-router-analysis]"), true);
       setHidden(root.querySelector("[data-assigned-status-card]"), true);
@@ -818,6 +901,9 @@
 
   function fetchLive(force) {
     if (!liveUrl || suspended) return;
+    if (pollInFlight && !force) return;
+    if (!force && (switchInFlight || applyInFlight || autoBalanceInFlight)) return;
+    pollInFlight = true;
     var url = liveUrl;
     if (force) url += (url.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
     fetch(url, { credentials: "same-origin", headers: { Accept: "application/json" } })
@@ -835,6 +921,9 @@
       .then(applyPayload)
       .catch(function (err) {
         showError((err && err.message) || "Network error while loading live data.");
+      })
+      .finally(function () {
+        pollInFlight = false;
       });
   }
 
@@ -864,6 +953,19 @@
   if (applyBtn) {
     applyBtn.addEventListener("click", function () {
       requestSmartBalanceApply();
+    });
+  }
+
+  var autoBalanceToggle = document.querySelector("[data-auto-balance-toggle]");
+  if (autoBalanceToggle) {
+    autoBalanceToggle.addEventListener("change", function () {
+      var next = !!autoBalanceToggle.checked;
+      var prev = !next;
+      setAutoBalance(next).then(function (data) {
+        if (!data || !data.ok) {
+          autoBalanceToggle.checked = prev;
+        }
+      });
     });
   }
 

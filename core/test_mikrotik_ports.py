@@ -1737,6 +1737,21 @@ class UplinkLinkNotificationTests(SimpleTestCase):
         self.assertIn("ether1", ports)
         self.assertIn("ether2", ports)
 
+    def test_collect_links_without_internet_empty_smart_balance_status(self):
+        from core.views import _collect_mikrotik_links_without_internet
+
+        affected = _collect_mikrotik_links_without_internet(
+            physical_ports=[
+                _port("ether1", running=True, uplink_kind="dhcp"),
+                _port("ether2", running=True, uplink_kind="dhcp"),
+            ],
+            primary_wan_ports=["ether1"],
+            backup_wan_ports=["ether2"],
+            bond_member_ports=[],
+            smart_balance_status={},
+        )
+        self.assertIsInstance(affected, list)
+
 
 class UplinkHealthAlertTests(SimpleTestCase):
     def test_failover_on_backup_alert(self):
@@ -1818,6 +1833,48 @@ class UplinkHealthAlertTests(SimpleTestCase):
             msg.get("message", "").lower(),
         )
         self.assertIn("customers stay online", msg.get("message", "").lower())
+
+    def test_failover_on_backup_with_empty_smart_balance_status(self):
+        alerts = _build_uplink_health_alerts(
+            uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+            uplink_live={
+                "ok": True,
+                "mode": "smart_balance",
+                "checked_routes": [
+                    {
+                        "active": False,
+                        "disabled": False,
+                        "distance": "1",
+                        "check_gateway": "ping",
+                        "gateway": "192.168.1.1",
+                    },
+                    {
+                        "active": True,
+                        "disabled": False,
+                        "distance": "11",
+                        "check_gateway": "ping",
+                    },
+                ],
+                "failover_clients": [
+                    {"interface": "ether1", "distance": "1", "disabled": False},
+                    {"interface": "ether2", "distance": "11", "disabled": False},
+                ],
+            },
+            wan_share={},
+            primary_wan_ports=["ether1"],
+            backup_wan_ports=["ether2"],
+            bond_member_ports=[],
+            physical_ports=[
+                _port("ether1", running=True, uplink_kind="dhcp"),
+                _port("ether2", running=True, uplink_kind="dhcp"),
+            ],
+            uplink_weights={},
+            balance_router_applied=True,
+            smart_balance_applied=True,
+            smart_balance_status={},
+        )
+        codes = [a["code"] for a in alerts]
+        self.assertIn("failover_on_backup", codes)
 
     def test_failover_on_backup_smart_balance_slow_reason(self):
         alerts = _build_uplink_health_alerts(
@@ -4643,7 +4700,10 @@ class ClientIspSwitchTests(SimpleTestCase):
             yield object()
 
         cached_live = {
-            "router_analysis": {"can_switch_clients": True},
+            "router_analysis": {
+                "can_switch_clients": True,
+                "clients": [{"customer_id": 9, "ip": "10.10.0.5", "isp_port": "ether1"}],
+            },
             "smart_balance_status": {"slow_ports": []},
         }
         with patch(
@@ -4651,6 +4711,9 @@ class ClientIspSwitchTests(SimpleTestCase):
             return_value=MagicMock(first=MagicMock(return_value=customer)),
         ), patch("core.views._router_api_host", return_value="10.0.0.1"), patch(
             "core.views._api_session", side_effect=fake_session
+        ), patch(
+            "core.views.router_client_isp_switch_ready",
+            return_value={"ok": True, "active_mark_indexes": [0, 1]},
         ), patch(
             "core.views.switch_client_to_isp_port",
             return_value={"ok": True, "isp_port": "ether2"},
@@ -4672,6 +4735,50 @@ class ClientIspSwitchTests(SimpleTestCase):
         switch_mock.assert_called_once()
         self.assertEqual(cache_delete.call_count, 2)
         record_mock.assert_called_once()
+
+    def test_perform_client_isp_switch_works_without_live_cache(self):
+        router = MikroTikRouter(
+            pk=7,
+            name="edge",
+            host="10.0.0.1",
+            username="admin",
+            password="x",
+            uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+            uplink_ports=["ether1", "ether2"],
+        )
+        org = MagicMock()
+        org.pk = 3
+        customer = MagicMock()
+        customer.pk = 9
+        customer.full_name = "Jane Doe"
+
+        @contextmanager
+        def fake_session(*args, **kwargs):
+            yield object()
+
+        with patch(
+            "core.views.Customer.objects.filter",
+            return_value=MagicMock(first=MagicMock(return_value=customer)),
+        ), patch("core.views._router_api_host", return_value="10.0.0.1"), patch(
+            "core.views._api_session", side_effect=fake_session
+        ), patch(
+            "core.views.router_client_isp_switch_ready",
+            return_value={"ok": True, "active_mark_indexes": [0, 1]},
+        ), patch(
+            "core.views.switch_client_to_isp_port",
+            return_value={"ok": True, "isp_port": "ether2"},
+        ), patch("core.views.cache.get", return_value=None), patch(
+            "core.views.cache.delete"
+        ), patch("core.views.record_client_isp_movement"):
+            result = _perform_client_isp_switch(
+                router,
+                org,
+                customer_id=9,
+                client_ip="10.10.0.5",
+                target_port="ether2",
+            )
+
+        self.assertTrue(result["ok"])
 
     def test_clear_all_client_isp_pins_removes_rules_and_refreshes_sessions(self):
         sock = object()

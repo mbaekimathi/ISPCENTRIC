@@ -187,6 +187,7 @@ from core.mikrotik_connect import (
     BALANCE_DRIFT_STREAK_THRESHOLD,
     CLIENT_REBALANCE_COOLDOWN_S,
     CLIENT_REBALANCE_FAST_COOLDOWN_S,
+    router_client_isp_switch_ready,
     switch_client_to_isp_port,
     build_wan_traffic_share,
     build_api_enable_terminal_script,
@@ -222,6 +223,10 @@ from core.mikrotik_discovery import annotate_onboarded, discover_mikrotik_device
 from core.client_isp_movements import record_client_isp_movement, record_client_isp_movements
 from core.models import ClientIspMovement, MikroTikRouter, WireGuardReservation
 from core.places import resolve_location, search_locations
+
+def _router_client_auto_balance_enabled(router: MikroTikRouter) -> bool:
+    """Per-router opt-in for automatic client ISP spreading (not port/WAN changes)."""
+    return bool(getattr(router, "smart_auto_balance_enabled", False))
 
 
 CLIENT_COMMON_NAV_START = [
@@ -2202,14 +2207,11 @@ def _build_router_client_analysis(
     mark_to_port = (
         usage.get("mark_to_port") if isinstance(usage.get("mark_to_port"), dict) else {}
     )
+    balance_tables_ready = bool(usage.get("balance_tables_ready"))
     balance_routing_ready = bool(
-        usage.get("uses_connection_marks")
-        or mark_to_port
-        or (
-            _is_multi_isp_mode(mode)
-            and len(member_ports) >= 2
-            and usage.get("ok")
-        )
+        balance_tables_ready
+        or usage.get("uses_connection_marks")
+        or len(mark_to_port) >= 2
     )
     can_switch_clients = bool(
         _is_multi_isp_mode(mode)
@@ -2742,7 +2744,11 @@ def _build_client_balance_insights(
         and bandwidth_drift.get("overloaded_isp")
         and bandwidth_drift.get("underloaded_isp")
     ) or bool(
-        applied and len(online_by_isp) == 1 and member_count >= 2 and total_online >= 1
+        applied
+        and uses_marks
+        and len(online_by_isp) == 1
+        and member_count >= 2
+        and total_online >= max(3, member_count)
     )
 
     mode_can_balance = _is_multi_isp_mode(mode) or mode == MikroTikRouter.UplinkMode.BOND
@@ -2763,13 +2769,13 @@ def _build_client_balance_insights(
         )
     elif not applied and ready_for_balance and mode == MikroTikRouter.UplinkMode.BOND:
         recommendations.append(
-            "Auto-enable smart balance to spread clients across both ISP links "
-            "with automatic failover."
+            "Turn on smart balance to spread clients across both ISP links "
+            "with failover."
         )
     elif not applied and balance_ready:
         recommendations.append(
             "Enable smart balance so new customer sessions spread across ISP links "
-            "with automatic failover."
+            "with failover."
         )
     elif applied and not uses_marks and total_online:
         recommendations.append(
@@ -2779,10 +2785,16 @@ def _build_client_balance_insights(
     elif imbalanced and bandwidth_drift.get("sustained"):
         drift_ports = bandwidth_drift.get("drifted_ports") or []
         drift_hint = "; ".join(drift_ports[:2]) if drift_ports else "live bandwidth skew"
-        recommendations.append(
-            f"Live traffic is uneven ({drift_hint}). "
-            "Moving heavy customers toward lighter ISP links automatically."
-        )
+        if router.smart_auto_balance_enabled:
+            recommendations.append(
+                f"Live traffic is uneven ({drift_hint}). "
+                "Auto balance may move heavy customers toward lighter ISP links."
+            )
+        else:
+            recommendations.append(
+                f"Live traffic is uneven ({drift_hint}). "
+                "Use Switch link on heavy customers to move them to a lighter ISP."
+            )
     elif imbalanced and dominant_isp:
         target_pct = target_pct_by_isp.get(dominant_isp)
         target_hint = (
@@ -2796,11 +2808,16 @@ def _build_client_balance_insights(
             if reason in {"bandwidth", "bandwidth_and_clients"}
             else ""
         )
-        recommendations.append(
-            f"{dominant_pct}% of online clients currently use {dominant_isp}{target_hint}{load_hint}. "
-            "The system auto-moves clients toward capacity-weighted share, "
-            "or use Switch link on a customer."
-        )
+        if router.smart_auto_balance_enabled:
+            recommendations.append(
+                f"{dominant_pct}% of online clients currently use {dominant_isp}{target_hint}{load_hint}. "
+                "Auto balance may move clients, or use Switch link manually."
+            )
+        else:
+            recommendations.append(
+                f"{dominant_pct}% of online clients currently use {dominant_isp}{target_hint}{load_hint}. "
+                "Use Switch link on a customer to move them to another ISP."
+            )
     elif applied and analysis.get("can_switch_clients") and member_count >= 2:
         recommendations.append(
             "Clients are tracked per ISP link — Switch link moves customers without "
@@ -2833,12 +2850,14 @@ def _build_client_balance_insights(
         "bps_target_pct_by_isp": distribution.get("bps_target_pct") or {},
         "bandwidth_drift": bandwidth_drift,
         "can_auto_enable": can_auto_enable,
-        "auto_enable_label": "Auto-enable smart balance",
+        "auto_enable_label": "Turn on smart balance",
         "recommendation": " ".join(recommendations),
         "recommendations": recommendations,
         "verified_member_count": len(verified_members),
         "can_switch_clients": bool(analysis.get("can_switch_clients")),
-        "auto_rebalance": bool(imbalanced and applied and uses_marks),
+        "auto_rebalance": bool(
+            router.smart_auto_balance_enabled and imbalanced and applied and uses_marks
+        ),
     }
 
 
@@ -2860,10 +2879,6 @@ def _try_auto_rebalance_client_isps(
         return {}
     if not router_analysis.get("can_switch_clients"):
         return {}
-    cache_key = _client_isp_rebalance_cache_key(router.pk)
-    if cache.get(cache_key):
-        return {"skipped": True, "reason": "throttled"}
-
     ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
     if len(ordered) < 2:
         return {"skipped": True, "reason": "need_two_members"}
@@ -2882,11 +2897,22 @@ def _try_auto_rebalance_client_isps(
         else {}
     )
     moves_needed = int(balance_insights.get("moves_needed") or 1)
+    drift = balance_insights.get("bandwidth_drift") or {}
+    forced_drift = bool(
+        drift.get("sustained")
+        and drift.get("overloaded_isp")
+        and drift.get("underloaded_isp")
+    )
     cooldown = (
-        CLIENT_REBALANCE_FAST_COOLDOWN_S
+        max(CLIENT_REBALANCE_COOLDOWN_S, 120)
+        if forced_drift
+        else CLIENT_REBALANCE_FAST_COOLDOWN_S
         if moves_needed > 1
         else CLIENT_REBALANCE_COOLDOWN_S
     )
+    cache_key = _client_isp_rebalance_cache_key(router.pk)
+    if not cache.add(cache_key, 1, cooldown):
+        return {"skipped": True, "reason": "throttled"}
 
     try:
         with _api_session(
@@ -2895,7 +2921,6 @@ def _try_auto_rebalance_client_isps(
             router.password or "",
             timeout=12.0,
         ) as sock:
-            drift = balance_insights.get("bandwidth_drift") or {}
             result = auto_rebalance_client_isps(
                 sock,
                 member_ports=ordered,
@@ -2904,12 +2929,14 @@ def _try_auto_rebalance_client_isps(
                 port_weights=port_weights,
                 preferred_overloaded_isp=str(drift.get("overloaded_isp") or ""),
                 preferred_underloaded_isp=str(drift.get("underloaded_isp") or ""),
+                router_pk=router.pk,
+                throttle_seconds=0,
             )
     except Exception as exc:
+        cache.delete(cache_key)
         return {"ok": False, "error": str(exc) or "Could not rebalance clients."}
 
     if result.get("ok"):
-        cache.set(cache_key, 1, cooldown)
         cache.delete(f"mikrotik_assigned_ports_live:{router.organization_id}:{router.pk}")
         record_client_isp_movements(
             router,
@@ -2920,6 +2947,8 @@ def _try_auto_rebalance_client_isps(
         )
     elif result.get("skipped"):
         cache.set(cache_key, 1, max(15, cooldown // 2))
+    else:
+        cache.delete(cache_key)
     return result
 
 
@@ -6218,7 +6247,7 @@ def _analyze_wan_failover_reason(
     slow_ports = {
         str(p).strip()
         for p in (
-            (smart_balance_status or {}).get("slow_ports")
+            ((smart_balance_status or {}).get("slow_ports") or [])
             if isinstance(smart_balance_status, dict)
             else []
         )
@@ -6795,7 +6824,7 @@ def _collect_mikrotik_links_without_internet(
     slow_ports = {
         str(p).strip()
         for p in (
-            (smart_balance_status or {}).get("slow_ports")
+            ((smart_balance_status or {}).get("slow_ports") or [])
             if isinstance(smart_balance_status, dict)
             else []
         )
@@ -12038,7 +12067,7 @@ def _ports_live_payload_while_applying(
 def _ports_live_payload(
     router: MikroTikRouter, *, include_client_analysis: bool = False
 ) -> dict:
-    """Read live ports/uplink and optionally auto-assign empty role maps."""
+    """Read live ports/uplink for display; auto-mutations only when enabled."""
     from concurrent.futures import ThreadPoolExecutor
 
     # Ports list and uplink multi-read are independent RouterOS sessions —
@@ -12124,96 +12153,11 @@ def _ports_live_payload(
         if (role or "").strip()
         and (role or "").strip().lower() not in {"", MikroTikRouter.PortRole.NONE}
     }
-    if live_ports and not assigned:
-        apply_suggested_port_roles(
-            router,
-            live_ports,
-            suggested_wan=suggested_wan,
-        )
-        auto_assigned = True
-        router.refresh_from_db(
-            fields=["port_roles", "wan_interface", "uplink_mode", "uplink_ports"]
-        )
-        # Keep RouterOS in sync with the first auto-assign (same as the button).
-        wan_name = (router.wan_interface or "").strip()
-        if wan_name:
-            try:
-                sync = _apply_single_wan_on_router(
-                    router,
-                    api_host,
-                    wan_interface=wan_name,
-                    retire_ports=[],
-                    live_ports=live_ports,
-                )
-                if not sync.get("ok"):
-                    auto_assigned_router_warning = (
-                        sync.get("error")
-                        or f"Saved {wan_name} as Internet, but could not configure it on the router."
-                    )
-                elif sync.get("skipped"):
-                    auto_assigned_router_warning = ""
-            except Exception:
-                auto_assigned_router_warning = (
-                    f"Saved {wan_name} as Internet, but could not configure it on the router."
-                )
+    client_auto_balance = _router_client_auto_balance_enabled(router)
 
     uplink_mode = router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE
     role_sync_message = ""
-
-    if listed.get("ok"):
-        # Live poll: label sync always; RouterOS push only after a verified ISP outage
-        # on the current WAN (debounced inside _auto_assign_single_wan_roles).
-        role_result = _auto_sync_port_roles_for_uplink_mode(
-            router,
-            live_ports,
-            suggested_wan=suggested_wan,
-            api_host=api_host,
-            apply_on_router=_live_poll_should_apply_on_router(
-                router, live_ports, suggested_wan=suggested_wan
-            ),
-        )
-        if role_result.get("changed"):
-            role_sync_message = (
-                role_result.get("message") or role_result.get("error") or ""
-            )
-            router.refresh_from_db(
-                fields=[
-                    "port_roles",
-                    "wan_interface",
-                    "uplink_ports",
-                    "uplink_weights",
-                    "uplink_mode",
-                    "updated_at",
-                ]
-            )
-
     shared_isp_probe_message = ""
-    if listed.get("ok") and _is_multi_isp_mode(uplink_mode):
-        probe_outcomes = _try_probe_shared_isp_ports(router, api_host, live_ports)
-        if probe_outcomes:
-            ok_ports = [
-                name
-                for name, result in probe_outcomes.items()
-                if isinstance(result, dict) and result.get("ok")
-            ]
-            if ok_ports:
-                shared_isp_probe_message = (
-                    f"Started DHCP on {', '.join(ok_ports)} — "
-                    "waiting for ISP online (customers stay on other ports)."
-                )
-                try:
-                    listed = list_mikrotik_ports(
-                        api_host,
-                        router.username,
-                        router.password or "",
-                        timeout=5.0,
-                        management_hosts=_management_hosts_for_router(router),
-                    )
-                    if listed.get("ok"):
-                        suggested_wan = (listed.get("suggested_wan") or suggested_wan).strip()
-                        live_ports = listed.get("ports") or live_ports
-                except Exception:
-                    pass
 
     suggested_roles = _suggested_roles_for_uplink_mode(
         uplink_mode,
@@ -12245,8 +12189,8 @@ def _ports_live_payload(
             and not inet.get("verified")
         ):
             internet_hint = (
-                "ISP cable linked — preparing DHCP on this port automatically "
-                "(customers on other bridge ports stay connected)."
+                "ISP cable linked — assign this port as Internet or start DHCP manually "
+                "when ready."
             )
         bridge_warn = _port_bridge_warn_payload(
             row,
@@ -12437,7 +12381,7 @@ def _ports_live_payload(
     )
     if uplink_mode == MikroTikRouter.UplinkMode.SMART_BALANCE and balance_ready:
         balance_apply_hint = (
-            "Ready — multi-ISP auto-applies (share + failover on every link)."
+            "Ready — apply multi-ISP setup (share + failover on every link)."
         )
     elif _is_multi_isp_mode(uplink_mode) and balance_ready:
         balance_apply_hint = (
@@ -12449,35 +12393,6 @@ def _ports_live_payload(
         uplink_mode,
     )
     smart_balance_auto: dict = {}
-    if (
-        listed.get("ok")
-        and uplink_mode == MikroTikRouter.UplinkMode.SMART_BALANCE
-        and balance_ready
-        and smart_balance_health.get("needs_apply")
-    ):
-        smart_balance_auto = _try_auto_apply_smart_balance(
-            router,
-            api_host,
-            member_ports=list(primary_wan_ports) + list(backup_wan_ports),
-            member_weights=(
-                dict(router.uplink_weights)
-                if isinstance(router.uplink_weights, dict)
-                else {}
-            ),
-            uplink_live=uplink_live if uplink_live.get("ok") else {},
-            live_ports=physical_ports,
-        )
-        if smart_balance_auto.get("ok"):
-            try:
-                uplink_live = read_mikrotik_uplink_multi(
-                    api_host,
-                    router.username,
-                    router.password or "",
-                    timeout=8.0,
-                    member_ports=list(router.uplink_ports or []),
-                )
-            except Exception:
-                pass
 
     balance_router_applied = (
         _is_weighted_share_mode(uplink_mode)
@@ -12504,31 +12419,6 @@ def _ports_live_payload(
         else {}
     )
     failover_gateway_reconcile: dict = {}
-    if listed.get("ok") and _is_multi_isp_mode(uplink_mode):
-        failover_gateway_reconcile = _try_reconcile_failover_gateways(
-            router,
-            api_host,
-            primary_wan_ports=primary_wan_ports,
-            backup_wan_ports=backup_wan_ports,
-            uplink_live=uplink_live if uplink_live.get("ok") else {},
-            physical_ports=physical_ports,
-        )
-        if failover_gateway_reconcile.get("updated"):
-            try:
-                uplink_live = read_mikrotik_uplink_multi(
-                    api_host,
-                    router.username,
-                    router.password or "",
-                    timeout=8.0,
-                    member_ports=list(router.uplink_ports or []),
-                )
-                smart_balance_status = (
-                    uplink_live.get("smart_balance_status")
-                    if isinstance(uplink_live.get("smart_balance_status"), dict)
-                    else smart_balance_status
-                )
-            except Exception:
-                pass
     allowed_roles = sorted(_allowed_roles_for_uplink_mode(uplink_mode))
     wan_switch_risks = _build_wan_switch_risks(
         router,
@@ -12644,7 +12534,11 @@ def _ports_live_payload(
             smart_balance_applied=smart_balance_applied,
             wan_share=wan_share if wan_share.get("ok") else {},
         )
-        if balance_insights.get("auto_rebalance"):
+        if (
+            client_auto_balance
+            and balance_insights.get("auto_rebalance")
+            and not applying_uplink_job
+        ):
             client_rebalance = _try_auto_rebalance_client_isps(
                 router,
                 api_host,
@@ -12688,7 +12582,11 @@ def _ports_live_payload(
                     smart_balance_applied=smart_balance_applied,
                     wan_share=wan_share if wan_share.get("ok") else {},
                 )
-        if balance_insights.get("can_auto_enable"):
+        if (
+            client_auto_balance
+            and balance_insights.get("can_auto_enable")
+            and not applying_uplink_job
+        ):
             balance_auto = _try_auto_enable_client_balance(
                 router,
                 api_host,
@@ -12887,6 +12785,10 @@ def _ports_live_payload(
         "applying_uplink": bool(applying_job),
         "uplink_apply_job": applying_job or {},
         "wan_rollback": wan_rollback,
+        "smart_auto_balance_enabled": bool(router.smart_auto_balance_enabled),
+        "can_toggle_auto_balance": bool(
+            _is_multi_isp_mode(uplink_mode) and len(member_ports) >= 2
+        ),
     }
 
 
@@ -12966,40 +12868,12 @@ def _perform_client_isp_switch(
     if target not in member_ports:
         return {"ok": False, "error": f"Unknown ISP port {target or '(empty)'}."}
 
-    balance_ready = False
-    cache_key = f"mikrotik_assigned_ports_live:{org.pk}:{router.pk}"
-    cached = cache.get(cache_key)
-    if isinstance(cached, dict):
-        analysis = cached.get("router_analysis") or {}
-        balance_ready = bool(analysis.get("can_switch_clients"))
-    if not balance_ready:
-        return {
-            "ok": False,
-            "error": (
-                "Turn on smart balance first — client switching needs multi-ISP "
-                "routing on the MikroTik."
-            ),
-        }
-
     ip = _parse_connection_address(client_ip)
     if not ip:
         return {"ok": False, "error": "Client IP is required for switching."}
 
-    slow_ports: list[str] = []
-    if isinstance(cached, dict):
-        smart = cached.get("smart_balance_status") or {}
-        slow_ports = [
-            str(p).strip()
-            for p in (smart.get("slow_ports") or [])
-            if str(p).strip()
-        ]
-        if not slow_ports:
-            analysis = cached.get("router_analysis") or {}
-            for row in analysis.get("isps") or []:
-                if (row.get("status") or "") in {"slow", "sidelined"}:
-                    port_name = str(row.get("port") or "").strip()
-                    if port_name:
-                        slow_ports.append(port_name)
+    cache_key = f"mikrotik_assigned_ports_live:{org.pk}:{router.pk}"
+    cached = cache.get(cache_key)
 
     api_host = _router_api_host(router)
     try:
@@ -13009,6 +12883,15 @@ def _perform_client_isp_switch(
             router.password or "",
             timeout=12.0,
         ) as sock:
+            ready = router_client_isp_switch_ready(sock, member_ports=member_ports)
+            if not ready.get("ok"):
+                return ready
+            live_status = read_smart_balance_status(sock, member_ports)
+            slow_ports = [
+                str(p).strip()
+                for p in (live_status.get("slow_ports") or [])
+                if str(p).strip()
+            ]
             result = switch_client_to_isp_port(
                 sock,
                 client_ip=ip,
@@ -13016,6 +12899,7 @@ def _perform_client_isp_switch(
                 member_ports=member_ports,
                 customer_id=customer.pk,
                 slow_ports=slow_ports,
+                manual=True,
             )
     except Exception as exc:
         return {"ok": False, "error": str(exc) or "Could not switch client ISP."}
@@ -13090,6 +12974,25 @@ def mikrotik_assigned_ports_apply(request, router_id: int):
         )
         status = 200 if result.get("ok") else 400
         return JsonResponse(result, status=status)
+
+    if action == "set_auto_balance":
+        raw = (request.POST.get("enabled") or "").strip().lower()
+        enabled = raw in {"1", "true", "yes", "on"}
+        router.smart_auto_balance_enabled = enabled
+        router.save(update_fields=["smart_auto_balance_enabled", "updated_at"])
+        cache.delete(f"mikrotik_assigned_ports_live:{org.pk}:{router.pk}")
+        cache.delete(f"mikrotik_ports_live:{org.pk}:{router.pk}")
+        return JsonResponse(
+            {
+                "ok": True,
+                "enabled": enabled,
+                "message": (
+                    "Auto balance on — clients may move automatically when links are uneven."
+                    if enabled
+                    else "Auto balance off — Switch link stays available for manual moves."
+                ),
+            }
+        )
 
     if action not in {"auto_enable_smart_balance", "auto_enable"}:
         return JsonResponse({"ok": False, "error": "Unknown action."}, status=400)

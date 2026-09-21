@@ -25748,6 +25748,17 @@ def run_smart_balance_monitor_via_api(
 
         # No ISP gateway on this port — clients routed here cannot browse.
         if not has_gateway:
+            healthy = [
+                int(item.get("index") or 0)
+                for item in ordered
+                if int(item.get("index") or 0) != index
+            ]
+            if healthy:
+                _rehome_client_isp_pins_from_mark(
+                    sock,
+                    mark_index=index,
+                    target_index=healthy[0],
+                )
             _set_smart_balance_member_active(sock, index, active=False)
             _remove_client_isp_pins_for_mark(sock, index)
             member_results[port_name] = "slow"
@@ -25770,6 +25781,24 @@ def run_smart_balance_monitor_via_api(
             member_results[port_name] = "ok"
             continue
         if bad and not good:
+            healthy = [
+                int(item.get("index") or 0)
+                for item in ordered
+                if int(item.get("index") or 0) != index
+                and member_results.get(str(item.get("interface") or "")) != "slow"
+            ]
+            if not healthy:
+                healthy = [
+                    int(item.get("index") or 0)
+                    for item in ordered
+                    if int(item.get("index") or 0) != index
+                ]
+            if healthy:
+                _rehome_client_isp_pins_from_mark(
+                    sock,
+                    mark_index=index,
+                    target_index=healthy[0],
+                )
             _set_smart_balance_member_active(sock, index, active=False)
             _remove_client_isp_pins_for_mark(sock, index)
             member_results[port_name] = "slow"
@@ -27313,16 +27342,6 @@ def read_mikrotik_uplink_multi(
                 str(p).strip() for p in (member_ports or []) if str(p).strip()
             ]
             if mode == "smart_balance" and len(ports_for_status) >= 2:
-                monitor_members = [
-                    {"interface": name, "index": str(i), "wan_iface": name}
-                    for i, name in enumerate(ports_for_status)
-                ]
-                run_smart_balance_monitor_via_api(
-                    sock,
-                    monitor_members,
-                    force=False,
-                    host=host,
-                )
                 smart_balance_status = read_smart_balance_status(sock, ports_for_status)
 
             return {
@@ -27696,17 +27715,29 @@ def _remove_client_isp_pins(
     *,
     client_ip: str = "",
     customer_id: int | str = "",
+    keep_connection_mark: str = "",
 ) -> int:
     removed = 0
     ip = _parse_connection_address(client_ip)
     cid = str(customer_id or "").strip()
+    keep_mark = (keep_connection_mark or "").strip()
     try:
-        rows = _print(sock, "/ip/firewall/mangle", props=".id,comment,src-address")
+        rows = _print(
+            sock,
+            "/ip/firewall/mangle",
+            props=".id,comment,src-address,new-connection-mark,connection-mark",
+        )
     except Exception:
         return 0
     for row in rows:
         comment = (row.get("comment") or "").strip()
         if CLIENT_ISP_PIN_TAG not in comment:
+            continue
+        row_mark = (
+            (row.get("new-connection-mark") or "").strip()
+            or (row.get("connection-mark") or "").strip()
+        )
+        if keep_mark and row_mark == keep_mark:
             continue
         row_ip = _parse_connection_address(row.get("src-address") or "")
         if ip and row_ip and row_ip != ip:
@@ -27724,6 +27755,32 @@ def _remove_client_isp_pins(
         }:
             removed += 1
     return removed
+
+
+def _rehome_client_isp_pins_from_mark(
+    sock: socket.socket,
+    *,
+    mark_index: int,
+    target_index: int,
+) -> int:
+    """Move pinned clients off a sidelined ISP slot before their pin rules are removed."""
+    if mark_index < 0 or target_index < 0 or mark_index == target_index:
+        return 0
+    pins = read_client_isp_pins(sock)
+    moved = 0
+    for ip, pin in pins.items():
+        if pin.get("mark_index") != mark_index:
+            continue
+        result = pin_client_to_isp_mark(
+            sock,
+            client_ip=ip,
+            mark_index=target_index,
+            customer_id=pin.get("customer_id") or "",
+            seamless=True,
+        )
+        if result.get("ok"):
+            moved += 1
+    return moved
 
 
 def clear_all_client_isp_pins(sock: socket.socket) -> dict[str, Any]:
@@ -27791,8 +27848,6 @@ def pin_client_to_isp_mark(
     if mark_index < 0:
         return {"ok": False, "error": "Invalid ISP slot."}
 
-    _remove_client_isp_pins(sock, client_ip=ip, customer_id=customer_id)
-
     conn_mark = f"{UPLINK_CONN_MARK_PREFIX}{mark_index}"
     table = _balance_table_name(mark_index)
     comment = _client_isp_pin_comment(customer_id, ip)
@@ -27824,10 +27879,23 @@ def pin_client_to_isp_mark(
             fallback = {k: v for k, v in props.items() if k != "place-before"}
             terminal = _add(sock, "/ip/firewall/mangle", **fallback)
         if terminal.get("_reply") in {"!trap", "!fatal"}:
+            _remove_client_isp_pins(
+                sock,
+                client_ip=ip,
+                customer_id=customer_id,
+                keep_connection_mark="",
+            )
             return {
                 "ok": False,
                 "error": _trap_message(terminal, "Could not pin client to ISP."),
             }
+
+    _remove_client_isp_pins(
+        sock,
+        client_ip=ip,
+        customer_id=customer_id,
+        keep_connection_mark=conn_mark,
+    )
 
     cleared = 0
     if not seamless:
@@ -27841,6 +27909,35 @@ def pin_client_to_isp_mark(
     }
 
 
+def router_client_isp_switch_ready(
+    sock: socket.socket,
+    *,
+    member_ports: list[str],
+) -> dict[str, Any]:
+    """True when multi-ISP routing tables exist for manual client ISP pinning."""
+    ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
+    ordered = list(dict.fromkeys(ordered))
+    if len(ordered) < 2:
+        return {
+            "ok": False,
+            "error": "Need at least two ISP ports configured.",
+        }
+    active_indexes = [
+        index
+        for index in range(len(ordered))
+        if _balance_table_has_active_default(sock, index)
+    ]
+    if len(active_indexes) >= 2:
+        return {"ok": True, "active_mark_indexes": active_indexes}
+    return {
+        "ok": False,
+        "error": (
+            "Turn on smart balance first — client switching needs multi-ISP "
+            "routing tables on the MikroTik."
+        ),
+    }
+
+
 def switch_client_to_isp_port(
     sock: socket.socket,
     *,
@@ -27850,6 +27947,7 @@ def switch_client_to_isp_port(
     customer_id: int | str = "",
     slow_ports: list[str] | None = None,
     seamless: bool = True,
+    manual: bool = False,
 ) -> dict[str, Any]:
     """Move one online client to a chosen ISP member port without dropping sessions."""
     ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
@@ -27857,12 +27955,29 @@ def switch_client_to_isp_port(
     target = (target_port or "").strip()
     if target not in ordered:
         return {"ok": False, "error": f"Unknown ISP port {target or '(empty)'}."}
-    if target in set(slow_ports or []):
+    mark_index = ordered.index(target)
+    if not manual and target in set(slow_ports or []):
         return {
             "ok": False,
             "error": f"{target} is sidelined (slow or unstable) — pick another ISP.",
         }
-    mark_index = ordered.index(target)
+    if manual and target in set(slow_ports or []):
+        if not _balance_table_has_active_default(sock, mark_index):
+            return {
+                "ok": False,
+                "error": (
+                    f"{target} has no active route right now — pick another link "
+                    "or wait for the ISP to recover."
+                ),
+            }
+    if not _balance_table_has_active_default(sock, mark_index):
+        return {
+            "ok": False,
+            "error": (
+                f"{target} has no active default route yet — apply multi-ISP setup "
+                "or pick another link."
+            ),
+        }
     result = pin_client_to_isp_mark(
         sock,
         client_ip=client_ip,
@@ -27873,6 +27988,10 @@ def switch_client_to_isp_port(
     if result.get("ok"):
         result["isp_port"] = target
     return result
+
+
+def _client_isp_rebalance_lock_key(router_pk: int) -> str:
+    return f"client_isp_rebalance:{router_pk}"
 
 
 def auto_rebalance_client_isps(
@@ -27886,6 +28005,8 @@ def auto_rebalance_client_isps(
     preferred_overloaded_isp: str = "",
     preferred_underloaded_isp: str = "",
     seamless: bool = True,
+    router_pk: int = 0,
+    throttle_seconds: int = 0,
 ) -> dict[str, Any]:
     """
     Move online clients toward capacity-weighted ISP targets.
@@ -27893,6 +28014,19 @@ def auto_rebalance_client_isps(
     Seamless by default: pins apply to new connections only — clients keep
     surfing while traffic gradually shifts to the lighter ISP link.
     """
+    if router_pk and throttle_seconds:
+        try:
+            from django.core.cache import cache
+
+            if not cache.add(
+                _client_isp_rebalance_lock_key(router_pk),
+                1,
+                max(15, int(throttle_seconds)),
+            ):
+                return {"ok": False, "skipped": True, "reason": "throttled"}
+        except Exception:
+            pass
+
     ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
     ordered = list(dict.fromkeys(ordered))
     slow = {str(p).strip() for p in (slow_ports or []) if str(p).strip()}
@@ -27944,9 +28078,9 @@ def auto_rebalance_client_isps(
     if not dominant or not target or dominant == target:
         return {"ok": False, "skipped": True, "reason": "not_imbalanced"}
 
-    move_limit = min(
+    move_limit = 1 if forced else min(
         max(1, int(max_moves)),
-        max(1, int(plan.get("moves_needed") or 1)) if not forced else max(1, int(max_moves)),
+        max(1, int(plan.get("moves_needed") or 1)),
     )
     imbalance_reason = str(plan.get("imbalance_reason") or "")
     candidates = sorted(
@@ -27966,6 +28100,8 @@ def auto_rebalance_client_isps(
             continue
         current = (client.get("isp_port") or "").strip()
         if current == target:
+            continue
+        if client.get("isp_pinned"):
             continue
         switch = switch_client_to_isp_port(
             sock,
@@ -28011,6 +28147,7 @@ def maintain_router_smart_balance(
     primary_wan: str = "",
     bond_interface: str = "",
     rebalance: bool = True,
+    router_pk: int = 0,
     timeout: float = 12.0,
 ) -> dict[str, Any]:
     """
@@ -28097,6 +28234,8 @@ def maintain_router_smart_balance(
                             clients=clients,
                             slow_ports=slow_ports,
                             port_weights=port_weights,
+                            router_pk=router_pk,
+                            throttle_seconds=CLIENT_REBALANCE_COOLDOWN_S,
                         )
     except Exception as exc:
         return {"ok": False, "error": str(exc) or "Smart balance maintenance failed."}
@@ -28462,6 +28601,7 @@ def read_client_wan_usage(
         "sessions": {},
         "default_isp_port": "",
         "uses_connection_marks": False,
+        "balance_tables_ready": False,
         "error": "Missing router credentials.",
     }
     if not host or not username:
@@ -28606,6 +28746,14 @@ def read_client_wan_usage(
 
             client_pins = read_client_isp_pins(sock, mark_to_port)
             mark_to_port_out = {str(k): v for k, v in sorted(mark_to_port.items())}
+            balance_tables_ready = False
+            if len(members) >= 2:
+                active_count = sum(
+                    1
+                    for index in range(len(members))
+                    if _balance_table_has_active_default(sock, index)
+                )
+                balance_tables_ready = active_count >= 2
             return {
                 "ok": True,
                 "mark_to_port": mark_to_port_out,
@@ -28614,6 +28762,7 @@ def read_client_wan_usage(
                 "client_pins": client_pins,
                 "default_isp_port": default_port,
                 "uses_connection_marks": uses_marks,
+                "balance_tables_ready": balance_tables_ready,
                 "error": "",
             }
     except TimeoutError:

@@ -21599,6 +21599,53 @@ a.packages-stat:focus-visible {
   color: var(--ink-soft);
 }
 
+.mk-auto-balance-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  cursor: pointer;
+  user-select: none;
+}
+
+.mk-auto-balance-toggle-copy {
+  display: grid;
+  gap: 0.05rem;
+  text-align: right;
+}
+
+.mk-auto-balance-toggle-label {
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.mk-auto-balance-toggle-hint {
+  font-size: 0.68rem;
+  color: var(--ink-soft);
+}
+
+.mk-auto-balance-toggle input {
+  width: 2.35rem;
+  height: 1.35rem;
+  margin: 0;
+  accent-color: var(--sea);
+  cursor: pointer;
+}
+
+.mk-auto-balance-toggle.is-on {
+  border-color: color-mix(in srgb, var(--sea) 45%, var(--border));
+  background: color-mix(in srgb, var(--sea) 12%, var(--surface-2));
+}
+
+.mk-auto-balance-toggle input:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
 .mk-assigned-kpi-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));

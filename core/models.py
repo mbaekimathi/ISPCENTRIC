@@ -203,6 +203,14 @@ class MikroTikRouter(models.Model):
         blank=True,
         help_text="Ports removed from a bridge for bond/failover; restored when multi-uplink is cleared.",
     )
+    smart_auto_balance_enabled = models.BooleanField(
+        "Smart auto balance",
+        default=False,
+        help_text=(
+            "When on, ISPCENTRIC may auto-rebalance clients and apply smart-balance "
+            "during live polls and background checks. Manual Switch link always works."
+        ),
+    )
 
     class AccountStatus(models.TextChoices):
         ACTIVE = "active", "Active"

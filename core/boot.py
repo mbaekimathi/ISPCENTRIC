@@ -312,6 +312,7 @@ def run_smart_balance_monitor_fleet(
             "uplink_weights",
             "wan_interface",
             "bond_interface",
+            "smart_auto_balance_enabled",
         )
     )
 
@@ -346,7 +347,10 @@ def run_smart_balance_monitor_fleet(
             ),
             primary_wan=(router.wan_interface or "").strip(),
             bond_interface=(router.bond_interface or "").strip(),
-            rebalance=rebalance,
+            rebalance=bool(
+                rebalance and getattr(router, "smart_auto_balance_enabled", False)
+            ),
+            router_pk=router.pk,
         )
         result["router_id"] = router.pk
         result["name"] = router.name
@@ -509,8 +513,9 @@ def _start_smart_balance_monitor_loop() -> None:
         daemon=True,
     ).start()
     logger.info(
-        "Smart balance monitor armed (every %.0fs) — ping health + client rebalance "
-        "without the ports page open. Disable with SMART_BALANCE_MONITOR_ENABLED=false.",
+        "Smart balance monitor armed (every %.0fs) — ping health; client rebalance "
+        "only when smart auto balance is enabled per router. "
+        "Disable with SMART_BALANCE_MONITOR_ENABLED=false.",
         interval,
     )
 

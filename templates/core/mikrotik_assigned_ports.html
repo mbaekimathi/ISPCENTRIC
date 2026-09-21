@@ -10,9 +10,22 @@
     <div class="mk-page-hero-copy">
       <p class="mk-page-kicker">{{ router.name }}</p>
       <h1 class="mk-page-title">Live clients</h1>
-      <p class="mk-page-lead">Who is online and which internet link they use. Updates automatically.</p>
+      <p class="mk-page-lead">Who is online and which internet link they use. Use Switch link to move customers manually.</p>
     </div>
     <div class="mk-ports-hero-actions">
+      <label class="mk-auto-balance-toggle" data-auto-balance-toggle-wrap {% if is_suspended %}hidden{% endif %} hidden>
+        <span class="mk-auto-balance-toggle-copy">
+          <span class="mk-auto-balance-toggle-label">Auto balance</span>
+          <span class="mk-auto-balance-toggle-hint">Manual Switch always works</span>
+        </span>
+        <input
+          type="checkbox"
+          data-auto-balance-toggle
+          role="switch"
+          aria-label="Auto balance clients across ISP links"
+          {% if router.smart_auto_balance_enabled %}checked{% endif %}
+        >
+      </label>
       <span class="mk-live-pill" data-assigned-live-pill hidden>
         <span class="mk-live-dot" aria-hidden="true"></span>
         Live
