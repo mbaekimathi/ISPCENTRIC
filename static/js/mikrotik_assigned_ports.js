@@ -15,6 +15,8 @@
   var applyInFlight = false;
   var switchInFlight = false;
   var SMART_BALANCE_JOB = "uplink_smart_balance";
+  var OFFLINE_KEY = "__offline__";
+  var UNKNOWN_KEY = "__unknown__";
 
   function setHidden(el, hidden) {
     if (!el) return;
@@ -42,8 +44,15 @@
     );
   }
 
-  function ispLabel(row) {
-    return row.uplink_label || row.isp_label || row.uplink_port || row.isp_port || "—";
+  function clientUplinkKey(row) {
+    if (!row.online) return OFFLINE_KEY;
+    return (row.isp_port || row.uplink_port || "").trim() || UNKNOWN_KEY;
+  }
+
+  function sortClients(rows) {
+    return rows.slice().sort(function (a, b) {
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
   }
 
   function ispSwitchChips(row, options) {
@@ -67,7 +76,7 @@
         esc(row.name || "Customer") +
         '" data-target-port="' +
         esc(opt.port) +
-        '">Use ' +
+        '">Move to ' +
         esc(opt.label || opt.port) +
         "</button>";
     });
@@ -75,40 +84,166 @@
     return html;
   }
 
-  function clientRow(row, ispOptions) {
+  function clientCard(row, ispOptions) {
     var online = !!row.online;
-    var isp = ispLabel(row);
-    var pinned = online && row.isp_pinned;
-
+    var phone = (row.phone || "").trim() || "—";
     return (
-      '<article class="mk-assigned-client-row ' +
+      '<article class="mk-assigned-client-simple ' +
       (online ? "is-online" : "is-offline") +
       '">' +
-      '<div class="mk-assigned-client-row-head">' +
-      '<div class="mk-assigned-client-row-id">' +
-      '<strong class="mk-assigned-client-row-name">' +
+      '<strong class="mk-assigned-client-simple-name">' +
       clientLink(row) +
       "</strong>" +
-      (row.account_number
-        ? '<span class="mk-assigned-client-row-account">' +
-          esc(row.account_number) +
-          "</span>"
-        : "") +
-      "</div>" +
-      '<span class="mk-assigned-status-chip">' +
-      (online ? "Online" : "Offline") +
-      "</span>" +
-      "</div>" +
-      (online
-        ? '<p class="mk-assigned-client-row-isp">' +
-          (pinned ? "Pinned on " : "Using ") +
-          "<strong>" +
-          esc(isp) +
-          "</strong></p>" +
-          ispSwitchChips(row, ispOptions)
-        : "") +
+      '<p class="mk-assigned-client-simple-phone">' +
+      esc(phone) +
+      "</p>" +
+      (online ? ispSwitchChips(row, ispOptions) : "") +
       "</article>"
     );
+  }
+
+  function columnStatusClass(status) {
+    if (status === "slow") return "is-slow";
+    if (status === "sidelined") return "is-off";
+    return "is-up";
+  }
+
+  function columnStatusLabel(status) {
+    if (status === "slow") return "Slow";
+    if (status === "sidelined") return "Off";
+    return "Up";
+  }
+
+  function buildColumns(analysis) {
+    var clients = analysis.clients || [];
+    var isps = (analysis.isps || []).filter(function (isp) {
+      return (isp.port || "").trim();
+    });
+    var columns = isps.map(function (isp) {
+      return {
+        key: isp.port,
+        port: isp.port,
+        label: isp.label || isp.port,
+        status: isp.status || "active",
+        isp_index: isp.isp_index,
+        clients: [],
+      };
+    });
+    var columnByKey = {};
+    columns.forEach(function (col) {
+      columnByKey[col.key] = col;
+    });
+
+    var unknownCol = {
+      key: UNKNOWN_KEY,
+      port: "",
+      label: "Unmapped",
+      status: "unknown",
+      isp_index: null,
+      clients: [],
+    };
+    var offlineCol = {
+      key: OFFLINE_KEY,
+      port: "",
+      label: "Offline",
+      status: "offline",
+      isp_index: null,
+      clients: [],
+    };
+
+    clients.forEach(function (row) {
+      var key = clientUplinkKey(row);
+      if (key === OFFLINE_KEY) {
+        offlineCol.clients.push(row);
+        return;
+      }
+      if (columnByKey[key]) {
+        columnByKey[key].clients.push(row);
+        return;
+      }
+      if (key === UNKNOWN_KEY) {
+        unknownCol.clients.push(row);
+        return;
+      }
+      var dynamic = {
+        key: key,
+        port: key,
+        label: row.isp_label || row.uplink_label || key,
+        status: "active",
+        isp_index: row.uplink_index,
+        clients: [row],
+      };
+      columns.push(dynamic);
+      columnByKey[key] = dynamic;
+    });
+
+    if (unknownCol.clients.length) columns.push(unknownCol);
+    if (offlineCol.clients.length) columns.push(offlineCol);
+
+    columns.forEach(function (col) {
+      col.clients = sortClients(col.clients);
+    });
+
+    return columns.filter(function (col) {
+      return col.clients.length || (col.key !== OFFLINE_KEY && col.key !== UNKNOWN_KEY);
+    });
+  }
+
+  function renderUplinkColumn(col, ispOptions) {
+    var onlineCount = col.clients.filter(function (c) {
+      return c.online;
+    }).length;
+    var isOffline = col.key === OFFLINE_KEY;
+    var isUnknown = col.key === UNKNOWN_KEY;
+    var idxAttr =
+      col.isp_index != null && col.isp_index !== ""
+        ? ' data-uplink-index="' + esc(String(col.isp_index)) + '"'
+        : "";
+
+    var meta = isOffline
+      ? col.clients.length + " customer" + (col.clients.length === 1 ? "" : "s")
+      : onlineCount +
+        " online" +
+        (col.clients.length > onlineCount
+          ? " · " + (col.clients.length - onlineCount) + " listed"
+          : "");
+
+    var html =
+      '<section class="mk-assigned-uplink-col ' +
+      (isOffline ? "is-offline-col" : isUnknown ? "is-unknown-col" : columnStatusClass(col.status)) +
+      '"' +
+      idxAttr +
+      ' aria-label="' +
+      esc(col.label) +
+      '">' +
+      '<header class="mk-assigned-uplink-col-head">' +
+      "<div>" +
+      '<h3 class="mk-assigned-uplink-col-title">' +
+      esc(col.label) +
+      "</h3>" +
+      '<p class="mk-assigned-uplink-col-meta">' +
+      esc(meta) +
+      (isOffline || isUnknown
+        ? ""
+        : " · " + esc(columnStatusLabel(col.status))) +
+      "</p>" +
+      "</div>" +
+      "</header>" +
+      '<div class="mk-assigned-uplink-col-body">';
+
+    if (!col.clients.length) {
+      html +=
+        '<p class="mk-assigned-uplink-col-empty">No customers on this link.</p>';
+    } else {
+      html += col.clients
+        .map(function (row) {
+          return clientCard(row, ispOptions);
+        })
+        .join("");
+    }
+
+    html += "</div></section>";
+    return html;
   }
 
   function renderNotice(data) {
@@ -158,7 +293,7 @@
     } else if (insights.imbalanced && insights.dominant_isp) {
       title = "Most customers on " + insights.dominant_isp;
       message =
-        "The system moves customers automatically, or tap Use … on a customer below.";
+        "The system moves customers automatically, or tap Move to … on a customer card.";
     }
 
     if (titleEl) titleEl.textContent = title;
@@ -180,57 +315,13 @@
     setHidden(card, false);
   }
 
-  function renderIspSummary(analysis) {
-    var wrap = root.querySelector("[data-assigned-isp-summary]");
-    if (!wrap) return;
-
-    var isps = (analysis.isps || []).filter(function (isp) {
-      return (isp.port || "").trim();
-    });
-    if (isps.length < 2) {
-      wrap.innerHTML = "";
-      setHidden(wrap, true);
-      return;
-    }
-
-    wrap.innerHTML = isps
-      .map(function (isp, index) {
-        var statusClass = "is-up";
-        var statusLabel = "Up";
-        if (isp.status === "slow") {
-          statusClass = "is-slow";
-          statusLabel = "Slow";
-        } else if (isp.status === "sidelined") {
-          statusClass = "is-off";
-          statusLabel = "Off";
-        }
-        var online = isp.online_clients != null ? isp.online_clients : isp.client_count;
-        return (
-          '<div class="mk-assigned-isp-pill ' +
-          statusClass +
-          '">' +
-          '<span class="mk-assigned-isp-pill-name">' +
-          esc(isp.label || isp.port || "ISP " + (index + 1)) +
-          "</span>" +
-          '<span class="mk-assigned-isp-pill-meta">' +
-          esc(String(online != null ? online : 0)) +
-          " online · " +
-          esc(statusLabel) +
-          "</span>" +
-          "</div>"
-        );
-      })
-      .join("");
-    setHidden(wrap, false);
-  }
-
   function renderClients(analysis) {
     var section = root.querySelector("[data-router-analysis]");
-    var list = root.querySelector("[data-assigned-client-list]");
+    var board = root.querySelector("[data-assigned-client-list]");
     var summaryEl = root.querySelector("[data-assigned-clients-summary]");
     var emptyEl = root.querySelector("[data-router-analysis-empty]");
     var errEl = root.querySelector("[data-router-analysis-error]");
-    if (!section || !list) return;
+    if (!section || !board) return;
 
     var clients = analysis.clients || [];
     var summary = analysis.summary || {};
@@ -242,24 +333,19 @@
     }
 
     if (!clients.length) {
-      list.innerHTML = "";
+      board.innerHTML = "";
       setHidden(emptyEl, false);
       setHidden(section, false);
       setHidden(livePill, false);
       return;
     }
 
-    var sorted = clients.slice().sort(function (a, b) {
-      if (!!a.online !== !!b.online) return a.online ? -1 : 1;
-      return String(a.name || "").localeCompare(String(b.name || ""));
-    });
-
+    var columns = buildColumns(analysis);
     var ispOptions = analysis.isp_switch_options || [];
-    list.innerHTML = sorted
-      .map(function (row) {
-        return clientRow(row, ispOptions);
-      })
-      .join("");
+    board.innerHTML = columns.map(function (col) {
+      return renderUplinkColumn(col, ispOptions);
+    }).join("");
+
     setHidden(emptyEl, true);
     setHidden(section, false);
     setHidden(livePill, false);
@@ -275,14 +361,12 @@
     var analysis = data.router_analysis || {};
     if (!analysis.ok && !(analysis.clients || []).length) {
       setHidden(root.querySelector("[data-router-analysis]"), true);
-      setHidden(root.querySelector("[data-assigned-isp-summary]"), true);
       setHidden(root.querySelector("[data-assigned-status-card]"), true);
       setHidden(livePill, true);
       return;
     }
 
     renderNotice(data);
-    renderIspSummary(analysis);
     renderClients(analysis);
   }
 
@@ -459,7 +543,6 @@
     setHidden(retry, suspended);
     setHidden(root.querySelector("[data-router-analysis]"), true);
     setHidden(root.querySelector("[data-assigned-status-card]"), true);
-    setHidden(root.querySelector("[data-assigned-isp-summary]"), true);
     setHidden(livePill, true);
   }
 
@@ -530,9 +613,9 @@
     });
   }
 
-  var clientList = root.querySelector("[data-assigned-client-list]");
-  if (clientList) {
-    clientList.addEventListener("click", function (event) {
+  var clientBoard = root.querySelector("[data-assigned-client-list]");
+  if (clientBoard) {
+    clientBoard.addEventListener("click", function (event) {
       var chip = event.target.closest("[data-isp-switch-chip]");
       if (!chip) return;
       event.preventDefault();

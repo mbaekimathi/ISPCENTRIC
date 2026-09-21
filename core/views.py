@@ -165,6 +165,7 @@ from core.mikrotik_connect import (
     find_pppoe_customer_for_ip,
     list_mikrotik_ports,
     probe_mikrotik_shared_isp_port,
+    nudge_mikrotik_shared_isp_dhcp,
     assess_uplink_switch_risk,
     assess_uplink_mode_apply_risk,
     assess_touch_ports_internet,
@@ -2105,11 +2106,14 @@ def _build_router_client_analysis(
             or (isps[0]["port"] if isps else "")
         ).strip()
 
+    from billing.services import format_customer_phone_display
+
     customers = list(
         Customer.objects.filter(router=router).only(
             "pk",
             "full_name",
             "account_number",
+            "phone",
             "pppoe_username",
             "hotspot_mac",
             "cpe_ip",
@@ -2290,6 +2294,7 @@ def _build_router_client_analysis(
             {
                 "customer_id": customer.pk,
                 "name": customer.full_name,
+                "phone": format_customer_phone_display(customer.phone or ""),
                 "account_number": customer.account_number,
                 "service_type": customer.service_type,
                 "status": customer.status,
@@ -2873,14 +2878,20 @@ def _port_isp_ready_for_uplink(
         return True
     if _uplink_live_isp_ready(port_name, uplink_live):
         return True
-    if port_name in _wan_share_ports_with_traffic(wan_share):
-        return True
     by_name = {
         (p.get("name") or "").strip(): p
         for p in physical_ports
         if (p.get("name") or "").strip()
     }
     row = by_name.get((port_name or "").strip()) or {}
+    if port_name in _wan_share_ports_with_traffic(wan_share):
+        # Raw interface counters on Shared ISP can show traffic without a usable
+        # gateway (modem chatter / failed sessions) — require DHCP/PPPoE too.
+        kind = (row.get("uplink_kind") or "").strip().lower()
+        if kind in {"dhcp", "pppoe"} and (
+            row.get("uplink_active") or _port_has_isp_signals(row)
+        ):
+            return True
     if row.get("running") and _port_has_isp_signals(row):
         return True
     return False
@@ -3194,19 +3205,32 @@ def _try_probe_shared_isp_ports(
         if row.get("disabled") or not row.get("running"):
             continue
 
+        cache_key = _shared_isp_probe_cache_key(router.pk, name)
         kind = (row.get("uplink_kind") or "").strip().lower()
         if kind == "dhcp" and row.get("uplink_active"):
+            cache.set(cache_key, "bound", 600)
             continue
         if kind == "dhcp" and not row.get("is_bridged"):
-            cache.set(_shared_isp_probe_cache_key(router.pk, name), "waiting", 120)
+            cache.set(cache_key, "waiting", 300)
+            renew_key = f"{cache_key}:renew"
+            if not cache.get(renew_key):
+                cache.set(renew_key, "1", 45)
+                outcomes[name] = nudge_mikrotik_shared_isp_dhcp(
+                    api_host,
+                    router.username,
+                    router.password or "",
+                    port_name=name,
+                    timeout=8.0,
+                )
             continue
 
-        cache_key = _shared_isp_probe_cache_key(router.pk, name)
         state = cache.get(cache_key)
-        if state in {"bound", "waiting"}:
+        if state == "bound":
+            continue
+        if state == "waiting":
             continue
         if state == "failed":
-            continue
+            cache.delete(cache_key)
 
         if row.get("is_bridged"):
             blocked = _reject_behind_provider_unbridge(

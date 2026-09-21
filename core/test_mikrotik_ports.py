@@ -17,6 +17,7 @@ from core.mikrotik_connect import (
     _resolve_wan_to_physical,
     apply_mikrotik_single_wan,
     auto_rebalance_client_isps,
+    clear_all_client_isp_pins,
     switch_client_to_isp_port,
     switch_mikrotik_single_wan,
     apply_mikrotik_uplink_bond,
@@ -314,8 +315,8 @@ class SuggestPortRolesTests(SimpleTestCase):
         from core.views import _balance_apply_readiness, _port_isp_ready_for_uplink
 
         ports = [
-            _port("ether1", running=True),
-            _port("ether2", running=True),
+            _port("ether1", running=True, uplink_kind="dhcp"),
+            _port("ether2", running=True, uplink_kind="dhcp"),
         ]
         wan_share = {
             "ok": True,
@@ -335,6 +336,19 @@ class SuggestPortRolesTests(SimpleTestCase):
             wan_share=wan_share,
         )
         self.assertTrue(ready, hint)
+
+    def test_wan_share_alone_does_not_ready_link_without_dhcp(self):
+        from core.views import _port_isp_ready_for_uplink
+
+        ports = [_port("ether2", running=True)]
+        wan_share = {
+            "ok": True,
+            "total_bps": 5000,
+            "shares": [{"name": "ether2", "pct": 100, "bps": 5000}],
+        }
+        self.assertFalse(
+            _port_isp_ready_for_uplink("ether2", ports, wan_share=wan_share)
+        )
 
     def test_isp_ready_when_uplink_live_dhcp_bound(self):
         from core.views import _port_isp_ready_for_uplink
@@ -4251,3 +4265,159 @@ class ClientIspSwitchTests(SimpleTestCase):
         self.assertIn("Jane Doe", result["message"])
         switch_mock.assert_called_once()
         self.assertEqual(cache_delete.call_count, 2)
+
+    def test_clear_all_client_isp_pins_removes_rules_and_refreshes_sessions(self):
+        sock = object()
+        with patch(
+            "core.mikrotik_connect.read_client_isp_pins",
+            return_value={
+                "10.10.0.1": {"pinned": True, "isp_port": "ether2"},
+                "10.10.0.2": {"pinned": True, "isp_port": "ether1"},
+            },
+        ), patch(
+            "core.mikrotik_connect._remove_client_isp_pins",
+            return_value=4,
+        ) as remove_mock, patch(
+            "core.mikrotik_connect._kill_firewall_connections_for_addresses",
+            return_value=2,
+        ) as kill_mock:
+            result = clear_all_client_isp_pins(sock)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["clients_reset"], 2)
+        self.assertEqual(result["removed_rules"], 4)
+        self.assertEqual(result["connections_cleared"], 2)
+        remove_mock.assert_called_once_with(sock)
+        kill_mock.assert_called_once_with(sock, ["10.10.0.1", "10.10.0.2"])
+
+
+class SmartBalanceMemberConnectivityTests(SimpleTestCase):
+    def test_monitor_sidelines_member_without_gateway(self):
+        from core.mikrotik_connect import run_smart_balance_monitor_via_api
+
+        sock = object()
+        members = [
+            {"interface": "ether1", "wan_iface": "ether1", "weight": "100", "index": "0"},
+            {"interface": "ether2", "wan_iface": "ether2", "weight": "100", "index": "1"},
+        ]
+        with patch(
+            "core.mikrotik_connect.read_smart_balance_status",
+            return_value={"members": {}},
+        ), patch(
+            "core.mikrotik_connect._balance_member_connectivity",
+            side_effect=[
+                {
+                    "has_gateway": True,
+                    "route_active": True,
+                    "ping_recv": 3,
+                    "ping_loss": 0,
+                    "ping_rtt_ms": 20.0,
+                },
+                {
+                    "has_gateway": False,
+                    "route_active": False,
+                    "ping_recv": 0,
+                    "ping_loss": 100,
+                    "ping_rtt_ms": 0.0,
+                },
+            ],
+        ), patch(
+            "core.mikrotik_connect._set_smart_balance_member_active"
+        ) as set_active, patch(
+            "core.mikrotik_connect._remove_client_isp_pins_for_mark"
+        ), patch("django.core.cache.cache.set"):
+            result = run_smart_balance_monitor_via_api(
+                sock, members, force=True, host="10.0.0.1"
+            )
+
+        self.assertTrue(result.get("ok"))
+        self.assertIn("ether2", result.get("slow_ports") or [])
+        set_active.assert_any_call(sock, 1, active=False)
+
+    def test_monitor_keeps_member_when_gateway_up_but_ping_blocked(self):
+        from core.mikrotik_connect import run_smart_balance_monitor_via_api
+
+        sock = object()
+        members = [
+            {"interface": "ether1", "wan_iface": "ether1", "weight": "100", "index": "0"},
+            {"interface": "ether2", "wan_iface": "ether2", "weight": "100", "index": "1"},
+        ]
+        with patch(
+            "core.mikrotik_connect.read_smart_balance_status",
+            return_value={"members": {}},
+        ), patch(
+            "core.mikrotik_connect._balance_member_connectivity",
+            return_value={
+                "has_gateway": True,
+                "route_active": True,
+                "ping_recv": 0,
+                "ping_loss": 100,
+                "ping_rtt_ms": 0.0,
+            },
+        ), patch(
+            "core.mikrotik_connect._set_smart_balance_member_active"
+        ) as set_active, patch("django.core.cache.cache.set"):
+            result = run_smart_balance_monitor_via_api(
+                sock, members, force=True, host="10.0.0.1"
+            )
+
+        self.assertTrue(result.get("ok"))
+        self.assertNotIn("ether2", result.get("slow_ports") or [])
+        set_active.assert_any_call(sock, 1, active=True)
+
+
+class SharedIspProbeTests(SimpleTestCase):
+    def test_unbridged_shared_isp_nudges_dhcp_while_waiting(self):
+        from core.views import _try_probe_shared_isp_ports
+
+        router = MikroTikRouter(
+            pk=99,
+            uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+            port_roles={"ether1": "wan", "ether2": "wan_backup"},
+            username="admin",
+            password="secret",
+        )
+        live_ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True, bridged=False),
+            _port(
+                "ether2",
+                uplink_kind="dhcp",
+                uplink_active=False,
+                bridged=False,
+            ),
+        ]
+        with patch("core.views.active_uplink_apply_job", return_value=None), patch(
+            "core.views.nudge_mikrotik_shared_isp_dhcp",
+            return_value={"ok": True, "nudged": True},
+        ) as nudge_mock, patch("core.views.cache") as cache_mock:
+            cache_mock.get.return_value = None
+            outcomes = _try_probe_shared_isp_ports(router, "10.0.0.1", live_ports)
+
+        nudge_mock.assert_called_once_with(
+            "10.0.0.1",
+            "admin",
+            "secret",
+            port_name="ether2",
+            timeout=8.0,
+        )
+        self.assertIn("ether2", outcomes)
+        self.assertTrue(outcomes["ether2"].get("nudged"))
+
+    def test_nudge_shared_isp_dhcp_renews_client(self):
+        from core.mikrotik_connect import nudge_mikrotik_shared_isp_dhcp
+
+        with patch("core.mikrotik_connect._api_session") as session, patch(
+            "core.mikrotik_connect._iface_names",
+            return_value={"ether2"},
+        ), patch(
+            "core.mikrotik_connect._renew_dhcp_on_port",
+            side_effect=lambda sock, port, notes: notes.append("renewed DHCP on ether2"),
+        ):
+            session.return_value.__enter__.return_value = object()
+            result = nudge_mikrotik_shared_isp_dhcp(
+                "192.168.88.1", "admin", "x", port_name="ether2"
+            )
+
+        self.assertTrue(result.get("ok"))
+        self.assertTrue(result.get("nudged"))
+        self.assertIn("renewed DHCP on ether2", result.get("notes") or [])

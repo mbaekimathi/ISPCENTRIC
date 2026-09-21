@@ -23521,6 +23521,11 @@ def switch_mikrotik_single_wan(
                 cleared = _clear_tagged_uplink(sock)
                 if any(cleared.values()):
                     notes.append("cleared previous multi-uplink settings")
+                pin_reset = clear_all_client_isp_pins(sock)
+                if pin_reset.get("clients_reset"):
+                    notes.append(
+                        f"reset {pin_reset['clients_reset']} pinned client(s) to main Internet"
+                    )
 
             for old_port in retire:
                 notes.extend(_retire_wan_interface(sock, old_port))
@@ -24670,6 +24675,46 @@ def probe_mikrotik_shared_isp_port(
         }
 
 
+def nudge_mikrotik_shared_isp_dhcp(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port_name: str,
+    port: int = 8728,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    """Renew DHCP on an already-unbridged Shared ISP port waiting for a lease."""
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    port_name = (port_name or "").strip()
+    if not host or not username or not port_name:
+        return {"ok": False, "error": "Missing router credentials or port name."}
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            if port_name not in _iface_names(sock):
+                return {"ok": False, "error": f"Port {port_name} not found on the MikroTik."}
+            notes: list[str] = []
+            _renew_dhcp_on_port(sock, port_name, notes)
+            return {
+                "ok": True,
+                "nudged": True,
+                "port": port_name,
+                "notes": notes,
+            }
+    except TimeoutError:
+        return {
+            "ok": False,
+            "error": f"Timed out renewing DHCP on {port_name}.",
+        }
+    except (ConnectionError, OSError) as exc:
+        return {
+            "ok": False,
+            "error": str(exc) or f"Could not reach the MikroTik to renew {port_name}.",
+        }
+
+
 def _ensure_bond_dhcp_client(sock: socket.socket, interface: str) -> dict[str, str]:
     """DHCP on the bond interface. Prefer create/reuse with UPLINK_TAG (bond iface is ours)."""
     for row in _print(sock, "/ip/dhcp-client", props=".id,interface,disabled,comment"):
@@ -25292,6 +25337,100 @@ def _parse_routeros_rtt_ms(value: str) -> float | None:
         return None
 
 
+def _balance_table_has_active_default(
+    sock: socket.socket,
+    mark_index: int,
+) -> bool:
+    """True when a member routing table has an active default route."""
+    table = _balance_table_name(mark_index)
+    try:
+        for row in _print(
+            sock,
+            "/ip/route",
+            props="dst-address,routing-table,routing-mark,active,disabled",
+        ):
+            if _flag_yes(row.get("disabled")):
+                continue
+            if not _flag_yes(row.get("active")):
+                continue
+            dst = (row.get("dst-address") or "").strip()
+            if dst not in {"0.0.0.0/0", "::/0"}:
+                continue
+            row_table = (row.get("routing-table") or row.get("routing-mark") or "").strip()
+            if row_table == table:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _balance_member_connectivity(
+    sock: socket.socket,
+    *,
+    port_name: str,
+    mark_index: int,
+    wan_iface: str,
+) -> dict[str, Any]:
+    """Gateway, route, and ping state for one smart-balance member."""
+    port_name = (port_name or "").strip()
+    wan_iface = (wan_iface or port_name).strip()
+    gateways = _detect_dhcp_gateways(sock, port_name)
+    ping = _ping_wan_via_api(sock, wan_iface)
+    try:
+        recv = int(ping.get("recv") if ping.get("recv") is not None else 0)
+    except (TypeError, ValueError):
+        recv = 0
+    try:
+        loss = int(ping.get("loss") if ping.get("loss") is not None else 100)
+    except (TypeError, ValueError):
+        loss = 100
+    try:
+        max_rtt = float(
+            ping.get("max_rtt_ms") if ping.get("max_rtt_ms") is not None else 0.0
+        )
+    except (TypeError, ValueError):
+        max_rtt = 0.0
+    return {
+        "gateways": gateways,
+        "has_gateway": bool(gateways),
+        "route_active": _balance_table_has_active_default(sock, mark_index),
+        "ping_recv": recv,
+        "ping_loss": loss,
+        "ping_rtt_ms": max_rtt,
+    }
+
+
+def _remove_client_isp_pins_for_mark(
+    sock: socket.socket,
+    mark_index: int,
+) -> int:
+    """Drop manual/auto ISP pins targeting one PCC slot (broken/sidelined link)."""
+    mark = f"{UPLINK_CONN_MARK_PREFIX}{mark_index}"
+    removed = 0
+    try:
+        rows = _print(
+            sock,
+            "/ip/firewall/mangle",
+            props=".id,comment,chain,action,new-connection-mark",
+        )
+    except Exception:
+        return 0
+    for row in rows:
+        if CLIENT_ISP_PIN_TAG not in (row.get("comment") or ""):
+            continue
+        if (row.get("new-connection-mark") or "").strip() != mark:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        if _remove(sock, "/ip/firewall/mangle", item_id).get("_reply") not in {
+            "!trap",
+            "!fatal",
+        }:
+            removed += 1
+    return removed
+
+
 def _ping_wan_via_api(
     sock: socket.socket,
     interface: str,
@@ -25430,19 +25569,26 @@ def run_smart_balance_monitor_via_api(
         wan_iface = (item.get("wan_iface") or port_name).strip()
         if not port_name or not wan_iface:
             continue
-        stats = _ping_wan_via_api(sock, wan_iface)
-        try:
-            recv = int(stats.get("recv") if stats.get("recv") is not None else 0)
-        except (TypeError, ValueError):
-            recv = 0
-        try:
-            loss = int(stats.get("loss") if stats.get("loss") is not None else 100)
-        except (TypeError, ValueError):
-            loss = 100
-        try:
-            max_rtt = float(stats.get("max_rtt_ms") if stats.get("max_rtt_ms") is not None else 0.0)
-        except (TypeError, ValueError):
-            max_rtt = 0.0
+        conn = _balance_member_connectivity(
+            sock,
+            port_name=port_name,
+            mark_index=index,
+            wan_iface=wan_iface,
+        )
+        recv = int(conn.get("ping_recv") or 0)
+        loss = int(conn.get("ping_loss") or 100)
+        max_rtt = float(conn.get("ping_rtt_ms") or 0.0)
+        has_gateway = bool(conn.get("has_gateway"))
+        route_active = bool(conn.get("route_active"))
+
+        # No ISP gateway on this port — clients routed here cannot browse.
+        if not has_gateway:
+            _set_smart_balance_member_active(sock, index, active=False)
+            _remove_client_isp_pins_for_mark(sock, index)
+            member_results[port_name] = "slow"
+            slow_ports.append(port_name)
+            continue
+
         bad = (
             recv <= 0
             or max_rtt > SMART_BALANCE_SLOW_RTT_MS
@@ -25453,8 +25599,14 @@ def run_smart_balance_monitor_via_api(
             and max_rtt < SMART_BALANCE_RECOVER_RTT_MS
             and loss < SMART_BALANCE_RECOVER_LOSS_PCT
         )
+        # Some ISPs block ICMP on the WAN — keep the link up when DHCP + route are OK.
+        if bad and not good and route_active and has_gateway and recv <= 0:
+            _set_smart_balance_member_active(sock, index, active=True)
+            member_results[port_name] = "ok"
+            continue
         if bad and not good:
             _set_smart_balance_member_active(sock, index, active=False)
+            _remove_client_isp_pins_for_mark(sock, index)
             member_results[port_name] = "slow"
             slow_ports.append(port_name)
         elif good:
@@ -25464,6 +25616,8 @@ def run_smart_balance_monitor_via_api(
             member_results[port_name] = prior_state.get(port_name) or "ok"
             if member_results[port_name] == "slow":
                 slow_ports.append(port_name)
+            elif member_results[port_name] == "ok":
+                _set_smart_balance_member_active(sock, index, active=True)
 
     try:
         from django.core.cache import cache
@@ -26473,16 +26627,24 @@ def clear_mikrotik_uplink_multi(
     try:
         with _api_session(host, username, password, port=port, timeout=timeout) as sock:
             removed = _clear_tagged_uplink(sock)
+            client_pins = clear_all_client_isp_pins(sock)
             restored = _restore_bridged_interfaces(
                 sock,
                 restore_bridged or [],
                 lan_bridge_fallback=lan_bridge or "bridgeLocal",
             )
+            message = "Bonded / failover / balance uplink settings cleared on the MikroTik."
+            if client_pins.get("clients_reset"):
+                message += (
+                    f" {client_pins['clients_reset']} pinned client(s) moved back to "
+                    "the main Internet port."
+                )
             return {
                 "ok": True,
                 "removed": removed,
+                "client_pins": client_pins,
                 "restored_bridge_ports": restored,
-                "message": "Bonded / failover / balance uplink settings cleared on the MikroTik.",
+                "message": message,
             }
     except TimeoutError:
         return {"ok": False, "error": "Connection timed out while clearing uplink settings."}
@@ -27075,6 +27237,25 @@ def _remove_client_isp_pins(
         }:
             removed += 1
     return removed
+
+
+def clear_all_client_isp_pins(sock: socket.socket) -> dict[str, Any]:
+    """
+    Drop every per-client ISP pin so traffic follows the single default route.
+
+    Called when leaving multi-ISP (balance / smart balance / failover) for one
+    Internet link — otherwise pinned mangle rules keep clients on old ISP slots.
+    """
+    pins = read_client_isp_pins(sock)
+    ips = list(pins.keys())
+    removed = _remove_client_isp_pins(sock)
+    cleared = _kill_firewall_connections_for_addresses(sock, ips) if ips else 0
+    return {
+        "ok": True,
+        "removed_rules": removed,
+        "clients_reset": len(ips),
+        "connections_cleared": cleared,
+    }
 
 
 def pin_client_to_isp_mark(
