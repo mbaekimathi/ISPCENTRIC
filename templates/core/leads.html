@@ -93,30 +93,30 @@
           <tbody>
             {% for lead in portal_leads %}
               <tr class="leads-portal-row is-{{ lead.interest_tier }}">
-                <td>
+                <td data-label="Contact">
                   {% if lead.is_matched and lead.customer_id %}
                     <a class="leads-contact-link" href="{% url 'core:client_detail' lead.customer_id %}">{{ lead.display_name }}</a>
                   {% else %}
                     <span class="leads-contact-name">{{ lead.display_name }}</span>
                   {% endif %}
                 </td>
-                <td>
+                <td data-label="Interest">
                   <span class="portal-interest-badge is-{{ lead.interest_tier }}" title="Score {{ lead.interest_score }}">
                     {{ lead.interest_tier|title }} <em>{{ lead.interest_score }}</em>
                   </span>
                 </td>
-                <td>
+                <td data-label="Phone">
                   {% if lead.phone %}
                     <a class="leads-phone-link" href="tel:{{ lead.phone }}">{{ lead.phone }}</a>
                   {% else %}
                     <span class="leads-muted">—</span>
                   {% endif %}
                 </td>
-                <td class="is-num">{{ lead.earn_clicks }}</td>
-                {% if show_partner_1 %}<td class="is-num col-optional">{{ lead.partner_1_clicks }}</td>{% endif %}
-                {% if show_partner_2 %}<td class="is-num col-optional">{{ lead.partner_2_clicks }}</td>{% endif %}
-                <td class="is-num is-total">{{ lead.total_clicks }}</td>
-                <td class="leads-when">
+                <td class="is-num" data-label="Earn">{{ lead.earn_clicks }}</td>
+                {% if show_partner_1 %}<td class="is-num col-optional" data-label="{{ partner1_label }}">{{ lead.partner_1_clicks }}</td>{% endif %}
+                {% if show_partner_2 %}<td class="is-num col-optional" data-label="{{ partner2_label }}">{{ lead.partner_2_clicks }}</td>{% endif %}
+                <td class="is-num is-total" data-label="Total">{{ lead.total_clicks }}</td>
+                <td class="leads-when" data-label="Last activity">
                   {% if lead.last_clicked_at %}
                     <span class="leads-when-date">{{ lead.last_clicked_at|date:"d M Y" }}</span>
                     <span class="leads-when-time">{{ lead.last_clicked_at|date:"H:i" }}</span>

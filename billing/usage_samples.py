@@ -958,9 +958,12 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
     cache.set(gate_key, 1, _ORG_SAMPLE_TTL)
 
     from core.mikrotik_connect import (
+        dial_host,
         fetch_router_bulk_live_usage,
         is_mikrotik_host_cooling_down,
+        resolve_nas_api_host,
     )
+    from core.subscription_sync import should_skip_background_router_dial
     from core.models import MikroTikRouter
 
     routers = list(
@@ -1048,10 +1051,16 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
     def _probe(
         router: MikroTikRouter,
     ) -> tuple[int, bool, dict[str, dict[str, Any]], bool, dict[str, dict[str, Any]]]:
-        if is_mikrotik_host_cooling_down(router.host):
+        if should_skip_background_router_dial():
+            return router.pk, False, {}, False, {}
+        api_host = (
+            dial_host(resolve_nas_api_host(router, timeout=0.8))
+            or (router.host or "").strip()
+        )
+        if is_mikrotik_host_cooling_down(api_host):
             return router.pk, False, {}, False, {}
         result = fetch_router_bulk_live_usage(
-            router.host,
+            api_host,
             router.username,
             router.password or "",
             timeout=_ORG_SAMPLE_ROUTER_TIMEOUT,

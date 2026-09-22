@@ -179,8 +179,11 @@ from core.mikrotik_connect import (
     provision_customer_pppoe,
     provision_static_client_dhcp_lease,
     read_mikrotik_uplink_multi,
+    read_mikrotik_ports_and_uplink,
     reconcile_uplink_route_gateways,
     read_client_wan_usage,
+    _read_client_wan_usage_on_sock,
+    clear_nas_api_host_cache,
     auto_rebalance_client_isps,
     plan_client_isp_distribution,
     detect_bandwidth_share_drift,
@@ -227,6 +230,31 @@ from core.places import resolve_location, search_locations
 def _router_client_auto_balance_enabled(router: MikroTikRouter) -> bool:
     """Per-router opt-in for automatic client ISP spreading (not port/WAN changes)."""
     return bool(getattr(router, "smart_auto_balance_enabled", False))
+
+
+def _can_toggle_client_auto_balance(
+    router: MikroTikRouter,
+    *,
+    uplink_mode: str,
+    balance_insights: dict,
+) -> bool:
+    """
+    Auto balance toggle belongs on live clients only when load-share is applied
+    and per-client ISP switching is live — not merely when multi-ISP is selected.
+    """
+    mode = (uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+    if mode not in _weighted_share_uplink_modes():
+        return False
+    ready = bool(
+        balance_insights.get("applied")
+        and balance_insights.get("can_switch_clients")
+    )
+    if ready:
+        return True
+    # Keep the switch visible when already on so operators can turn it off.
+    return _router_client_auto_balance_enabled(router) and bool(
+        balance_insights.get("eligible")
+    )
 
 
 CLIENT_COMMON_NAV_START = [
@@ -542,6 +570,99 @@ def _resolve_working_nas_host(router, *, timeout: float = 1.5) -> str:
     return _router_api_host(router)
 
 
+def _dial_hosts_for_router_api(router, *, probe_timeout: float = 2.5) -> list[str]:
+    """Ordered NAS dial targets — probed working host first, then saved candidates."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def _add(raw: str) -> None:
+        host = (dial_host(raw) or raw or "").strip()
+        if host and host not in seen:
+            seen.add(host)
+            ordered.append(host)
+
+    primary = _resolve_working_nas_host(router, timeout=probe_timeout)
+    if primary:
+        _add(primary)
+    for candidate in _router_api_host_candidates(router, discover=on_router_lan()):
+        _add(candidate)
+    if not ordered:
+        _add(_router_api_host(router))
+    return ordered
+
+
+def _list_mikrotik_ports_resolved(
+    router: MikroTikRouter,
+    *,
+    timeout: float = 6.0,
+    management_hosts: list[str] | None = None,
+    probe_timeout: float = 2.5,
+) -> tuple[dict, str]:
+    """Try each dial candidate until list_mikrotik_ports succeeds."""
+    password = router.password or ""
+    last: dict = {"ok": False, "error": "Could not reach the MikroTik API."}
+    dial_host_used = ""
+    for host in _dial_hosts_for_router_api(router, probe_timeout=probe_timeout):
+        listed = list_mikrotik_ports(
+            host,
+            router.username,
+            password,
+            timeout=timeout,
+            management_hosts=management_hosts,
+        )
+        if listed.get("ok"):
+            return listed, host
+        last = listed
+        dial_host_used = host
+    return last, dial_host_used or _router_api_host(router)
+
+
+def _read_ports_uplink_resolved(
+    router: MikroTikRouter,
+    *,
+    timeout: float = 6.0,
+    management_hosts: list[str] | None = None,
+    member_ports: list[str] | None = None,
+    probe_timeout: float | None = None,
+    usage_on_session=None,
+) -> tuple[dict, dict, dict | None, str]:
+    """One RouterOS session per dial candidate for ports + uplink (+ optional usage)."""
+    password = router.password or ""
+    last: dict = {"ok": False, "error": "Could not reach the MikroTik API."}
+    dial_host_used = ""
+    probe = probe_timeout if probe_timeout is not None else _mikrotik_live_probe_timeout()
+    for host in _dial_hosts_for_router_api(router, probe_timeout=probe):
+        listed, uplink_live, usage = read_mikrotik_ports_and_uplink(
+            host,
+            router.username,
+            password,
+            timeout=timeout,
+            management_hosts=management_hosts,
+            member_ports=member_ports,
+            usage_on_session=usage_on_session,
+        )
+        if listed.get("ok"):
+            return listed, uplink_live, usage, host
+        last = listed
+        dial_host_used = host
+    return last, {"ok": False}, None, dial_host_used or _router_api_host(router)
+
+
+def _api_poll_unreachable_error(message: str) -> str:
+    """Clarify that API timeouts do not mean customer internet is down."""
+    base = (message or "Could not read ports from the MikroTik.").strip()
+    hint = (
+        " Customer internet may still work — this is the billing server's "
+        "management API path to the router, not customer traffic."
+    )
+    if hint.strip() in base:
+        return base
+    lowered = base.lower()
+    if "8728" in base or "timed out" in lowered or "could not reach" in lowered:
+        return base + hint
+    return base
+
+
 def _router_uses_tunnel(router) -> bool:
     tunnel = (getattr(router, "vpn_address", None) or "").strip()
     if tunnel:
@@ -573,6 +694,7 @@ def _router_tunnel_cache_key(router, *, require_api: bool = False) -> str:
 def _clear_router_tunnel_cache(router) -> None:
     cache.delete(_router_tunnel_cache_key(router))
     cache.delete(_router_tunnel_cache_key(router, require_api=True))
+    clear_nas_api_host_cache(router)
 
 
 def _wan_rollback_cache_key(router_pk: int) -> str:
@@ -1002,6 +1124,20 @@ def _mikrotik_status_cache_ttl(all_connected: bool) -> int:
     return 12 if all_connected else 8
 
 
+def _mikrotik_live_poll_cache_ttl(*, assigned: bool = False) -> int:
+    """Server-side cache for ports/assigned live JSON — longer on hosted VPS."""
+    if getattr(settings, "HOSTED", False):
+        return 10 if assigned else 7
+    return 6 if assigned else 4
+
+
+def _mikrotik_live_probe_timeout() -> float:
+    """NAS TCP probe before live polls — skip long scans when tunnel is known."""
+    if getattr(settings, "HOSTED", False):
+        return 0.9
+    return 2.5
+
+
 def _redirect_with_mikrotik_job(request, url_name: str, router_id: int, job_type: str):
     from django.http import HttpResponseRedirect
 
@@ -1242,6 +1378,7 @@ def mikrotik_assigned_ports(request, router_id: int):
         ),
         mikrotik_quicknav_set="ports",
         mikrotik_quicknav_active="assigned_ports",
+        hosted_server=bool(getattr(settings, "HOSTED", False)),
     )
     return render(
         request,
@@ -11724,7 +11861,8 @@ def mikrotik_ports(request, router_id: int):
         auto_assigned=auto_assigned,
         api_terminal_script=build_api_enable_terminal_script(),
         mikrotik_quicknav_set="ports",
-        mikrotik_quicknav_active="",
+        mikrotik_quicknav_active="ports",
+        hosted_server=bool(getattr(settings, "HOSTED", False)),
     )
     return render(
         request,
@@ -12068,54 +12206,56 @@ def _ports_live_payload(
     router: MikroTikRouter, *, include_client_analysis: bool = False
 ) -> dict:
     """Read live ports/uplink for display; auto-mutations only when enabled."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    # Ports list and uplink multi-read are independent RouterOS sessions —
-    # run them together so the ports page fills in sooner.
-    api_host = _router_api_host(router)
+    ports_timeout = 8.0 if include_client_analysis else 5.0
+    usage_timeout = 12.0 if include_client_analysis else 8.0
+    mgmt_hosts = _management_hosts_for_router(router)
     member_ports_for_read = [
         str(p).strip() for p in (router.uplink_ports or []) if str(p).strip()
     ]
-    ports_args = (
-        api_host,
-        router.username,
-        router.password or "",
+    uplink_mode = router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE
+    stored_roles = router.port_roles if isinstance(router.port_roles, dict) else {}
+    primary_wan_early = [
+        name
+        for name, role in stored_roles.items()
+        if _is_primary_wan_role((role or "").strip())
+    ]
+    backup_wan_early = [
+        name
+        for name, role in stored_roles.items()
+        if (role or "").strip() == MikroTikRouter.PortRole.WAN_BACKUP
+    ]
+    prefetched_usage: dict | None = None
+    usage_on_session = None
+    if include_client_analysis:
+
+        def usage_on_session(sock, listed, uplink_live, dial_host):
+            failover_active = ""
+            if _is_multi_isp_mode(uplink_mode) and uplink_live.get("ok"):
+                failover_active = _failover_active_wan_port(
+                    uplink_live,
+                    primary_wan_ports=primary_wan_early,
+                    backup_wan_ports=backup_wan_early,
+                )
+            return _read_client_wan_usage_on_sock(
+                sock,
+                dial_host,
+                uplink_mode=uplink_mode,
+                member_ports=member_ports_for_read or None,
+                primary_wan=(
+                    (primary_wan_early[0] if primary_wan_early else "")
+                    or (router.wan_interface or "")
+                ),
+                failover_active_port=failover_active,
+                bond_interface=(router.bond_interface or "").strip(),
+            )
+
+    listed, uplink_live, prefetched_usage, api_host = _read_ports_uplink_resolved(
+        router,
+        timeout=ports_timeout,
+        management_hosts=mgmt_hosts,
+        member_ports=member_ports_for_read or None,
+        usage_on_session=usage_on_session if include_client_analysis else None,
     )
-    ports_kwargs = {
-        "timeout": 5.0,
-        "management_hosts": _management_hosts_for_router(router),
-    }
-    uplink_kwargs = {
-        "timeout": 8.0,
-        "member_ports": member_ports_for_read or None,
-    }
-
-    def _read_sequential() -> tuple[dict, dict]:
-        listed_local = list_mikrotik_ports(*ports_args, **ports_kwargs)
-        try:
-            uplink_local = read_mikrotik_uplink_multi(*ports_args, **uplink_kwargs)
-        except Exception:
-            uplink_local = {"ok": False}
-        return listed_local, uplink_local
-
-    try:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            ports_future = pool.submit(
-                list_mikrotik_ports, *ports_args, **ports_kwargs
-            )
-            uplink_future = pool.submit(
-                read_mikrotik_uplink_multi, *ports_args, **uplink_kwargs
-            )
-            listed = ports_future.result()
-            try:
-                uplink_live = uplink_future.result()
-            except Exception:
-                uplink_live = {"ok": False}
-    except RuntimeError as exc:
-        # Autoreload can mark futures shut down while this request is still alive.
-        if "shutdown" not in str(exc).lower():
-            raise
-        listed, uplink_live = _read_sequential()
 
     wan_rollback = _wan_switch_rollback_payload(router)
 
@@ -12132,7 +12272,9 @@ def _ports_live_payload(
             )
         payload = {
             "ok": False,
-            "error": listed.get("error") or "Could not read ports from the MikroTik.",
+            "error": _api_poll_unreachable_error(
+                listed.get("error") or "Could not read ports from the MikroTik."
+            ),
             "ports": [],
             "auto_assigned": False,
             "terminal_script": listed.get("terminal_script") or "",
@@ -12342,8 +12484,7 @@ def _ports_live_payload(
         live_ports=live_ports,
         management_iface_by_host=listed.get("management_iface_by_host") or {},
     )
-    tunnel_management = check_router_tunnel_management(router, timeout=3.0)
-    tunnel_verified = bool(tunnel_management.get("verified"))
+    tunnel_verified = _router_tunnel_verified(router)
     uplink_apply_risks = _build_uplink_apply_risks(
         router,
         live_ports=live_ports,
@@ -12500,19 +12641,23 @@ def _ports_live_payload(
     balance_auto: dict = {}
     client_rebalance: dict = {}
     if include_client_analysis and listed.get("ok"):
-        usage = read_client_wan_usage(
-            api_host,
-            router.username,
-            router.password or "",
-            uplink_mode=uplink_mode,
-            member_ports=member_ports,
-            primary_wan=(
-                (primary_wan_ports[0] if primary_wan_ports else "")
-                or (router.wan_interface or "")
-            ),
-            failover_active_port=failover_active,
-            bond_interface=(router.bond_interface or "").strip(),
-            timeout=8.0,
+        usage = (
+            prefetched_usage
+            if isinstance(prefetched_usage, dict) and prefetched_usage
+            else read_client_wan_usage(
+                api_host,
+                router.username,
+                router.password or "",
+                uplink_mode=uplink_mode,
+                member_ports=member_ports,
+                primary_wan=(
+                    (primary_wan_ports[0] if primary_wan_ports else "")
+                    or (router.wan_interface or "")
+                ),
+                failover_active_port=failover_active,
+                bond_interface=(router.bond_interface or "").strip(),
+                timeout=usage_timeout,
+            )
         )
         router_analysis = _build_router_client_analysis(
             router,
@@ -12560,7 +12705,7 @@ def _ports_live_payload(
                     ),
                     failover_active_port=failover_active,
                     bond_interface=(router.bond_interface or "").strip(),
-                    timeout=8.0,
+                    timeout=usage_timeout,
                 )
                 router_analysis = _build_router_client_analysis(
                     router,
@@ -12786,8 +12931,10 @@ def _ports_live_payload(
         "uplink_apply_job": applying_job or {},
         "wan_rollback": wan_rollback,
         "smart_auto_balance_enabled": bool(router.smart_auto_balance_enabled),
-        "can_toggle_auto_balance": bool(
-            _is_multi_isp_mode(uplink_mode) and len(member_ports) >= 2
+        "can_toggle_auto_balance": _can_toggle_client_auto_balance(
+            router,
+            uplink_mode=uplink_mode,
+            balance_insights=balance_insights,
         ),
     }
 
@@ -12811,6 +12958,7 @@ def mikrotik_assigned_ports_live(request, router_id: int):
         )
 
     cache_key = f"mikrotik_assigned_ports_live:{org.pk}:{router.pk}"
+    last_good_key = f"mikrotik_assigned_ports_last:{org.pk}:{router.pk}"
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
     if force:
         _clear_router_tunnel_cache(router)
@@ -12827,16 +12975,41 @@ def mikrotik_assigned_ports_live(request, router_id: int):
             router.pk,
             org.pk,
         )
+        stale = cache.get(last_good_key)
+        if isinstance(stale, dict) and stale.get("ok"):
+            stale = dict(stale)
+            stale["stale"] = True
+            stale["live_error"] = _api_poll_unreachable_error(
+                str(exc) or "Could not read assigned port analytics."
+            )
+            stale["router_id"] = router.pk
+            cache.set(cache_key, stale, 3)
+            return JsonResponse(stale)
         return JsonResponse(
             {
                 "ok": False,
-                "error": str(exc) or "Could not read assigned port analytics.",
+                "error": _api_poll_unreachable_error(
+                    str(exc) or "Could not read assigned port analytics."
+                ),
             },
             status=500,
         )
     payload["router_id"] = router.pk
-    ttl = 5 if payload.get("ok") else 3
-    cache.set(cache_key, payload, ttl)
+    if payload.get("ok"):
+        cache.set(cache_key, payload, _mikrotik_live_poll_cache_ttl(assigned=True))
+        cache.set(last_good_key, payload, 300)
+        return JsonResponse(payload)
+
+    stale = cache.get(last_good_key)
+    if isinstance(stale, dict) and stale.get("ok"):
+        stale = dict(stale)
+        stale["stale"] = True
+        stale["live_error"] = payload.get("error") or ""
+        stale["router_id"] = router.pk
+        cache.set(cache_key, stale, 3)
+        return JsonResponse(stale)
+
+    cache.set(cache_key, payload, 3)
     return JsonResponse(payload)
 
 
@@ -12978,6 +13151,22 @@ def mikrotik_assigned_ports_apply(request, router_id: int):
     if action == "set_auto_balance":
         raw = (request.POST.get("enabled") or "").strip().lower()
         enabled = raw in {"1", "true", "yes", "on"}
+        if enabled:
+            try:
+                live = _ports_live_payload(router, include_client_analysis=True)
+            except Exception:
+                live = {}
+            if not live.get("can_toggle_auto_balance"):
+                return JsonResponse(
+                    {
+                        "ok": False,
+                        "error": (
+                            "Auto balance needs smart balance applied on this router "
+                            "with live client ISP switching."
+                        ),
+                    },
+                    status=400,
+                )
         router.smart_auto_balance_enabled = enabled
         router.save(update_fields=["smart_auto_balance_enabled", "updated_at"])
         cache.delete(f"mikrotik_assigned_ports_live:{org.pk}:{router.pk}")
@@ -13038,7 +13227,12 @@ def mikrotik_ports_live(request, router_id: int):
     payload = _ports_live_payload(router)
     payload["router_id"] = router.pk
     # Auto-assign mutates DB — do not serve a stale empty role map.
-    ttl = 3 if (payload.get("auto_assigned") or payload.get("role_sync_message")) else (4 if payload.get("ok") else 3)
+    if payload.get("auto_assigned") or payload.get("role_sync_message"):
+        ttl = 3
+    elif payload.get("ok"):
+        ttl = _mikrotik_live_poll_cache_ttl(assigned=False)
+    else:
+        ttl = 3
     cache.set(cache_key, payload, ttl)
     return JsonResponse(payload)
 
@@ -13489,10 +13683,12 @@ def mikrotik_live(request, router_id: int):
     from core.mikrotik_auto_restore import get_auto_restore_record
 
     snapshot["auto_restore"] = get_auto_restore_record(router.pk)
-    # Shorter than the 10s UI poll so each refresh gets fresh WAN speeds.
-    ttl = 4
     if snapshot.get("management_deferred"):
         ttl = 60
+    elif getattr(settings, "HOSTED", False) and snapshot.get("ok"):
+        ttl = 9
+    else:
+        ttl = 4
     cache.set(cache_key, snapshot, ttl)
     return JsonResponse(_strip_remote_only_live_flags(snapshot))
 
@@ -18797,7 +18993,8 @@ def clients_surfing_status(request):
         stored_ssid = (getattr(router, "wifi_ssid", None) or "").strip()
         if router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
             return router_id, set(), set(), set(), {}, "Router suspended", stored_ssid
-        if is_mikrotik_host_cooling_down(router.host):
+        api_host = _resolve_working_nas_host(router, timeout=0.8)
+        if is_mikrotik_host_cooling_down(api_host):
             return (
                 router_id,
                 set(),
@@ -18809,7 +19006,7 @@ def clients_surfing_status(request):
             )
         if service == "hotspot":
             result = fetch_hotspot_client_macs(
-                router.host,
+                api_host,
                 router.username,
                 router.password,
                 timeout=4.0,
@@ -18825,7 +19022,7 @@ def clients_surfing_status(request):
             live_ssid = (result.get("wifi_ssid") or "").strip() or stored_ssid
         else:
             result = fetch_active_pppoe_usernames(
-                router.host,
+                api_host,
                 router.username,
                 router.password,
                 timeout=4.0,
@@ -20989,14 +21186,13 @@ def _hotspot_payment_start_impl(request, join_code: str):
         try:
             from core.subscription_sync import enqueue_customer_subscription_sync
 
-            # Don't hold the captive Pay response on MikroTik; authorize can retry.
             provision = (
                 enqueue_customer_subscription_sync(
                     customer.pk,
                     True,
-                    wait_first=False,
+                    wait_first=True,
                     quick=True,
-                    reauthenticate=False,
+                    reauthenticate=True,
                 )
                 or provision
             )
@@ -21412,8 +21608,8 @@ def hotspot_connection_status(request, join_code: str):
     """
     Fast Hotspot connection probe for the welcome page.
 
-    Default response is DB-only (no MikroTik wait). Pass sync=1 for one
-    non-blocking NAS poke when the client needs a second opinion.
+    Default response is DB-only (no MikroTik wait). Pass sync=1 to push one
+    quick NAS authorize for paid reconnects (blocks up to ~5s on the router).
     """
     org = get_object_or_404(Organization, join_code=join_code)
     hotspot_mac = ""
@@ -21454,6 +21650,7 @@ def hotspot_connection_status(request, join_code: str):
     owns_mac = customer_owns_hotspot_mac(customer, hotspot_mac)
     authorized = bool(paid and owns_mac)
     offline = False
+    nas_synced = False
 
     want_sync = (request.GET.get("sync") or "").strip().lower() in {
         "1",
@@ -21466,7 +21663,9 @@ def hotspot_connection_status(request, join_code: str):
         "yes",
     }
 
-    if not authorized and paid and want_sync:
+    # sync=1 must push NAS access for paid reconnects. The old path only ran
+    # when DB authorization was false, so active subscribers never got a NAS poke.
+    if paid and owns_mac and want_sync:
         from core.subscription_sync import (
             enqueue_customer_subscription_sync,
             nas_access_ready,
@@ -21476,14 +21675,25 @@ def hotspot_connection_status(request, join_code: str):
             enqueue_customer_subscription_sync(
                 customer.pk,
                 True,
-                wait_first=False,
+                wait_first=True,
                 quick=True,
-                reauthenticate=False,
+                reauthenticate=True,
             )
             or {}
         )
-        offline = bool(nas.get("offline"))
-        authorized = bool(nas_access_ready(nas) and owns_mac)
+        nas_synced = True
+        offline = bool(
+            nas.get("offline")
+            or nas.get("authorize_pending")
+            or nas.get("skipped")
+        )
+        if nas_access_ready(nas):
+            authorized = True
+        elif offline:
+            # Router offline — billing is valid; background sweep will finish.
+            authorized = True
+        else:
+            authorized = False
 
     if authorized and want_live:
         from core import mikrotik_connect
@@ -21498,9 +21708,10 @@ def hotspot_connection_status(request, join_code: str):
             "ok": True,
             "authorized": authorized,
             "paid": paid,
-            "can_retry": bool(paid and not authorized),
+            "can_retry": bool(paid and owns_mac and not authorized),
             "offline": offline,
             "live_checked": bool(want_live),
+            "nas_synced": nas_synced,
         }
     )
 
@@ -22007,6 +22218,70 @@ def hotspot_portal_track(request, join_code: str):
     return redirect(next_url)
 
 
+@require_GET
+def hotspot_reconnect(request, join_code: str):
+    """
+    Fast captive gateway for returning Hotspot clients.
+
+    MikroTik login.html lands here first. Paid MACs get a quick NAS authorize
+    and redirect to welcome; everyone else goes to pay or pause.
+    """
+    org = get_object_or_404(Organization, join_code=join_code)
+    hotspot_mac = _resolve_request_hotspot_mac(org, request)
+
+    if not hotspot_mac:
+        response = _redirect_pay_preserving_query(
+            request, "core:hotspot_pay", join_code
+        )
+        response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response["Pragma"] = "no-cache"
+        response["Expires"] = "0"
+        return response
+
+    customer = _find_hotspot_customer_for_mac(org, hotspot_mac)
+    from billing.devices import customer_owns_hotspot_mac
+    from billing.services import (
+        customer_can_surf_via_hotspot,
+        customer_package_is_paused,
+    )
+
+    if customer is not None and customer_package_is_paused(customer):
+        response = _redirect_pay_preserving_query(
+            request, "core:hotspot_pause", join_code
+        )
+    elif (
+        customer is not None
+        and customer_can_surf_via_hotspot(customer)
+        and customer_owns_hotspot_mac(customer, hotspot_mac)
+    ):
+        try:
+            from core.subscription_sync import enqueue_customer_subscription_sync
+
+            enqueue_customer_subscription_sync(
+                customer.pk,
+                True,
+                wait_first=True,
+                quick=True,
+                reauthenticate=True,
+            )
+        except Exception:
+            logger.exception(
+                "hotspot reconnect sync failed customer=%s",
+                getattr(customer, "pk", None),
+            )
+        response = redirect(_hotspot_welcome_url(join_code, mac=hotspot_mac))
+    else:
+        response = _redirect_pay_preserving_query(
+            request, "core:hotspot_pay", join_code
+        )
+
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    response = _set_hotspot_mac_cookie(response, hotspot_mac)
+    return response
+
+
 def hotspot_pay(request, join_code: str):
     """Public Hotspot payment page (captive redirect target + preview)."""
     return _hotspot_captive_page(request, join_code, expected_page="pay")
@@ -22128,6 +22403,46 @@ def _hotspot_captive_page(request, join_code: str, *, expected_page: str):
                 _block_unpaid_mac,
                 name=f"hotspot-block-{hotspot_mac[-8:]}",
             )
+        else:
+            from billing.devices import customer_owns_hotspot_mac
+
+            if customer_owns_hotspot_mac(hotspot_customer, hotspot_mac):
+                reconnect_pk = hotspot_customer.pk
+
+                def _reconnect_paid_hotspot(
+                    customer_pk=reconnect_pk,
+                ) -> None:
+                    from billing.models import Customer
+                    from core.subscription_sync import (
+                        enqueue_customer_subscription_sync,
+                    )
+
+                    cust = (
+                        Customer.objects.select_related(
+                            "plan", "router", "organization"
+                        )
+                        .filter(pk=customer_pk)
+                        .first()
+                    )
+                    if cust is None:
+                        return
+                    enqueue_customer_subscription_sync(
+                        cust.pk,
+                        True,
+                        wait_first=True,
+                        quick=True,
+                        reauthenticate=True,
+                    )
+
+                schedule_mikrotik_job(
+                    _reconnect_paid_hotspot,
+                    name=f"hotspot-reconnect-{hotspot_mac[-8:]}",
+                )
+                context["hotspot_reconnect_eligible"] = True
+                context["connection_check_url"] = reverse(
+                    "core:hotspot_connection_status",
+                    kwargs={"join_code": join_code},
+                )
     _prefetch_daraja_oauth(org)
     response = render(request, "core/hotspot_pay.html", context)
     response = _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")

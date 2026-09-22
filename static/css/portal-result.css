@@ -1,0 +1,217 @@
+﻿    *, *::before, *::after { box-sizing: border-box; }
+
+    :root {
+      --accent: #0e7c86;
+      --tint: rgba(14, 124, 134, 0.12);
+      --brand: #0e7c86;
+      --brand-ink: #fff;
+      --surface: #fff;
+      --text: #0f1b2d;
+      --muted: #5b6b82;
+      --line: rgba(15, 27, 45, 0.1);
+      --shadow: 0 1.5rem 3.5rem rgba(3, 12, 22, 0.45);
+    }
+    .is-ok { --accent: #15803d; --tint: rgba(21, 128, 61, 0.12); }
+    .is-pending { --accent: #0369a1; --tint: rgba(3, 105, 161, 0.12); }
+    .is-error { --accent: #b91c1c; --tint: rgba(185, 28, 28, 0.12); }
+
+    [data-theme="dark"] {
+
+        --surface: #131c28;
+        --text: #eaf1fa;
+        --muted: #9db0c8;
+        --line: rgba(255, 255, 255, 0.1);
+        --brand: #2ea3ad;
+        --brand-ink: #04121a;
+}
+
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: calc(1rem + env(safe-area-inset-top)) calc(1rem + env(safe-area-inset-right))
+               calc(1rem + env(safe-area-inset-bottom)) calc(1rem + env(safe-area-inset-left));
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", sans-serif;
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      text-size-adjust: 100%;
+      -webkit-text-size-adjust: 100%;
+      background:
+        radial-gradient(ellipse 90% 60% at 10% 0%, rgba(14, 124, 134, 0.28), transparent 55%),
+        radial-gradient(ellipse 70% 50% at 100% 100%, rgba(31, 111, 235, 0.2), transparent 50%),
+        #0b1520;
+    }
+
+    .card {
+      /* margin:auto keeps the top reachable when the card outgrows the viewport */
+      margin: auto;
+      width: min(100%, 26rem);
+      padding: clamp(1.35rem, 5vw, 1.9rem) clamp(1.15rem, 5vw, 1.6rem);
+      border-radius: clamp(1rem, 4vw, 1.4rem);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      text-align: center;
+      animation: rise 0.3s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+    }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(0.75rem) scale(0.98); }
+    }
+
+    .brand {
+      margin: 0 0 clamp(0.9rem, 4vw, 1.15rem);
+      display: inline-flex;
+      align-items: center;
+      padding: 0.28rem 0.65rem;
+      border-radius: 999px;
+      border: 1px solid rgba(14, 124, 134, 0.28);
+      background: var(--tint);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--brand);
+    }
+
+    .badge {
+      width: clamp(3.5rem, 16vw, 4.25rem);
+      height: clamp(3.5rem, 16vw, 4.25rem);
+      margin: 0 auto clamp(0.85rem, 3.5vw, 1.1rem);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: var(--accent);
+      background: var(--tint);
+    }
+    .badge svg { width: 62%; height: 62%; display: block; }
+    .badge circle, .badge path, .badge line {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 3.4;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .ring { opacity: 0.25; }
+    .mark {
+      stroke-dasharray: 44;
+      stroke-dashoffset: 44;
+      animation: draw 0.5s 0.15s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    }
+    @keyframes draw { to { stroke-dashoffset: 0; } }
+    .arc {
+      stroke-dasharray: 30 115;
+      transform-origin: 50% 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.25rem, 5.5vw, 1.5rem);
+      line-height: 1.25;
+      letter-spacing: -0.02em;
+    }
+    .lede {
+      margin: 0.55rem 0 0;
+      font-size: clamp(0.92rem, 3.8vw, 1rem);
+      line-height: 1.5;
+      color: var(--muted);
+    }
+
+    .facts {
+      margin: clamp(1rem, 4vw, 1.25rem) 0 0;
+      padding: 0.25rem clamp(0.85rem, 4vw, 1rem);
+      border-radius: 0.9rem;
+      background: var(--tint);
+      text-align: left;
+    }
+    .fact {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.25rem 1rem;
+      padding: 0.65rem 0;
+      border-top: 1px solid var(--line);
+    }
+    .fact:first-child { border-top: 0; }
+    .fact dt {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .fact dd {
+      margin: 0;
+      font-size: 0.92rem;
+      font-weight: 700;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+    .fact dd.code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.02em; }
+
+    .action {
+      display: block;
+      margin-top: clamp(1rem, 4vw, 1.25rem);
+      padding: 0.9rem 1.1rem;
+      min-height: 3rem;
+      border-radius: 999px;
+      background: linear-gradient(135deg, var(--brand), color-mix(in srgb, var(--brand) 70%, #05353a));
+      color: var(--brand-ink);
+      font-size: 1rem;
+      font-weight: 700;
+      text-decoration: none;
+      box-shadow: 0 10px 24px rgba(14, 124, 134, 0.28);
+      transition: transform 0.12s ease, filter 0.12s ease;
+    }
+    .action:hover { filter: brightness(1.08); }
+    .action:active { transform: scale(0.985); }
+    .action:focus-visible { outline: 3px solid var(--brand); outline-offset: 3px; }
+
+    .hint {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      margin: clamp(1rem, 4vw, 1.25rem) 0 0;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .hint::before {
+      content: "";
+      width: 0.45rem;
+      height: 0.45rem;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse { 50% { opacity: 0.25; transform: scale(0.7); } }
+
+    .earn-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+      padding: 0.55rem 1rem;
+      border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+      color: var(--accent);
+      font-size: 1.05rem;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      text-decoration: none;
+    }
+
+    .earn-chip:hover {
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before { animation: none !important; transition: none !important; }
+      .mark { stroke-dashoffset: 0; }
+      .arc { stroke-dasharray: none; }
+    }

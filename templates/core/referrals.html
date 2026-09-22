@@ -151,7 +151,7 @@
     </div>
 
     {% if referred_organizations %}
-      <div class="referral-table-wrap">
+      <div class="org-table-shell referral-table-shell">
         <table class="org-table referral-table">
           <thead>
             <tr>
@@ -165,22 +165,22 @@
           <tbody>
             {% for row in referred_organizations %}
               <tr>
-                <td>
+                <td data-label="ISP client">
                   <div class="referral-org-cell">
                     <span class="referral-org-avatar" aria-hidden="true">{{ row.name|slice:":1"|upper }}</span>
                     <strong>{{ row.name }}</strong>
                   </div>
                 </td>
-                <td>{{ row.owner.get_full_name|default:row.owner.username }}</td>
-                <td>{{ row.phone|default:"—" }}</td>
-                <td>
+                <td data-label="Owner">{{ row.owner.get_full_name|default:row.owner.username }}</td>
+                <td data-label="Phone">{{ row.phone|default:"—" }}</td>
+                <td data-label="Onboarding">
                   {% if row.referral_status == "active" %}
                     <span class="referral-status-pill is-active">Onboarded</span>
                   {% else %}
                     <span class="referral-status-pill is-pending">Pending onboard</span>
                   {% endif %}
                 </td>
-                <td>{{ row.created_at|date:"d M Y" }}</td>
+                <td data-label="Joined">{{ row.created_at|date:"d M Y" }}</td>
               </tr>
             {% endfor %}
           </tbody>

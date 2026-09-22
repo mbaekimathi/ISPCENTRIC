@@ -8,7 +8,7 @@
 {% endblock %}
 
 {% block staff_content %}
-<section class="org-page" id="hr-employees">
+<section class="org-page org-page-responsive hr-page" id="hr-employees">
   <header class="org-page-header">
     <div>
       <h2>Registered employees</h2>
@@ -30,8 +30,8 @@
     >
   </div>
 
-  <div class="org-table-shell">
-    <table class="org-table org-table-hr" id="org-table">
+  <div class="org-table-shell hr-table-shell">
+    <table class="org-table org-table-hr hr-table" id="org-table">
       <thead>
         <tr>
           <th>Employee</th>
@@ -44,8 +44,11 @@
       </thead>
       <tbody>
         {% for member in employees %}
-        <tr data-search="{{ member.user.get_full_name|default:member.user.username }} {{ member.user.username }} {{ member.user.email }} {{ member.phone }} {{ member.login_code }} {{ member.get_role_display }} {{ member.role }} {{ member.get_status_display }} {{ member.status }}">
-          <td>
+        <tr
+          class="hr-row{% if member.status == 'suspended' %} is-suspended{% elif member.status == 'pending_approval' %} is-pending{% endif %}"
+          data-search="{{ member.user.get_full_name|default:member.user.username }} {{ member.user.username }} {{ member.user.email }} {{ member.phone }} {{ member.login_code }} {{ member.get_role_display }} {{ member.role }} {{ member.get_status_display }} {{ member.status }}"
+        >
+          <td data-label="Employee">
             <div class="org-identity">
               {% if member.profile_photo %}
                 <img src="{{ member.profile_photo.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
@@ -58,13 +61,13 @@
               </div>
             </div>
           </td>
-          <td>{{ member.phone|default:"—" }}</td>
-          <td><span class="org-code">{{ member.login_code|default:"—" }}</span></td>
-          <td>{{ member.get_role_display }}</td>
-          <td>
+          <td data-label="Contact">{{ member.phone|default:"—" }}</td>
+          <td data-label="Login code"><span class="org-code">{{ member.login_code|default:"—" }}</span></td>
+          <td data-label="Role">{{ member.get_role_display }}</td>
+          <td data-label="Status">
             <span class="org-status org-status-{{ member.status }}">{{ member.get_status_display }}</span>
           </td>
-          <td>
+          <td data-label="Actions">
             <div class="org-actions org-actions-icons">
               <a
                 class="org-action-icon"

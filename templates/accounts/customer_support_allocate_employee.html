@@ -62,19 +62,19 @@
           <tbody>
             {% for row in active_allocations %}
               <tr>
-                <td>
+                <td data-label="Equipment">
                   <strong>{{ row.equipment.name }}</strong>
                   <small class="lead-location-line">{{ row.equipment.get_equipment_type_display }}</small>
                 </td>
-                <td>
+                <td data-label="Qty / Serial">
                   {% if row.serial %}
                     <code>{{ row.serial.serial_number }}</code>
                   {% else %}
                     {{ row.quantity }}
                   {% endif %}
                 </td>
-                <td>{{ row.allocated_at|date:"M j, Y H:i" }}</td>
-                <td>
+                <td data-label="Allocated">{{ row.allocated_at|date:"M j, Y H:i" }}</td>
+                <td data-label="Actions">
                   <form method="post" class="inline-form" onsubmit="return confirm('Return this item to stock?');">
                     {% csrf_token %}
                     <input type="hidden" name="action" value="return">
@@ -120,15 +120,15 @@
                 data-track-serials="{% if item.track_serials %}1{% else %}0{% endif %}"
                 data-stock="{{ item.quantity }}"
               >
-                <td>
+                <td data-label="Equipment">
                   <strong>{{ item.name }}</strong>
                   <small class="lead-location-line">
                     {{ item.get_equipment_type_display }}
                     {% if item.track_serials %} · Serial tracked{% endif %}
                   </small>
                 </td>
-                <td>{{ item.quantity }}</td>
-                <td>
+                <td data-label="On hand">{{ item.quantity }}</td>
+                <td data-label="Allocate">
                   {% if item.quantity < 1 %}
                     <span class="org-status org-status-suspended">Out of stock</span>
                   {% else %}

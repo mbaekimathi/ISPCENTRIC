@@ -1,137 +1,148 @@
-{% extends "core/client_base.html" %}
-{% load static %}
-
-{% block title %}Live clients — {{ router.name }} — ISPCENTRIC{% endblock %}
-
-{% block client_content %}
-{% include "core/includes/mikrotik_job_poll.html" %}
-<div class="mk-page mk-assigned-ports-page mk-assigned-simple">
-  <header class="mk-page-hero mk-ports-hero mk-assigned-hero">
-    <div class="mk-page-hero-copy">
-      <p class="mk-page-kicker">{{ router.name }}</p>
-      <h1 class="mk-page-title">Live clients</h1>
-      <p class="mk-page-lead">Who is online and which internet link they use. Use Switch link to move customers manually.</p>
-    </div>
-    <div class="mk-ports-hero-actions">
-      <label class="mk-auto-balance-toggle" data-auto-balance-toggle-wrap {% if is_suspended %}hidden{% endif %} hidden>
-        <span class="mk-auto-balance-toggle-copy">
-          <span class="mk-auto-balance-toggle-label">Auto balance</span>
-          <span class="mk-auto-balance-toggle-hint">Manual Switch always works</span>
-        </span>
-        <input
-          type="checkbox"
-          data-auto-balance-toggle
-          role="switch"
-          aria-label="Auto balance clients across ISP links"
-          {% if router.smart_auto_balance_enabled %}checked{% endif %}
-        >
-      </label>
-      <span class="mk-live-pill" data-assigned-live-pill hidden>
-        <span class="mk-live-dot" aria-hidden="true"></span>
-        Live
-      </span>
-      <a class="btn btn-ghost" href="{% url 'core:mikrotik_assigned_ports_movements' router.id %}">Movement history</a>
-      <a class="btn btn-ghost" href="{% url 'core:mikrotik_ports' router.id %}">Port setup</a>
-    </div>
-  </header>
-
-  {% include "core/includes/mikrotik_detail_quicknav.html" %}
-
-  <section
-    class="mk-surface mk-assigned-ports-surface"
-    id="mikrotik-assigned-ports-root"
-    data-assigned-live-url="{{ assigned_ports_live_url }}"
-    data-assigned-apply-url="{{ assigned_ports_apply_url }}"
-    data-push-status-url="{{ push_status_url }}"
-    data-csrf-token="{{ csrf_token }}"
-    data-ports-loading="{% if ports_loading %}1{% else %}0{% endif %}"
-    data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
-    data-router-id="{{ router.id }}"
-  >
-    <div class="mk-assigned-top-panel">
-      <div class="mk-assigned-loading" data-assigned-loading {% if not ports_loading %}hidden{% endif %}>
-        <div class="mk-assigned-loading-head">
-          <div class="mk-loading-pulse" aria-hidden="true"></div>
-          <div>
-            <p class="mk-loading-title">Loading live clients…</p>
-            <p class="mk-help-note">Reading customers from {{ router.name }}.</p>
-          </div>
-        </div>
-        <div class="mk-assigned-loading-skeleton" aria-hidden="true">
-          <div class="mk-assigned-skeleton-col"></div>
-          <div class="mk-assigned-skeleton-col"></div>
-          <div class="mk-assigned-skeleton-col is-short"></div>
-        </div>
-      </div>
-
-      <div
-        class="mk-assigned-uplink-overview"
-        data-assigned-uplink-overview
-        hidden
-        aria-label="Live uplink snapshot"
-      >
-        <header class="mk-assigned-uplink-overview-head">
-          <div>
-            <p class="mk-assigned-uplink-overview-kicker">Live snapshot</p>
-            <h2 class="mk-assigned-uplink-overview-title">Uplink load</h2>
-          </div>
-          <p class="mk-help-note mk-assigned-uplink-overview-stamp" data-assigned-overview-stamp></p>
-        </header>
-        <div class="mk-assigned-uplink-overview-grid" data-assigned-uplink-overview-grid></div>
-      </div>
-    </div>
-
-    <div class="mk-banner is-danger mk-ports-error" role="alert" data-assigned-error hidden>
-      <p data-assigned-error-text></p>
-      <button type="button" class="btn btn-ghost" data-assigned-retry hidden>Retry</button>
-    </div>
-
-    <div class="mk-assigned-notice" data-assigned-status-card hidden role="status">
-      <div class="mk-assigned-notice-copy">
-        <strong data-assigned-balance-title></strong>
-        <p data-assigned-balance-message></p>
-      </div>
-      <button type="button" class="btn btn-primary btn-sm" data-assigned-balance-apply hidden>
-        Turn on smart balance
-      </button>
-    </div>
-
-    <div class="mk-assigned-kpi-row" data-assigned-kpi-row hidden aria-label="Live client summary">
-      <article class="mk-assigned-kpi">
-        <p class="mk-assigned-kpi-label">Online now</p>
-        <p class="mk-assigned-kpi-value" data-assigned-kpi-online>—</p>
-      </article>
-      <article class="mk-assigned-kpi">
-        <p class="mk-assigned-kpi-label">Total customers</p>
-        <p class="mk-assigned-kpi-value" data-assigned-kpi-total>—</p>
-      </article>
-      <article class="mk-assigned-kpi">
-        <p class="mk-assigned-kpi-label">Active uplinks</p>
-        <p class="mk-assigned-kpi-value" data-assigned-kpi-uplinks>—</p>
-      </article>
-    </div>
-
-    <section class="mk-assigned-clients-section" data-router-analysis hidden aria-label="Customers by uplink">
-      <header class="mk-assigned-section-head">
-        <div class="mk-assigned-section-head-copy">
-          <h2 class="mk-assigned-section-title">Customers by uplink</h2>
-          <p class="mk-help-note" data-assigned-clients-summary></p>
-        </div>
-        <p class="mk-assigned-board-hint mk-help-note">Swipe to see all links on smaller screens.</p>
-        <p class="mk-help-note mk-assigned-switch-hint" data-assigned-switch-hint hidden>
-          Online customers can be moved manually — tap <strong>Switch</strong> next to their link.
-        </p>
-      </header>
-      <div class="mk-assigned-uplink-board-wrap">
-        <div class="mk-assigned-uplink-board" data-assigned-client-list></div>
-      </div>
-      <p class="mk-help-note mk-assigned-empty" data-router-analysis-empty hidden>
-        No customers on this router yet.
-      </p>
-      <p class="mk-help-note mk-router-analysis-error" data-router-analysis-error hidden></p>
-    </section>
-  </section>
-</div>
-
-<script src="{% static 'js/mikrotik_assigned_ports.js' %}" defer></script>
-{% endblock %}
+{% extends "core/client_base.html" %}
+{% load static %}
+
+{% block title %}Live clients — {{ router.name }} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+{% include "core/includes/mikrotik_job_poll.html" %}
+<div class="mk-page mk-assigned-ports-page">
+  <section
+    class="mk-surface mk-assigned-ports-surface"
+    id="mikrotik-assigned-ports-root"
+    data-assigned-live-url="{{ assigned_ports_live_url }}"
+    data-assigned-apply-url="{{ assigned_ports_apply_url }}"
+    data-push-status-url="{{ push_status_url }}"
+    data-csrf-token="{{ csrf_token }}"
+    data-ports-loading="{% if ports_loading %}1{% else %}0{% endif %}"
+    data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
+    data-hosted="{% if hosted_server %}1{% else %}0{% endif %}"
+    data-router-id="{{ router.id }}"
+  >
+    <header class="mk-page-hero mk-ports-hero mk-assigned-hero">
+      <div class="mk-page-hero-copy">
+        <p class="mk-page-kicker">{{ router.name }} · Live clients</p>
+        <h1 class="mk-page-title">Who is online</h1>
+        <p class="mk-page-lead">
+          Customers mapped to each internet link on
+          <strong>{{ router.name }}</strong>
+          <span class="mk-host-chip">{{ router.host }}</span>.
+          Use <strong>Switch</strong> to move someone manually.
+        </p>
+      </div>
+      <div class="mk-ports-hero-actions mk-assigned-hero-actions">
+        <label class="mk-auto-balance-toggle{% if router.smart_auto_balance_enabled %} is-on{% endif %}" data-auto-balance-toggle-wrap {% if is_suspended %}hidden{% endif %} hidden>
+          <input
+            type="checkbox"
+            data-auto-balance-toggle
+            role="switch"
+            aria-label="Auto balance clients across ISP links"
+            {% if router.smart_auto_balance_enabled %}checked{% endif %}
+          >
+          <span class="mk-auto-balance-switch-track" aria-hidden="true"></span>
+          <span class="mk-auto-balance-toggle-copy">
+            <span class="mk-auto-balance-toggle-label" data-auto-balance-toggle-label>
+              {% if router.smart_auto_balance_enabled %}Stop auto balancing{% else %}Auto balance{% endif %}
+            </span>
+            <span class="mk-auto-balance-toggle-hint" data-auto-balance-toggle-hint>
+              {% if router.smart_auto_balance_enabled %}Spreading clients across links{% else %}Manual Switch always works{% endif %}
+            </span>
+          </span>
+        </label>
+        <span class="mk-live-pill" data-assigned-live-pill hidden>
+          <span class="mk-live-dot" aria-hidden="true"></span>
+          Live
+        </span>
+        <a class="btn btn-ghost" href="{% url 'core:mikrotik_assigned_ports_movements' router.id %}">Movement history</a>
+        <a class="btn btn-ghost" href="{% url 'core:mikrotik_ports' router.id %}">Port setup</a>
+      </div>
+    </header>
+
+    {% include "core/includes/mikrotik_detail_quicknav.html" %}
+
+    <div class="mk-assigned-top-panel">
+      <div class="mk-assigned-loading" data-assigned-loading {% if not ports_loading %}hidden{% endif %}>
+        <div class="mk-assigned-loading-head">
+          <div class="mk-loading-pulse" aria-hidden="true"></div>
+          <div>
+            <p class="mk-loading-title">Loading live clients…</p>
+            <p class="mk-help-note">Reading customers from {{ router.name }}.</p>
+          </div>
+        </div>
+        <div class="mk-assigned-loading-skeleton" aria-hidden="true">
+          <div class="mk-assigned-skeleton-col"></div>
+          <div class="mk-assigned-skeleton-col"></div>
+          <div class="mk-assigned-skeleton-col is-short"></div>
+        </div>
+      </div>
+
+      <div
+        class="mk-assigned-uplink-overview"
+        data-assigned-uplink-overview
+        hidden
+        aria-label="Live uplink snapshot"
+      >
+        <header class="mk-assigned-uplink-overview-head">
+          <div>
+            <p class="mk-assigned-uplink-overview-kicker">Live snapshot</p>
+            <h2 class="mk-assigned-uplink-overview-title">Uplink load</h2>
+          </div>
+          <p class="mk-help-note mk-assigned-uplink-overview-stamp" data-assigned-overview-stamp></p>
+        </header>
+        <div class="mk-assigned-uplink-overview-grid" data-assigned-uplink-overview-grid></div>
+      </div>
+    </div>
+
+    <div class="mk-banner is-danger mk-ports-error" role="alert" data-assigned-error hidden>
+      <p data-assigned-error-text></p>
+      <button type="button" class="btn btn-ghost" data-assigned-retry hidden>Retry</button>
+    </div>
+
+    <div class="mk-assigned-notice" data-assigned-status-card hidden role="status">
+      <div class="mk-assigned-notice-copy">
+        <strong data-assigned-balance-title></strong>
+        <p data-assigned-balance-message></p>
+      </div>
+      <button type="button" class="btn btn-primary btn-sm" data-assigned-balance-apply hidden>
+        Turn on smart balance
+      </button>
+    </div>
+
+    <div class="mk-assigned-kpi-row" data-assigned-kpi-row hidden aria-label="Live client summary">
+      <article class="mk-assigned-kpi">
+        <p class="mk-assigned-kpi-label">Online now</p>
+        <p class="mk-assigned-kpi-value" data-assigned-kpi-online>—</p>
+      </article>
+      <article class="mk-assigned-kpi">
+        <p class="mk-assigned-kpi-label">Total customers</p>
+        <p class="mk-assigned-kpi-value" data-assigned-kpi-total>—</p>
+      </article>
+      <article class="mk-assigned-kpi">
+        <p class="mk-assigned-kpi-label">Active uplinks</p>
+        <p class="mk-assigned-kpi-value" data-assigned-kpi-uplinks>—</p>
+      </article>
+    </div>
+
+    <section class="mk-assigned-clients-section mk-assigned-section" data-router-analysis hidden aria-label="Customers by uplink">
+      <header class="mk-assigned-section-head">
+        <div class="mk-assigned-section-head-copy">
+          <h2 class="mk-assigned-section-title">Customers by uplink</h2>
+          <p class="mk-help-note" data-assigned-clients-summary></p>
+        </div>
+        <p class="mk-assigned-board-hint mk-help-note">Swipe to see all links on smaller screens.</p>
+        <p class="mk-help-note mk-assigned-switch-hint" data-assigned-switch-hint hidden>
+          Online customers can be moved manually — tap <strong>Switch</strong> next to their link.
+        </p>
+      </header>
+      <div class="mk-assigned-uplink-board-wrap">
+        <div class="mk-assigned-uplink-board" data-assigned-client-list></div>
+      </div>
+      <p class="mk-help-note mk-assigned-empty" data-router-analysis-empty hidden>
+        No customers on this router yet.
+      </p>
+      <p class="mk-help-note mk-router-analysis-error" data-router-analysis-error hidden></p>
+    </section>
+  </section>
+</div>
+
+<script src="{% static 'js/mikrotik_assigned_ports.js' %}" defer></script>
+{% endblock %}

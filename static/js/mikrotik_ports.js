@@ -4,6 +4,8 @@
   var liveUrl = root.getAttribute("data-ports-live-url") || "";
   var csrf = root.getAttribute("data-csrf-token") || "";
   var suspended = root.getAttribute("data-is-suspended") === "1";
+  var hosted = root.getAttribute("data-hosted") === "1";
+  var livePollMs = hosted ? 8000 : 3000;
   var loading = root.getAttribute("data-ports-loading") === "1";
   var routerId = root.getAttribute("data-router-id") || "";
   var routerDetailUrl = root.getAttribute("data-router-detail-url") || "";
@@ -2245,7 +2247,7 @@
     livePollTimer = window.setInterval(function () {
       if (document.hidden) return;
       refresh({ silent: true });
-    }, 3000);
+    }, livePollMs);
   }
   function stopLivePolling() {
     if (!livePollTimer) return;

@@ -2362,6 +2362,7 @@
   function drawDevices(devices) {
     if (!deviceList || !deviceWrap) return;
     deviceList.textContent = "";
+    var labels = ["Device", "IP", "MAC", "Connection", "Traffic"];
     (devices || []).forEach(function (device) {
       var row = document.createElement("tr");
       [
@@ -2370,8 +2371,9 @@
         device.mac || "—",
         device.type || "—",
         [device.download, device.upload].filter(Boolean).join(" / ") || "—"
-      ].forEach(function (value) {
+      ].forEach(function (value, index) {
         var cell = document.createElement("td");
+        cell.setAttribute("data-label", labels[index] || "");
         cell.textContent = value;
         row.appendChild(cell);
       });

@@ -36,8 +36,8 @@
     </div>
   </div>
   {% if lead_payments %}
-    <div class="table-scroll">
-      <table class="table">
+    <div class="org-table-shell lead-payments-table-shell">
+      <table class="org-table lead-payments-table">
         <thead>
           <tr>
             <th>Ticket</th>
@@ -52,27 +52,27 @@
         <tbody>
           {% for row in lead_payments %}
             <tr class="{% if row.reversed %}is-reversed-lead-payment{% endif %}">
-              <td>
+              <td data-label="Ticket">
                 <span class="org-code">{{ row.customer.sales_ticket_number|default:row.customer.account_number }}</span>
               </td>
-              <td>{{ row.customer.full_name }}</td>
-              <td>KES {{ row.amount }}</td>
-              <td>{{ row.receipt|default:"—" }}</td>
-              <td>
+              <td data-label="Client">{{ row.customer.full_name }}</td>
+              <td data-label="Amount">KES {{ row.amount }}</td>
+              <td data-label="M-Pesa Ref">{{ row.receipt|default:"—" }}</td>
+              <td data-label="Paid">
                 {% if row.completed_at %}
                   {{ row.completed_at|date:"d M Y H:i" }}
                 {% else %}
                   —
                 {% endif %}
               </td>
-              <td>
+              <td data-label="Status">
                 {% if row.reversed %}
                   <span class="badge badge-warn">Reversed</span>
                 {% else %}
                   <span class="badge badge-success">Paid</span>
                 {% endif %}
               </td>
-              <td>{% if row.reversed %}{{ row.reversal_reason|default:"—" }}{% else %}—{% endif %}</td>
+              <td data-label="Reason">{% if row.reversed %}{{ row.reversal_reason|default:"—" }}{% else %}—{% endif %}</td>
             </tr>
           {% endfor %}
         </tbody>

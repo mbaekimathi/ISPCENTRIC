@@ -20940,8 +20940,14 @@ a.packages-stat:focus-visible {
   color: var(--notice-error-fg);
 }
 
-.mk-assigned-ports-page .mk-assigned-ports-surface {
-  margin-top: 1rem;
+.mk-assigned-ports-page {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.mk-assigned-ports-surface {
+  display: grid;
+  gap: 1rem;
 }
 
 .mk-assigned-ports-page .mk-router-analysis {
@@ -21603,46 +21609,107 @@ a.packages-stat:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 0.65rem;
-  padding: 0.45rem 0.7rem;
+  padding: 0.45rem 0.75rem;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--surface-2);
   cursor: pointer;
   user-select: none;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.mk-auto-balance-toggle:hover {
+  border-color: color-mix(in srgb, var(--sea) 28%, var(--border));
 }
 
 .mk-auto-balance-toggle-copy {
   display: grid;
   gap: 0.05rem;
-  text-align: right;
+  min-width: 0;
 }
 
 .mk-auto-balance-toggle-label {
   font-size: 0.78rem;
   font-weight: 650;
   color: var(--ink);
+  line-height: 1.2;
 }
 
 .mk-auto-balance-toggle-hint {
   font-size: 0.68rem;
   color: var(--ink-soft);
+  line-height: 1.25;
 }
 
 .mk-auto-balance-toggle input {
-  width: 2.35rem;
-  height: 1.35rem;
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
   margin: 0;
-  accent-color: var(--sea);
-  cursor: pointer;
+}
+
+.mk-auto-balance-switch-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 2.55rem;
+  height: 1.4rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.mk-auto-balance-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.28);
+  transition: transform 0.2s ease;
+}
+
+.mk-auto-balance-toggle input:checked + .mk-auto-balance-switch-track {
+  background: rgba(14, 124, 134, 0.85);
+  border-color: rgba(14, 124, 134, 0.95);
+}
+
+.mk-auto-balance-toggle input:checked + .mk-auto-balance-switch-track::after {
+  transform: translateX(1.05rem);
+}
+
+.mk-auto-balance-toggle input:focus-visible + .mk-auto-balance-switch-track {
+  outline: 2px solid color-mix(in srgb, var(--sea) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .mk-auto-balance-toggle.is-on {
   border-color: color-mix(in srgb, var(--sea) 45%, var(--border));
   background: color-mix(in srgb, var(--sea) 12%, var(--surface-2));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sea) 10%, transparent);
 }
 
-.mk-auto-balance-toggle input:disabled {
+.mk-auto-balance-toggle.is-on .mk-auto-balance-toggle-label {
+  color: color-mix(in srgb, var(--sea) 82%, var(--ink));
+}
+
+.mk-auto-balance-toggle input:disabled + .mk-auto-balance-switch-track {
   opacity: 0.55;
+  cursor: wait;
+}
+
+.mk-auto-balance-toggle:has(input:disabled) {
+  opacity: 0.85;
   cursor: wait;
 }
 
@@ -21816,29 +21883,9 @@ a.packages-stat:focus-visible {
   border-left: 3px solid var(--border-strong, #98a2b3);
 }
 
-/* Simplified assigned-ports (live clients) layout */
-.mk-assigned-simple .mk-assigned-hero {
-  margin-bottom: 0.35rem;
-  background:
-    radial-gradient(120% 90% at 100% 0%, color-mix(in srgb, var(--sea) 14%, transparent), transparent 55%),
-    linear-gradient(135deg, var(--sea-soft), transparent 48%),
-    var(--surface);
-}
-
-.mk-assigned-simple .mk-assigned-hero .mk-page-lead {
-  max-width: 32rem;
-}
-
-.mk-assigned-simple .mk-assigned-ports-surface {
-  display: grid;
-  gap: 1rem;
-  padding: clamp(0.95rem, 2vw, 1.25rem);
-  border-radius: calc(var(--radius) + 6px);
-  border: 1px solid var(--border);
-  background:
-    radial-gradient(140% 90% at 0% 0%, color-mix(in srgb, var(--sea-soft) 65%, transparent), transparent 58%),
-    var(--surface);
-  box-shadow: var(--shadow);
+/* Live clients (assigned ports) layout */
+.mk-assigned-ports-page .mk-assigned-hero .mk-page-lead {
+  max-width: 36rem;
 }
 
 .mk-assigned-top-panel {
@@ -21986,16 +22033,16 @@ a.packages-stat:focus-visible {
   100% { background-position: -100% 0; }
 }
 
-.mk-assigned-simple .mk-assigned-kpi-row {
+.mk-assigned-ports-page .mk-assigned-kpi-row {
   animation: mk-page-in 0.35s ease both;
 }
 
-.mk-assigned-simple .mk-assigned-kpi {
+.mk-assigned-ports-page .mk-assigned-kpi {
   min-height: 5.25rem;
   box-shadow: 0 1px 2px rgba(11, 31, 42, 0.04);
 }
 
-.mk-assigned-simple .mk-assigned-kpi-value {
+.mk-assigned-ports-page .mk-assigned-kpi-value {
   font-size: clamp(1.35rem, 3vw, 1.65rem);
   letter-spacing: -0.02em;
 }
@@ -22507,10 +22554,15 @@ a.packages-stat:focus-visible {
 }
 
 .mk-assigned-board-hint {
+  display: none;
   margin: 0;
   flex: 0 0 auto;
   font-size: 0.76rem;
   opacity: 0.85;
+}
+
+.mk-assigned-ports-page .mk-assigned-section {
+  margin-top: 0.15rem;
 }
 
 .mk-assigned-flow {
@@ -22522,7 +22574,7 @@ a.packages-stat:focus-visible {
     var(--surface-1, var(--surface));
 }
 
-.mk-assigned-simple .mk-assigned-port-map {
+.mk-assigned-ports-page .mk-assigned-port-map {
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 0.75rem;
@@ -22923,8 +22975,15 @@ a.packages-stat:focus-visible {
   }
 }
 
+@media (max-width: 900px) {
+  .mk-assigned-board-hint {
+    display: block;
+    width: 100%;
+  }
+}
+
 @media (max-width: 720px) {
-  .mk-assigned-simple .mk-assigned-port-map {
+  .mk-assigned-ports-page .mk-assigned-port-map {
     grid-template-columns: 1fr;
   }
 
@@ -22937,7 +22996,7 @@ a.packages-stat:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .mk-assigned-simple .mk-assigned-kpi-row {
+  .mk-assigned-ports-page .mk-assigned-kpi-row {
     grid-template-columns: 1fr;
   }
 
@@ -22948,10 +23007,35 @@ a.packages-stat:focus-visible {
 
   .mk-assigned-notice .btn {
     width: 100%;
+    justify-content: center;
   }
 
   .mk-assigned-uplink-col-head {
     flex-wrap: wrap;
+  }
+
+  .mk-assigned-hero-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 520px) {
+  .mk-assigned-uplink-switch-form {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    width: 100%;
+  }
+
+  .mk-assigned-uplink-switch:not(.mk-assigned-uplink-switch-form) {
+    display: grid;
+    width: 100%;
+  }
+
+  .mk-assigned-uplink-switch-btn {
+    width: 100%;
+    justify-content: center;
+    min-height: 2rem;
   }
 }
 
@@ -43868,8 +43952,10 @@ h1, h2, h3, h4,
   font-size: 0.78rem;
 }
 
-.referral-table-wrap {
+.referral-table-wrap,
+.referral-table-shell {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .referral-table .referral-org-cell {
@@ -54887,4 +54973,522 @@ a.module-card:focus-visible {
 /* Rank charts: readable bar density for top-12 */
 :root {
   --analytics-chart-h-rank: clamp(12rem, 24vw, 16.5rem);
+}
+
+/* ==========================================================================
+   UI/UX consistency — cross-page responsive layer
+   Mobile (≤760px) · Tablet (761–1100px) · Desktop (1101px+)
+   ========================================================================== */
+
+/* Safe-area padding for notched phones */
+.staff-app .staff-main,
+.staff-app .main.staff-main,
+.auth-shell {
+  padding-bottom: max(var(--space-page, 1rem), env(safe-area-inset-bottom));
+}
+
+.staff-topbar {
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+}
+
+/* Attempted connections — align with clients usage workspace */
+.clients-attempted-page .clients-usage-workspace-head {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #059669 6%, transparent), transparent 85%);
+}
+
+.clients-attempted-page .clients-usage-workspace-kicker {
+  color: #059669;
+}
+
+.clients-attempted-range {
+  margin: 0;
+  padding: 0.85rem clamp(1rem, 2vw, 1.35rem);
+  border-bottom: 1px solid var(--border);
+}
+
+.clients-attempted-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.5rem), 1fr));
+  gap: 0.65rem;
+  padding: 0.85rem clamp(1rem, 2vw, 1.35rem);
+  border-bottom: 1px solid var(--border);
+}
+
+.clients-attempted-stat {
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-2) 80%, transparent);
+}
+
+.clients-attempted-stat-label {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.clients-attempted-stat-value {
+  margin: 0.25rem 0 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 1.1rem + 0.8vw, 1.65rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: var(--ink);
+}
+
+.clients-attempted-stat-meta {
+  margin: 0.3rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.clients-attempted-feed {
+  padding: clamp(0.95rem, 1.8vw, 1.2rem) clamp(1rem, 2vw, 1.35rem);
+}
+
+.clients-attempted-feed-head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.clients-attempted-feed-head p {
+  margin: 0.25rem 0 0.85rem;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  font-weight: 500;
+}
+
+.clients-attempted-empty {
+  margin: 0;
+  padding: 1.5rem 1rem;
+  border: 1px dashed color-mix(in srgb, var(--sea) 24%, var(--border));
+  border-radius: 14px;
+  color: var(--ink-soft);
+  font-weight: 600;
+  text-align: center;
+}
+
+/* Tablet: horizontal scroll for tables not yet in card mode */
+@media (max-width: 1100px) and (min-width: 761px) {
+  .org-table-shell:not(.billing-dash-table-shell):not(.packages-table-shell):not(.mikrotik-table-shell):not(:has(.org-table-clients-responsive)) {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .org-table-shell:not(.billing-dash-table-shell):not(.packages-table-shell):not(.mikrotik-table-shell):not(:has(.org-table-clients-responsive)) .org-table {
+    min-width: 36rem;
+  }
+
+  .table-scroll .table {
+    min-width: 36rem;
+  }
+}
+
+/* Tablet: stack panel headers and action rows */
+@media (max-width: 960px) and (min-width: 641px) {
+  .panel-head-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+
+  .panel-head-actions {
+    width: 100%;
+  }
+
+  .panel-head-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .module-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .role-highlight-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Mobile: generic card-stack for org tables with data-label */
+@media (max-width: 760px) {
+  .org-table-shell:has(.org-table td[data-label]):not(.billing-dash-table-shell):not(.packages-table-shell):not(.mikrotik-table-shell):not(:has(.org-table-clients-responsive)),
+  .table-scroll:has(.table td[data-label]) {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .org-table-shell:has(.org-table td[data-label]):not(.billing-dash-table-shell):not(.packages-table-shell):not(.mikrotik-table-shell):not(:has(.org-table-clients-responsive))::after,
+  .table-scroll:has(.table td[data-label])::after {
+    display: none;
+  }
+
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table),
+  .table-scroll .table:has(td[data-label]) {
+    width: 100%;
+    min-width: 0 !important;
+    border-collapse: separate;
+    border-spacing: 0 0.75rem;
+  }
+
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) thead,
+  .table-scroll .table:has(td[data-label]) thead {
+    display: none;
+  }
+
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) tbody,
+  .table-scroll .table:has(td[data-label]) tbody {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) tbody tr,
+  .table-scroll .table:has(td[data-label]) tbody tr {
+    display: grid;
+    gap: 0.1rem;
+    padding: 0.95rem 1rem;
+    border: 1px solid var(--border-strong);
+    border-radius: 14px;
+    background: var(--surface-solid, var(--surface));
+    box-shadow: var(--card-shadow);
+  }
+
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) tbody tr:hover td,
+  .table-scroll .table:has(td[data-label]) tbody tr:hover td {
+    background: transparent;
+  }
+
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td,
+  .table-scroll .table:has(td[data-label]) td {
+    display: grid;
+    grid-template-columns: 7.25rem minmax(0, 1fr);
+    gap: 0.55rem;
+    align-items: start;
+    padding: 0.4rem 0;
+    border: 0;
+    white-space: normal;
+  }
+
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td::before,
+  .table-scroll .table:has(td[data-label]) td::before {
+    content: attr(data-label);
+    color: var(--ink-soft);
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding-top: 0.15rem;
+  }
+
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Name"]::before,
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Employee"]::before,
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Organization"]::before,
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Ticket"]::before,
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Contact"]::before,
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="ISP client"]::before,
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Customer"]::before {
+    display: none;
+  }
+
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Name"],
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Employee"],
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Organization"],
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Ticket"],
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Contact"],
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="ISP client"],
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Customer"] {
+    grid-template-columns: 1fr;
+    padding-bottom: 0.55rem;
+    margin-bottom: 0.25rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Actions"],
+  .table-scroll .table:has(td[data-label]) td[data-label="Actions"] {
+    grid-template-columns: 1fr;
+    padding-top: 0.65rem;
+    margin-top: 0.2rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .org-table:has(td[data-label]):not(.org-table-clients-responsive):not(.org-table-mikrotik):not(.billing-dash-table):not(.packages-table) td[data-label="Actions"]::before,
+  .table-scroll .table:has(td[data-label]) td[data-label="Actions"]::before {
+    display: none;
+  }
+
+  .clients-attempted-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .clients-attempted-range {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .clients-attempted-range .clients-seg-item {
+    flex: 0 0 auto;
+  }
+
+  .auth-shell {
+    padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1.5rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  }
+
+  .auth-panel {
+    width: min(100%, 100%);
+  }
+}
+
+@media (max-width: 480px) {
+  .clients-attempted-stat-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stat-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ==========================================================================
+   MikroTik workspace — detail, port setup, live clients (responsive layer)
+   ========================================================================== */
+
+.staff-app:has(.mk-page) .staff-main,
+.client-app:has(.mk-page) .staff-main {
+  overflow-x: clip;
+  max-width: 100%;
+}
+
+.mk-page {
+  width: min(100%, 68rem);
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* Sticky workspace nav on scroll (tablet + desktop) */
+@media (min-width: 721px) {
+  .mk-detail-quicknav {
+    position: sticky;
+    top: 0.35rem;
+    z-index: 6;
+    backdrop-filter: blur(10px);
+    background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  }
+}
+
+/* Topbar router profile — match account menu on mobile */
+@media (max-width: 960px) {
+  .mikrotik-router-profile .account-menu-copy,
+  .mikrotik-router-profile .account-menu-caret {
+    display: none;
+  }
+
+  .mikrotik-router-profile-trigger {
+    padding: 0.3rem;
+  }
+
+  .mikrotik-router-profile-panel {
+    width: min(calc(100vw - 1.5rem), 24rem);
+    max-height: min(85dvh, 36rem);
+  }
+}
+
+/* Detail hero — badge row wraps cleanly */
+.mk-detail-hero-topline {
+  row-gap: 0.35rem;
+}
+
+@media (max-width: 640px) {
+  .mk-detail-hero-topline .mikrotik-auto-restore-badge {
+    max-width: 100%;
+  }
+
+  .mk-detail-hero-topline .mikrotik-auto-restore-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 12rem;
+  }
+}
+
+/* Analytics blocks */
+@media (max-width: 720px) {
+  .mk-detail-analytics {
+    padding: 0.85rem;
+  }
+
+  .mk-detail-analytics-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .mk-detail-analytics-head .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .mk-detail-analytics-chips {
+    width: 100%;
+  }
+
+  .mk-detail-analytics-chip {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .mk-detail-chart-wrap {
+    height: clamp(8.5rem, 38vw, 10.5rem);
+  }
+
+  .mk-detail-drop {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+  }
+
+  .mk-detail-kpi-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 420px) {
+  .mk-detail-kpi-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Port setup page */
+@media (max-width: 900px) {
+  .mk-ports-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .mk-ports-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mk-port-card:hover {
+    transform: none;
+  }
+
+  .mk-ports-overview .mk-uplink-config-prominent {
+    padding-left: 0;
+    padding-right: 0;
+  }
+}
+
+/* Dialogs — bottom sheet on phones */
+@media (max-width: 640px) {
+  .mk-uplink-risk-dialog,
+  .mk-wan-recovery-dialog {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    transform: none;
+    width: 100%;
+    max-height: min(92dvh, 100%);
+    overflow-y: auto;
+    border-radius: 1.15rem 1.15rem 0 0;
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  .mk-uplink-risk-actions,
+  .mk-uplink-prompt-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .mk-uplink-risk-actions .btn,
+  .mk-uplink-prompt-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .mk-banner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .mk-banner .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+/* Live clients page */
+.mk-assigned-hero-actions {
+  align-items: stretch;
+}
+
+.mk-assigned-hero-actions .mk-auto-balance-toggle {
+  flex: 1 1 100%;
+  min-width: min(100%, 16rem);
+  justify-content: space-between;
+}
+
+.mk-assigned-hero-actions .mk-live-pill {
+  align-self: center;
+  justify-content: center;
+}
+
+@media (max-width: 720px) {
+  .mk-assigned-hero-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+  }
+
+  .mk-assigned-hero-actions .mk-auto-balance-toggle,
+  .mk-assigned-hero-actions .mk-live-pill {
+    grid-column: 1 / -1;
+  }
+
+  .mk-assigned-hero-actions .mk-auto-balance-toggle {
+    width: 100%;
+  }
+
+  .mk-assigned-section-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
+  }
+
+  .mk-assigned-uplink-overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mk-assigned-ports-page .mk-assigned-section {
+    padding: 0.85rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .mk-assigned-hero-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .mk-assigned-client-simple-head {
+    align-items: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mk-assigned-uplink-col:hover,
+  .mk-port-card:hover {
+    transform: none;
+  }
 }

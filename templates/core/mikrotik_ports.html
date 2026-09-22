@@ -12,6 +12,7 @@
     data-ports-live-url="{{ ports_live_url }}"
     data-ports-loading="{% if ports_loading %}1{% else %}0{% endif %}"
     data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
+    data-hosted="{% if hosted_server %}1{% else %}0{% endif %}"
     data-router-id="{{ router.id }}"
     data-router-detail-url="{% url 'core:mikrotik_detail' router.id %}"
     data-csrf-token="{{ csrf_token }}"
@@ -19,8 +20,8 @@
     <textarea hidden readonly data-api-terminal-script>{{ api_terminal_script }}</textarea>
     <header class="mk-page-hero mk-ports-hero">
       <div class="mk-page-hero-copy">
-        <p class="mk-page-kicker">Interfaces</p>
-        <h1 class="mk-page-title">Ports</h1>
+        <p class="mk-page-kicker">{{ router.name }} · Interfaces</p>
+        <h1 class="mk-page-title">Port setup</h1>
         <p class="mk-page-lead">
           Live roles and internet setup for
           <strong data-router-name>{{ router.name }}</strong>

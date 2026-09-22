@@ -66,24 +66,24 @@
           <tbody>
             {% for row in movements_page.object_list %}
               <tr>
-                <td>
+                <td data-label="When">
                   <time datetime="{{ row.created_at|date:'c' }}">{{ row.created_at|date:"M j, Y H:i" }}</time>
                 </td>
-                <td>
+                <td data-label="Customer">
                   <strong>{{ row.customer_name|default:"—" }}</strong>
                   {% if row.client_ip %}
                     <span class="mk-host-chip">{{ row.client_ip }}</span>
                   {% endif %}
                 </td>
-                <td>{{ row.from_isp_port|default:"—" }}</td>
-                <td>{{ row.to_isp_port|default:"—" }}</td>
-                <td>
+                <td data-label="From">{{ row.from_isp_port|default:"—" }}</td>
+                <td data-label="To">{{ row.to_isp_port|default:"—" }}</td>
+                <td data-label="Source">
                   {{ row.get_source_display }}
                   {% if row.imbalance_reason %}
                     <span class="mk-help-note">({{ row.imbalance_reason }})</span>
                   {% endif %}
                 </td>
-                <td>
+                <td data-label="By">
                   {% if row.actor %}
                     {{ row.actor.get_full_name|default:row.actor.username }}
                   {% else %}

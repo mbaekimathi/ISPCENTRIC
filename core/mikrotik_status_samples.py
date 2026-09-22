@@ -1189,14 +1189,30 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
     results: dict[int, dict[str, Any]] = {}
 
     def _check(router: MikroTikRouter):
+        from django.conf import settings
+
         host, probe = pick_best_probe_for_router(
             router,
             router_candidates.get(router.id) or [],
             probe_by_host,
         )
-        return router.id, classify_router_status_row(
-            router, host=host, probe=probe, skip_login=False
+        via = (probe.get("via") or "").strip()
+        auth_cache_key = f"mikrotik_auth_ok:{organization.pk}:{router.id}"
+        skip_login = (
+            via == "api"
+            and getattr(settings, "HOSTED", False)
+            and bool(cache.get(auth_cache_key))
         )
+        row = classify_router_status_row(
+            router, host=host, probe=probe, skip_login=skip_login
+        )
+        if row.get("auth_ok") and getattr(settings, "HOSTED", False) and not skip_login:
+            cache.set(auth_cache_key, True, _HOSTED_AUTH_CACHE_TTL)
+        elif via == "api" and getattr(settings, "HOSTED", False) and not row.get(
+            "auth_ok"
+        ):
+            cache.delete(auth_cache_key)
+        return router.id, row
 
     workers = min(8, max(1, len(routers)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1231,6 +1247,30 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
 def sample_all_organizations() -> dict[str, int]:
     """Probe every org with MikroTiks and persist health samples."""
     from accounts.models import Organization
+    from core.subscription_sync import (
+        is_fleet_write_active,
+        release_fleet_read_lock,
+        try_acquire_fleet_read_lock,
+    )
+
+    if is_fleet_write_active():
+        return {
+            "organizations": 0,
+            "routers": 0,
+            "samples": 0,
+            "auto_restores": 0,
+            "skipped": True,
+            "reason": "fleet_write",
+        }
+    if not try_acquire_fleet_read_lock(ttl_sec=300, label="status"):
+        return {
+            "organizations": 0,
+            "routers": 0,
+            "samples": 0,
+            "auto_restores": 0,
+            "skipped": True,
+            "reason": "fleet_read_locked",
+        }
 
     orgs = (
         Organization.objects.filter(mikrotik_routers__isnull=False)
@@ -1240,18 +1280,21 @@ def sample_all_organizations() -> dict[str, int]:
     written = 0
     probed = 0
     restored = 0
-    for org in orgs:
-        payload = collect_organization_status_payload(org)
-        probed += len(payload)
-        if not payload:
-            continue
-        # Background sampler always records — clear the gate so steady-state
-        # healthy ticks still land about once a minute from the scheduled job.
-        cache.delete(f"mikrotik_status_sample_gate:{org.pk}")
-        written += record_mikrotik_status_samples(org, payload)
-        restore_outcomes = maybe_auto_restore_routers(org, payload)
-        restored += len(restore_outcomes)
-        cache.set(f"mikrotik_status:{org.pk}", payload, 5)
+    try:
+        for org in orgs:
+            payload = collect_organization_status_payload(org)
+            probed += len(payload)
+            if not payload:
+                continue
+            # Background sampler always records — clear the gate so steady-state
+            # healthy ticks still land about once a minute from the scheduled job.
+            cache.delete(f"mikrotik_status_sample_gate:{org.pk}")
+            written += record_mikrotik_status_samples(org, payload)
+            restore_outcomes = maybe_auto_restore_routers(org, payload)
+            restored += len(restore_outcomes)
+            cache.set(f"mikrotik_status:{org.pk}", payload, 5)
+    finally:
+        release_fleet_read_lock()
     return {
         "organizations": orgs.count(),
         "routers": probed,

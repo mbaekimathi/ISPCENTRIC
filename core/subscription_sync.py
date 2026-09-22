@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 # same MikroTik fleet at once (partial secret/user updates = some clients offline).
 _SWEEP_LOCK_NAME = "subscription_sweep_lock"
 _EXPIRY_WATCH_LOCK_NAME = "subscription_expiry_watch_lock"
+_FLEET_READ_LOCK_NAME = "mikrotik_fleet_read_lock"
 
 
 def _jobs_cache():
@@ -118,6 +119,65 @@ def try_acquire_expiry_watch_lock(*, ttl_sec: int = 25) -> bool:
 
 def release_expiry_watch_lock() -> None:
     release_subscription_sweep_lock()
+
+
+def is_fleet_write_active() -> bool:
+    """True while subscription sweep / expiry watch is rewriting MikroTiks."""
+    try:
+        holder = _jobs_cache().get(_SWEEP_LOCK_NAME)
+        if holder is None:
+            return False
+        try:
+            holder_pid = int(holder)
+        except (TypeError, ValueError):
+            return True
+        return bool(holder_pid) and _pid_is_alive(holder_pid)
+    except Exception:
+        return False
+
+
+def try_acquire_fleet_read_lock(*, ttl_sec: int = 240, label: str = "") -> bool:
+    """
+    Serialize background read fleet jobs (usage sampling, status sampling,
+    smart-balance monitor) so they do not hammer the same routers at once.
+    """
+    ttl = max(60, int(ttl_sec))
+    cache = _jobs_cache()
+    token = f"{label or 'read'}:{os.getpid()}"
+    try:
+        if cache.add(_FLEET_READ_LOCK_NAME, token, timeout=ttl):
+            return True
+        if is_fleet_write_active():
+            return False
+        holder = cache.get(_FLEET_READ_LOCK_NAME)
+        if isinstance(holder, str) and ":" in holder:
+            try:
+                holder_pid = int(holder.rsplit(":", 1)[-1])
+            except ValueError:
+                holder_pid = 0
+            if holder_pid and not _pid_is_alive(holder_pid):
+                cache.delete(_FLEET_READ_LOCK_NAME)
+                return bool(cache.add(_FLEET_READ_LOCK_NAME, token, timeout=ttl))
+        return False
+    except Exception:
+        logger.exception("fleet read lock acquire failed")
+        return True
+
+
+def release_fleet_read_lock() -> None:
+    try:
+        cache = _jobs_cache()
+        holder = cache.get(_FLEET_READ_LOCK_NAME)
+        token_suffix = f":{os.getpid()}"
+        if isinstance(holder, str) and holder.endswith(token_suffix):
+            cache.delete(_FLEET_READ_LOCK_NAME)
+    except Exception:
+        logger.exception("fleet read lock release failed")
+
+
+def should_skip_background_router_dial() -> bool:
+    """Background jobs should not dial routers during a fleet write."""
+    return is_fleet_write_active()
 
 
 def acquire_subscription_sweep_lock_with_retry(

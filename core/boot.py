@@ -168,6 +168,32 @@ def run_usage_sample_all_orgs(*, label: str = "interval") -> dict:
 
     from accounts.models import Organization
     from billing.usage_samples import sample_organization_usage
+    from core.subscription_sync import (
+        is_fleet_write_active,
+        release_fleet_read_lock,
+        try_acquire_fleet_read_lock,
+    )
+
+    if is_fleet_write_active():
+        cache.delete(_USAGE_SAMPLE_LOCK_KEY)
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "fleet_write",
+            "sampled": 0,
+            "organizations": 0,
+            "label": label,
+        }
+    if not try_acquire_fleet_read_lock(ttl_sec=lock_ttl, label="usage"):
+        cache.delete(_USAGE_SAMPLE_LOCK_KEY)
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "fleet_read_locked",
+            "sampled": 0,
+            "organizations": 0,
+            "label": label,
+        }
 
     sampled_total = 0
     org_count = 0
@@ -201,6 +227,7 @@ def run_usage_sample_all_orgs(*, label: str = "interval") -> dict:
             "label": label,
         }
     finally:
+        release_fleet_read_lock()
         cache.delete(_USAGE_SAMPLE_LOCK_KEY)
 
 
@@ -279,7 +306,7 @@ def run_smart_balance_monitor_fleet(
 
     from core.mikrotik_connect import maintain_router_smart_balance
     from core.models import MikroTikRouter
-    from core.views import _ports_live_payload, _router_api_host
+    from core.views import _resolve_working_nas_host
 
     interval = int(_smart_balance_monitor_interval_sec())
     lock_ttl = max(180, interval * 3)
@@ -288,6 +315,32 @@ def run_smart_balance_monitor_fleet(
             "ok": True,
             "skipped": True,
             "reason": "locked",
+            "label": label,
+        }
+
+    from core.subscription_sync import (
+        is_fleet_write_active,
+        release_fleet_read_lock,
+        try_acquire_fleet_read_lock,
+    )
+
+    if is_fleet_write_active():
+        if use_lock:
+            cache.delete(_SMART_BALANCE_LOCK_KEY)
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "fleet_write",
+            "label": label,
+        }
+    fleet_read = try_acquire_fleet_read_lock(ttl_sec=lock_ttl, label="smart_balance")
+    if not fleet_read:
+        if use_lock:
+            cache.delete(_SMART_BALANCE_LOCK_KEY)
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "fleet_read_locked",
             "label": label,
         }
 
@@ -334,7 +387,7 @@ def run_smart_balance_monitor_fleet(
                 "skipped": True,
                 "reason": "need_two_ports",
             }
-        api_host = _router_api_host(router)
+        api_host = _resolve_working_nas_host(router, timeout=0.9)
         result = maintain_router_smart_balance(
             api_host,
             router.username,
@@ -433,7 +486,16 @@ def run_smart_balance_monitor_fleet(
                             }
                         )
                     try:
-                        _ports_live_payload(router)
+                        from django.core.cache import cache as dj_cache
+
+                        org_pk = getattr(router, "organization_id", None)
+                        if org_pk:
+                            dj_cache.delete(
+                                f"mikrotik_assigned_ports_live:{org_pk}:{router.pk}"
+                            )
+                            dj_cache.delete(
+                                f"mikrotik_ports_live:{org_pk}:{router.pk}"
+                            )
                     except Exception:
                         pass
                 elif result.get("skipped"):
@@ -474,6 +536,7 @@ def run_smart_balance_monitor_fleet(
             "label": label,
         }
     finally:
+        release_fleet_read_lock()
         if use_lock:
             cache.delete(_SMART_BALANCE_LOCK_KEY)
 
@@ -605,9 +668,7 @@ def _run_near_deadline_expiry_sync() -> None:
     """
     from billing.services import customers_for_subscription_enforcement_watch
     from core.mikrotik_connect import (
-        repair_paid_pppoe_not_surfing_on_router,
-        repair_unpaid_hotspot_leaking_on_router,
-        repair_unpaid_pppoe_leaking_on_router,
+        repair_router_access_leaks_on_router,
         sync_customer_subscription_access,
     )
     from core.models import MikroTikRouter
@@ -678,21 +739,20 @@ def _run_near_deadline_expiry_sync() -> None:
 
             def _repair_one_router(router):
                 """Run all access repairs for one NAS sequentially (no API races)."""
-                results = []
-                for fn in (
-                    repair_paid_pppoe_not_surfing_on_router,
-                    repair_unpaid_pppoe_leaking_on_router,
-                    repair_unpaid_hotspot_leaking_on_router,
-                ):
-                    try:
-                        results.append(fn(router))
-                    except Exception:
-                        logger.exception(
-                            "access repair failed router=%s fn=%s",
-                            getattr(router, "pk", None),
-                            getattr(fn, "__name__", fn),
-                        )
-                return results
+                from core.mikrotik_connect import is_mikrotik_host_cooling_down
+                from core.views import _resolve_working_nas_host
+
+                api_host = _resolve_working_nas_host(router, timeout=0.8)
+                if is_mikrotik_host_cooling_down(api_host):
+                    return []
+                try:
+                    return repair_router_access_leaks_on_router(router)
+                except Exception:
+                    logger.exception(
+                        "access repair failed router=%s",
+                        getattr(router, "pk", None),
+                    )
+                    return []
 
             workers = min(8, len(routers))
             with ThreadPoolExecutor(max_workers=workers) as pool:

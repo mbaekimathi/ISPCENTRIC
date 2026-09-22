@@ -548,6 +548,116 @@ class HotspotConnectSpeedTests(TestCase):
         live_mock.assert_called_once()
         self.assertFalse(data["authorized"])
 
+    def test_connection_status_sync_pushes_paid_reconnect(self):
+        url = (
+            reverse(
+                "core:hotspot_connection_status",
+                kwargs={"join_code": self.org.join_code},
+            )
+            + "?sync=1"
+        )
+        self.customer.package_start = timezone.now() - timedelta(hours=1)
+        self.customer.package_end = timezone.now() + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": True, "allowed": True},
+        ) as sync_mock:
+            response = self.client.get(url, HTTP_COOKIE=f"hs_mac={self.mac}")
+        data = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["authorized"])
+        self.assertTrue(data["paid"])
+        self.assertTrue(data["nas_synced"])
+        sync_mock.assert_called_once_with(
+            self.customer.pk,
+            True,
+            wait_first=True,
+            quick=True,
+            reauthenticate=True,
+        )
+
+    def test_connection_status_sync_offline_still_authorized(self):
+        url = (
+            reverse(
+                "core:hotspot_connection_status",
+                kwargs={"join_code": self.org.join_code},
+            )
+            + "?sync=1"
+        )
+        self.customer.package_start = timezone.now() - timedelta(hours=1)
+        self.customer.package_end = timezone.now() + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={
+                "ok": True,
+                "allowed": True,
+                "skipped": True,
+                "authorize_pending": True,
+                "offline": True,
+            },
+        ):
+            response = self.client.get(url, HTTP_COOKIE=f"hs_mac={self.mac}")
+        data = response.json()
+        self.assertTrue(data["authorized"])
+        self.assertTrue(data["offline"])
+
+    def test_portal_login_url_points_at_reconnect_gateway(self):
+        from core.hotspot_portal import hotspot_portal_urls
+
+        urls = hotspot_portal_urls(self.org.join_code)
+        self.assertIn("/reconnect/", urls["login_url"])
+        self.assertIn("/reconnect/", urls["reconnect_url"])
+        self.assertIn("/pay/", urls["pay_url"])
+
+    def test_reconnect_paid_customer_redirects_to_welcome(self):
+        self.customer.package_start = timezone.now() - timedelta(hours=1)
+        self.customer.package_end = timezone.now() + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        url = (
+            reverse("core:hotspot_reconnect", kwargs={"join_code": self.org.join_code})
+            + f"?mac={self.mac}"
+        )
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": True, "allowed": True},
+        ) as sync_mock:
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/welcome/", response.url)
+        sync_mock.assert_called_once_with(
+            self.customer.pk,
+            True,
+            wait_first=True,
+            quick=True,
+            reauthenticate=True,
+        )
+
+    def test_reconnect_unpaid_mac_redirects_to_pay(self):
+        url = (
+            reverse("core:hotspot_reconnect", kwargs={"join_code": self.org.join_code})
+            + "?mac=11:22:33:44:55:66"
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/pay/", response.url)
+
+    def test_pay_page_shows_reconnect_banner_for_active_package(self):
+        self.customer.package_start = timezone.now() - timedelta(hours=1)
+        self.customer.package_end = timezone.now() + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        url = (
+            reverse("core:hotspot_pay", kwargs={"join_code": self.org.join_code})
+            + f"?mac={self.mac}"
+        )
+        with patch("core.views.schedule_mikrotik_job") as job_mock:
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Reconnecting this device")
+        self.assertTrue(job_mock.called)
+
     def test_status_rate_limit_returns_429(self):
         stk = StkPushRequest.objects.create(
             organization=self.org,

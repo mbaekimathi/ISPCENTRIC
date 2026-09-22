@@ -19,7 +19,7 @@
       </div>
     </header>
 
-    <nav class="clients-seg" aria-label="Time range" style="margin-bottom:1rem;">
+    <nav class="clients-seg clients-attempted-range" aria-label="Time range">
       {% for d in attempt_day_choices %}
         <a
           class="clients-seg-item{% if attempt_days == d %} is-active{% endif %}"
@@ -31,69 +31,69 @@
       {% endfor %}
     </nav>
 
-    <div class="account-stat-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr));gap:0.75rem;margin-bottom:1.25rem;">
-      <div class="panel account-card" style="padding:1rem;">
-        <p class="account-receive-label">Portal visits</p>
-        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.portal_hits }}</p>
-        <p class="field-hint" style="margin:0;">{{ attempt_summary.unique_devices }} unique device{{ attempt_summary.unique_devices|pluralize }}</p>
-      </div>
-      <div class="panel account-card" style="padding:1rem;">
-        <p class="account-receive-label">Payment attempts</p>
-        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.payment_attempts }}</p>
-      </div>
-      <div class="panel account-card" style="padding:1rem;">
-        <p class="account-receive-label">Payments succeeded</p>
-        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.payment_success }}</p>
-      </div>
-      <div class="panel account-card" style="padding:1rem;">
-        <p class="account-receive-label">Payments failed</p>
-        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.payment_failed }}</p>
-      </div>
-      <div class="panel account-card" style="padding:1rem;">
-        <p class="account-receive-label">Connected (surfing)</p>
-        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.authorized }}</p>
-      </div>
-      <div class="panel account-card" style="padding:1rem;">
-        <p class="account-receive-label">Paid, not surfing</p>
-        <p style="font-size:1.6rem;font-weight:700;margin:0.2rem 0;">{{ attempt_summary.paid_not_surfing }}</p>
-        <p class="field-hint" style="margin:0;">Paid / package applied but MikroTik did not authorize</p>
-      </div>
+    <div class="clients-attempted-stat-grid" aria-label="Funnel summary">
+      <article class="clients-attempted-stat">
+        <p class="clients-attempted-stat-label">Portal visits</p>
+        <p class="clients-attempted-stat-value">{{ attempt_summary.portal_hits }}</p>
+        <p class="clients-attempted-stat-meta">{{ attempt_summary.unique_devices }} unique device{{ attempt_summary.unique_devices|pluralize }}</p>
+      </article>
+      <article class="clients-attempted-stat">
+        <p class="clients-attempted-stat-label">Payment attempts</p>
+        <p class="clients-attempted-stat-value">{{ attempt_summary.payment_attempts }}</p>
+      </article>
+      <article class="clients-attempted-stat">
+        <p class="clients-attempted-stat-label">Payments succeeded</p>
+        <p class="clients-attempted-stat-value">{{ attempt_summary.payment_success }}</p>
+      </article>
+      <article class="clients-attempted-stat">
+        <p class="clients-attempted-stat-label">Payments failed</p>
+        <p class="clients-attempted-stat-value">{{ attempt_summary.payment_failed }}</p>
+      </article>
+      <article class="clients-attempted-stat">
+        <p class="clients-attempted-stat-label">Connected (surfing)</p>
+        <p class="clients-attempted-stat-value">{{ attempt_summary.authorized }}</p>
+      </article>
+      <article class="clients-attempted-stat">
+        <p class="clients-attempted-stat-label">Paid, not surfing</p>
+        <p class="clients-attempted-stat-value">{{ attempt_summary.paid_not_surfing }}</p>
+        <p class="clients-attempted-stat-meta">Paid / package applied but MikroTik did not authorize</p>
+      </article>
     </div>
 
-    <section class="panel account-card">
-      <header class="account-card-head">
+    <section class="clients-attempted-feed">
+      <header class="clients-attempted-feed-head">
         <div>
-          <h3>Recent activity</h3>
+          <h2>Recent activity</h2>
           <p>Latest portal and payment events for this ISP.</p>
         </div>
       </header>
       {% if attempt_summary.recent %}
-        <div class="table-wrap" style="overflow-x:auto;">
-          <table class="data-table" style="width:100%;border-collapse:collapse;">
+        <div class="org-table-shell clients-attempted-table-shell">
+          <table class="org-table clients-attempted-table">
             <thead>
               <tr>
-                <th style="text-align:left;padding:0.5rem;">When</th>
-                <th style="text-align:left;padding:0.5rem;">Event</th>
-                <th style="text-align:left;padding:0.5rem;">MAC</th>
-                <th style="text-align:left;padding:0.5rem;">Phone</th>
-                <th style="text-align:left;padding:0.5rem;">Package</th>
+                <th>When</th>
+                <th>Event</th>
+                <th>MAC</th>
+                <th>Phone</th>
+                <th>Package</th>
               </tr>
             </thead>
             <tbody>
               {% for row in attempt_summary.recent %}
                 <tr>
-                  <td style="padding:0.5rem;white-space:nowrap;">{{ row.created_at|date:"d M Y H:i" }}</td>
-                  <td style="padding:0.5rem;">{{ row.get_event_display }}</td>
-                  <td style="padding:0.5rem;font-family:ui-monospace,monospace;">{{ row.mac|default:"—" }}</td>
-                  <td style="padding:0.5rem;">{{ row.phone|default:"—" }}</td>
-                  <td style="padding:0.5rem;">{% if row.plan %}{{ row.plan.name }}{% else %}—{% endif %}</td>
+                  <td data-label="When">{{ row.created_at|date:"d M Y H:i" }}</td>
+                  <td data-label="Event">{{ row.get_event_display }}</td>
+                  <td data-label="MAC"><span class="org-code">{{ row.mac|default:"—" }}</span></td>
+                  <td data-label="Phone">{{ row.phone|default:"—" }}</td>
+                  <td data-label="Package">{% if row.plan %}{{ row.plan.name }}{% else %}—{% endif %}</td>
                 </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
       {% else %}
-        <p class="field-hint" style="padding:1rem;">No Hotspot connection attempts recorded in this period yet.</p>
+        <p class="clients-attempted-empty">No Hotspot connection attempts recorded in this period yet.</p>
       {% endif %}
     </section>
   </section>

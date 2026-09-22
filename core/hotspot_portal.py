@@ -398,8 +398,11 @@ def public_absolute_url(path: str, request=None) -> str:
 
 def hotspot_portal_urls(join_code: str, request=None) -> dict[str, str]:
     """Absolute URLs for Hotspot portal pages pushed to MikroTik."""
-    # login.html on the NAS redirects to the same Hotspot pay page customers open.
-    login_path = reverse("core:hotspot_pay", kwargs={"join_code": join_code})
+    # login.html hits /reconnect/ first so paid MACs skip the pay page.
+    reconnect_path = reverse(
+        "core:hotspot_reconnect", kwargs={"join_code": join_code}
+    )
+    login_path = reconnect_path
     alogin_path = reverse("core:hotspot_alogin_page", kwargs={"join_code": join_code})
     welcome_path = reverse("core:hotspot_welcome", kwargs={"join_code": join_code})
     pay_path = reverse("core:hotspot_pay", kwargs={"join_code": join_code})
@@ -416,10 +419,12 @@ def hotspot_portal_urls(join_code: str, request=None) -> dict[str, str]:
     effective_reason = unreachable_base_url_reason(base or "")
     return {
         "login_path": login_path,
+        "reconnect_path": reconnect_path,
         "alogin_path": alogin_path,
         "welcome_path": welcome_path,
         "pay_path": pay_path,
         "login_url": public_absolute_url(login_path, request),
+        "reconnect_url": public_absolute_url(reconnect_path, request),
         "alogin_url": public_absolute_url(alogin_path, request),
         "welcome_url": public_absolute_url(welcome_path, request),
         "pay_url": public_absolute_url(pay_path, request),

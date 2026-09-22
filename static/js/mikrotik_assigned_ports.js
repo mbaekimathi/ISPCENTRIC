@@ -7,9 +7,10 @@
   var pushStatusUrl = root.getAttribute("data-push-status-url") || "";
   var csrf = root.getAttribute("data-csrf-token") || "";
   var suspended = root.getAttribute("data-is-suspended") === "1";
+  var hosted = root.getAttribute("data-hosted") === "1";
   var loading = root.getAttribute("data-ports-loading") === "1";
   var pollTimer = null;
-  var pollMs = 5000;
+  var pollMs = hosted ? 10000 : 5000;
   var livePill = document.querySelector("[data-assigned-live-pill]");
   var jobWatcher = null;
   var applyInFlight = false;
@@ -608,6 +609,18 @@
     }
   }
 
+  function autoBalanceToggleCopy(enabled) {
+    return {
+      label: enabled ? "Stop auto balancing" : "Auto balance",
+      hint: enabled
+        ? "Spreading clients across links"
+        : "Manual Switch always works",
+      aria: enabled
+        ? "Stop auto balancing clients across ISP links"
+        : "Start auto balancing clients across ISP links",
+    };
+  }
+
   function renderAutoBalanceToggle(data) {
     var wrap = document.querySelector("[data-auto-balance-toggle-wrap]");
     var input = wrap ? wrap.querySelector("[data-auto-balance-toggle]") : null;
@@ -615,9 +628,16 @@
     var show = !!data.can_toggle_auto_balance && !suspended;
     setHidden(wrap, !show);
     if (!show) return;
-    input.checked = !!data.smart_auto_balance_enabled;
+    var enabled = !!data.smart_auto_balance_enabled;
+    var copy = autoBalanceToggleCopy(enabled);
+    input.checked = enabled;
     input.disabled = autoBalanceInFlight;
-    wrap.classList.toggle("is-on", !!data.smart_auto_balance_enabled);
+    input.setAttribute("aria-label", copy.aria);
+    wrap.classList.toggle("is-on", enabled);
+    var labelEl = wrap.querySelector("[data-auto-balance-toggle-label]");
+    var hintEl = wrap.querySelector("[data-auto-balance-toggle-hint]");
+    if (labelEl) labelEl.textContent = copy.label;
+    if (hintEl) hintEl.textContent = copy.hint;
   }
 
   function setAutoBalance(enabled) {
@@ -664,7 +684,7 @@
         if (typeof window.showToast === "function") {
           window.showToast({
             type: "success",
-            title: enabled ? "Auto balance on" : "Auto balance off",
+            title: enabled ? "Auto balance on" : "Auto balance stopped",
             text: data.message || "",
           });
         }
@@ -868,12 +888,20 @@
     }
   }
 
+  function errorBanner() {
+    return root.querySelector("[data-assigned-error]");
+  }
+
   function showError(message) {
-    var banner = root.querySelector("[data-assigned-error]");
+    var banner = errorBanner();
     var text = root.querySelector("[data-assigned-error-text]");
     var retry = root.querySelector("[data-assigned-retry]");
     hideLoadingPanel();
     setHidden(overviewEl(), true);
+    if (banner) {
+      banner.classList.remove("is-warn");
+      banner.classList.add("is-danger");
+    }
     if (text) text.textContent = message || "Could not load live data.";
     setHidden(banner, false);
     setHidden(retry, suspended);
@@ -883,8 +911,30 @@
     setHidden(livePill, true);
   }
 
+  function showStaleWarning(message) {
+    var banner = errorBanner();
+    var text = root.querySelector("[data-assigned-error-text]");
+    var retry = root.querySelector("[data-assigned-retry]");
+    if (banner) {
+      banner.classList.remove("is-danger");
+      banner.classList.add("is-warn");
+    }
+    if (text) {
+      text.textContent =
+        (message || "Live refresh failed.") +
+        " Showing the last successful snapshot — customer internet may still be working.";
+    }
+    setHidden(banner, false);
+    setHidden(retry, suspended);
+  }
+
   function clearError() {
-    setHidden(root.querySelector("[data-assigned-error]"), true);
+    var banner = errorBanner();
+    if (banner) {
+      banner.classList.remove("is-warn");
+      banner.classList.add("is-danger");
+    }
+    setHidden(banner, true);
   }
 
   function applyPayload(data) {
@@ -893,7 +943,11 @@
       return;
     }
     hideLoadingPanel();
-    clearError();
+    if (data.stale && data.live_error) {
+      showStaleWarning(data.live_error);
+    } else {
+      clearError();
+    }
     renderPage(data);
     syncJobProgress(data);
     maybeAutoApply(data);

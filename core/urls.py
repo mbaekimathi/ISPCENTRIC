@@ -284,6 +284,11 @@ urlpatterns = [
         name="hotspot_vouchers",
     ),
     path(
+        "hotspot/<str:join_code>/reconnect/",
+        views.hotspot_reconnect,
+        name="hotspot_reconnect",
+    ),
+    path(
         "hotspot/<str:join_code>/pay/",
         views.hotspot_pay,
         name="hotspot_pay",

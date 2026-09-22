@@ -13,8 +13,8 @@
     </div>
   </div>
   {% if members %}
-    <div class="table-scroll">
-      <table class="table">
+    <div class="org-table-shell team-table-shell">
+      <table class="org-table team-table">
         <thead>
           <tr>
             <th>Name</th>
@@ -27,7 +27,7 @@
         <tbody>
           {% for member in members %}
             <tr>
-              <td>
+              <td data-label="Name">
                 <div class="org-identity">
                   {% if member.profile_photo %}
                     <img src="{{ member.profile_photo.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
@@ -37,10 +37,10 @@
                   <strong>{{ member.user.get_full_name|default:member.user.username }}</strong>
                 </div>
               </td>
-              <td>{{ member.user.username }}</td>
-              <td>{{ member.phone|default:"—" }}</td>
-              <td><span class="badge">{{ member.get_status_display }}</span></td>
-              <td>{{ member.login_code }}</td>
+              <td data-label="Username">{{ member.user.username }}</td>
+              <td data-label="Phone">{{ member.phone|default:"—" }}</td>
+              <td data-label="Status"><span class="badge">{{ member.get_status_display }}</span></td>
+              <td data-label="Login code"><span class="org-code">{{ member.login_code }}</span></td>
             </tr>
           {% endfor %}
         </tbody>

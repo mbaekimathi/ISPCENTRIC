@@ -8,6 +8,7 @@ import http.client
 import ipaddress
 import json
 import logging
+import os
 import socket
 import ssl
 import threading
@@ -2125,6 +2126,97 @@ def recover_mikrotik_connection(
     }
 
 
+_thread_api_pool = threading.local()
+
+
+def _api_pool_enabled() -> bool:
+    raw = (os.getenv("MIKROTIK_API_POOL") or "").strip().lower()
+    if raw in {"0", "false", "no"}:
+        return False
+    if raw in {"1", "true", "yes"}:
+        return True
+    return bool(getattr(settings, "HOSTED", False))
+
+
+def _api_pool_ttl_sec() -> float:
+    try:
+        return max(1.0, float(os.getenv("MIKROTIK_API_POOL_TTL_SEC", "5")))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def _api_pool_key(dial: str, username: str, port: int) -> str:
+    return f"{dial}|{username}|{port}"
+
+
+def _api_pool_store() -> dict[str, dict[str, Any]]:
+    store = getattr(_thread_api_pool, "entries", None)
+    if store is None:
+        store = {}
+        _thread_api_pool.entries = store
+    return store
+
+
+def _api_pool_take(key: str) -> socket.socket | None:
+    entry = _api_pool_store().get(key)
+    if not entry:
+        return None
+    if time.monotonic() - float(entry.get("last_used") or 0) > _api_pool_ttl_sec():
+        _api_pool_discard(key)
+        return None
+    sock = entry.get("sock")
+    if sock is None:
+        _api_pool_discard(key)
+        return None
+    return sock
+
+
+def _api_pool_put(key: str, sock: socket.socket) -> None:
+    _api_pool_store()[key] = {"sock": sock, "last_used": time.monotonic()}
+
+
+def _api_pool_discard(key: str) -> None:
+    entry = _api_pool_store().pop(key, None)
+    if not entry:
+        return
+    try:
+        sock = entry.get("sock")
+        if sock is not None:
+            sock.close()
+    except OSError:
+        pass
+
+
+def _api_connect_and_login(
+    host: str,
+    dial: str,
+    username: str,
+    password: str,
+    *,
+    port: int,
+    timeout: float,
+) -> tuple[socket.socket, int, int]:
+    tcp_started = time.perf_counter()
+    sock = socket.create_connection((dial, port), timeout=timeout)
+    tcp_ms = int((time.perf_counter() - tcp_started) * 1000)
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
+    sock.settimeout(timeout)
+    login_started = time.perf_counter()
+    login_error = _api_login(sock, username, password)
+    login_ms = int((time.perf_counter() - login_started) * 1000)
+    if login_error:
+        try:
+            sock.close()
+        except OSError:
+            pass
+        raise ConnectionError(login_error.get("error") or "Login failed.")
+    clear_mikrotik_host_cooldown(host)
+    return sock, tcp_ms, login_ms
+
+
 @contextmanager
 def _api_session(
     host: str,
@@ -2133,32 +2225,68 @@ def _api_session(
     *,
     port: int = 8728,
     timeout: float = 5.0,
+    reuse: bool = False,
 ) -> Iterator[socket.socket]:
     dial = dial_host(host)
+    pool_key = _api_pool_key(dial, username, port)
+    use_pool = bool(reuse and _api_pool_enabled())
     started = time.perf_counter()
     tcp_ms = 0
     login_ms = 0
+    connected = False
+    pooled_in = False
+    sock: socket.socket | None = None
+    keep_in_pool = False
     try:
-        tcp_started = time.perf_counter()
-        with socket.create_connection((dial, port), timeout=timeout) as sock:
-            tcp_ms = int((time.perf_counter() - tcp_started) * 1000)
+        if use_pool:
+            sock = _api_pool_take(pool_key)
+            pooled_in = sock is not None
+        if sock is None:
+            sock, tcp_ms, login_ms = _api_connect_and_login(
+                host,
+                dial,
+                username,
+                password,
+                port=port,
+                timeout=timeout,
+            )
+        else:
             sock.settimeout(timeout)
-            login_started = time.perf_counter()
-            login_error = _api_login(sock, username, password)
-            login_ms = int((time.perf_counter() - login_started) * 1000)
-            if login_error:
-                raise ConnectionError(login_error.get("error") or "Login failed.")
-            yield sock
+        connected = True
+        yield sock
+        keep_in_pool = use_pool
+    except TimeoutError:
+        mark_mikrotik_host_unreachable(host, ttl=45)
+        _api_pool_discard(pool_key)
+        raise
+    except OSError:
+        mark_mikrotik_host_unreachable(host, ttl=45)
+        _api_pool_discard(pool_key)
+        raise
+    except ConnectionError:
+        _api_pool_discard(pool_key)
+        raise
     finally:
+        if sock is not None:
+            if keep_in_pool and connected:
+                _api_pool_put(pool_key, sock)
+            else:
+                if not pooled_in or not keep_in_pool:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
         total_ms = int((time.perf_counter() - started) * 1000)
         log = logger.info if total_ms >= 1000 else logger.debug
         log(
-            "mikrotik api host=%s dial=%s tcp_ms=%s login_ms=%s total_ms=%s",
+            "mikrotik api host=%s dial=%s tcp_ms=%s login_ms=%s total_ms=%s ok=%s pooled=%s",
             host,
             dial,
             tcp_ms,
             login_ms,
             total_ms,
+            connected,
+            pooled_in or keep_in_pool,
         )
 
 
@@ -7793,11 +7921,26 @@ def fetch_mikrotik_live_snapshot_for_router(
             getattr(router, "api_host", None) or getattr(router, "host", None) or ""
         ).strip()
         candidates = [primary] if primary else []
-    if not candidates or not username:
+    resolved = (resolve_nas_api_host(router, timeout=0.8) or "").strip()
+    ordered: list[str] = []
+    for candidate in [resolved, *candidates]:
+        value = (candidate or "").strip()
+        if value and value not in ordered:
+            ordered.append(value)
+    if not ordered or not username:
         return {
             "ok": False,
             "online": False,
             "error": "Missing router credentials.",
+        }
+
+    dial_first = dial_host(ordered[0]) or ordered[0]
+    if is_mikrotik_host_cooling_down(dial_first):
+        return {
+            "ok": False,
+            "online": False,
+            "error": "Router recently unreachable — cooling down.",
+            "cooling_down": True,
         }
 
     last_snap: dict[str, Any] = {
@@ -7805,7 +7948,7 @@ def fetch_mikrotik_live_snapshot_for_router(
         "online": False,
         "error": "Could not reach the MikroTik API on any saved address.",
     }
-    for host in candidates:
+    for host in ordered:
         snap = fetch_mikrotik_live_snapshot(
             host,
             username,
@@ -8424,7 +8567,9 @@ def fetch_router_bulk_live_usage(
             "cooling_down": True,
         }
     try:
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+        with _api_session(
+            host, username, password, port=port, timeout=timeout, reuse=True
+        ) as sock:
             pppoe_sessions: dict[str, dict[str, Any]] = {}
             hotspot_sessions: dict[str, dict[str, Any]] = {}
             if want_pppoe:
@@ -9314,7 +9459,9 @@ def fetch_active_pppoe_usernames(
             "cooling_down": True,
         }
     try:
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+        with _api_session(
+            host, username, password, port=port, timeout=timeout, reuse=True
+        ) as sock:
             rows = _print(sock, "/ppp/active", props="name,service")
             names: list[str] = []
             seen: set[str] = set()
@@ -9435,7 +9582,9 @@ def fetch_hotspot_client_macs(
         return ""
 
     try:
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+        with _api_session(
+            host, username, password, port=port, timeout=timeout, reuse=True
+        ) as sock:
             active_macs: set[str] = set()
             active_uptime_by_mac: dict[str, str] = {}
             for row in _print(
@@ -13933,9 +14082,276 @@ def _pppoe_customer_needs_session_kick(
     )
 
 
+def _pppoe_batch_classify_customers(customers: list) -> tuple[int, int, bool]:
+    allowed = blocked = 0
+    need_block_stack = False
+    for customer in customers:
+        disabled = _customer_pppoe_secret_disabled(customer)
+        internet_allowed = _customer_internet_allowed(customer)
+        profile = _ppp_secret_profile_for_customer(customer, disabled=disabled)
+        if internet_allowed and not disabled:
+            allowed += 1
+        else:
+            blocked += 1
+        if profile == PPPOE_BLOCKED_PROFILE_NAME:
+            need_block_stack = True
+    return allowed, blocked, need_block_stack
+
+
+def _pppoe_batch_write_on_socket(
+    sock: socket.socket,
+    router,
+    customers: list,
+    *,
+    need_block_stack: bool,
+) -> dict[str, Any]:
+    """Write PPPoE secrets and collect kick / CPE-renew targets on one session."""
+    router_id = getattr(router, "pk", None)
+    notes: list[str] = []
+    kick_usernames: list[str] = []
+    block_kick_usernames: list[str] = []
+    clear_usernames: list[str] = []
+    renew_portal_customers: list = []
+    blocked_identity_customers: list = []
+    errors = 0
+
+    if need_block_stack:
+        portal_url = _billing_portal_base_url()
+        notes.extend(_ensure_pppoe_expired_access(sock, portal_url=portal_url))
+        notes.extend(_ensure_pppoe_blocked_profile(sock))
+        # Do NOT call full _ensure_pppoe_stack here. Batch secret sync used to
+        # wipe+rebuild compulsory firewall whenever any unpaid client was in the
+        # batch — brief WAN gaps for every paid CPE. Stack refresh belongs to
+        # onboard / refresh_onboarded_router_config (now idempotent).
+
+    live = _pppoe_live_state_maps(sock)
+    for customer in customers:
+        username = (customer.pppoe_username or "").strip()
+        password = customer.pppoe_password or ""
+        if not username or not password:
+            errors += 1
+            continue
+        disabled = _customer_pppoe_secret_disabled(customer)
+        internet_allowed = _customer_internet_allowed(customer)
+        profile = _ppp_secret_profile_for_customer(customer, disabled=disabled)
+        comment = (
+            f"{PPP_SECRET_TAG} {getattr(customer, 'account_number', '')}"
+        ).strip()
+        rate_limit = _pppoe_rate_limit_for_customer(customer)
+        try:
+            previous_profile = _current_ppp_secret_profile(
+                sock, username, live=live
+            )
+            session_active_before = _pppoe_has_active_session(
+                sock, username, live=live
+            )
+            session_was_blocked = False
+            if previous_profile or session_active_before:
+                session_was_blocked = _active_pppoe_session_is_blocked(
+                    sock, username, live=live
+                )
+            _ensure_ppp_secret(
+                sock,
+                username=username,
+                password=password,
+                profile=profile,
+                comment=comment,
+                disabled=disabled,
+                rate_limit=rate_limit,
+                kick=False,
+            )
+            restoring_surf = bool(
+                internet_allowed
+                and not disabled
+                and profile != PPPOE_BLOCKED_PROFILE_NAME
+            )
+            if restoring_surf and session_was_blocked:
+                clear_usernames.append(username)
+            if (
+                restoring_surf
+                and session_active_before
+                and _pppoe_session_looks_ghost(sock, username, live=live)
+            ):
+                notes.append(
+                    f"ghost PPP session for {username} — "
+                    "leaving for keepalive (no kick)"
+                )
+            needs_kick = _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile=previous_profile,
+                profile=profile,
+                disabled=disabled,
+                internet_allowed=internet_allowed,
+                session_was_blocked=session_was_blocked,
+                session_active_before=session_active_before,
+            )
+            if needs_kick:
+                kick_usernames.append(username)
+                if profile == PPPOE_BLOCKED_PROFILE_NAME:
+                    block_kick_usernames.append(username)
+            if (
+                not internet_allowed
+                and not disabled
+                and getattr(customer, "status", "") == "active"
+                and (
+                    needs_kick
+                    or session_active_before
+                    or cpe_renew_enable_is_pending(customer)
+                )
+            ):
+                renew_portal_customers.append(customer)
+                if needs_kick or session_active_before:
+                    blocked_identity_customers.append(customer)
+        except Exception as exc:  # noqa: BLE001
+            errors += 1
+            logger.warning(
+                "PPPoE batch sync failed customer=%s router=%s: %s",
+                getattr(customer, "pk", None),
+                router_id,
+                exc,
+            )
+
+    if clear_usernames:
+        try:
+            _clear_pppoe_blocked_address_list_many(sock, clear_usernames, live=live)
+        except Exception:
+            logger.exception(
+                "Could not clear blocked list batch on router %s",
+                router_id,
+            )
+
+    return {
+        "notes": notes,
+        "errors": errors,
+        "kick_usernames": kick_usernames,
+        "block_kick_usernames": block_kick_usernames,
+        "renew_portal_customers": renew_portal_customers,
+        "blocked_identity_customers": blocked_identity_customers,
+    }
+
+
+def _pppoe_batch_finish_on_router(
+    router,
+    customers: list,
+    *,
+    candidate: str,
+    api_user: str,
+    api_password: str,
+    allowed: int,
+    blocked: int,
+    write_state: dict[str, Any],
+) -> dict[str, Any]:
+    """CPE renew portals, kick sessions, and follow-ups after the write phase."""
+    router_id = getattr(router, "pk", None)
+    router_name = getattr(router, "name", "") or candidate
+    notes = list(write_state.get("notes") or [])
+    errors = int(write_state.get("errors") or 0)
+    kick_usernames = list(write_state.get("kick_usernames") or [])
+    block_kick_usernames = list(write_state.get("block_kick_usernames") or [])
+    renew_portal_customers = list(write_state.get("renew_portal_customers") or [])
+    blocked_identity_customers = list(
+        write_state.get("blocked_identity_customers") or []
+    )
+    kicked = 0
+
+    portal_enabled = _enable_cpe_renew_portals_for_batch_block(renew_portal_customers)
+    if portal_enabled:
+        notes.append(
+            f"enabled CPE renew Hotspot on {portal_enabled} "
+            "expired/paused account(s) before kick"
+        )
+
+    if kick_usernames:
+        try:
+            with _api_session(
+                candidate, api_user, api_password, timeout=12.0, reuse=True
+            ) as kick_sock:
+                kicked = _disconnect_pppoe_sessions_many(kick_sock, kick_usernames)
+                leak_retry: list[str] = []
+                if block_kick_usernames:
+                    live_after = _pppoe_live_state_maps(kick_sock)
+                    for uname in {
+                        (n or "").strip().lower()
+                        for n in block_kick_usernames
+                        if (n or "").strip()
+                    }:
+                        if not _pppoe_has_active_session(
+                            kick_sock, uname, live=live_after
+                        ):
+                            continue
+                        if _active_pppoe_session_is_blocked(
+                            kick_sock, uname, live=live_after
+                        ):
+                            continue
+                        leak_retry.append(uname)
+                if leak_retry:
+                    re_kicked = _disconnect_pppoe_sessions_many(kick_sock, leak_retry)
+                    kicked += re_kicked
+                    notes.append(
+                        f"leak-retry kicked {re_kicked} unpaid "
+                        f"session(s) still surfing "
+                        f"({len(leak_retry)} account(s))"
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "PPPoE batch kick failed router=%s: %s",
+                router_id,
+                exc,
+            )
+            kicked = 0
+        if kicked:
+            notes.append(
+                f"batch-kicked {kicked} session(s) "
+                f"({len(set(kick_usernames))} account(s)) — "
+                "CPEs redial together"
+            )
+
+    for customer in blocked_identity_customers:
+        try:
+            _remember_blocked_pppoe_captive_identity(customer)
+        except Exception:
+            logger.exception(
+                "Could not cache blocked PPPoE identity for customer %s",
+                getattr(customer, "pk", None),
+            )
+
+    cleared = _follow_up_pending_cpe_renew_clears(customers)
+    if cleared:
+        notes.append(f"cleared {cleared} pending CPE renew Hotspot(s)")
+    enabled_followup = _follow_up_pending_cpe_renew_enables(customers)
+    if enabled_followup:
+        notes.append(
+            f"enabled {enabled_followup} pending CPE renew Hotspot(s)"
+        )
+
+    return {
+        "ok": errors == 0,
+        "router_id": router_id,
+        "router_name": router_name,
+        "host": candidate,
+        "allowed": allowed,
+        "blocked": blocked,
+        "errors": errors,
+        "kicked": kicked,
+        "kick_accounts": len(set(kick_usernames)),
+        "cpe_renew_enabled": portal_enabled + enabled_followup,
+        "cpe_renew_cleared": cleared,
+        "notes": notes,
+        "message": (
+            f"PPPoE batch on {router_name}: allowed={allowed} "
+            f"blocked={blocked} kick_accounts={len(set(kick_usernames))}"
+            + (f" cpe_pay={portal_enabled}" if portal_enabled else "")
+            + (f" cpe_cleared={cleared}" if cleared else "")
+        ),
+    }
+
+
 def sync_pppoe_subscription_batch_on_router(
     router,
     customers: list | None = None,
+    *,
+    write_sock: socket.socket | None = None,
+    dial_host_label: str = "",
 ) -> dict[str, Any]:
     """
     Apply PPPoE allow/block for many customers on one NAS in one API session.
@@ -13944,6 +14360,9 @@ def sync_pppoe_subscription_batch_on_router(
     Hotspot while PPP is still up for expired clients, clears stuck blocked
     address-list rows, then drops all sessions that need a redial together so
     CPEs reconnect in parallel instead of first→last.
+
+    Pass ``write_sock`` (and ``dial_host_label`` for kicks) when the caller
+    already holds an open RouterOS API session — e.g. expiry-watch scan+repair.
     """
     if router is None:
         return {"ok": False, "error": "No router provided.", "allowed": 0, "blocked": 0}
@@ -13982,30 +14401,54 @@ def sync_pppoe_subscription_batch_on_router(
             "message": "No PPPoE customers on this router.",
         }
 
+    allowed, blocked, need_block_stack = _pppoe_batch_classify_customers(customers)
+
+    if write_sock is not None:
+        candidate = (dial_host_label or host).strip()
+        if not candidate:
+            return {
+                "ok": False,
+                "router_id": router_id,
+                "router_name": router_name,
+                "host": host,
+                "allowed": allowed,
+                "blocked": blocked,
+                "errors": 1,
+                "kicked": 0,
+                "error": "dial_host_label is required when write_sock is set.",
+            }
+        try:
+            write_state = _pppoe_batch_write_on_socket(
+                write_sock,
+                router,
+                customers,
+                need_block_stack=need_block_stack,
+            )
+            return _pppoe_batch_finish_on_router(
+                router,
+                customers,
+                candidate=candidate,
+                api_user=api_user,
+                api_password=api_password,
+                allowed=allowed,
+                blocked=blocked,
+                write_state=write_state,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "router_id": router_id,
+                "router_name": router_name,
+                "host": candidate,
+                "allowed": allowed,
+                "blocked": blocked,
+                "errors": 1,
+                "kicked": 0,
+                "error": str(exc) or "PPPoE batch write failed.",
+            }
+
     hosts = _router_api_host_candidates(router, discover=False)
     last_error = ""
-    kick_usernames: list[str] = []
-    block_kick_usernames: list[str] = []
-    clear_usernames: list[str] = []
-    renew_portal_customers: list = []
-    blocked_identity_customers: list = []
-    allowed = blocked = errors = 0
-    kicked = 0
-    portal_enabled = 0
-    notes: list[str] = []
-    need_block_stack = False
-
-    for customer in customers:
-        disabled = _customer_pppoe_secret_disabled(customer)
-        internet_allowed = _customer_internet_allowed(customer)
-        profile = _ppp_secret_profile_for_customer(customer, disabled=disabled)
-        if internet_allowed and not disabled:
-            allowed += 1
-        else:
-            blocked += 1
-        if profile == PPPOE_BLOCKED_PROFILE_NAME:
-            need_block_stack = True
-
     for candidate in hosts:
         try:
             with socket.create_connection((dial_host(candidate), 8728), timeout=1.2):
@@ -14014,233 +14457,25 @@ def sync_pppoe_subscription_batch_on_router(
             if candidate != host:
                 continue
         try:
-            with _api_session(candidate, api_user, api_password, timeout=20.0) as sock:
-                if need_block_stack:
-                    portal_url = _billing_portal_base_url()
-                    notes.extend(
-                        _ensure_pppoe_expired_access(sock, portal_url=portal_url)
-                    )
-                    notes.extend(_ensure_pppoe_blocked_profile(sock))
-                    # Do NOT call full _ensure_pppoe_stack here. Batch secret
-                    # sync used to wipe+rebuild compulsory firewall whenever
-                    # any unpaid client was in the batch — brief WAN gaps for
-                    # every paid CPE. Stack refresh belongs to onboard /
-                    # refresh_onboarded_router_config (now idempotent).
-
-                live = _pppoe_live_state_maps(sock)
-                for customer in customers:
-                    username = (customer.pppoe_username or "").strip()
-                    password = customer.pppoe_password or ""
-                    if not username or not password:
-                        errors += 1
-                        continue
-                    disabled = _customer_pppoe_secret_disabled(customer)
-                    internet_allowed = _customer_internet_allowed(customer)
-                    profile = _ppp_secret_profile_for_customer(
-                        customer, disabled=disabled
-                    )
-                    comment = (
-                        f"{PPP_SECRET_TAG} {getattr(customer, 'account_number', '')}"
-                    ).strip()
-                    rate_limit = _pppoe_rate_limit_for_customer(customer)
-                    try:
-                        previous_profile = _current_ppp_secret_profile(
-                            sock, username, live=live
-                        )
-                        session_active_before = _pppoe_has_active_session(
-                            sock, username, live=live
-                        )
-                        session_was_blocked = False
-                        if previous_profile or session_active_before:
-                            session_was_blocked = _active_pppoe_session_is_blocked(
-                                sock, username, live=live
-                            )
-                        _ensure_ppp_secret(
-                            sock,
-                            username=username,
-                            password=password,
-                            profile=profile,
-                            comment=comment,
-                            disabled=disabled,
-                            rate_limit=rate_limit,
-                            kick=False,
-                        )
-                        restoring_surf = bool(
-                            internet_allowed
-                            and not disabled
-                            and profile != PPPOE_BLOCKED_PROFILE_NAME
-                        )
-                        if restoring_surf and session_was_blocked:
-                            clear_usernames.append(username)
-                        # Do not kick for incomplete-ARP "ghost" alone — that
-                        # false-positives on live CPEs. Keepalive clears dead
-                        # peers; kicks stay for profile / blocked transitions.
-                        if (
-                            restoring_surf
-                            and session_active_before
-                            and _pppoe_session_looks_ghost(
-                                sock,
-                                username,
-                                live=live,
-                            )
-                        ):
-                            notes.append(
-                                f"ghost PPP session for {username} — "
-                                "leaving for keepalive (no kick)"
-                            )
-                        needs_kick = _pppoe_customer_needs_session_kick(
-                            customer,
-                            previous_profile=previous_profile,
-                            profile=profile,
-                            disabled=disabled,
-                            internet_allowed=internet_allowed,
-                            session_was_blocked=session_was_blocked,
-                            session_active_before=session_active_before,
-                        )
-                        if needs_kick:
-                            kick_usernames.append(username)
-                            if profile == PPPOE_BLOCKED_PROFILE_NAME:
-                                block_kick_usernames.append(username)
-                        # Expired/paused: push CPE pay/pause Hotspot while the
-                        # PPP session is still up. Without this, fleet kicks
-                        # leave phones on "no internet" with no renew popup.
-                        if (
-                            not internet_allowed
-                            and not disabled
-                            and getattr(customer, "status", "") == "active"
-                            and (
-                                needs_kick
-                                or session_active_before
-                                or cpe_renew_enable_is_pending(customer)
-                            )
-                        ):
-                            renew_portal_customers.append(customer)
-                            if needs_kick or session_active_before:
-                                blocked_identity_customers.append(customer)
-                    except Exception as exc:  # noqa: BLE001
-                        errors += 1
-                        logger.warning(
-                            "PPPoE batch sync failed customer=%s router=%s: %s",
-                            getattr(customer, "pk", None),
-                            router_id,
-                            exc,
-                        )
-
-                if clear_usernames:
-                    try:
-                        _clear_pppoe_blocked_address_list_many(
-                            sock, clear_usernames, live=live
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Could not clear blocked list batch on router %s",
-                            router_id,
-                        )
-
-            # Pay popup BEFORE kick, outside the timed NAS write session so a
-            # slow CPE HTML push cannot abort the disconnect. Live PPP still
-            # has the old (paid) address-list until we kick below.
-            portal_enabled = _enable_cpe_renew_portals_for_batch_block(
-                renew_portal_customers
+            with _api_session(
+                candidate, api_user, api_password, timeout=20.0, reuse=True
+            ) as sock:
+                write_state = _pppoe_batch_write_on_socket(
+                    sock,
+                    router,
+                    customers,
+                    need_block_stack=need_block_stack,
+                )
+            return _pppoe_batch_finish_on_router(
+                router,
+                customers,
+                candidate=candidate,
+                api_user=api_user,
+                api_password=api_password,
+                allowed=allowed,
+                blocked=blocked,
+                write_state=write_state,
             )
-            if portal_enabled:
-                notes.append(
-                    f"enabled CPE renew Hotspot on {portal_enabled} "
-                    "expired/paused account(s) before kick"
-                )
-
-            if kick_usernames:
-                try:
-                    with _api_session(
-                        candidate, api_user, api_password, timeout=12.0
-                    ) as kick_sock:
-                        kicked = _disconnect_pppoe_sessions_many(
-                            kick_sock, kick_usernames
-                        )
-                        # Post-block leak check: secret may already be on
-                        # ispcentric-blocked while the live session still
-                        # carries a paid address-list (first kick raced).
-                        leak_retry: list[str] = []
-                        if block_kick_usernames:
-                            live_after = _pppoe_live_state_maps(kick_sock)
-                            for uname in {
-                                (n or "").strip().lower()
-                                for n in block_kick_usernames
-                                if (n or "").strip()
-                            }:
-                                if not _pppoe_has_active_session(
-                                    kick_sock, uname, live=live_after
-                                ):
-                                    continue
-                                if _active_pppoe_session_is_blocked(
-                                    kick_sock, uname, live=live_after
-                                ):
-                                    continue
-                                leak_retry.append(uname)
-                        if leak_retry:
-                            re_kicked = _disconnect_pppoe_sessions_many(
-                                kick_sock, leak_retry
-                            )
-                            kicked += re_kicked
-                            notes.append(
-                                f"leak-retry kicked {re_kicked} unpaid "
-                                f"session(s) still surfing "
-                                f"({len(leak_retry)} account(s))"
-                            )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "PPPoE batch kick failed router=%s: %s",
-                        router_id,
-                        exc,
-                    )
-                    kicked = 0
-                if kicked:
-                    notes.append(
-                        f"batch-kicked {kicked} session(s) "
-                        f"({len(set(kick_usernames))} account(s)) — "
-                        "CPEs redial together"
-                    )
-
-            for customer in blocked_identity_customers:
-                try:
-                    _remember_blocked_pppoe_captive_identity(customer)
-                except Exception:
-                    logger.exception(
-                        "Could not cache blocked PPPoE identity for customer %s",
-                        getattr(customer, "pk", None),
-                    )
-
-            # Outside the API session: CPE renew clear uses NAS→CPE proxy and
-            # must run while paid secrets are already restored.
-            cleared = _follow_up_pending_cpe_renew_clears(customers)
-            if cleared:
-                notes.append(f"cleared {cleared} pending CPE renew Hotspot(s)")
-            enabled_followup = _follow_up_pending_cpe_renew_enables(customers)
-            if enabled_followup:
-                notes.append(
-                    f"enabled {enabled_followup} pending CPE renew Hotspot(s)"
-                )
-
-            return {
-                "ok": errors == 0,
-                "router_id": router_id,
-                "router_name": router_name,
-                "host": candidate,
-                "allowed": allowed,
-                "blocked": blocked,
-                "errors": errors,
-                "kicked": kicked,
-                "kick_accounts": len(set(kick_usernames)),
-                "cpe_renew_enabled": portal_enabled + enabled_followup,
-                "cpe_renew_cleared": cleared,
-                "notes": notes,
-                "message": (
-                    f"PPPoE batch on {router_name}: allowed={allowed} "
-                    f"blocked={blocked} kick_accounts={len(set(kick_usernames))}"
-                    + (f" cpe_pay={portal_enabled}" if portal_enabled else "")
-                    + (f" cpe_cleared={cleared}" if cleared else "")
-                ),
-            }
         except TimeoutError:
             last_error = f"{candidate}: timed out on API port 8728"
         except OSError as exc:
@@ -14255,7 +14490,7 @@ def sync_pppoe_subscription_batch_on_router(
         "host": host,
         "allowed": allowed,
         "blocked": blocked,
-        "errors": errors + 1,
+        "errors": 1,
         "kicked": 0,
         "error": last_error or f"{host}: unreachable",
     }
@@ -14348,6 +14583,433 @@ def sync_hotspot_subscription_batch_on_router(
     }
 
 
+def _scan_pppoe_repair_targets_on_socket(
+    sock: socket.socket,
+    *,
+    paid: list | None = None,
+    unpaid: list | None = None,
+) -> dict[str, Any]:
+    """One live-map pass for paid-not-surfing and unpaid-leak repair targets."""
+    live = _pppoe_live_state_maps(sock)
+    paid_need_repair: list = []
+    paid_pending_clear: list = []
+    ghost_noted = 0
+    unpaid_need_repair: list = []
+
+    for customer in paid or []:
+        username = (customer.pppoe_username or "").strip()
+        if not username:
+            continue
+        expected = _ppp_secret_profile_for_customer(customer, disabled=False)
+        current = _current_ppp_secret_profile(sock, username, live=live)
+        active = _pppoe_has_active_session(sock, username, live=live)
+        blocked_session = bool(
+            active and _active_pppoe_session_is_blocked(sock, username, live=live)
+        )
+        wrong_profile = bool(
+            current
+            and current != expected
+            and (
+                current == PPPOE_BLOCKED_PROFILE_NAME
+                or expected != PPPOE_BLOCKED_PROFILE_NAME
+            )
+        )
+        if active and _pppoe_session_looks_ghost(sock, username, live=live):
+            ghost_noted += 1
+        renew_pending = cpe_renew_clear_is_pending(customer)
+        if renew_pending:
+            paid_pending_clear.append(customer)
+        surfing_ok = bool(active and not blocked_session and not wrong_profile)
+        if blocked_session or wrong_profile or (renew_pending and not surfing_ok):
+            paid_need_repair.append(customer)
+
+    for customer in unpaid or []:
+        username = (customer.pppoe_username or "").strip()
+        if not username:
+            continue
+        disabled = _customer_pppoe_secret_disabled(customer)
+        expected = _ppp_secret_profile_for_customer(customer, disabled=disabled)
+        current = _current_ppp_secret_profile(sock, username, live=live)
+        active = _pppoe_has_active_session(sock, username, live=live)
+        if not active and not disabled:
+            wrong_profile = bool(
+                current
+                and current != expected
+                and expected == PPPOE_BLOCKED_PROFILE_NAME
+            )
+            if wrong_profile:
+                unpaid_need_repair.append(customer)
+            continue
+        if disabled and active:
+            unpaid_need_repair.append(customer)
+            continue
+        if not active:
+            continue
+        blocked_session = _active_pppoe_session_is_blocked(sock, username, live=live)
+        wrong_profile = bool(
+            current
+            and current != expected
+            and expected == PPPOE_BLOCKED_PROFILE_NAME
+        )
+        if (not blocked_session) or wrong_profile:
+            unpaid_need_repair.append(customer)
+
+    return {
+        "paid_need_repair": paid_need_repair,
+        "paid_pending_clear": paid_pending_clear,
+        "ghost_noted": ghost_noted,
+        "unpaid_need_repair": unpaid_need_repair,
+    }
+
+
+def _repair_unpaid_hotspot_leak_on_socket(
+    sock: socket.socket,
+    router,
+    org,
+) -> dict[str, Any]:
+    """Hotspot orphan purge + captive refresh on an existing API session."""
+    router_id = getattr(router, "pk", None)
+    host = (getattr(router, "host", None) or "").strip()
+    notes = _block_orphan_hotspot_users_on_socket(sock, router)
+    portal = _billing_portal_base_url(organization=org)
+    leak_found = any(
+        "blocked orphan" in n or "purged" in n or "killed" in n for n in notes
+    )
+    if leak_found:
+        notes.extend(_ensure_hotspot_pool_wan_guard(sock, portal_url=portal))
+        notes.extend(
+            _ensure_hotspot_tether_block(
+                sock,
+                enabled=bool(getattr(org, "hotspot_block_tethering", True)),
+            )
+        )
+        try:
+            urls = _hotspot_portal_urls_for_org(org)
+            page_notes = _fetch_isp_hotspot_pages(
+                sock,
+                login_url=urls.get("login_url") or "",
+                alogin_url=urls.get("alogin_url") or "",
+                pay_url=urls.get("pay_url") or "",
+                welcome_url=urls.get("welcome_url") or "",
+            )
+            notes.extend(page_notes[:3])
+            notes.extend(
+                _ensure_captive_portal_dhcp_option(
+                    sock,
+                    urls.get("pay_url") or portal,
+                    comment=ISP_HOTSPOT_TAG,
+                )
+            )
+            notes.extend(_bounce_isp_hotspot_clients(sock))
+        except Exception as exc:  # noqa: BLE001
+            notes.append(
+                f"warning: captive refresh after leak repair failed: {exc}"
+            )
+    repaired = sum(
+        1 for n in notes if "blocked orphan" in n or "purged" in n or "killed" in n
+    )
+    return {
+        "ok": True,
+        "skipped": repaired == 0
+        and not any("pool WAN guard" in n for n in notes),
+        "repaired": repaired,
+        "router_id": router_id,
+        "host": host,
+        "notes": notes,
+        "message": (
+            f"Hotspot leak repair: repaired={repaired}"
+            if repaired
+            else (
+                "; ".join(notes[:4])
+                if notes
+                else "No unpaid Hotspot leak on this router."
+            )
+        ),
+    }
+
+
+def repair_router_access_leaks_on_router(router) -> list[dict[str, Any]]:
+    """
+    Scan PPPoE + Hotspot access leaks in one API session, then one PPPoE batch.
+
+    Replaces three sequential repair passes (paid not surfing, unpaid PPPoE leak,
+    unpaid Hotspot leak) for the expiry-watch background loop.
+    """
+    from core.models import MikroTikRouter
+
+    results: list[dict[str, Any]] = []
+    router_id = getattr(router, "pk", None)
+    host = (getattr(router, "host", None) or "").strip()
+    api_user = (getattr(router, "username", None) or "").strip()
+    api_password = getattr(router, "password", None) or ""
+    org = getattr(router, "organization", None)
+    suspended = (
+        getattr(router, "account_status", "") == MikroTikRouter.AccountStatus.SUSPENDED
+    )
+
+    paid = [
+        customer
+        for customer in _pppoe_customers_for_router(router)
+        if _customer_internet_allowed(customer)
+        and not _customer_pppoe_secret_disabled(customer)
+    ]
+    if not paid:
+        results.append(
+            {
+                "ok": True,
+                "skipped": True,
+                "repaired": 0,
+                "router_id": router_id,
+                "message": "No paid PPPoE clients on this router.",
+            }
+        )
+
+    unpaid: list = []
+    if suspended:
+        results.append(
+            {
+                "ok": True,
+                "skipped": True,
+                "repaired": 0,
+                "router_id": router_id,
+                "message": "Router suspended — PPPoE leak repair skipped.",
+            }
+        )
+    else:
+        unpaid = [
+            customer
+            for customer in _pppoe_customers_for_router(router)
+            if not _customer_internet_allowed(customer)
+        ]
+        if not unpaid:
+            results.append(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "repaired": 0,
+                    "router_id": router_id,
+                    "message": "No unpaid PPPoE clients on this router.",
+                }
+            )
+
+    hotspot_on = bool(getattr(org, "hotspot_enabled", False)) if org else False
+    has_hotspot = False
+    if org and not suspended:
+        from billing.models import Customer
+
+        has_hotspot = hotspot_on or Customer.objects.filter(
+            organization_id=org.pk,
+            service_type=Customer.ServiceType.HOTSPOT,
+        ).exclude(hotspot_mac="").exists()
+    if not org or not host or not api_user:
+        results.append(
+            {
+                "ok": False,
+                "skipped": True,
+                "repaired": 0,
+                "router_id": router_id,
+                "error": "Router organization or API credentials missing.",
+            }
+        )
+    elif suspended:
+        results.append(
+            {
+                "ok": True,
+                "skipped": True,
+                "repaired": 0,
+                "router_id": router_id,
+                "message": "Router suspended — Hotspot leak repair skipped.",
+            }
+        )
+    elif not has_hotspot:
+        results.append(
+            {
+                "ok": True,
+                "skipped": True,
+                "repaired": 0,
+                "router_id": router_id,
+                "message": "No Hotspot clients on this router.",
+            }
+        )
+
+    need_pppoe_scan = bool(paid or unpaid)
+    need_hotspot_scan = bool(has_hotspot and org and not suspended and host and api_user)
+    if not need_pppoe_scan and not need_hotspot_scan:
+        return results
+
+    if not host or not api_user:
+        err = {
+            "ok": False,
+            "repaired": 0,
+            "error": "Router host or API username is missing.",
+            "router_id": router_id,
+        }
+        if paid:
+            results.append(err)
+        if unpaid and not suspended:
+            results.append({**err, "router_id": router_id})
+        return results
+
+    scan: dict[str, Any] | None = None
+    hotspot_result: dict[str, Any] | None = None
+    batch_result: dict[str, Any] | None = None
+    paid_need: list = []
+    paid_pending: list = []
+    ghost_noted = 0
+    unpaid_need: list = []
+    working_host = ""
+    last_error = ""
+    for candidate in _router_api_host_candidates(router, discover=False):
+        try:
+            with _api_session(
+                candidate, api_user, api_password, timeout=15.0, reuse=True
+            ) as sock:
+                if need_pppoe_scan:
+                    scan = _scan_pppoe_repair_targets_on_socket(
+                        sock,
+                        paid=paid or None,
+                        unpaid=unpaid or None,
+                    )
+                    paid_need = list(scan.get("paid_need_repair") or [])
+                    paid_pending = list(scan.get("paid_pending_clear") or [])
+                    ghost_noted = int(scan.get("ghost_noted") or 0)
+                    unpaid_need = list(scan.get("unpaid_need_repair") or [])
+                    pppoe_batch_targets: list = []
+                    if paid_need or paid_pending:
+                        pppoe_batch_targets.extend(paid_need)
+                        pppoe_batch_targets.extend(paid_pending)
+                    if unpaid_need:
+                        pppoe_batch_targets.extend(unpaid_need)
+                    if pppoe_batch_targets:
+                        pppoe_batch_targets = list(
+                            {
+                                getattr(c, "pk", id(c)): c
+                                for c in pppoe_batch_targets
+                            }.values()
+                        )
+                        batch_result = sync_pppoe_subscription_batch_on_router(
+                            router,
+                            pppoe_batch_targets,
+                            write_sock=sock,
+                            dial_host_label=candidate,
+                        )
+                if need_hotspot_scan:
+                    hotspot_result = _repair_unpaid_hotspot_leak_on_socket(
+                        sock, router, org
+                    )
+                working_host = candidate
+                break
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            continue
+
+    if not working_host:
+        err = {
+            "ok": False,
+            "repaired": 0,
+            "error": last_error or f"{host}: unreachable",
+            "router_id": router_id,
+        }
+        if paid:
+            results.append(err)
+        if unpaid and not suspended:
+            results.append({**err})
+        if need_hotspot_scan:
+            results.append({**err})
+        return results
+
+    if paid:
+        if not paid_need and not paid_pending:
+            results.append(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "repaired": 0,
+                    "ghost_noted": ghost_noted,
+                    "router_id": router_id,
+                    "host": working_host,
+                    "message": (
+                        "All paid PPPoE sessions already surfing."
+                        + (
+                            f" ({ghost_noted} incomplete-ARP peer(s) left for keepalive)"
+                            if ghost_noted
+                            else ""
+                        )
+                    ),
+                }
+            )
+        else:
+            try:
+                if org is not None and paid_need:
+                    from accounts.communications import (
+                        maybe_notify_pppoe_connected_not_surfing,
+                    )
+
+                    rows = []
+                    for customer in paid_need:
+                        rows.append(
+                            {
+                                "id": customer.pk,
+                                "full_name": getattr(customer, "full_name", "") or "",
+                                "account_number": getattr(
+                                    customer, "account_number", ""
+                                )
+                                or "",
+                                "phone": getattr(customer, "phone", "") or "",
+                                "internet_allowed": True,
+                                "connected": True,
+                                "surfing": False,
+                            }
+                        )
+                    maybe_notify_pppoe_connected_not_surfing(
+                        organization=org,
+                        clients=rows,
+                        newly_affected_ids={str(c.pk) for c in paid_need},
+                    )
+            except Exception:
+                pass
+            repair_targets = list(
+                {getattr(c, "pk", id(c)): c for c in [*paid_need, *paid_pending]}.values()
+            )
+            cleared = _follow_up_pending_cpe_renew_clears(repair_targets)
+            paid_result = dict(batch_result or {})
+            paid_result["repaired"] = len(repair_targets)
+            paid_result["cpe_renew_cleared"] = cleared
+            paid_result["ghost_noted"] = ghost_noted
+            paid_result["message"] = (
+                f"Repaired {len(repair_targets)} paid PPPoE account(s) not surfing on "
+                f"{getattr(router, 'name', None) or working_host}"
+                + (f" (cleared {cleared} CPE renew Hotspot(s))" if cleared else "")
+            )
+            results.append(paid_result)
+
+    if unpaid and not suspended:
+        if not unpaid_need:
+            results.append(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "repaired": 0,
+                    "router_id": router_id,
+                    "host": working_host,
+                    "message": "No unpaid PPPoE leak on this router.",
+                }
+            )
+        else:
+            unpaid_result = dict(batch_result or {})
+            unpaid_result["repaired"] = len(unpaid_need)
+            unpaid_result["message"] = (
+                f"PPPoE leak repair: repaired={len(unpaid_need)} unpaid account(s) "
+                f"still surfing on {getattr(router, 'name', None) or working_host}"
+            )
+            results.append(unpaid_result)
+
+    if need_hotspot_scan and hotspot_result is not None:
+        results.append(hotspot_result)
+
+    return results
+
+
 def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
     """
     Fix paid PPPoE clients that are dialed but not surfing on one NAS.
@@ -14394,50 +15056,10 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
     for candidate in _router_api_host_candidates(router, discover=False):
         try:
             with _api_session(candidate, api_user, api_password, timeout=15.0) as sock:
-                live = _pppoe_live_state_maps(sock)
-                for customer in paid:
-                    username = (customer.pppoe_username or "").strip()
-                    if not username:
-                        continue
-                    expected = _ppp_secret_profile_for_customer(
-                        customer, disabled=False
-                    )
-                    current = _current_ppp_secret_profile(
-                        sock, username, live=live
-                    )
-                    active = _pppoe_has_active_session(sock, username, live=live)
-                    blocked_session = bool(
-                        active
-                        and _active_pppoe_session_is_blocked(
-                            sock, username, live=live
-                        )
-                    )
-                    wrong_profile = bool(
-                        current
-                        and current != expected
-                        and (
-                            current == PPPOE_BLOCKED_PROFILE_NAME
-                            or expected != PPPOE_BLOCKED_PROFILE_NAME
-                        )
-                    )
-                    if active and _pppoe_session_looks_ghost(
-                        sock, username, live=live
-                    ):
-                        ghost_noted += 1
-                    renew_pending = cpe_renew_clear_is_pending(customer)
-                    if renew_pending:
-                        pending_clear.append(customer)
-                    surfing_ok = bool(
-                        active and not blocked_session and not wrong_profile
-                    )
-                    # Ghost alone is not a repair target (deploy-safe).
-                    # Renew-pending alone must not batch-kick a CPE that is
-                    # already dialed on the paid profile and surfing — only
-                    # follow up the CPE renew Hotspot clear.
-                    if blocked_session or wrong_profile or (
-                        renew_pending and not surfing_ok
-                    ):
-                        need_repair.append(customer)
+                scan = _scan_pppoe_repair_targets_on_socket(sock, paid=paid)
+                need_repair = list(scan.get("paid_need_repair") or [])
+                pending_clear = list(scan.get("paid_pending_clear") or [])
+                ghost_noted = int(scan.get("ghost_noted") or 0)
                 break
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
@@ -14565,47 +15187,8 @@ def repair_unpaid_pppoe_leaking_on_router(router) -> dict[str, Any]:
     for candidate in _router_api_host_candidates(router, discover=False):
         try:
             with _api_session(candidate, api_user, api_password, timeout=15.0) as sock:
-                live = _pppoe_live_state_maps(sock)
-                for customer in unpaid:
-                    username = (customer.pppoe_username or "").strip()
-                    if not username:
-                        continue
-                    disabled = _customer_pppoe_secret_disabled(customer)
-                    expected = _ppp_secret_profile_for_customer(
-                        customer, disabled=disabled
-                    )
-                    current = _current_ppp_secret_profile(
-                        sock, username, live=live
-                    )
-                    active = _pppoe_has_active_session(sock, username, live=live)
-                    if not active and not disabled:
-                        # Secret on paid profile while billing denies surf —
-                        # still rewrite so the next dial is blocked.
-                        wrong_profile = bool(
-                            current
-                            and current != expected
-                            and expected == PPPOE_BLOCKED_PROFILE_NAME
-                        )
-                        if wrong_profile:
-                            need_repair.append(customer)
-                        continue
-                    if disabled and active:
-                        # Suspended secret should not stay dialed.
-                        need_repair.append(customer)
-                        continue
-                    if not active:
-                        continue
-                    blocked_session = _active_pppoe_session_is_blocked(
-                        sock, username, live=live
-                    )
-                    wrong_profile = bool(
-                        current
-                        and current != expected
-                        and expected == PPPOE_BLOCKED_PROFILE_NAME
-                    )
-                    # Primary leak: dialed and not on the blocked address-list.
-                    if (not blocked_session) or wrong_profile:
-                        need_repair.append(customer)
+                scan = _scan_pppoe_repair_targets_on_socket(sock, unpaid=unpaid)
+                need_repair = list(scan.get("unpaid_need_repair") or [])
                 break
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
@@ -14858,18 +15441,18 @@ def clear_mikrotik_host_cooldown(host: str) -> None:
 
 
 def mikrotik_probe_timeout(host: str, *, base: float = 1.2) -> float:
-    """TCP reachability timeout — longer on WireGuard peers (brief jitter is common)."""
+    """TCP reachability timeout — slightly longer on WireGuard peers."""
     host = (host or "").strip()
     if _is_wireguard_tunnel_host(host):
-        return max(base, 2.0)
+        return max(base, 1.5)
     return base
 
 
 def mikrotik_login_timeout(host: str, *, base: float = 2.5) -> float:
-    """RouterOS API login timeout — tunnel dials need more time under load."""
+    """RouterOS API login timeout — tunnel dials need a little more under load."""
     host = (host or "").strip()
     if _is_wireguard_tunnel_host(host):
-        return max(base, 4.0)
+        return max(base, 3.0)
     return base
 
 
@@ -15151,6 +15734,25 @@ def _router_api_host_candidates(
     return hosts
 
 
+def _nas_api_host_cache_key(router) -> str:
+    pk = getattr(router, "pk", None)
+    if pk:
+        return f"mikrotik_nas_host:v1:{pk}"
+    host = (getattr(router, "host", None) or "").strip()
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    return f"mikrotik_nas_host:v1:{host}:{tunnel}"
+
+
+def clear_nas_api_host_cache(router) -> None:
+    """Drop cached NAS dial target after reconnect or credential change."""
+    try:
+        from django.core.cache import cache
+
+        cache.delete(_nas_api_host_cache_key(router))
+    except Exception:
+        pass
+
+
 def resolve_nas_api_host(router, *, timeout: float = 1.5) -> str:
     """
     First NAS address that accepts RouterOS API (:8728).
@@ -15160,21 +15762,39 @@ def resolve_nas_api_host(router, *, timeout: float = 1.5) -> str:
     LAN gateway still answers. Falls back to ``api_host`` / ``host`` when
     nothing accepts (caller surfaces the connectivity error).
     """
+    try:
+        from django.core.cache import cache
+
+        cached = cache.get(_nas_api_host_cache_key(router))
+        if cached:
+            return str(cached).strip()
+    except Exception:
+        pass
+
     candidates = _router_api_host_candidates(router, discover=False)
-    connect_timeout = max(0.4, min(float(timeout or 1.5), 2.0))
+    connect_timeout = max(0.35, min(float(timeout or 1.5), 1.5))
     for host in candidates:
+        if is_mikrotik_host_cooling_down(host):
+            continue
         target = dial_host(host)
         if not target:
             continue
         try:
             with socket.create_connection((target, 8728), timeout=connect_timeout):
+                try:
+                    from django.core.cache import cache
+
+                    cache.set(_nas_api_host_cache_key(router), host, 90)
+                except Exception:
+                    pass
                 return host
         except OSError:
             continue
-    return (
+    fallback = (
         (getattr(router, "api_host", None) or getattr(router, "host", None) or "")
         .strip()
     )
+    return fallback
 
 
 def unreachable_router_error(router) -> str:
@@ -15340,7 +15960,13 @@ def provision_customer_pppoe(
                 else 4.0
             )
         try:
-            with _api_session(candidate, api_user, api_password, timeout=attempt_timeout) as sock:
+            with _api_session(
+                candidate,
+                api_user,
+                api_password,
+                timeout=attempt_timeout,
+                reuse=not ensure_stack,
+            ) as sock:
                 if ensure_stack:
                     portal_url = _billing_portal_base_url()
                     _, stack_notes = _ensure_pppoe_stack(
@@ -16843,82 +17469,9 @@ def repair_unpaid_hotspot_leaking_on_router(router) -> dict[str, Any]:
     for candidate in _router_api_host_candidates(router, discover=False):
         try:
             with _api_session(candidate, api_user, api_password, timeout=15.0) as sock:
-                notes = _block_orphan_hotspot_users_on_socket(sock, router)
-                portal = _billing_portal_base_url(
-                    organization=org,
-                )
-                # Bounce / firewall rewrite only when this pass actually stopped
-                # a leak. Pool WAN + tether ensure delete/recreate filter rules
-                # every call — doing that every ~30s briefly drops paid WAN
-                # even when no orphan was found. Full sweep still refreshes
-                # the stack on its own cadence.
-                leak_found = any(
-                    "blocked orphan" in n
-                    or "purged" in n
-                    or "killed" in n
-                    for n in notes
-                )
-                if leak_found:
-                    notes.extend(
-                        _ensure_hotspot_pool_wan_guard(sock, portal_url=portal)
-                    )
-                    notes.extend(
-                        _ensure_hotspot_tether_block(
-                            sock,
-                            enabled=bool(
-                                getattr(org, "hotspot_block_tethering", True)
-                            ),
-                        )
-                    )
-                    try:
-                        urls = _hotspot_portal_urls_for_org(org)
-                        page_notes = _fetch_isp_hotspot_pages(
-                            sock,
-                            login_url=urls.get("login_url") or "",
-                            alogin_url=urls.get("alogin_url") or "",
-                            pay_url=urls.get("pay_url") or "",
-                            welcome_url=urls.get("welcome_url") or "",
-                        )
-                        notes.extend(page_notes[:3])
-                        notes.extend(
-                            _ensure_captive_portal_dhcp_option(
-                                sock,
-                                urls.get("pay_url") or portal,
-                                comment=ISP_HOTSPOT_TAG,
-                            )
-                        )
-                        # Unauthorized hosts / MACs only — paid sessions stay up.
-                        notes.extend(_bounce_isp_hotspot_clients(sock))
-                    except Exception as exc:  # noqa: BLE001
-                        notes.append(
-                            f"warning: captive refresh after leak repair failed: {exc}"
-                        )
-                repaired = sum(
-                    1
-                    for n in notes
-                    if "blocked orphan" in n
-                    or "purged" in n
-                    or "killed" in n
-                )
-                return {
-                    "ok": True,
-                    "skipped": repaired == 0 and not any(
-                        "pool WAN guard" in n for n in notes
-                    ),
-                    "repaired": repaired,
-                    "router_id": router_id,
-                    "host": candidate,
-                    "notes": notes,
-                    "message": (
-                        f"Hotspot leak repair: repaired={repaired}"
-                        if repaired
-                        else (
-                            "; ".join(notes[:4])
-                            if notes
-                            else "No unpaid Hotspot leak on this router."
-                        )
-                    ),
-                }
+                result = _repair_unpaid_hotspot_leak_on_socket(sock, router, org)
+                result["host"] = candidate
+                return result
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc) or "unreachable"
             continue
@@ -16928,6 +17481,177 @@ def repair_unpaid_hotspot_leaking_on_router(router) -> dict[str, Any]:
         "router_id": router_id,
         "host": host,
         "error": last_error or f"{host}: unreachable",
+    }
+
+
+def _refresh_onboarded_router_config_on_socket(
+    sock: socket.socket,
+    router,
+    org,
+    *,
+    username: str,
+    password: str,
+    skip_pppoe: bool,
+    skip_hotspot: bool,
+    sync_pppoe_secrets: bool,
+    reauthenticate: bool,
+    compulsory: bool,
+    hotspot_on: bool,
+    has_pppoe: bool,
+    has_hotspot: bool,
+) -> dict[str, Any]:
+    """Push PPPoE / Hotspot / captive templates on one RouterOS API session."""
+    notes: list[str] = []
+    notes.extend(
+        _ensure_hotspot_management_access(
+            sock, username=username, password=password
+        )
+    )
+
+    lan_interface = getattr(router, "lan_bridge", None) or "bridgeLocal"
+    wan_interface = getattr(router, "wan_interface", None) or "ether1"
+    router_ok = True
+    pppoe_result: dict[str, Any] | None = None
+    hotspot_result: dict[str, Any] | None = None
+    redirect_result: dict[str, Any] | None = None
+    resolved_lan = ""
+
+    if not skip_pppoe and (compulsory or has_pppoe):
+        pppoe_notes, secrets_synced, resolved_lan = _push_pppoe_enforcement_on_socket(
+            sock,
+            router,
+            compulsory=compulsory,
+            sync_secrets=sync_pppoe_secrets,
+        )
+        notes.extend(pppoe_notes[:6])
+        pppoe_result = {
+            "ok": True,
+            "notes": pppoe_notes,
+            "secrets_synced": secrets_synced,
+            "resolved_lan": resolved_lan,
+        }
+        if compulsory and not skip_hotspot and org is not None:
+            if not getattr(org, "hotspot_enabled", False):
+                try:
+                    org.hotspot_enabled = True
+                    org.save(update_fields=["hotspot_enabled"])
+                    notes.append("enabled organization Hotspot fallback")
+                except Exception:
+                    pass
+            urls = _hotspot_portal_urls_for_org(org)
+            redirect_url = (getattr(org, "hotspot_redirect_url", "") or "").strip()
+            if getattr(org, "hotspot_use_welcome_page", True):
+                redirect_url = urls.get("welcome_url") or redirect_url
+                if redirect_url and org.hotspot_redirect_url != redirect_url:
+                    try:
+                        org.hotspot_redirect_url = redirect_url
+                        org.save(update_fields=["hotspot_redirect_url"])
+                    except Exception:
+                        pass
+            hs_notes, users_synced, hs_lan = _push_hotspot_enabled_on_socket(
+                sock,
+                router,
+                org,
+                username=username,
+                password=password,
+                reauthenticate=reauthenticate,
+                compulsory=True,
+                redirect_url=redirect_url
+                if redirect_url
+                else urls.get("welcome_url", ""),
+                login_url=urls.get("login_url", ""),
+                alogin_url=urls.get("alogin_url", ""),
+                pay_url=urls.get("pay_url", ""),
+                welcome_url=urls.get("welcome_url", ""),
+                lan_interface=resolved_lan or lan_interface,
+                wan_interface=wan_interface,
+            )
+            notes.extend(hs_notes[:6])
+            if hs_lan:
+                resolved_lan = hs_lan
+            hotspot_result = {
+                "ok": True,
+                "notes": hs_notes,
+                "users_synced": users_synced,
+            }
+            pppoe_result["hotspot"] = hotspot_result
+    else:
+        portal = _billing_portal_base_url()
+        redirect_notes = _ensure_pppoe_expired_access(sock, portal_url=portal)
+        redirect_notes.extend(_ensure_pppoe_blocked_profile(sock))
+        safe_notes = [sweep_log_text(n) for n in redirect_notes]
+        redirect_result = {
+            "ok": True,
+            "skipped": False,
+            "notes": safe_notes,
+            "message": (
+                "; ".join(safe_notes) if safe_notes else "expired captive redirect ok"
+            ),
+        }
+        notes.append(redirect_result.get("message") or "expired-redirect ok")
+
+    need_hotspot = (
+        not skip_hotspot
+        and (hotspot_on or has_hotspot)
+        and not (compulsory and not skip_pppoe)
+    )
+    if need_hotspot and org is not None:
+        urls = _hotspot_portal_urls_for_org(org)
+        normalized = _normalize_hotspot_portal_urls(
+            pay_url=urls.get("pay_url", ""),
+            login_url=urls.get("login_url", ""),
+            welcome_url=urls.get("welcome_url", ""),
+            alogin_url=urls.get("alogin_url", ""),
+            redirect_url=(
+                urls.get("welcome_url", "")
+                if getattr(org, "hotspot_use_welcome_page", True)
+                else getattr(org, "hotspot_redirect_url", "") or ""
+            ),
+        )
+        if not normalized.get("pay_url"):
+            router_ok = False
+            hotspot_result = {
+                "ok": False,
+                "error": (
+                    "Cannot enable Hotspot without an absolute pay URL. "
+                    "Set PUBLIC_BASE_URL to a reachable http://host so phones "
+                    "open /hotspot/…/pay/ immediately on Wi‑Fi connect."
+                ),
+            }
+            notes.append(hotspot_result["error"])
+        else:
+            hs_notes, users_synced, hs_lan = _push_hotspot_enabled_on_socket(
+                sock,
+                router,
+                org,
+                username=username,
+                password=password,
+                reauthenticate=reauthenticate,
+                compulsory=compulsory,
+                redirect_url=normalized["redirect_url"],
+                login_url=normalized["login_url"],
+                alogin_url=normalized["alogin_url"],
+                pay_url=normalized["pay_url"],
+                welcome_url=normalized["welcome_url"],
+                lan_interface=resolved_lan or lan_interface,
+                wan_interface=wan_interface,
+            )
+            notes.extend(hs_notes[:6])
+            if hs_lan:
+                resolved_lan = hs_lan
+            hotspot_result = {
+                "ok": True,
+                "notes": hs_notes,
+                "users_synced": users_synced,
+            }
+
+    return {
+        "router_ok": router_ok,
+        "notes": notes,
+        "pppoe_result": pppoe_result,
+        "hotspot_result": hotspot_result,
+        "redirect_result": redirect_result,
+        "resolved_lan": resolved_lan,
     }
 
 
@@ -16985,11 +17709,17 @@ def refresh_onboarded_router_config(
             "error": "Router host is missing.",
         }
 
-    api_notes = _ensure_nas_api_and_management(router)
-    if api_notes:
-        notes: list[str] = list(api_notes[:4])
-    else:
-        notes = []
+    username = (getattr(router, "username", None) or "").strip()
+    password = getattr(router, "password", None) or ""
+    if not username:
+        return {
+            "ok": False,
+            "skipped": True,
+            "router_id": router_id,
+            "router_name": router_name,
+            "host": host,
+            "error": "Router API username is missing.",
+        }
 
     compulsory = bool(getattr(org, "pppoe_compulsory", False))
     hotspot_on = bool(getattr(org, "hotspot_enabled", False))
@@ -17010,6 +17740,10 @@ def refresh_onboarded_router_config(
     pppoe_result: dict[str, Any] | None = None
     hotspot_result: dict[str, Any] | None = None
     redirect_result: dict[str, Any] | None = None
+    notes: list[str] = []
+    working_host = ""
+    resolved_lan = ""
+    last_error = ""
 
     # Drop cached "stack ready" so the next Hotspot authorize cannot skip a
     # full repair after a code upgrade.
@@ -17021,47 +17755,67 @@ def refresh_onboarded_router_config(
         except Exception:
             pass
 
-    if not skip_pppoe and (compulsory or has_pppoe):
-        pppoe_result = apply_pppoe_enforcement_on_router(
-            router,
-            compulsory=compulsory,
-            hotspot_fallback=bool(compulsory or hotspot_on or has_hotspot),
-            sync_secrets=sync_pppoe_secrets,
-        )
-        if pppoe_result.get("ok"):
-            notes.append("pppoe ok")
-            notes.extend(list(pppoe_result.get("notes") or [])[:6])
-            hotspot_result = pppoe_result.get("hotspot")
-        else:
-            router_ok = False
-            notes.append(pppoe_result.get("error") or "pppoe refresh failed")
-    else:
-        redirect_result = repair_router_expired_captive_redirect(router)
-        if redirect_result.get("ok") or redirect_result.get("skipped"):
-            notes.append(redirect_result.get("message") or "expired-redirect ok")
-        else:
-            router_ok = False
-            notes.append(redirect_result.get("error") or "expired-redirect failed")
+    for candidate in _router_api_host_candidates(router, discover=False):
+        try:
+            with _api_session(
+                candidate, username, password, timeout=20.0, reuse=True
+            ) as sock:
+                session = _refresh_onboarded_router_config_on_socket(
+                    sock,
+                    router,
+                    org,
+                    username=username,
+                    password=password,
+                    skip_pppoe=skip_pppoe,
+                    skip_hotspot=skip_hotspot,
+                    sync_pppoe_secrets=sync_pppoe_secrets,
+                    reauthenticate=reauthenticate,
+                    compulsory=compulsory,
+                    hotspot_on=hotspot_on,
+                    has_pppoe=has_pppoe,
+                    has_hotspot=has_hotspot,
+                )
+            working_host = candidate
+            break
+        except (TimeoutError, socket.timeout, OSError, ConnectionError) as exc:
+            last_error = sweep_log_text(str(exc) or "timed out")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            last_error = sweep_log_text(str(exc) or "NAS refresh failed")
+            continue
 
-    need_hotspot = (
-        not skip_hotspot
-        and (hotspot_on or has_hotspot)
-        and not (compulsory and not skip_pppoe)
-    )
-    if need_hotspot:
-        hotspot_result = repair_hotspot_captive_portal(
-            router,
-            organization=org,
-            attempts=2,
-            reauthenticate=reauthenticate,
-        )
-        if hotspot_result.get("ok"):
+    if not working_host:
+        router_ok = False
+        notes.append(last_error or f"{host}: unreachable")
+    else:
+        router_ok = bool(session.get("router_ok", True))
+        notes.extend(list(session.get("notes") or [])[:12])
+        pppoe_result = session.get("pppoe_result")
+        hotspot_result = session.get("hotspot_result")
+        redirect_result = session.get("redirect_result")
+        resolved_lan = (session.get("resolved_lan") or "").strip()
+        if pppoe_result and pppoe_result.get("ok"):
+            notes.append("pppoe ok")
+        elif redirect_result and redirect_result.get("ok"):
+            notes.append(redirect_result.get("message") or "expired-redirect ok")
+        if hotspot_result and hotspot_result.get("ok"):
             notes.append("hotspot ok")
-        elif hotspot_result.get("skipped"):
-            notes.append(hotspot_result.get("message") or "hotspot skipped")
-        else:
+        elif hotspot_result and hotspot_result.get("error"):
             router_ok = False
-            notes.append(hotspot_result.get("error") or "hotspot refresh failed")
+
+        tunnel = (getattr(router, "vpn_address", None) or "").strip()
+        host_changed = bool(
+            working_host and working_host not in (host, tunnel)
+        )
+        if host_changed and hasattr(router, "host"):
+            try:
+                router.host = working_host
+                router.save(update_fields=["host", "updated_at"])
+                notes.append(f"updated saved IP to {working_host}")
+            except Exception:
+                pass
+        if resolved_lan:
+            _persist_resolved_lan_bridge(router, resolved_lan, notes)
 
     error = ""
     if not router_ok:
@@ -18610,7 +19364,7 @@ def _hotspot_portal_urls_for_org(organization) -> dict[str, str]:
     if not pay_url or not urlparse(pay_url).scheme:
         cached_base = recall_org_portal_base(getattr(organization, "pk", 0) or 0)
         if cached_base:
-            for kind in ("login", "alogin", "welcome", "pay"):
+            for kind in ("login", "reconnect", "alogin", "welcome", "pay"):
                 path = (urls.get(f"{kind}_path") or "").strip()
                 if path:
                     urls[f"{kind}_url"] = f"{cached_base.rstrip('/')}{path}"
@@ -18651,6 +19405,37 @@ def _nas_refresh_failure_message(
     if notes:
         return "; ".join(str(note) for note in notes if note)
     return "Could not apply billing settings on the MikroTik."
+
+
+def _push_pppoe_enforcement_on_socket(
+    sock: socket.socket,
+    router,
+    *,
+    compulsory: bool,
+    sync_secrets: bool,
+) -> tuple[list[str], int, str]:
+    """PPPoE stack (+ optional secret sync) on an existing RouterOS API session."""
+    lan_interface = getattr(router, "lan_bridge", None) or "bridgeLocal"
+    wan_interface = getattr(router, "wan_interface", None) or "ether1"
+    portal_url = _billing_portal_base_url()
+    lan_interface = _resolve_lan_interface(
+        sock, lan_interface, exclude=wan_interface
+    )
+    _, notes = _ensure_pppoe_stack(
+        sock,
+        lan_interface=lan_interface,
+        wan_interface=wan_interface,
+        compulsory=bool(compulsory),
+        portal_url=portal_url,
+    )
+    secrets_synced = 0
+    if sync_secrets:
+        secrets_synced = _sync_organization_pppoe_secrets_on_socket(sock, router)
+        if secrets_synced:
+            notes.append(f"synced {secrets_synced} PPPoE secret(s)")
+    else:
+        notes.append("pppoe secrets skipped (already synced per customer)")
+    return notes, secrets_synced, lan_interface
 
 
 def apply_pppoe_enforcement_on_router(
@@ -18718,26 +19503,12 @@ def apply_pppoe_enforcement_on_router(
             with _api_session(
                 candidate, username, password, timeout=attempt_timeout
             ) as sock:
-                portal_url = _billing_portal_base_url()
-                lan_interface = _resolve_lan_interface(
-                    sock, lan_interface, exclude=wan_interface
-                )
-                resolved_lan = lan_interface
-                _, notes = _ensure_pppoe_stack(
+                notes, secrets_synced, resolved_lan = _push_pppoe_enforcement_on_socket(
                     sock,
-                    lan_interface=lan_interface,
-                    wan_interface=wan_interface,
+                    router,
                     compulsory=bool(compulsory),
-                    portal_url=portal_url,
+                    sync_secrets=sync_secrets,
                 )
-                if sync_secrets:
-                    secrets_synced = _sync_organization_pppoe_secrets_on_socket(
-                        sock, router
-                    )
-                    if secrets_synced:
-                        notes.append(f"synced {secrets_synced} PPPoE secret(s)")
-                else:
-                    notes.append("pppoe secrets skipped (already synced per customer)")
             working_host = candidate
             break
         except TimeoutError:
@@ -20934,11 +21705,19 @@ def _captive_pay_redirect_html(pay_url: str) -> str:
         sep = "?"
     path_lower = (urlparse(pay_url).path or "").lower()
     is_pause = path_lower.rstrip("/").endswith("/pause")
-    page_title = "Internet paused" if is_pause else "Pay to connect"
-    body_text = (
-        "Opening pause notice…" if is_pause else "Opening payment page…"
-    )
-    link_text = "Continue" if is_pause else "Continue to payment"
+    is_reconnect = path_lower.rstrip("/").endswith("/reconnect")
+    if is_pause:
+        page_title = "Internet paused"
+        body_text = "Opening pause notice…"
+        link_text = "Continue"
+    elif is_reconnect:
+        page_title = "Connecting"
+        body_text = "Reconnecting to your package…"
+        link_text = "Continue"
+    else:
+        page_title = "Pay to connect"
+        body_text = "Opening payment page…"
+        link_text = "Continue to payment"
     # Pass MikroTik session vars so the payment page can identify the device.
     # Put mac first so it survives if other substituted fields contain '&'.
     # Prefer $(mac) (widely substituted); keep $(mac-esc) as a second param.
@@ -21059,19 +21838,20 @@ def _fetch_isp_hotspot_pages(
     not left without an instant pay popup.
     """
     notes: list[str] = []
+    login = _resolve_absolute_captive_url(login_url or pay_url or "")
     pay = _resolve_absolute_captive_url(pay_url or login_url or "")
     welcome = _resolve_absolute_captive_url(welcome_url or alogin_url or "") or (
         welcome_url or alogin_url or ""
     ).strip()
 
-    if not pay:
+    if not login:
         notes.append(
-            "warning: refused relative/empty Hotspot pay URL — "
+            "warning: refused relative/empty Hotspot login URL — "
             "login.html not installed (would stick clients on http://10.50.50.…)"
         )
         return notes
 
-    pay_html = _captive_pay_redirect_html(pay)
+    pay_html = _captive_pay_redirect_html(login)
     alogin_html = _captive_alogin_html(welcome) if welcome else ""
 
     for dst in _STALE_PROBE_FILES:
@@ -21106,7 +21886,7 @@ def _fetch_isp_hotspot_pages(
     missing_login = not any(
         n.startswith("installed hotspot/login.html") for n in notes
     )
-    fetch_src = pay or _resolve_absolute_captive_url(login_url)
+    fetch_src = login or _resolve_absolute_captive_url(login_url)
     if missing_login and fetch_src:
         fetch_words = [
             "/tool/fetch",
@@ -21440,7 +22220,7 @@ def _ensure_isp_hotspot_stack(
         raise ConnectionError(message)
     notes.append(f"Hotspot server on {lan}")
 
-    garden_url = pay_url or redirect_url or login_url or welcome_url or alogin_url
+    garden_url = login_url or pay_url or redirect_url or welcome_url or alogin_url
 
     if _clear_captive_dns_hijack(sock, ISP_HOTSPOT_TAG):
         notes.append("captive probe hostnames resolve normally again")
@@ -21484,7 +22264,7 @@ def _ensure_isp_hotspot_stack(
     # popup the moment Wi‑Fi associates — do not wait for an HTTP probe.
     notes.extend(
         _ensure_captive_portal_dhcp_option(
-            sock, pay_url or garden_url, comment=ISP_HOTSPOT_TAG
+            sock, login_url or pay_url or garden_url, comment=ISP_HOTSPOT_TAG
         )
     )
     # Hard-stop unpaid pool clients (QUIC/app leak) even when Hotspot dynamic
@@ -21500,6 +22280,87 @@ def _ensure_isp_hotspot_stack(
     )
     notes.extend(_bounce_isp_hotspot_clients(sock))
     return notes
+
+
+def _push_hotspot_enabled_on_socket(
+    sock: socket.socket,
+    router,
+    org,
+    *,
+    username: str,
+    password: str,
+    reauthenticate: bool,
+    compulsory: bool,
+    redirect_url: str,
+    login_url: str,
+    alogin_url: str,
+    pay_url: str,
+    welcome_url: str,
+    lan_interface: str | None = None,
+    wan_interface: str | None = None,
+) -> tuple[list[str], int, str]:
+    """Full ISP Hotspot push on an existing RouterOS API session."""
+    lan = lan_interface or getattr(router, "lan_bridge", None) or "bridgeLocal"
+    wan = wan_interface or getattr(router, "wan_interface", None) or "ether1"
+    lan = _resolve_lan_interface(sock, lan, exclude=wan)
+    notes = _ensure_isp_hotspot_stack(
+        sock,
+        lan_interface=lan,
+        organization=org,
+        wan_interface=wan,
+        redirect_url=redirect_url,
+        login_url=login_url,
+        alogin_url=alogin_url,
+        pay_url=pay_url,
+        welcome_url=welcome_url or redirect_url,
+        wifi_ssid=(getattr(router, "wifi_ssid", None) or "").strip(),
+    )
+    notes.extend(
+        _ensure_hotspot_management_access(
+            sock,
+            username=username,
+            password=password,
+        )
+    )
+    users_synced = _sync_organization_hotspot_users_on_socket(
+        sock,
+        router,
+        reauthenticate=reauthenticate,
+    )
+    if users_synced:
+        notes.append(f"synced {users_synced} Hotspot user(s)")
+    else:
+        notes.append("no Hotspot clients to sync yet")
+    if compulsory:
+        portal_url = _billing_portal_base_url(
+            pay_url or redirect_url or login_url or welcome_url or ""
+        )
+        _, fw_notes = _ensure_pppoe_stack(
+            sock,
+            lan_interface=lan,
+            wan_interface=wan,
+            compulsory=True,
+            portal_url=portal_url,
+        )
+        notes.extend(fw_notes)
+    garden = pay_url or redirect_url or login_url or welcome_url or ""
+    hotspot_address = _lan_ipv4_for_interface(sock, lan)
+    notes.extend(
+        _ensure_hotspot_owns_http_port(
+            sock,
+            hotspot_address=hotspot_address,
+            comment=ISP_HOTSPOT_TAG,
+            portal_url=garden,
+        )
+    )
+    notes.extend(_ensure_hotspot_pool_wan_guard(sock, portal_url=garden))
+    notes.extend(
+        _ensure_hotspot_tether_block(
+            sock,
+            enabled=bool(getattr(org, "hotspot_block_tethering", True)),
+        )
+    )
+    return notes, users_synced, lan
 
 
 def apply_hotspot_on_router(
@@ -21637,90 +22498,21 @@ def apply_hotspot_on_router(
                 candidate, username, password, timeout=attempt_timeout
             ) as sock:
                 if enabled:
-                    # Resolve once here so every later interface-scoped call in
-                    # this session uses a name the router actually has.
-                    lan_interface = _resolve_lan_interface(
-                        sock, lan_interface, exclude=wan_interface
-                    )
-                    resolved_lan = lan_interface
-                    notes = _ensure_isp_hotspot_stack(
+                    notes, users_synced, resolved_lan = _push_hotspot_enabled_on_socket(
                         sock,
-                        lan_interface=lan_interface,
-                        organization=org,
-                        wan_interface=wan_interface,
+                        router,
+                        org,
+                        username=username,
+                        password=password,
+                        reauthenticate=reauthenticate,
+                        compulsory=compulsory,
                         redirect_url=redirect_url,
                         login_url=login_url,
                         alogin_url=alogin_url,
                         pay_url=pay_url,
-                        welcome_url=welcome_url or redirect_url,
-                        wifi_ssid=(getattr(router, "wifi_ssid", None) or "").strip(),
-                    )
-                    # Keep this billing PC able to Reconnect after Hotspot locks
-                    # unauthenticated clients off API/Winbox/SSH.
-                    notes.extend(
-                        _ensure_hotspot_management_access(
-                            sock,
-                            username=username,
-                            password=password,
-                        )
-                    )
-                    users_synced = _sync_organization_hotspot_users_on_socket(
-                        sock,
-                        router,
-                        reauthenticate=reauthenticate,
-                    )
-                    if users_synced:
-                        notes.append(f"synced {users_synced} Hotspot user(s)")
-                    else:
-                        notes.append("no Hotspot clients to sync yet")
-                    if compulsory:
-                        # Refresh firewall so Hotspot-authenticated clients bypass
-                        # the PPPoE compulsory LAN drop. Keep portal_url so the
-                        # expired-client billing allow / HTTP redirect survive —
-                        # a bare re-push used to wipe them and leave only the
-                        # silent WAN drop (slow captive popup).
-                        portal_url = _billing_portal_base_url(
-                            pay_url or redirect_url or login_url or welcome_url or ""
-                        )
-                        _, fw_notes = _ensure_pppoe_stack(
-                            sock,
-                            lan_interface=lan_interface,
-                            wan_interface=wan_interface,
-                            compulsory=True,
-                            portal_url=portal_url,
-                        )
-                        notes.extend(fw_notes)
-                    # Re-apply after PPPoE filter rewrite so captive HTTP forward
-                    # allow + hairpin NAT stay above the compulsory drop.
-                    garden = (
-                        pay_url
-                        or redirect_url
-                        or login_url
-                        or welcome_url
-                        or ""
-                    )
-                    hotspot_address = _lan_ipv4_for_interface(sock, lan_interface)
-                    notes.extend(
-                        _ensure_hotspot_owns_http_port(
-                            sock,
-                            hotspot_address=hotspot_address,
-                            comment=ISP_HOTSPOT_TAG,
-                            portal_url=garden,
-                        )
-                    )
-                    # PPPoE stack rewrite can insert LAN→WAN accept after our
-                    # pool drop; re-assert the guard so unpaid 10.50.50 clients
-                    # cannot leak through apps (QUIC/HTTPS).
-                    notes.extend(
-                        _ensure_hotspot_pool_wan_guard(sock, portal_url=garden)
-                    )
-                    notes.extend(
-                        _ensure_hotspot_tether_block(
-                            sock,
-                            enabled=bool(
-                                getattr(org, "hotspot_block_tethering", True)
-                            ),
-                        )
+                        welcome_url=welcome_url,
+                        lan_interface=lan_interface,
+                        wan_interface=wan_interface,
                     )
                 else:
                     notes = _disable_isp_hotspot_stack(sock)
@@ -22872,6 +23664,96 @@ def assess_uplink_mode_apply_risk(
     }
 
 
+def _list_mikrotik_ports_on_sock(
+    sock: socket.socket,
+    host: str,
+    *,
+    management_hosts: list[str] | None = None,
+) -> dict[str, Any]:
+    """List ports on an already-authenticated RouterOS API session."""
+    rows = _print(
+        sock,
+        "/interface",
+        props=".id,name,type,running,disabled,comment,rx-byte,tx-byte",
+    )
+    bytes_by_name: dict[str, tuple[int, int]] = {}
+    for row in rows:
+        iname = (row.get("name") or "").strip()
+        if iname:
+            bytes_by_name[iname] = (
+                max(0, _parse_int(row.get("rx-byte"))),
+                max(0, _parse_int(row.get("tx-byte"))),
+            )
+    bridge_of: dict[str, str] = {}
+    try:
+        for brow in _print(sock, "/interface/bridge/port", props="interface,bridge"):
+            iface = (brow.get("interface") or "").strip()
+            bridge = (brow.get("bridge") or "").strip()
+            if iface and bridge:
+                bridge_of[iface] = bridge
+    except (TimeoutError, OSError, ConnectionError):
+        bridge_of = {}
+
+    uplink_hints = _port_uplink_hints(sock)
+    suggested_wan = _default_route_wan(sock)
+    mgmt_hosts = [
+        (h or "").strip() for h in (management_hosts or []) if (h or "").strip()
+    ]
+    management_iface_by_host = (
+        _interfaces_for_management_hosts(sock, mgmt_hosts) if mgmt_hosts else {}
+    )
+    ports: list[dict[str, Any]] = []
+    for row in rows:
+        if not _is_manageable_port(row):
+            continue
+        name = (row.get("name") or "").strip()
+        iface_type = (row.get("type") or "").strip() or "ether"
+        disabled = _flag_yes(row.get("disabled"))
+        running = _flag_yes(row.get("running"))
+        bridge = bridge_of.get(name, "")
+        hint = uplink_hints.get(name) or {}
+        traffic_iface = (hint.get("uplink") or "").strip() or name
+        rx_byte, tx_byte = bytes_by_name.get(traffic_iface) or bytes_by_name.get(
+            name, (0, 0)
+        )
+        ports.append(
+            {
+                "id": (row.get(".id") or "").strip(),
+                "name": name,
+                "type": iface_type,
+                "disabled": disabled,
+                "running": running and not disabled,
+                "comment": (row.get("comment") or "").strip(),
+                "bridge": bridge,
+                "is_bridged": bool(bridge),
+                "is_wireless": iface_type.lower() in {"wlan", "wifi", "wifiwave2"}
+                or name.lower().startswith(("wlan", "wifi")),
+                "uplink_kind": hint.get("kind") or "",
+                "uplink_iface": hint.get("uplink") or "",
+                "uplink_active": (hint.get("active") or "") == "1",
+                "uplink_gateway": (hint.get("gateway") or "").strip(),
+                "traffic_iface": traffic_iface,
+                "rx_byte": rx_byte,
+                "tx_byte": tx_byte,
+            }
+        )
+
+    def _sort_key(item: dict[str, Any]) -> tuple:
+        n = item["name"].lower()
+        prefix = "".join(ch for ch in n if not ch.isdigit())
+        digits = "".join(ch for ch in n if ch.isdigit())
+        return (prefix, int(digits) if digits else 0, n)
+
+    ports.sort(key=_sort_key)
+    return {
+        "ok": True,
+        "ports": ports,
+        "host": host,
+        "suggested_wan": suggested_wan,
+        "management_iface_by_host": management_iface_by_host,
+    }
+
+
 def list_mikrotik_ports(
     host: str,
     username: str,
@@ -22890,93 +23772,9 @@ def list_mikrotik_ports(
 
     try:
         with _api_session(host, username, password, port=port, timeout=timeout) as sock:
-            rows = _print(
-                sock,
-                "/interface",
-                props=".id,name,type,running,disabled,comment,rx-byte,tx-byte",
+            return _list_mikrotik_ports_on_sock(
+                sock, host, management_hosts=management_hosts
             )
-            bytes_by_name: dict[str, tuple[int, int]] = {}
-            for row in rows:
-                iname = (row.get("name") or "").strip()
-                if iname:
-                    bytes_by_name[iname] = (
-                        max(0, _parse_int(row.get("rx-byte"))),
-                        max(0, _parse_int(row.get("tx-byte"))),
-                    )
-            bridge_of: dict[str, str] = {}
-            try:
-                for brow in _print(
-                    sock, "/interface/bridge/port", props="interface,bridge"
-                ):
-                    iface = (brow.get("interface") or "").strip()
-                    bridge = (brow.get("bridge") or "").strip()
-                    if iface and bridge:
-                        bridge_of[iface] = bridge
-            except (TimeoutError, OSError, ConnectionError):
-                bridge_of = {}
-
-            uplink_hints = _port_uplink_hints(sock)
-            suggested_wan = _default_route_wan(sock)
-            mgmt_hosts = [
-                (h or "").strip()
-                for h in (management_hosts or [])
-                if (h or "").strip()
-            ]
-            management_iface_by_host = (
-                _interfaces_for_management_hosts(sock, mgmt_hosts) if mgmt_hosts else {}
-            )
-            ports: list[dict[str, Any]] = []
-            for row in rows:
-                if not _is_manageable_port(row):
-                    continue
-                name = (row.get("name") or "").strip()
-                iface_type = (row.get("type") or "").strip() or "ether"
-                disabled = _flag_yes(row.get("disabled"))
-                running = _flag_yes(row.get("running"))
-                bridge = bridge_of.get(name, "")
-                hint = uplink_hints.get(name) or {}
-                traffic_iface = (hint.get("uplink") or "").strip() or name
-                rx_byte, tx_byte = bytes_by_name.get(traffic_iface) or bytes_by_name.get(
-                    name, (0, 0)
-                )
-                ports.append(
-                    {
-                        "id": (row.get(".id") or "").strip(),
-                        "name": name,
-                        "type": iface_type,
-                        "disabled": disabled,
-                        "running": running and not disabled,
-                        "comment": (row.get("comment") or "").strip(),
-                        "bridge": bridge,
-                        "is_bridged": bool(bridge),
-                        "is_wireless": iface_type.lower()
-                        in {"wlan", "wifi", "wifiwave2"}
-                        or name.lower().startswith(("wlan", "wifi")),
-                        "uplink_kind": hint.get("kind") or "",
-                        "uplink_iface": hint.get("uplink") or "",
-                        "uplink_active": (hint.get("active") or "") == "1",
-                        "uplink_gateway": (hint.get("gateway") or "").strip(),
-                        "traffic_iface": traffic_iface,
-                        "rx_byte": rx_byte,
-                        "tx_byte": tx_byte,
-                    }
-                )
-
-            def _sort_key(item: dict[str, Any]) -> tuple:
-                n = item["name"].lower()
-                # ether1 before ether10
-                prefix = "".join(ch for ch in n if not ch.isdigit())
-                digits = "".join(ch for ch in n if ch.isdigit())
-                return (prefix, int(digits) if digits else 0, n)
-
-            ports.sort(key=_sort_key)
-            return {
-                "ok": True,
-                "ports": ports,
-                "host": host,
-                "suggested_wan": suggested_wan,
-                "management_iface_by_host": management_iface_by_host,
-            }
     except TimeoutError:
         return _api_unreachable_ports_error(
             "Connection timed out. Is the router reachable on API port 8728?"
@@ -27161,6 +27959,182 @@ def attempt_mikrotik_auto_restore(
     return internet
 
 
+def _read_mikrotik_uplink_multi_on_sock(
+    sock: socket.socket,
+    *,
+    member_ports: list[str] | None = None,
+) -> dict[str, Any]:
+    """Read bonded / failover uplink state on an open RouterOS API session."""
+    bonds: list[dict[str, Any]] = []
+    for row in _print(
+        sock,
+        "/interface/bonding",
+        props=".id,name,mode,slaves,running,disabled,comment,link-monitoring,primary",
+    ):
+        if UPLINK_TAG not in (row.get("comment") or ""):
+            continue
+        slaves_raw = (row.get("slaves") or "").strip()
+        bonds.append(
+            {
+                "name": (row.get("name") or "").strip(),
+                "mode": (row.get("mode") or "").strip(),
+                "slaves": [s.strip() for s in slaves_raw.split(",") if s.strip()],
+                "running": _flag_yes(row.get("running")),
+                "disabled": _flag_yes(row.get("disabled")),
+                "link_monitoring": (row.get("link-monitoring") or "").strip(),
+                "primary": (row.get("primary") or "").strip(),
+            }
+        )
+
+    failover_clients: list[dict[str, Any]] = []
+    for row in _print(
+        sock,
+        "/ip/dhcp-client",
+        props=".id,interface,status,default-route-distance,disabled,comment,add-default-route",
+    ):
+        comment = row.get("comment") or ""
+        distance = (row.get("default-route-distance") or "").strip() or "1"
+        if UPLINK_TAG not in comment and distance in {"", "0", "1"}:
+            continue
+        failover_clients.append(
+            {
+                "interface": (row.get("interface") or "").strip(),
+                "status": (row.get("status") or "").strip(),
+                "distance": distance,
+                "disabled": _flag_yes(row.get("disabled")),
+                "kind": "dhcp",
+                "add_default_route": not (
+                    (row.get("add-default-route") or "").strip().lower() in {"no", "false"}
+                ),
+            }
+        )
+
+    try:
+        pppoe_rows = _print(
+            sock,
+            "/interface/pppoe-client",
+            props=".id,name,interface,disabled,default-route-distance,add-default-route,running",
+        )
+    except Exception:
+        pppoe_rows = []
+    for row in pppoe_rows:
+        if _flag_yes(row.get("disabled")):
+            continue
+        distance = (row.get("default-route-distance") or "").strip() or "1"
+        failover_clients.append(
+            {
+                "interface": (row.get("interface") or "").strip(),
+                "pppoe": (row.get("name") or "").strip(),
+                "status": "running" if _flag_yes(row.get("running")) else "down",
+                "distance": distance,
+                "disabled": False,
+                "kind": "pppoe",
+                "add_default_route": not (
+                    (row.get("add-default-route") or "").strip().lower() in {"no", "false"}
+                ),
+            }
+        )
+
+    failover_clients.sort(
+        key=lambda item: int(item["distance"]) if str(item["distance"]).isdigit() else 99
+    )
+
+    checked_routes: list[dict[str, Any]] = []
+    for row in _print(
+        sock,
+        "/ip/route",
+        props="dst-address,gateway,distance,check-gateway,active,disabled,comment",
+    ):
+        if UPLINK_TAG not in (row.get("comment") or ""):
+            continue
+        if (row.get("dst-address") or "").strip() not in {"0.0.0.0/0", "::/0"}:
+            continue
+        checked_routes.append(
+            {
+                "gateway": (row.get("gateway") or "").strip(),
+                "distance": (row.get("distance") or "").strip() or "1",
+                "check_gateway": (row.get("check-gateway") or "").strip(),
+                "active": _flag_yes(row.get("active")),
+                "disabled": _flag_yes(row.get("disabled")),
+            }
+        )
+    checked_routes.sort(
+        key=lambda item: int(item["distance"]) if str(item["distance"]).isdigit() else 99
+    )
+
+    pcc_rules = 0
+    try:
+        for row in _print(
+            sock,
+            "/ip/firewall/mangle",
+            props="chain,action,per-connection-classifier,comment",
+        ):
+            if UPLINK_TAG not in (row.get("comment") or ""):
+                continue
+            classifier = (row.get("per-connection-classifier") or "").strip()
+            if (
+                classifier
+                and (row.get("action") or "").strip() == "mark-connection"
+                and (row.get("chain") or "").strip() == "prerouting"
+            ):
+                pcc_rules += 1
+    except Exception:
+        pcc_rules = 0
+
+    smart_scheduler = False
+    try:
+        for row in _print(sock, "/system/scheduler", props="name,comment,disabled"):
+            if (row.get("name") or "").strip() != SMART_BALANCE_SCHEDULER_NAME:
+                continue
+            if UPLINK_TAG in (row.get("comment") or ""):
+                smart_scheduler = not _flag_yes(row.get("disabled"))
+                break
+    except Exception:
+        smart_scheduler = False
+
+    mode = "single"
+    if bonds:
+        mode = "bond"
+    elif pcc_rules >= 2:
+        mode = "smart_balance" if smart_scheduler else "balance"
+    else:
+        distances = {
+            str(c.get("distance") or "1") for c in failover_clients if not c.get("disabled")
+        }
+        if len(checked_routes) >= 2 or len(distances) >= 2:
+            mode = "failover"
+
+    healthy = False
+    if mode == "bond":
+        healthy = any(b.get("running") and not b.get("disabled") for b in bonds)
+    elif mode in {"balance", "smart_balance"}:
+        healthy = pcc_rules >= 2 and (
+            any(r.get("active") and not r.get("disabled") for r in checked_routes)
+            or any(not c.get("disabled") for c in failover_clients)
+        )
+    elif mode == "failover":
+        healthy = any(r.get("active") and not r.get("disabled") for r in checked_routes) or any(
+            not c.get("disabled") for c in failover_clients
+        )
+
+    smart_balance_status: dict[str, Any] = {}
+    ports_for_status = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
+    if mode == "smart_balance" and len(ports_for_status) >= 2:
+        smart_balance_status = read_smart_balance_status(sock, ports_for_status)
+
+    return {
+        "ok": True,
+        "mode": mode,
+        "bonds": bonds,
+        "failover_clients": failover_clients,
+        "checked_routes": checked_routes,
+        "healthy": healthy,
+        "balance_pcc_rules": pcc_rules,
+        "smart_balance_enabled": smart_scheduler,
+        "smart_balance_status": smart_balance_status,
+    }
+
+
 def read_mikrotik_uplink_multi(
     host: str,
     username: str,
@@ -27179,184 +28153,91 @@ def read_mikrotik_uplink_multi(
 
     try:
         with _api_session(host, username, password, port=port, timeout=timeout) as sock:
-            bonds: list[dict[str, Any]] = []
-            for row in _print(
-                sock,
-                "/interface/bonding",
-                props=".id,name,mode,slaves,running,disabled,comment,link-monitoring,primary",
-            ):
-                if UPLINK_TAG not in (row.get("comment") or ""):
-                    continue
-                slaves_raw = (row.get("slaves") or "").strip()
-                bonds.append(
-                    {
-                        "name": (row.get("name") or "").strip(),
-                        "mode": (row.get("mode") or "").strip(),
-                        "slaves": [s.strip() for s in slaves_raw.split(",") if s.strip()],
-                        "running": _flag_yes(row.get("running")),
-                        "disabled": _flag_yes(row.get("disabled")),
-                        "link_monitoring": (row.get("link-monitoring") or "").strip(),
-                        "primary": (row.get("primary") or "").strip(),
-                    }
-                )
-
-            failover_clients: list[dict[str, Any]] = []
-            for row in _print(
-                sock,
-                "/ip/dhcp-client",
-                props=".id,interface,status,default-route-distance,disabled,comment,add-default-route",
-            ):
-                comment = row.get("comment") or ""
-                distance = (row.get("default-route-distance") or "").strip() or "1"
-                # Include tagged clients, or any client with a non-default distance
-                # (failover often reuses the original untagged WAN DHCP client).
-                if UPLINK_TAG not in comment and distance in {"", "0", "1"}:
-                    continue
-                failover_clients.append(
-                    {
-                        "interface": (row.get("interface") or "").strip(),
-                        "status": (row.get("status") or "").strip(),
-                        "distance": distance,
-                        "disabled": _flag_yes(row.get("disabled")),
-                        "kind": "dhcp",
-                        "add_default_route": not (
-                            (row.get("add-default-route") or "").strip().lower()
-                            in {"no", "false"}
-                        ),
-                    }
-                )
-
-            try:
-                pppoe_rows = _print(
-                    sock,
-                    "/interface/pppoe-client",
-                    props=".id,name,interface,disabled,default-route-distance,add-default-route,running",
-                )
-            except Exception:
-                pppoe_rows = []
-            for row in pppoe_rows:
-                if _flag_yes(row.get("disabled")):
-                    continue
-                distance = (row.get("default-route-distance") or "").strip() or "1"
-                failover_clients.append(
-                    {
-                        "interface": (row.get("interface") or "").strip(),
-                        "pppoe": (row.get("name") or "").strip(),
-                        "status": "running" if _flag_yes(row.get("running")) else "down",
-                        "distance": distance,
-                        "disabled": False,
-                        "kind": "pppoe",
-                        "add_default_route": not (
-                            (row.get("add-default-route") or "").strip().lower()
-                            in {"no", "false"}
-                        ),
-                    }
-                )
-
-            failover_clients.sort(
-                key=lambda item: int(item["distance"]) if str(item["distance"]).isdigit() else 99
-            )
-
-            checked_routes: list[dict[str, Any]] = []
-            for row in _print(
-                sock,
-                "/ip/route",
-                props="dst-address,gateway,distance,check-gateway,active,disabled,comment",
-            ):
-                if UPLINK_TAG not in (row.get("comment") or ""):
-                    continue
-                if (row.get("dst-address") or "").strip() not in {"0.0.0.0/0", "::/0"}:
-                    continue
-                checked_routes.append(
-                    {
-                        "gateway": (row.get("gateway") or "").strip(),
-                        "distance": (row.get("distance") or "").strip() or "1",
-                        "check_gateway": (row.get("check-gateway") or "").strip(),
-                        "active": _flag_yes(row.get("active")),
-                        "disabled": _flag_yes(row.get("disabled")),
-                    }
-                )
-            checked_routes.sort(
-                key=lambda item: int(item["distance"]) if str(item["distance"]).isdigit() else 99
-            )
-
-            pcc_rules = 0
-            try:
-                for row in _print(
-                    sock,
-                    "/ip/firewall/mangle",
-                    props="chain,action,per-connection-classifier,comment",
-                ):
-                    if UPLINK_TAG not in (row.get("comment") or ""):
-                        continue
-                    classifier = (row.get("per-connection-classifier") or "").strip()
-                    if (
-                        classifier
-                        and (row.get("action") or "").strip() == "mark-connection"
-                        and (row.get("chain") or "").strip() == "prerouting"
-                    ):
-                        pcc_rules += 1
-            except Exception:
-                pcc_rules = 0
-
-            smart_scheduler = False
-            try:
-                for row in _print(sock, "/system/scheduler", props="name,comment,disabled"):
-                    if (row.get("name") or "").strip() != SMART_BALANCE_SCHEDULER_NAME:
-                        continue
-                    if UPLINK_TAG in (row.get("comment") or ""):
-                        smart_scheduler = not _flag_yes(row.get("disabled"))
-                        break
-            except Exception:
-                smart_scheduler = False
-
-            mode = "single"
-            if bonds:
-                mode = "bond"
-            elif pcc_rules >= 2:
-                mode = "smart_balance" if smart_scheduler else "balance"
-            else:
-                distances = {
-                    str(c.get("distance") or "1")
-                    for c in failover_clients
-                    if not c.get("disabled")
-                }
-                if len(checked_routes) >= 2 or len(distances) >= 2:
-                    mode = "failover"
-
-            healthy = False
-            if mode == "bond":
-                healthy = any(b.get("running") and not b.get("disabled") for b in bonds)
-            elif mode in {"balance", "smart_balance"}:
-                healthy = pcc_rules >= 2 and (
-                    any(r.get("active") and not r.get("disabled") for r in checked_routes)
-                    or any(not c.get("disabled") for c in failover_clients)
-                )
-            elif mode == "failover":
-                healthy = any(r.get("active") and not r.get("disabled") for r in checked_routes) or any(
-                    not c.get("disabled") for c in failover_clients
-                )
-
-            smart_balance_status: dict[str, Any] = {}
-            ports_for_status = [
-                str(p).strip() for p in (member_ports or []) if str(p).strip()
-            ]
-            if mode == "smart_balance" and len(ports_for_status) >= 2:
-                smart_balance_status = read_smart_balance_status(sock, ports_for_status)
-
-            return {
-                "ok": True,
-                "mode": mode,
-                "bonds": bonds,
-                "failover_clients": failover_clients,
-                "checked_routes": checked_routes,
-                "healthy": healthy,
-                "balance_pcc_rules": pcc_rules,
-                "smart_balance_enabled": smart_scheduler,
-                "smart_balance_status": smart_balance_status,
-            }
+            return _read_mikrotik_uplink_multi_on_sock(sock, member_ports=member_ports)
     except Exception as exc:
         return {"ok": False, "error": str(exc) or "Could not read uplink state."}
+
+
+def read_mikrotik_ports_and_uplink(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    member_ports: list[str] | None = None,
+    management_hosts: list[str] | None = None,
+    port: int = 8728,
+    timeout: float = 6.0,
+    usage_on_session=None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+    """
+    List ports and read uplink state in one RouterOS API session.
+
+    Optionally run ``usage_on_session(sock, listed, uplink)`` before closing
+    the session (assigned-ports poll) to avoid extra TCP connect + login.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    if not host or not username:
+        empty_ports = {
+            "ok": False,
+            "error": "Missing router credentials.",
+            "ports": [],
+            "suggested_wan": "",
+        }
+        return empty_ports, {"ok": False, "error": "Missing router credentials."}, None
+
+    if is_mikrotik_host_cooling_down(host):
+        cooling = {
+            "ok": False,
+            "error": "Router recently unreachable — cooling down.",
+            "ports": [],
+            "suggested_wan": "",
+            "cooling_down": True,
+        }
+        return (
+            cooling,
+            {"ok": False, "error": cooling["error"], "cooling_down": True},
+            None,
+        )
+
+    try:
+        with _api_session(
+            host, username, password, port=port, timeout=timeout, reuse=True
+        ) as sock:
+            listed = _list_mikrotik_ports_on_sock(
+                sock, host, management_hosts=management_hosts
+            )
+            if not listed.get("ok"):
+                return listed, {"ok": False}, None
+            uplink = _read_mikrotik_uplink_multi_on_sock(sock, member_ports=member_ports)
+            usage = None
+            if usage_on_session is not None:
+                try:
+                    usage = usage_on_session(sock, listed, uplink, host)
+                except Exception as exc:  # noqa: BLE001
+                    usage = {
+                        "ok": False,
+                        "error": str(exc) or "Could not read client WAN usage.",
+                    }
+            return listed, uplink, usage
+    except TimeoutError:
+        err = _api_unreachable_ports_error(
+            "Connection timed out. Is the router reachable on API port 8728?"
+        )
+        return err, {"ok": False, "error": err.get("error") or "Connection timed out."}, None
+    except ConnectionError as exc:
+        err = {
+            "ok": False,
+            "error": str(exc) or "Login failed. Check the saved username and password.",
+            "ports": [],
+            "suggested_wan": "",
+            "management_iface_by_host": {},
+        }
+        return err, {"ok": False, "error": err["error"]}, None
+    except OSError as exc:
+        err = _api_unreachable_ports_error(f"Could not reach {host}:8728. ({exc})")
+        return err, {"ok": False, "error": err.get("error") or str(exc)}, None
 
 
 UPLINK_CONN_MARK_PREFIX = "ispcentric-c"
@@ -28188,15 +29069,13 @@ def maintain_router_smart_balance(
             slow_ports = list(smart_status.get("slow_ports") or [])
 
             if rebalance:
-                usage = read_client_wan_usage(
+                usage = _read_client_wan_usage_on_sock(
+                    sock,
                     host,
-                    username,
-                    password or "",
                     uplink_mode="smart_balance",
                     member_ports=ordered,
                     primary_wan=primary_wan or (ordered[0] if ordered else ""),
                     bond_interface=bond_interface or "",
-                    timeout=timeout,
                 )
                 if usage.get("uses_connection_marks") or usage.get("mark_to_port"):
                     clients: list[dict[str, Any]] = []
@@ -28570,6 +29449,170 @@ def _read_live_session_addresses(
     return sessions
 
 
+def _read_client_wan_usage_on_sock(
+    sock: socket.socket,
+    host: str,
+    *,
+    uplink_mode: str = "single",
+    member_ports: list[str] | None = None,
+    primary_wan: str = "",
+    failover_active_port: str = "",
+    bond_interface: str = "",
+) -> dict[str, Any]:
+    """Read per-client WAN usage on an open RouterOS API session."""
+    mode = (uplink_mode or "single").strip()
+    members = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
+    mark_to_port = _read_balance_mark_to_port(sock)
+    if not mark_to_port and len(members) >= 2:
+        for index, name in enumerate(members):
+            mark_to_port[index] = name
+
+    primary_wan = (primary_wan or "").strip()
+    failover_active_port = (failover_active_port or "").strip()
+    bond_interface = (bond_interface or "").strip()
+    if mode == "bond":
+        default_port = bond_interface or (members[0] if members else primary_wan)
+    elif mode == "failover":
+        default_port = (
+            failover_active_port or primary_wan or (members[0] if members else "")
+        )
+    elif mode in {"balance", "smart_balance"}:
+        default_port = members[0] if members else primary_wan
+    else:
+        default_port = primary_wan or (members[0] if members else "")
+    default_port = (default_port or "").strip()
+
+    exclude_lan = [
+        p
+        for p in [
+            *members,
+            primary_wan,
+            failover_active_port,
+            bond_interface,
+            default_port,
+            *mark_to_port.values(),
+        ]
+        if (p or "").strip()
+    ]
+    sessions = _read_live_session_addresses(
+        sock,
+        sample_host=host,
+        exclude_lan_ports=exclude_lan,
+    )
+    ip_mark_counts: dict[str, dict[int, int]] = {}
+    total_marked = 0
+
+    conn_rows: list[dict[str, str]] = []
+    try:
+        conn_rows = _print(
+            sock,
+            "/ip/firewall/connection",
+            props="src-address,connection-mark,repl-connection-mark",
+            query={"connection-mark~": UPLINK_CONN_MARK_PREFIX},
+        )
+    except Exception:
+        conn_rows = []
+    if not conn_rows:
+        try:
+            conn_rows = _print(
+                sock,
+                "/ip/firewall/connection",
+                props="src-address,connection-mark,repl-connection-mark",
+            )
+        except Exception:
+            conn_rows = []
+
+    for row in conn_rows:
+        mark = (row.get("connection-mark") or "").strip()
+        if not mark or mark == "no-mark":
+            mark = (row.get("repl-connection-mark") or "").strip()
+        index = _parse_ispcentric_mark_index(mark)
+        if index is None:
+            continue
+        src = _parse_connection_address(row.get("src-address") or "")
+        if not src or not _is_likely_lan_ip(src):
+            continue
+        bucket = ip_mark_counts.setdefault(src, {})
+        bucket[index] = bucket.get(index, 0) + 1
+        total_marked += 1
+
+    uses_marks = total_marked > 0 and bool(mark_to_port)
+
+    def _session_analytics(ip: str) -> dict[str, Any]:
+        meta = sessions.get(ip) or {}
+        bytes_in = max(0, int(meta.get("bytes_in") or 0))
+        bytes_out = max(0, int(meta.get("bytes_out") or 0))
+        lan_port = _sanitize_lan_cable_port(
+            (meta.get("lan_port") or "").strip(),
+            exclude_ports={p.strip().lower() for p in exclude_lan if p},
+        )
+        return {
+            "lan_port": lan_port,
+            "mac": (meta.get("mac") or "").strip(),
+            "bytes_in": bytes_in,
+            "bytes_out": bytes_out,
+            "bytes_total": bytes_in + bytes_out,
+            "download_bps": meta.get("download_bps"),
+            "upload_bps": meta.get("upload_bps"),
+            "download_label": meta.get("download_label") or "—",
+            "upload_label": meta.get("upload_label") or "—",
+            "uptime": meta.get("uptime") or "",
+            "session_source": meta.get("source") or "",
+            "pppoe_username": meta.get("pppoe_username") or "",
+        }
+
+    ip_usage: dict[str, dict[str, Any]] = {}
+    for ip, counts in ip_mark_counts.items():
+        best_index = max(counts, key=lambda idx: counts[idx])
+        isp_port = mark_to_port.get(best_index, "") or default_port
+        ip_usage[ip] = {
+            "isp_port": isp_port,
+            "connections": sum(counts.values()),
+            "mark_index": best_index,
+            "source": "connection_mark",
+            **_session_analytics(ip),
+        }
+
+    for ip in sessions:
+        if ip in ip_usage:
+            kept_isp = (ip_usage[ip].get("isp_port") or "").strip()
+            ip_usage[ip].update(_session_analytics(ip))
+            if kept_isp:
+                ip_usage[ip]["isp_port"] = kept_isp
+            elif default_port:
+                ip_usage[ip]["isp_port"] = default_port
+            continue
+        ip_usage[ip] = {
+            "isp_port": default_port,
+            "connections": 0,
+            "mark_index": None,
+            "source": "default_wan" if default_port else "session",
+            **_session_analytics(ip),
+        }
+
+    client_pins = read_client_isp_pins(sock, mark_to_port)
+    mark_to_port_out = {str(k): v for k, v in sorted(mark_to_port.items())}
+    balance_tables_ready = False
+    if len(members) >= 2:
+        active_count = sum(
+            1
+            for index in range(len(members))
+            if _balance_table_has_active_default(sock, index)
+        )
+        balance_tables_ready = active_count >= 2
+    return {
+        "ok": True,
+        "mark_to_port": mark_to_port_out,
+        "ip_usage": ip_usage,
+        "sessions": sessions,
+        "client_pins": client_pins,
+        "default_isp_port": default_port,
+        "uses_connection_marks": uses_marks,
+        "balance_tables_ready": balance_tables_ready,
+        "error": "",
+    }
+
+
 def read_client_wan_usage(
     host: str,
     username: str,
@@ -28592,8 +29635,6 @@ def read_client_wan_usage(
     host = (host or "").strip()
     username = (username or "").strip()
     password = password or ""
-    mode = (uplink_mode or "single").strip()
-    members = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
     empty = {
         "ok": False,
         "mark_to_port": {},
@@ -28609,162 +29650,15 @@ def read_client_wan_usage(
 
     try:
         with _api_session(host, username, password, port=port, timeout=timeout) as sock:
-            mark_to_port = _read_balance_mark_to_port(sock)
-            if not mark_to_port and len(members) >= 2:
-                for index, name in enumerate(members):
-                    mark_to_port[index] = name
-
-            primary_wan = (primary_wan or "").strip()
-            failover_active_port = (failover_active_port or "").strip()
-            bond_interface = (bond_interface or "").strip()
-            if mode == "bond":
-                default_port = bond_interface or (
-                    members[0] if members else primary_wan
-                )
-            elif mode == "failover":
-                default_port = (
-                    failover_active_port
-                    or primary_wan
-                    or (members[0] if members else "")
-                )
-            elif mode in {"balance", "smart_balance"}:
-                default_port = (members[0] if members else primary_wan)
-            else:
-                # Single WAN — never drop primary_wan when uplink_ports is empty
-                # (Python's `a or b if c else d` binds as `(a or b) if c else d`).
-                default_port = primary_wan or (members[0] if members else "")
-            default_port = (default_port or "").strip()
-
-            exclude_lan = [
-                p
-                for p in [
-                    *members,
-                    primary_wan,
-                    failover_active_port,
-                    bond_interface,
-                    default_port,
-                    *mark_to_port.values(),
-                ]
-                if (p or "").strip()
-            ]
-            sessions = _read_live_session_addresses(
+            return _read_client_wan_usage_on_sock(
                 sock,
-                sample_host=host,
-                exclude_lan_ports=exclude_lan,
+                host,
+                uplink_mode=uplink_mode,
+                member_ports=member_ports,
+                primary_wan=primary_wan,
+                failover_active_port=failover_active_port,
+                bond_interface=bond_interface,
             )
-            ip_mark_counts: dict[str, dict[int, int]] = {}
-            total_marked = 0
-
-            conn_rows: list[dict[str, str]] = []
-            try:
-                conn_rows = _print(
-                    sock,
-                    "/ip/firewall/connection",
-                    props="src-address,connection-mark,repl-connection-mark",
-                    query={"connection-mark~": UPLINK_CONN_MARK_PREFIX},
-                )
-            except Exception:
-                conn_rows = []
-            if not conn_rows:
-                try:
-                    conn_rows = _print(
-                        sock,
-                        "/ip/firewall/connection",
-                        props="src-address,connection-mark,repl-connection-mark",
-                    )
-                except Exception:
-                    conn_rows = []
-
-            for row in conn_rows:
-                mark = (row.get("connection-mark") or "").strip()
-                if not mark or mark == "no-mark":
-                    mark = (row.get("repl-connection-mark") or "").strip()
-                index = _parse_ispcentric_mark_index(mark)
-                if index is None:
-                    continue
-                src = _parse_connection_address(row.get("src-address") or "")
-                if not src or not _is_likely_lan_ip(src):
-                    continue
-                bucket = ip_mark_counts.setdefault(src, {})
-                bucket[index] = bucket.get(index, 0) + 1
-                total_marked += 1
-
-            uses_marks = total_marked > 0 and bool(mark_to_port)
-
-            def _session_analytics(ip: str) -> dict[str, Any]:
-                meta = sessions.get(ip) or {}
-                bytes_in = max(0, int(meta.get("bytes_in") or 0))
-                bytes_out = max(0, int(meta.get("bytes_out") or 0))
-                lan_port = _sanitize_lan_cable_port(
-                    (meta.get("lan_port") or "").strip(),
-                    exclude_ports={p.strip().lower() for p in exclude_lan if p},
-                )
-                return {
-                    "lan_port": lan_port,
-                    "mac": (meta.get("mac") or "").strip(),
-                    "bytes_in": bytes_in,
-                    "bytes_out": bytes_out,
-                    "bytes_total": bytes_in + bytes_out,
-                    "download_bps": meta.get("download_bps"),
-                    "upload_bps": meta.get("upload_bps"),
-                    "download_label": meta.get("download_label") or "—",
-                    "upload_label": meta.get("upload_label") or "—",
-                    "uptime": meta.get("uptime") or "",
-                    "session_source": meta.get("source") or "",
-                    "pppoe_username": meta.get("pppoe_username") or "",
-                }
-
-            ip_usage: dict[str, dict[str, Any]] = {}
-            for ip, counts in ip_mark_counts.items():
-                best_index = max(counts, key=lambda idx: counts[idx])
-                isp_port = mark_to_port.get(best_index, "") or default_port
-                ip_usage[ip] = {
-                    "isp_port": isp_port,
-                    "connections": sum(counts.values()),
-                    "mark_index": best_index,
-                    "source": "connection_mark",
-                    **_session_analytics(ip),
-                }
-
-            for ip in sessions:
-                if ip in ip_usage:
-                    # Keep mark-based ISP, refresh live analytics.
-                    kept_isp = (ip_usage[ip].get("isp_port") or "").strip()
-                    ip_usage[ip].update(_session_analytics(ip))
-                    if kept_isp:
-                        ip_usage[ip]["isp_port"] = kept_isp
-                    elif default_port:
-                        ip_usage[ip]["isp_port"] = default_port
-                    continue
-                ip_usage[ip] = {
-                    "isp_port": default_port,
-                    "connections": 0,
-                    "mark_index": None,
-                    "source": "default_wan" if default_port else "session",
-                    **_session_analytics(ip),
-                }
-
-            client_pins = read_client_isp_pins(sock, mark_to_port)
-            mark_to_port_out = {str(k): v for k, v in sorted(mark_to_port.items())}
-            balance_tables_ready = False
-            if len(members) >= 2:
-                active_count = sum(
-                    1
-                    for index in range(len(members))
-                    if _balance_table_has_active_default(sock, index)
-                )
-                balance_tables_ready = active_count >= 2
-            return {
-                "ok": True,
-                "mark_to_port": mark_to_port_out,
-                "ip_usage": ip_usage,
-                "sessions": sessions,
-                "client_pins": client_pins,
-                "default_isp_port": default_port,
-                "uses_connection_marks": uses_marks,
-                "balance_tables_ready": balance_tables_ready,
-                "error": "",
-            }
     except TimeoutError:
         return {**empty, "error": "Connection timed out."}
     except OSError as exc:

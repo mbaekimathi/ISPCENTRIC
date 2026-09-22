@@ -2940,6 +2940,73 @@ class ClientBalanceInsightsTests(SimpleTestCase):
         self.assertTrue(insights["can_auto_enable"])
 
 
+class ClientAutoBalanceToggleTests(SimpleTestCase):
+    def _router(self, **kwargs):
+        return MikroTikRouter(
+            name="edge",
+            host="10.0.0.1",
+            username="admin",
+            password="x",
+            uplink_mode=kwargs.get(
+                "uplink_mode", MikroTikRouter.UplinkMode.SMART_BALANCE
+            ),
+            uplink_ports=kwargs.get("uplink_ports", ["ether1", "ether2"]),
+            smart_auto_balance_enabled=kwargs.get("smart_auto_balance_enabled", False),
+        )
+
+    def test_toggle_hidden_until_balance_applied(self):
+        from core.views import _can_toggle_client_auto_balance
+
+        router = self._router()
+        insights = {"applied": False, "can_switch_clients": False, "eligible": True}
+        self.assertFalse(
+            _can_toggle_client_auto_balance(
+                router,
+                uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+                balance_insights=insights,
+            )
+        )
+
+    def test_toggle_shown_when_balance_live(self):
+        from core.views import _can_toggle_client_auto_balance
+
+        router = self._router()
+        insights = {"applied": True, "can_switch_clients": True, "eligible": True}
+        self.assertTrue(
+            _can_toggle_client_auto_balance(
+                router,
+                uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+                balance_insights=insights,
+            )
+        )
+
+    def test_toggle_hidden_for_failover_mode(self):
+        from core.views import _can_toggle_client_auto_balance
+
+        router = self._router(uplink_mode=MikroTikRouter.UplinkMode.FAILOVER)
+        insights = {"applied": True, "can_switch_clients": True, "eligible": True}
+        self.assertFalse(
+            _can_toggle_client_auto_balance(
+                router,
+                uplink_mode=MikroTikRouter.UplinkMode.FAILOVER,
+                balance_insights=insights,
+            )
+        )
+
+    def test_toggle_stays_when_enabled_but_setup_degraded(self):
+        from core.views import _can_toggle_client_auto_balance
+
+        router = self._router(smart_auto_balance_enabled=True)
+        insights = {"applied": False, "can_switch_clients": False, "eligible": True}
+        self.assertTrue(
+            _can_toggle_client_auto_balance(
+                router,
+                uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+                balance_insights=insights,
+            )
+        )
+
+
 class AutomaticPortLabelTests(SimpleTestCase):
     def _router(self, **kwargs):
         router = MagicMock(spec=MikroTikRouter)
@@ -4935,3 +5002,42 @@ class SharedIspProbeTests(SimpleTestCase):
         self.assertTrue(result.get("ok"))
         self.assertTrue(result.get("nudged"))
         self.assertIn("renewed DHCP on ether2", result.get("notes") or [])
+
+
+class AssignedPortsLiveApiTests(SimpleTestCase):
+    def test_api_poll_unreachable_error_adds_customer_hint(self):
+        from core.views import _api_poll_unreachable_error
+
+        msg = _api_poll_unreachable_error(
+            "Connection timed out. Is the router reachable on API port 8728?"
+        )
+        self.assertIn("8728", msg)
+        self.assertIn("Customer internet may still work", msg)
+
+    def test_list_mikrotik_ports_resolved_tries_next_host(self):
+        from core.views import _list_mikrotik_ports_resolved
+
+        router = MikroTikRouter(
+            pk=18,
+            host="10.9.0.50",
+            vpn_address="10.9.0.50",
+            username="admin",
+            password="secret",
+        )
+        ok_payload = {"ok": True, "ports": [], "suggested_wan": ""}
+
+        def _list_side_effect(host, username, password, **kwargs):
+            if host == "10.9.0.50":
+                return {"ok": False, "error": "Connection timed out."}
+            if host == "192.168.88.1":
+                return ok_payload
+            return {"ok": False, "error": "unreachable"}
+
+        with patch(
+            "core.views._dial_hosts_for_router_api",
+            return_value=["10.9.0.50", "192.168.88.1"],
+        ), patch("core.views.list_mikrotik_ports", side_effect=_list_side_effect):
+            listed, api_host = _list_mikrotik_ports_resolved(router, timeout=6.0)
+
+        self.assertTrue(listed.get("ok"))
+        self.assertEqual(api_host, "192.168.88.1")

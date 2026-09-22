@@ -1,10 +1,15 @@
 {% if mikrotik_quicknav_set == "ports" %}
-<nav class="mk-detail-quicknav" aria-label="Port sections">
+<nav class="mk-detail-quicknav" aria-label="Router workspace">
   <a
     class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'overview' %} is-active{% endif %}"
     href="{% url 'core:mikrotik_detail' router.id %}"
     {% if mikrotik_quicknav_active == 'overview' %}aria-current="page"{% endif %}
-  >MikroTik overview</a>
+  >Overview</a>
+  <a
+    class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'ports' %} is-active{% endif %}"
+    href="{% url 'core:mikrotik_ports' router.id %}"
+    {% if mikrotik_quicknav_active == 'ports' %}aria-current="page"{% endif %}
+  >Port setup</a>
   <a
     class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'assigned_ports' %} is-active{% endif %}"
     href="{% url 'core:mikrotik_assigned_ports' router.id %}"

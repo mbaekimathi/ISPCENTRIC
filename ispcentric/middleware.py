@@ -415,7 +415,7 @@ class HotspotCaptiveProbeMiddleware:
                 (
                     "core:hotspot_pause"
                     if hotspot_page == "pause"
-                    else "core:hotspot_pay"
+                    else "core:hotspot_reconnect"
                 ),
                 kwargs={"join_code": org.join_code},
             )
