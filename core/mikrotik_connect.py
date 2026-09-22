@@ -19944,6 +19944,45 @@ def _ensure_hotspot_walled_garden(sock: socket.socket, redirect_url: str) -> lis
         )
         if terminal.get("_reply") != "!trap":
             notes.append(f"walled garden ip {host}")
+    elif host:
+        # Hostname billing (VPS): TCP dials the resolved IPv4 — dst-host alone
+        # is not enough on many RouterOS builds for remote billing servers.
+        billing_ip = _portal_target_ipv4((redirect_url or "").strip())
+        if billing_ip:
+            existing_ip = {
+                ((row.get("dst-address") or "").strip(), (row.get("comment") or "")): (
+                    row.get(".id") or ""
+                ).strip()
+                for row in _print(
+                    sock,
+                    "/ip/hotspot/walled-garden/ip",
+                    props=".id,dst-address,action,comment",
+                )
+            }
+            for dst in (billing_ip, f"{billing_ip}/32"):
+                item_id = existing_ip.get((dst, ISP_HOTSPOT_TAG)) or existing_ip.get(
+                    (dst, "")
+                )
+                attempts = [
+                    {
+                        "dst-address": dst,
+                        "action": "accept",
+                        "comment": ISP_HOTSPOT_TAG,
+                    },
+                    {
+                        "dst-address": dst,
+                        "action": "accept",
+                    },
+                ]
+                terminal, _ = _add_or_set_attempts(
+                    sock,
+                    "/ip/hotspot/walled-garden/ip",
+                    item_id,
+                    attempts,
+                    required=("dst-address",),
+                )
+                if terminal.get("_reply") != "!trap":
+                    notes.append(f"walled garden ip {dst} ({host})")
     return notes
 
 
@@ -21312,6 +21351,45 @@ def enforce_hotspot_pay_wall(
     return result
 
 
+def defer_hotspot_pay_wall(
+    organization,
+    mac: str,
+    *,
+    customer=None,
+) -> None:
+    """
+    Block an unpaid MAC off the request thread.
+
+    Captive mini-browsers abort when reconnect/pay waits on RouterOS API (up to
+    ~10s) before returning the redirect or HTML.
+    """
+    mac = (mac or "").strip().upper()
+    if not mac or organization is None:
+        return
+    from core.mikrotik_jobs import schedule_mikrotik_job
+
+    org_pk = organization.pk
+    customer_pk = getattr(customer, "pk", None)
+
+    def _run(
+        org_id=org_pk,
+        mac_value=mac,
+        customer_id=customer_pk,
+    ) -> None:
+        from accounts.models import Organization
+        from billing.models import Customer
+
+        org = Organization.objects.filter(pk=org_id).first()
+        if org is None:
+            return
+        cust = None
+        if customer_id:
+            cust = Customer.objects.filter(pk=customer_id).first()
+        enforce_hotspot_pay_wall(org, mac_value, customer=cust)
+
+    schedule_mikrotik_job(_run, name=f"hotspot-wall-{mac[-8:]}")
+
+
 def disconnect_hotspot_customer(customer, *, router=None) -> dict[str, Any]:
     """
     Force-disable Hotspot MAC users and kick live sessions immediately.
@@ -22026,7 +22104,8 @@ def _captive_pay_redirect_html(pay_url: str) -> str:
         base = f"{path_part.rstrip('?')}?{query_part}"
         sep = "&"
     else:
-        base = pay_url.rstrip("/")
+        # Keep trailing slash on /reconnect/ and /pay/ — Django routes expect it.
+        base = (pay_url or "").strip()
         sep = "?"
     path_lower = (urlparse(pay_url).path or "").lower()
     is_pause = path_lower.rstrip("/").endswith("/pause")

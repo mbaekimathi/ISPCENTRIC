@@ -715,8 +715,7 @@ class HotspotConnectSpeedTests(TestCase):
             + "?mac=11:22:33:44:55:66"
         )
         with patch(
-            "core.mikrotik_connect.enforce_hotspot_pay_wall",
-            return_value={"ok": True, "skipped": False},
+            "core.mikrotik_connect.defer_hotspot_pay_wall",
         ) as block_mock:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
@@ -736,8 +735,7 @@ class HotspotConnectSpeedTests(TestCase):
             + f"?mac={sibling_mac}"
         )
         with patch(
-            "core.mikrotik_connect.enforce_hotspot_pay_wall",
-            return_value={"ok": True, "skipped": False},
+            "core.mikrotik_connect.defer_hotspot_pay_wall",
         ) as block_mock:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)

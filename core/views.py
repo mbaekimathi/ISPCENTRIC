@@ -22506,9 +22506,9 @@ def hotspot_reconnect(request, join_code: str):
 
     if customer is not None and customer_package_is_paused(customer):
         try:
-            from core.mikrotik_connect import enforce_hotspot_pay_wall
+            from core.mikrotik_connect import defer_hotspot_pay_wall
 
-            enforce_hotspot_pay_wall(org, hotspot_mac, customer=customer)
+            defer_hotspot_pay_wall(org, hotspot_mac, customer=customer)
         except Exception:
             logger.exception(
                 "hotspot pause block failed mac=%s customer=%s",
@@ -22537,9 +22537,9 @@ def hotspot_reconnect(request, join_code: str):
         response = redirect(_hotspot_welcome_url(join_code, mac=hotspot_mac))
     else:
         try:
-            from core.mikrotik_connect import enforce_hotspot_pay_wall
+            from core.mikrotik_connect import defer_hotspot_pay_wall
 
-            enforce_hotspot_pay_wall(org, hotspot_mac, customer=customer)
+            defer_hotspot_pay_wall(org, hotspot_mac, customer=customer)
         except Exception:
             logger.exception(
                 "hotspot reconnect pay-wall block failed mac=%s",
@@ -22659,9 +22659,9 @@ def _hotspot_captive_page(request, join_code: str, *, expected_page: str):
             except Exception:
                 logger.exception("Could not record Hotspot portal_hit")
             try:
-                from core.mikrotik_connect import enforce_hotspot_pay_wall
+                from core.mikrotik_connect import defer_hotspot_pay_wall
 
-                enforce_hotspot_pay_wall(
+                defer_hotspot_pay_wall(
                     org,
                     hotspot_mac,
                     customer=hotspot_customer,
