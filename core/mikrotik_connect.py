@@ -22043,17 +22043,11 @@ def _captive_pay_redirect_html(pay_url: str) -> str:
         page_title = "Pay to connect"
         body_text = "Opening payment page…"
         link_text = "Continue to payment"
-    # Pass MikroTik session vars so the payment page can identify the device.
-    # Put mac first so it survives if other substituted fields contain '&'.
-    # Prefer $(mac) (widely substituted); keep $(mac-esc) as a second param.
-    target = (
-        f"{base}{sep}"
-        f"mac=$(mac)"
-        f"&dst=$(link-orig-esc)"
-        f"&username=$(username-esc)"
-        f"&link-login-only=$(link-login-only-esc)"
-        f"&error=$(error-esc)"
-    )
+    # Only pass MAC — Django resolves the device from mac= or the client IP.
+    # Extra RouterOS vars ($(link-orig-esc), $(link-login-only-esc), …) break
+    # the Location query on many builds: & separators merge into dst and phones
+    # open URLs like dst=http://connectlogin-only=http://10.50.50.1/login.
+    target = f"{base}{sep}mac=$(mac)"
     # RouterOS macros ($(mac), …) must stay literal in Location/meta/JS — do not
     # HTML-entity-encode '&' or substitution breaks on the CPE.
     # A real 302 is required for non-browser captive clients such as Windows NCSI;
