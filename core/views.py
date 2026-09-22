@@ -760,6 +760,60 @@ def _management_ready_for_uplink_apply(
     )
 
 
+def _router_tunnel_management(
+    router,
+    *,
+    force: bool = False,
+    require_api: bool = False,
+    timeout: float = 3.0,
+) -> dict:
+    """Cached WireGuard / API reachability details for live polls."""
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    if not tunnel:
+        host = (getattr(router, "host", None) or "").strip()
+        try:
+            from core.mikrotik_connect import _is_wireguard_tunnel_host
+
+            if not _is_wireguard_tunnel_host(host):
+                return {
+                    "verified": False,
+                    "tunnel_address": "",
+                    "api_ok": False,
+                    "handshake_ok": False,
+                    "reason": "no_tunnel",
+                }
+        except Exception:
+            return {
+                "verified": False,
+                "tunnel_address": "",
+                "api_ok": False,
+                "handshake_ok": False,
+                "reason": "no_tunnel",
+            }
+    cache_key = _router_tunnel_cache_key(router, require_api=require_api) + ":mgmt"
+    if not force:
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+    try:
+        result = check_router_tunnel_management(
+            router, timeout=timeout, require_api=require_api
+        )
+        if not isinstance(result, dict):
+            raise TypeError("tunnel management result must be a dict")
+    except Exception:
+        result = {
+            "verified": False,
+            "tunnel_address": tunnel,
+            "api_ok": False,
+            "handshake_ok": False,
+            "reason": "tunnel_unreachable",
+        }
+    verified = bool(result.get("verified"))
+    cache.set(cache_key, result, 45 if verified else 8)
+    return result
+
+
 def _router_tunnel_verified(
     router, *, force: bool = False, require_api: bool = False
 ) -> bool:
@@ -768,30 +822,11 @@ def _router_tunnel_verified(
     ``require_api=True`` for uplink combine/auto-apply — handshake alone is not
     enough; unbridging without API would lock out the MikroTik.
     """
-    tunnel = (getattr(router, "vpn_address", None) or "").strip()
-    if not tunnel:
-        host = (getattr(router, "host", None) or "").strip()
-        try:
-            from core.mikrotik_connect import _is_wireguard_tunnel_host
-
-            if not _is_wireguard_tunnel_host(host):
-                return False
-        except Exception:
-            return False
-    cache_key = _router_tunnel_cache_key(router, require_api=require_api)
-    if not force:
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return bool(cached)
-    try:
-        result = check_router_tunnel_management(
-            router, timeout=3.0, require_api=require_api
-        )
-        verified = bool(result.get("verified"))
-    except Exception:
-        verified = False
-    cache.set(cache_key, verified, 45 if verified else 8)
-    return verified
+    return bool(
+        _router_tunnel_management(
+            router, force=force, require_api=require_api
+        ).get("verified")
+    )
 
 
 def _uplink_tunnel_ready_message(router) -> str:
@@ -12484,7 +12519,8 @@ def _ports_live_payload(
         live_ports=live_ports,
         management_iface_by_host=listed.get("management_iface_by_host") or {},
     )
-    tunnel_verified = _router_tunnel_verified(router)
+    tunnel_management = _router_tunnel_management(router)
+    tunnel_verified = bool(tunnel_management.get("verified"))
     uplink_apply_risks = _build_uplink_apply_risks(
         router,
         live_ports=live_ports,
