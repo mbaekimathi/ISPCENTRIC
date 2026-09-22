@@ -10,11 +10,17 @@
   <meta name="theme-color" content="#0e7c86" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0a1118" media="(prefers-color-scheme: dark)">
   <title>{{ org_name }} — Pay</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-
-  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=1">
+  {# No Google Fonts here — captive clients have no WAN until they pay. #}
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      color: #12231f;
+      background: #e8f2ee;
+    }
+  </style>
+  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=2">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true">
