@@ -800,11 +800,12 @@ class WireGuardKeyTests(SimpleTestCase):
         from django.core.management import call_command
 
         from core.subscription_sync import (
+            force_clear_subscription_sweep_lock,
             release_subscription_sweep_lock,
             try_acquire_subscription_sweep_lock,
         )
 
-        release_subscription_sweep_lock()
+        force_clear_subscription_sweep_lock()
         self.assertTrue(try_acquire_subscription_sweep_lock(ttl_sec=60))
         try:
             out = StringIO()
@@ -817,12 +818,13 @@ class WireGuardKeyTests(SimpleTestCase):
 
     def test_expiry_watch_shares_fleet_lock_with_sweep(self):
         from core.subscription_sync import (
+            force_clear_subscription_sweep_lock,
             release_subscription_sweep_lock,
             try_acquire_expiry_watch_lock,
             try_acquire_subscription_sweep_lock,
         )
 
-        release_subscription_sweep_lock()
+        force_clear_subscription_sweep_lock()
         self.assertTrue(try_acquire_subscription_sweep_lock(ttl_sec=60))
         try:
             self.assertFalse(try_acquire_expiry_watch_lock(ttl_sec=60))
@@ -853,11 +855,12 @@ class WireGuardKeyTests(SimpleTestCase):
         from django.core.management import call_command
 
         from core.subscription_sync import (
+            force_clear_subscription_sweep_lock,
             release_subscription_sweep_lock,
             try_acquire_subscription_sweep_lock,
         )
 
-        release_subscription_sweep_lock()
+        force_clear_subscription_sweep_lock()
         self.assertTrue(try_acquire_subscription_sweep_lock(ttl_sec=60))
         try:
             with (
@@ -889,11 +892,12 @@ class WireGuardKeyTests(SimpleTestCase):
         from django.core.management import call_command
 
         from core.subscription_sync import (
+            force_clear_subscription_sweep_lock,
             release_subscription_sweep_lock,
             try_acquire_subscription_sweep_lock,
         )
 
-        release_subscription_sweep_lock()
+        force_clear_subscription_sweep_lock()
         self.assertTrue(try_acquire_subscription_sweep_lock(ttl_sec=60))
         out = StringIO()
         call_command("sync_subscription_access", clear_lock=True, stdout=out)
@@ -905,11 +909,12 @@ class WireGuardKeyTests(SimpleTestCase):
         from core.subscription_sync import (
             _SWEEP_LOCK_NAME,
             _jobs_cache,
+            force_clear_subscription_sweep_lock,
             release_subscription_sweep_lock,
             try_acquire_subscription_sweep_lock,
         )
 
-        release_subscription_sweep_lock()
+        force_clear_subscription_sweep_lock()
         # PID 1 may be alive on Linux; use a high unused pid that is almost
         # certainly dead on both Windows and Linux test hosts.
         dead_pid = 2_147_483_646
@@ -1757,7 +1762,11 @@ class CaptiveOrganizationResolutionTests(TestCase):
 
         self.org_hotspot.hotspot_enabled = False
         self.org_hotspot.save(update_fields=["hotspot_enabled"])
-        org = resolve_captive_organization("192.168.88.50")
+        with patch(
+            "core.mikrotik_connect._captive_org_candidates",
+            return_value=[self.org_pppoe],
+        ):
+            org = resolve_captive_organization("192.168.88.50")
         self.assertEqual(org.pk, self.org_pppoe.pk)
 
     def test_cpe_renew_pool_resolves_org_from_cached_pppoe_session(self):
@@ -2013,7 +2022,7 @@ class CaptiveProbeMiddlewareTests(TestCase):
         )
         response = middleware(request)
         self.assertEqual(response.status_code, 302)
-        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
+        self.assertIn(f"/hotspot/{self.org.join_code}/reconnect/", response.url)
 
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
     def test_hotspot_probe_attaches_mac_when_host_known(self):
@@ -2046,7 +2055,7 @@ class CaptiveProbeMiddlewareTests(TestCase):
             response = middleware(request)
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
+        self.assertIn(f"/hotspot/{self.org.join_code}/reconnect/", response.url)
         mac = parse_qs(urlparse(response.url).query).get("mac", [""])[0]
         self.assertEqual(mac, "AA:BB:CC:DD:EE:20")
 
@@ -2347,7 +2356,7 @@ class CaptiveProbeMiddlewareTests(TestCase):
                 response = middleware(request)
                 self.assertEqual(response.status_code, 302, msg=host)
                 self.assertIn(
-                    f"/hotspot/{self.org.join_code}/pay/",
+                    f"/hotspot/{self.org.join_code}/reconnect/",
                     response.url,
                     msg=host,
                 )
@@ -2723,7 +2732,7 @@ class HotspotAuthorizeFastPathTests(TestCase):
         )
         order = []
 
-        def portal_side_effect(customer, *, enabled, portal_url=""):
+        def portal_side_effect(customer, *, enabled, portal_url="", **kwargs):
             order.append(("portal", enabled))
             return {"ok": True, "enabled": enabled}
 
@@ -2848,7 +2857,7 @@ class HotspotDisconnectOnDeleteTests(TestCase):
             return {"ok": True}
 
         with patch(
-            "core.views.disconnect_hotspot_customer",
+            "billing.customer_delete.disconnect_customer_from_nas",
             side_effect=disconnect_side_effect,
         ) as disconnect:
             response = self.client.post(
@@ -2927,10 +2936,7 @@ class HotspotDisconnectOnDeleteTests(TestCase):
         stk_id = stk.pk
         voucher_id = voucher.pk
 
-        with patch(
-            "core.views.disconnect_hotspot_customer",
-            return_value={"ok": True},
-        ):
+        with patch("billing.customer_delete.disconnect_customer_from_nas"):
             response = self.client.post(
                 f"/app/clients/{customer_id}/delete/"
             )
@@ -2948,6 +2954,156 @@ class HotspotDisconnectOnDeleteTests(TestCase):
         self.assertIsNone(voucher.customer_id)
         self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
         self.assertIsNotNone(voucher.invalidated_at)
+
+    def test_client_delete_purges_usage_and_frees_mac_for_pay_page(self):
+        from unittest.mock import patch
+
+        from django.utils import timezone
+
+        from billing.devices import resolve_or_create_hotspot_customer
+        from billing.models import Customer, CustomerDevice, CustomerUsageSample
+
+        mac = "AA:BB:CC:11:22:33"
+        CustomerUsageSample.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            sampled_at=timezone.now(),
+            session_active=True,
+        )
+        customer_id = self.customer.pk
+
+        with patch("billing.customer_delete.disconnect_customer_from_nas"):
+            response = self.client.post(f"/app/clients/{customer_id}/delete/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Customer.objects.filter(pk=customer_id).exists())
+        self.assertFalse(CustomerDevice.objects.filter(mac__iexact=mac).exists())
+        self.assertFalse(
+            CustomerUsageSample.objects.filter(customer_id=customer_id).exists()
+        )
+
+        resolved = resolve_or_create_hotspot_customer(
+            self.org, mac=mac, phone="0700999888"
+        )
+        self.assertTrue(resolved.get("ok"))
+        self.assertTrue(resolved.get("created"))
+        self.assertNotEqual(resolved["customer"].pk, customer_id)
+
+    def test_end_subscription_resets_access_and_keeps_client(self):
+        from unittest.mock import patch
+
+        from django.utils import timezone
+
+        from billing.models import Customer, CustomerUsageSample
+        from billing.services import customer_receives_internet, customer_subscription_expired
+
+        CustomerUsageSample.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            sampled_at=timezone.now(),
+            session_active=True,
+        )
+        customer_id = self.customer.pk
+        sync_calls = []
+        disconnect_calls = []
+
+        def sync_side_effect(customer, **kwargs):
+            sync_calls.append((customer.pk, kwargs))
+            return {"ok": True, "allowed": False, "portal": {"ok": True}}
+
+        def disconnect_side_effect(customer):
+            disconnect_calls.append(customer.pk)
+            return {"ok": True}
+
+        with (
+            patch(
+                "core.mikrotik_connect.sync_customer_subscription_access",
+                side_effect=sync_side_effect,
+            ),
+            patch(
+                "billing.customer_delete.disconnect_customer_from_nas",
+                side_effect=disconnect_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect.invalidate_captive_redirect_cache_for_customer"
+            ),
+            patch("core.subscription_sync.enqueue_customer_subscription_sync"),
+        ):
+            response = self.client.post(
+                f"/app/clients/{customer_id}/",
+                {"action": "end_subscription"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        customer = Customer.objects.get(pk=customer_id)
+        self.assertTrue(customer_subscription_expired(customer))
+        self.assertFalse(customer_receives_internet(customer))
+        self.assertFalse(
+            CustomerUsageSample.objects.filter(customer_id=customer_id).exists()
+        )
+        self.assertEqual(len(sync_calls), 1)
+        self.assertTrue(sync_calls[0][1].get("reauthenticate"))
+        self.assertEqual(disconnect_calls, [customer_id])
+
+
+class HotspotOrphanScrubTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+
+        self.owner = User.objects.create_user("orphan-scrub-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Orphan Scrub ISP",
+            owner=self.owner,
+            join_code="667788",
+            hotspot_enabled=True,
+        )
+
+    def test_hotspot_block_pending_queue_drains_when_router_online(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import (
+            enqueue_hotspot_block_pending,
+            process_hotspot_block_pending_for_organization,
+        )
+        from core.subscription_sync import _jobs_cache
+
+        key = f"hotspot:block_pending:v1:{self.org.pk}"
+        _jobs_cache().delete(key)
+        enqueue_hotspot_block_pending(self.org, "AA:BB:CC:DD:EE:99")
+
+        with patch(
+            "core.mikrotik_connect.block_hotspot_mac_until_paid",
+            return_value={"ok": True, "skipped": False},
+        ) as block_mock:
+            result = process_hotspot_block_pending_for_organization(self.org)
+
+        self.assertEqual(result["drained"], 1)
+        self.assertEqual(result["remaining"], 0)
+        block_mock.assert_called_once()
+        self.assertIsNone(_jobs_cache().get(key))
+
+    def test_enforce_hotspot_pay_wall_enqueues_pending_when_offline(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import enforce_hotspot_pay_wall
+        from core.subscription_sync import _jobs_cache
+
+        key = f"hotspot:block_pending:v1:{self.org.pk}"
+        _jobs_cache().delete(key)
+
+        with (
+            patch(
+                "core.mikrotik_connect.block_hotspot_mac_until_paid",
+                return_value={"ok": True, "skipped": True, "timeout": True},
+            ),
+            patch("core.mikrotik_jobs.schedule_mikrotik_job"),
+        ):
+            enforce_hotspot_pay_wall(self.org, "AA:BB:CC:DD:EE:55")
+
+        pending = _jobs_cache().get(key) or {}
+        self.assertIn("AA:BB:CC:DD:EE:55", pending)
 
 
 class CaptiveGatewayHostTests(TestCase):
@@ -2975,6 +3131,9 @@ class CaptiveGatewayHostTests(TestCase):
         with patch(
             "core.hotspot_portal.local_ipv4_addresses",
             return_value={"192.168.88.254"},
+        ), patch(
+            "core.mikrotik_connect.resolve_captive_organization",
+            return_value=self.org,
         ):
             response = self.client.get(
                 "/generate_204",
@@ -2983,7 +3142,7 @@ class CaptiveGatewayHostTests(TestCase):
             )
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
+        self.assertIn(f"/hotspot/{self.org.join_code}/reconnect/", response.url)
 
     @override_settings(ALLOWED_HOSTS=["192.168.88.254"])
     def test_allowed_private_host_is_left_alone(self):
@@ -3937,6 +4096,7 @@ class PppoeClientDnsRuleTests(SimpleTestCase):
             patch("core.mikrotik_connect._command", return_value=([], {"_reply": "!done"})),
             patch("core.mikrotik_connect._add_or_set_attempts", return_value=({"_reply": "!done"}, "*1")),
             patch("core.mikrotik_connect._ensure_pppoe_nat"),
+            patch("core.mikrotik_connect._ensure_pppoe_pool"),
             patch("core.mikrotik_connect._ensure_pppoe_blocked_profile", return_value=[]),
             patch("core.mikrotik_connect._ensure_pppoe_expired_redirect", return_value=[]),
             patch(
@@ -4169,6 +4329,9 @@ class PppoePayPortalUrlTests(SimpleTestCase):
         ), patch(
             "core.hotspot_portal._default_route_ipv4",
             return_value="192.168.1.135",
+        ), patch(
+            "core.hotspot_portal.preferred_wireguard_ipv4",
+            return_value="",
         ), override_settings(WIREGUARD_SUBNET="10.9.0.0/24"):
             url = _pppoe_pay_portal_url(org)
         self.assertTrue(
@@ -4580,7 +4743,7 @@ class TunnelStatusTests(TestCase):
             patch("core.wireguard.server_on_tunnel", return_value=False),
             patch("core.views.discover_mikrotik_devices", return_value=[device]),
             patch(
-                "core.views.check_mikrotik_reachable",
+                "core.views.probe_mikrotik_for_onboarding",
                 return_value={"online": True, "via": "api"},
             ) as probe,
             patch(
@@ -4593,7 +4756,7 @@ class TunnelStatusTests(TestCase):
             )
 
         data = response.json()
-        probe.assert_called_once_with("192.168.88.1", timeout=0.8)
+        probe.assert_called_once_with("192.168.88.1", base_timeout=1.2)
         self.assertTrue(data["local_mode"])
         self.assertTrue(data["api_enabled"])
         self.assertEqual(data["lan_address"], "192.168.88.1")
@@ -4627,7 +4790,7 @@ class TunnelStatusTests(TestCase):
             patch("core.wireguard.server_on_tunnel", return_value=False),
             patch("core.views.discover_mikrotik_devices", return_value=[device]),
             patch(
-                "core.views.check_mikrotik_reachable",
+                "core.views.probe_mikrotik_for_onboarding",
                 return_value={"online": True, "via": "api"},
             ),
         ):
@@ -4655,7 +4818,7 @@ class TunnelStatusTests(TestCase):
             patch("core.wireguard.server_on_tunnel", return_value=False),
             patch("core.views.discover_mikrotik_devices", return_value=[device]),
             patch(
-                "core.views.check_mikrotik_reachable",
+                "core.views.probe_mikrotik_for_onboarding",
                 return_value={"online": False, "via": ""},
             ),
             patch(
@@ -4679,7 +4842,7 @@ class TunnelStatusTests(TestCase):
         with (
             patch("core.wireguard.server_on_tunnel", return_value=True),
             patch(
-                "core.views.check_mikrotik_reachable",
+                "core.views.probe_mikrotik_for_onboarding",
                 return_value={"online": True, "via": "api"},
             ),
         ):
@@ -8423,6 +8586,18 @@ class IspHotspotInstantPayTests(SimpleTestCase):
 
         with (
             patch(
+                "core.mikrotik_connect._disable_fasttrack_connection_rules",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_tether_block",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._billing_portal_base_url",
+                return_value="http://billing.example:8000",
+            ),
+            patch(
                 "core.mikrotik_connect._resolve_lan_interface",
                 return_value="bridge",
             ),
@@ -8528,6 +8703,14 @@ class IspHotspotInstantPayTests(SimpleTestCase):
             ensured_pools.append(kwargs.get("name") or "")
 
         with (
+            patch(
+                "core.mikrotik_connect._disable_fasttrack_connection_rules",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_tether_block",
+                return_value=[],
+            ),
             patch(
                 "core.mikrotik_connect._resolve_lan_interface",
                 return_value="bridge",
@@ -8636,6 +8819,14 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         sock = MagicMock()
         org = SimpleNamespace(name="Hot ISP", join_code="505050")
         with (
+            patch(
+                "core.mikrotik_connect._disable_fasttrack_connection_rules",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_tether_block",
+                return_value=[],
+            ),
             patch(
                 "core.mikrotik_connect._resolve_lan_interface",
                 return_value="bridge",
@@ -8875,7 +9066,7 @@ class AccessFlowCorrectionLoopTests(TestCase):
         from django.utils import timezone
 
         from accounts.models import Organization
-        from billing.models import Customer
+        from billing.models import BillingPlan, Customer
 
         cache.clear()
         self.owner = User.objects.create_user("loop-owner", password="x")
@@ -8885,6 +9076,14 @@ class AccessFlowCorrectionLoopTests(TestCase):
             join_code="606061",
             hotspot_enabled=True,
             pppoe_compulsory=True,
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Monthly",
+            price="1000.00",
+            duration=BillingPlan.Duration.MONTHLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
         )
         self.router = MikroTikRouter.objects.create(
             organization=self.org,
@@ -8904,6 +9103,7 @@ class AccessFlowCorrectionLoopTests(TestCase):
             pppoe_password="pass",
             status=Customer.Status.ACTIVE,
             router=self.router,
+            plan=self.plan,
             package_start=timezone.now() - timedelta(days=5),
             package_end=timezone.now() - timedelta(days=1),
         )
@@ -8929,7 +9129,7 @@ class AccessFlowCorrectionLoopTests(TestCase):
         portal_calls = []
         order = []
 
-        def portal_side_effect(customer, *, enabled, portal_url=""):
+        def portal_side_effect(customer, *, enabled, portal_url="", **kwargs):
             portal_calls.append(enabled)
             order.append("portal")
             # Fail once, then succeed — correction loop must keep trying.
@@ -9508,20 +9708,19 @@ class AccessFlowCorrectionLoopTests(TestCase):
 
         with (
             patch(
-                "billing.management.commands.sync_subscription_access.sync_customer_subscription_access",
-                return_value={
-                    "ok": True,
-                    "allowed": False,
-                    "portal": {"ok": False, "skipped": True, "error": "CPE offline"},
-                    "provision": {"ok": True, "profile": "ispcentric-blocked"},
-                },
-            ),
-            patch(
                 "core.mikrotik_connect.apply_cpe_renew_portal",
             ) as cpe_retry,
             patch(
                 "billing.management.commands.sync_subscription_access.refresh_onboarded_router_config",
                 return_value={"ok": True, "message": "synced"},
+            ),
+            patch(
+                "billing.management.commands.sync_subscription_access.sync_pppoe_subscription_batch_on_router",
+                return_value={"ok": True, "message": "pppoe ok", "errors": 0},
+            ),
+            patch(
+                "billing.management.commands.sync_subscription_access.sync_hotspot_subscription_batch_on_router",
+                return_value={"ok": True, "message": "hotspot ok", "errors": 0},
             ),
         ):
             call_command("sync_subscription_access", stdout=StringIO())
@@ -9847,6 +10046,54 @@ class AccessFlowCorrectionLoopTests(TestCase):
         self.assertTrue(any("purged" in n for n in notes))
         kill.assert_called()
 
+    def test_orphan_hotspot_scrubs_untagged_enabled_mac(self):
+        from unittest.mock import MagicMock, patch
+
+        from core.mikrotik_connect import _block_orphan_hotspot_users_on_socket
+
+        router = MagicMock()
+        router.organization = MagicMock()
+        blocked = []
+
+        def fake_print(sock, path, **kwargs):
+            if path == "/ip/hotspot/active":
+                return []
+            if path == "/ip/hotspot/host":
+                return []
+            if path == "/ip/hotspot/user":
+                return [
+                    {
+                        ".id": "*u2",
+                        "name": "DE:AD:BE:EF:00:01",
+                        "disabled": "false",
+                        "comment": "manual import",
+                    }
+                ]
+            if path == "/ip/firewall/address-list":
+                return []
+            return []
+
+        with (
+            patch(
+                "core.mikrotik_connect._paid_hotspot_mac_set",
+                return_value=set(),
+            ),
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_user",
+                side_effect=lambda *a, **k: blocked.append(k.get("username")),
+            ),
+            patch("core.mikrotik_connect._expire_hotspot_mac_sessions"),
+            patch(
+                "core.mikrotik_connect._purge_hotspot_ok_list_for_mac",
+                return_value=0,
+            ),
+        ):
+            notes = _block_orphan_hotspot_users_on_socket(MagicMock(), router)
+
+        self.assertEqual(blocked, ["DE:AD:BE:EF:00:01"])
+        self.assertTrue(any("blocked untagged" in n for n in notes))
+
     def test_repair_hotspot_captive_retries_until_ok(self):
         from core.mikrotik_connect import repair_hotspot_captive_portal
 
@@ -9877,32 +10124,23 @@ class AccessFlowCorrectionLoopTests(TestCase):
 
         with (
             patch(
-                "billing.management.commands.sync_subscription_access.sync_customer_subscription_access",
-                return_value={
-                    "ok": False,
-                    "allowed": False,
-                    "portal": {
-                        "ok": False,
-                        "skipped": False,
-                        "error": "login.html missing",
-                    },
-                    "provision": {"ok": True, "profile": "ispcentric-blocked"},
-                },
-            ),
-            patch(
-                "core.mikrotik_connect.apply_cpe_renew_portal",
-                return_value={"ok": True, "enabled": True},
-            ),
-            patch(
                 "billing.management.commands.sync_subscription_access.refresh_onboarded_router_config",
                 return_value={
                     "ok": True,
                     "message": "pppoe ok; hotspot ok",
                 },
             ) as nas_refresh,
+            patch(
+                "billing.management.commands.sync_subscription_access.sync_pppoe_subscription_batch_on_router",
+                return_value={"ok": True, "message": "pppoe ok", "errors": 0},
+            ),
+            patch(
+                "billing.management.commands.sync_subscription_access.sync_hotspot_subscription_batch_on_router",
+                return_value={"ok": True, "message": "hotspot ok", "errors": 0},
+            ),
         ):
             out = StringIO()
-            call_command("sync_subscription_access", stdout=out)
+            call_command("sync_subscription_access", force=True, stdout=out)
             text = out.getvalue()
 
         self.assertTrue(nas_refresh.called)
@@ -9965,6 +10203,9 @@ class AccessFlowCorrectionLoopTests(TestCase):
         self.pppoe.package_end = timezone.now() + timedelta(days=1)
         self.pppoe.save(update_fields=["package_end"])
 
+        from billing.access_verification import _expected_pppoe_speed_profile
+
+        expected_profile = _expected_pppoe_speed_profile(self.pppoe)
         calls = {"n": 0}
 
         def fake_sync(customer, **kwargs):
@@ -9975,10 +10216,10 @@ class AccessFlowCorrectionLoopTests(TestCase):
                     "allowed": True,
                     "cpe_renew_clear_pending": True,
                     "message": "pending clear",
-                    "portal": {"ok": False, "skipped": True, "error": "offline"},
+                    "portal": {"ok": False, "skipped": False, "error": "offline"},
                     "provision": {
                         "ok": True,
-                        "profile": "ispcentric",
+                        "profile": expected_profile,
                         "disabled": False,
                         "kicked": 0,
                         "notes": [],
@@ -9992,7 +10233,7 @@ class AccessFlowCorrectionLoopTests(TestCase):
                 "portal": {"ok": True, "enabled": False},
                 "provision": {
                     "ok": True,
-                    "profile": "ispcentric",
+                    "profile": expected_profile,
                     "disabled": False,
                     "kicked": 0,
                     "notes": ["nudged"],
@@ -10364,6 +10605,14 @@ class DynamicAccessEnforcementLoopTests(TestCase):
 
         calls = {"n": 0}
 
+        from core.mikrotik_connect import (
+            _expected_hotspot_profile_for_customer,
+            _hotspot_rate_limit_for_customer,
+        )
+
+        expected_profile = _expected_hotspot_profile_for_customer(self.hotspot)
+        expected_rate = _hotspot_rate_limit_for_customer(self.hotspot)
+
         def fake_sync(customer, **kwargs):
             calls["n"] += 1
             if calls["n"] < 2:
@@ -10376,7 +10625,12 @@ class DynamicAccessEnforcementLoopTests(TestCase):
             return {
                 "ok": True,
                 "allowed": True,
-                "provision": {"ok": True},
+                "provision": {
+                    "ok": True,
+                    "profile": expected_profile,
+                    "rate_limit": expected_rate,
+                    "allowed_count": 1,
+                },
                 "message": "authorized",
             }
 
@@ -10781,6 +11035,7 @@ class RouterConnectivityLoopTests(TestCase):
             call_command(
                 "verify_router_connectivity",
                 router=self.router.pk,
+                target="nas",
                 dry_run=True,
                 stdout=out,
             )
@@ -11802,7 +12057,12 @@ class MikroTikStatusOfflineTests(TestCase):
             ),
             patch(
                 "core.mikrotik_status_samples.build_router_probe_plan",
-                return_value=({self.router.pk: ["10.9.0.50"]}, ["10.9.0.50"], {self.router.pk: True}),
+                return_value=(
+                    {self.router.pk: ["10.9.0.50"]},
+                    ["10.9.0.50"],
+                    {self.router.pk: True},
+                    {self.router.pk: False},
+                ),
             ),
             patch(
                 "core.mikrotik_connect.test_mikrotik_api_login",

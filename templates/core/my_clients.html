@@ -177,7 +177,7 @@
         {% elif clients_sort == 'name' %}
           <p class="clients-status-hint">Ordered by client name A–Z.</p>
         {% elif clients_sort == 'session' %}
-          <p class="clients-status-hint">Ordered by latest surfing start — who began surfing most recently first · then connected · then disconnected · refreshes every 10s.</p>
+          <p class="clients-status-hint">Ordered by latest paid surfers first · then disconnected with an active package (most recently offline at the top, with date &amp; time) · refreshes every 25s.</p>
         {% endif %}
       <div class="clients-search-meta" data-clients-search-meta {% if not clients_query and not clients_router_param %}hidden{% endif %}>
         <span class="clients-search-meta-ico" aria-hidden="true">
@@ -738,6 +738,19 @@
   var timer = null;
   var inFlight = false;
 
+  function hotspotSurfBadgeLabel(item) {
+    if (!item) return "Disconnected";
+    if (item.surfing || item.state === "surfing") return item.label || "Surfing";
+    if (
+      item.state === "disconnected"
+      && item.internet_allowed
+      && item.last_disconnect_label
+    ) {
+      return "Disconnected · " + item.last_disconnect_label;
+    }
+    return item.label || (item.state === "not_surfing" ? "Not surfing" : "Disconnected");
+  }
+
   function applySurfBadge(el, surfing, reason, state, label) {
     if (!el) return;
     el.classList.remove("is-checking", "is-surfing", "is-not-surfing", "is-disconnected", "is-expired");
@@ -776,11 +789,12 @@
   }
 
   function hotspotSessionRank(item) {
-    if (!item) return 3;
+    if (!item) return 4;
     if (item.state === "surfing" || item.surfing) return 0;
-    if (item.state === "not_surfing" || item.connected) return 1;
-    if (item.state === "disconnected") return 2;
-    return 3;
+    if (item.state === "disconnected" && item.internet_allowed) return 1;
+    if (item.state === "not_surfing" || item.connected) return 2;
+    if (item.state === "disconnected") return 3;
+    return 4;
   }
 
   function reorderHotspotRows(byId) {
@@ -802,9 +816,15 @@
       var n = Number(raw);
       return Number.isFinite(n) ? n : null;
     }
-    function sessionUptime(item) {
-      var n = Number(item && item.session_uptime_seconds);
-      return Number.isFinite(n) && n >= 0 ? n : Number.MAX_SAFE_INTEGER;
+    function packageStartKey(item) {
+      var ts = Number(item && item.package_start_ts);
+      return Number.isFinite(ts) && ts > 0 ? -ts : Number.MAX_SAFE_INTEGER;
+    }
+    function lastDisconnectKey(item) {
+      var raw = item && item.last_disconnect_at;
+      if (!raw) return Number.MAX_SAFE_INTEGER;
+      var t = Date.parse(raw);
+      return Number.isFinite(t) ? -t : Number.MAX_SAFE_INTEGER;
     }
     rows.sort(function (a, b) {
       if (clientsSort === "used" || clientsSort === "used_asc") {
@@ -827,9 +847,14 @@
       var bRank = hotspotSessionRank(bItem);
       if (aRank !== bRank) return aRank - bRank;
       if (clientsSort === "session" && aRank === 0) {
-        var aUp = sessionUptime(aItem);
-        var bUp = sessionUptime(bItem);
-        if (aUp !== bUp) return aUp - bUp;
+        var aPaid = packageStartKey(aItem);
+        var bPaid = packageStartKey(bItem);
+        if (aPaid !== bPaid) return aPaid - bPaid;
+      }
+      if (clientsSort === "session" && aRank === 1) {
+        var aDisc = lastDisconnectKey(aItem);
+        var bDisc = lastDisconnectKey(bItem);
+        if (aDisc !== bDisc) return aDisc - bDisc;
       }
       var aName = String(aItem.full_name || a.getAttribute("data-search") || "").toLowerCase();
       var bName = String(bItem.full_name || b.getAttribute("data-search") || "").toLowerCase();
@@ -872,7 +897,25 @@
             applySurfBadge(el, false, "No live data", "disconnected");
             return;
           }
-          applySurfBadge(el, !!item.surfing, item.reason || item.label || "", item.state || "", item.label || "");
+          var surfReason = item.reason || item.label || "";
+          if (
+            item.state === "disconnected"
+            && item.internet_allowed
+            && item.last_disconnect_label
+          ) {
+            surfReason = (
+              surfReason
+                ? surfReason + " · Last seen " + item.last_disconnect_label
+                : "Last seen " + item.last_disconnect_label
+            );
+          }
+          applySurfBadge(
+            el,
+            !!item.surfing,
+            surfReason,
+            item.state || "",
+            hotspotSurfBadgeLabel(item)
+          );
         });
         connectionBadges.forEach(function (el) {
           var item = byId[String(el.getAttribute("data-hotspot-connected"))];

@@ -1665,6 +1665,9 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "duration_value",
             "duration_unit",
             "max_devices",
+            "hotspot_other_devices_enabled",
+            "hotspot_other_base_price",
+            "hotspot_hourly_rate_per_device",
             "offer_enabled",
             "offer_pay_count",
             "image",
@@ -1761,6 +1764,30 @@ class BillingPackageRegisterForm(forms.ModelForm):
                     "id": "id_package_max_devices",
                 }
             ),
+            "hotspot_other_devices_enabled": forms.CheckboxInput(
+                attrs={
+                    "class": "package-hotspot-other-toggle",
+                    "id": "id_package_hotspot_other_devices_enabled",
+                }
+            ),
+            "hotspot_other_base_price": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "Same as package price",
+                    "step": "0.01",
+                    "min": "0",
+                    "id": "id_package_hotspot_other_base_price",
+                }
+            ),
+            "hotspot_hourly_rate_per_device": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "0.00",
+                    "step": "0.01",
+                    "min": "0",
+                    "id": "id_package_hotspot_hourly_rate_per_device",
+                }
+            ),
             "offer_enabled": forms.CheckboxInput(
                 attrs={
                     "id": "id_package_offer_enabled",
@@ -1801,6 +1828,9 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "duration_value": "Billing period",
             "duration_unit": "Period unit",
             "max_devices": "Max devices",
+            "hotspot_other_devices_enabled": "Enable pay-for-other-devices",
+            "hotspot_other_base_price": "Other devices base price (KES)",
+            "hotspot_hourly_rate_per_device": "Hourly rate per device (KES)",
             "offer_enabled": "Enable buy-X-get-1-free offer",
             "offer_pay_count": "Paid sessions before free one",
             "image": "Package image",
@@ -1818,6 +1848,9 @@ class BillingPackageRegisterForm(forms.ModelForm):
         self.fields["routers"].required = False
         self.fields["service_type"].required = True
         self.fields["max_devices"].required = False
+        self.fields["hotspot_other_devices_enabled"].required = False
+        self.fields["hotspot_other_base_price"].required = False
+        self.fields["hotspot_hourly_rate_per_device"].required = False
         self.fields["download_guaranteed_mbps"].required = False
         self.fields["upload_guaranteed_mbps"].required = False
         self.fields["download_guaranteed_mbps"].help_text = (
@@ -1831,6 +1864,12 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "Hotspot: number of phones/laptops; payment creates one one-time voucher per device. "
             "PPPoE: always 1 concurrent dial (one CPE). Devices on Wi‑Fi/LAN behind that CPE "
             "are already unlimited — this field does not add extra PPPoE sessions."
+        )
+        self.fields["hotspot_other_base_price"].help_text = (
+            "Base fee for “Pay for other devices”. Blank uses the package price."
+        )
+        self.fields["hotspot_hourly_rate_per_device"].help_text = (
+            "KES per hour per device added to the base (devices × hours × rate)."
         )
         self.fields["offer_enabled"].required = False
         self.fields["offer_pay_count"].required = False
@@ -1872,6 +1911,9 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "duration_value": f"id_{self.id_prefix}_duration_value",
             "duration_unit": f"id_{self.id_prefix}_duration_unit",
             "max_devices": f"id_{self.id_prefix}_max_devices",
+            "hotspot_other_devices_enabled": f"id_{self.id_prefix}_hotspot_other_devices_enabled",
+            "hotspot_other_base_price": f"id_{self.id_prefix}_hotspot_other_base_price",
+            "hotspot_hourly_rate_per_device": f"id_{self.id_prefix}_hotspot_hourly_rate_per_device",
             "offer_enabled": f"id_{self.id_prefix}_offer_enabled",
             "offer_pay_count": f"id_{self.id_prefix}_offer_pay_count",
             "image": f"id_{self.id_prefix}_image",

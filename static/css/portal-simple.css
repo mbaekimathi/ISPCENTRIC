@@ -105,7 +105,25 @@
       40% { opacity: 1; transform: translateY(-0.14rem); }
     }
 
-    .wrap.is-connecting .hero-cta { opacity: 0.55; pointer-events: none; }
+    .welcome-ready[hidden],
+    [data-welcome-ready][hidden] { display: none !important; }
+    .welcome-loading[hidden] { display: none !important; }
+
+    .welcome-title {
+      margin: 0 0 0.35rem;
+      font-size: 1.35rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: #102033;
+    }
+    .welcome-message {
+      margin: 0 0 0.85rem;
+      font-size: 0.88rem;
+      line-height: 1.45;
+      color: rgba(16, 32, 51, 0.72);
+    }
+    [data-theme="dark"] .welcome-title { color: #e8f3ef; }
+    [data-theme="dark"] .welcome-message { color: rgba(232, 243, 239, 0.72); }
 
     .voucher-share {
       display: grid;
@@ -575,7 +593,7 @@
         grid-column: 2;
         justify-self: start;
       }
-    }
+    }
 
 
 /* === Assistance & vouchers extensions === */
@@ -984,4 +1002,4 @@
     .back-link {
       color: #5f746d;
       font-size: 0.78rem;
-    }
+    }

@@ -62,6 +62,29 @@ def voucher_count_for_plan(plan) -> int:
     return min(max(n, 1), MAX_DEVICES_HARD_CAP)
 
 
+def voucher_count_for_stk(stk: StkPushRequest) -> int:
+    """Voucher batch size for one STK (plan default or other-devices quote)."""
+    from billing.hotspot_pricing import PAY_MODE_OTHER_DEVICES, stk_other_devices_meta
+
+    meta = stk_other_devices_meta(stk)
+    if meta.get("voucher_count"):
+        from billing.devices import MAX_DEVICES_HARD_CAP
+
+        return min(int(meta["voucher_count"]), MAX_DEVICES_HARD_CAP)
+    raw = getattr(stk, "raw_callback", None)
+    if isinstance(raw, dict) and raw.get("pay_mode") == PAY_MODE_OTHER_DEVICES:
+        try:
+            count = int(raw.get("voucher_count") or raw.get("device_count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count > 0:
+            from billing.devices import MAX_DEVICES_HARD_CAP
+
+            return min(count, MAX_DEVICES_HARD_CAP)
+    plan = stk.plan or (stk.customer.plan if stk.customer else None)
+    return voucher_count_for_plan(plan)
+
+
 def customer_unused_voucher_count(customer) -> int:
     if customer is None or not getattr(customer, "pk", None):
         return 0
@@ -134,7 +157,7 @@ def create_vouchers_for_stk(stk: StkPushRequest) -> list[AccessVoucher]:
             return existing
         raise ValueError("Voucher requires a customer and plan.")
 
-    needed = voucher_count_for_plan(plan)
+    needed = voucher_count_for_stk(stk)
     if len(existing) >= needed:
         return existing[:needed]
 
@@ -270,6 +293,7 @@ def autoconnect_primary_after_cash_recharge(customer, vouchers: list) -> dict:
             "primary_mac": primary_mac,
             "extra_vouchers": [],
             "keep_macs": [primary_mac] if primary_mac else [],
+            "claimed_voucher_id": None,
         }
     if not primary_mac:
         return {
@@ -277,6 +301,7 @@ def autoconnect_primary_after_cash_recharge(customer, vouchers: list) -> dict:
             "primary_mac": "",
             "extra_vouchers": vouchers,
             "keep_macs": [],
+            "claimed_voucher_id": None,
         }
 
     primary_voucher = vouchers[0]
@@ -285,19 +310,20 @@ def autoconnect_primary_after_cash_recharge(customer, vouchers: list) -> dict:
     attach_hotspot_device(customer, primary_mac, enforce_cap=True)
     try:
         _claim_voucher_mac(primary_voucher, primary_mac)
-        _mark_voucher_used(primary_voucher, mac=primary_mac)
     except ValueError:
         return {
             "autoconnected": False,
             "primary_mac": primary_mac,
             "extra_vouchers": vouchers,
             "keep_macs": [primary_mac],
+            "claimed_voucher_id": None,
         }
     return {
         "autoconnected": True,
         "primary_mac": primary_mac,
         "extra_vouchers": vouchers[1:],
         "keep_macs": [primary_mac],
+        "claimed_voucher_id": primary_voucher.pk,
     }
 
 
@@ -361,6 +387,20 @@ def voucher_payload(
     }
 
 
+def burn_claimed_voucher_after_nas(voucher_id: int | None) -> bool:
+    """Burn a VALID voucher that already claimed a MAC once NAS authorize succeeds."""
+    if not voucher_id:
+        return False
+    voucher = AccessVoucher.objects.filter(pk=int(voucher_id)).first()
+    if voucher is None or voucher.status != AccessVoucher.Status.VALID:
+        return False
+    claimed = (voucher.redeemed_mac or "").strip()
+    if not claimed:
+        return False
+    _mark_voucher_used(voucher, mac=claimed)
+    return True
+
+
 def _mark_voucher_used(voucher: AccessVoucher, *, mac: str = "") -> AccessVoucher:
     """Burn a voucher so it can never activate another device."""
     from billing.devices import normalize_device_mac
@@ -397,6 +437,12 @@ def _claim_voucher_mac(voucher: AccessVoucher, mac: str) -> AccessVoucher:
         )
     if existing == mac:
         return voucher
+    # A newer voucher on the same gadget supersedes an older VALID claim.
+    AccessVoucher.objects.filter(
+        customer_id=voucher.customer_id,
+        status=AccessVoucher.Status.VALID,
+        redeemed_mac__iexact=mac,
+    ).exclude(pk=voucher.pk).update(redeemed_mac="")
     voucher.redeemed_mac = mac[:17]
     voucher.save(update_fields=["redeemed_mac"])
     return voucher
@@ -428,6 +474,11 @@ def redeem_access_voucher(
     if len(compact) < 5:
         return {"ok": False, "error": "Enter a valid voucher code."}
 
+    if mac:
+        from billing.devices import normalize_device_mac
+
+        mac = normalize_device_mac(mac) or ""
+
     with transaction.atomic():
         voucher = (
             AccessVoucher.objects.select_for_update()
@@ -457,6 +508,14 @@ def redeem_access_voucher(
             return {"ok": False, "error": "No customer is linked to this voucher."}
         if target.organization_id != organization.pk:
             return {"ok": False, "error": "Voucher not found."}
+        if (
+            getattr(target, "service_type", "") == Customer.ServiceType.HOTSPOT
+            and not (mac or "").strip()
+        ):
+            return {
+                "ok": False,
+                "error": "Connect this device to Wi‑Fi first, then enter the voucher.",
+            }
         if customer is not None and customer.pk != voucher.customer_id:
             from billing.services import customer_can_surf_via_hotspot
 
@@ -574,7 +633,7 @@ def redeem_access_voucher(
                     True,
                     wait_first=wait_first,
                     quick=quick,
-                    reauthenticate=False,
+                    reauthenticate=True,
                 )
                 or nas
             )
@@ -755,6 +814,16 @@ def _activate_paid_subscription_stk_locked(
         if voucher is None:
             return {"ok": False, "error": "Could not create voucher."}
 
+        from billing.hotspot_pricing import (
+            PAY_MODE_OTHER_DEVICES,
+            apply_hotspot_other_devices_period,
+            stk_other_devices_meta,
+            stk_pay_mode,
+        )
+
+        pay_mode = stk_pay_mode(stk)
+        stk_pay_mode_value = pay_mode
+        other_meta = stk_other_devices_meta(stk)
         already_applied = bool(stk.subscription_applied)
         if not already_applied:
             paid_plan = voucher.plan or customer.plan
@@ -766,7 +835,13 @@ def _activate_paid_subscription_stk_locked(
 
             stacked = customer_subscription_window_active(customer)
             try:
-                apply_paid_subscription_with_offer(customer, plan=paid_plan)
+                if pay_mode == PAY_MODE_OTHER_DEVICES:
+                    hours = int(other_meta.get("package_hours") or other_meta.get("hours") or 1)
+                    apply_hotspot_other_devices_period(
+                        customer, plan=paid_plan, hours=hours
+                    )
+                else:
+                    apply_paid_subscription_with_offer(customer, plan=paid_plan)
             except ValueError as exc:
                 return {"ok": False, "error": str(exc)}
             stk.subscription_applied = True
@@ -774,7 +849,10 @@ def _activate_paid_subscription_stk_locked(
             AccessVoucher.objects.filter(stk_request=stk).update(
                 subscription_applied=True
             )
-            if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+            if (
+                getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
+                and pay_mode != PAY_MODE_OTHER_DEVICES
+            ):
                 if not stacked and device_mac:
                     # Fresh period: drop previous shared gadgets; only the payer
                     # (or staff-kept primary) stays. Never unlink with empty keep.
@@ -783,7 +861,7 @@ def _activate_paid_subscription_stk_locked(
                     set_primary_hotspot_mac(customer, device_mac)
                     # CustomerDevice is created only after MikroTik authorize.
             customer.refresh_from_db()
-            if stacked:
+            if stacked and pay_mode != PAY_MODE_OTHER_DEVICES:
                 notify_org_event(
                     "subscription_extended",
                     organization=stk.organization,
@@ -803,7 +881,8 @@ def _activate_paid_subscription_stk_locked(
         # Claim device MAC on a VALID voucher before NAS sync so voucher-scoped
         # authorize enables this gadget (and not a stale shared peer).
         if (
-            device_mac
+            pay_mode != PAY_MODE_OTHER_DEVICES
+            and device_mac
             and voucher is not None
             and getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
         ):
@@ -838,6 +917,8 @@ def _activate_paid_subscription_stk_locked(
         )
         stk_pk = stk.pk
 
+    from billing.hotspot_pricing import PAY_MODE_OTHER_DEVICES
+
     # Outside the row lock — MikroTik latency must not block other payers.
     nas = {"ok": False, "allowed": False}
     nas_deduped = False
@@ -860,7 +941,7 @@ def _activate_paid_subscription_stk_locked(
                     True,
                     wait_first=wait_first,
                     quick=quick,
-                    reauthenticate=False,
+                    reauthenticate=True,
                 )
                 or nas
             )
@@ -890,7 +971,8 @@ def _activate_paid_subscription_stk_locked(
     )
     customer = Customer.objects.filter(pk=customer_pk).first()
     if (
-        authorized
+        stk_pay_mode_value != PAY_MODE_OTHER_DEVICES
+        and authorized
         and voucher is not None
         and voucher.status == AccessVoucher.Status.VALID
     ):
@@ -913,7 +995,8 @@ def _activate_paid_subscription_stk_locked(
 
         # Durable device registration only after payment + NAS authorize.
         if (
-            device_mac
+            stk_pay_mode_value != PAY_MODE_OTHER_DEVICES
+            and device_mac
             and getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
         ):
             attach_hotspot_device(customer, device_mac, enforce_cap=True)
@@ -1165,6 +1248,13 @@ def invalidate_vouchers_for_surfing_customers(customers: Iterable[Customer]) -> 
 
 def attach_voucher_to_stk_status(payload: dict, stk: StkPushRequest) -> dict:
     """Add voucher fields to payment-status JSON when a voucher exists."""
+    from billing.hotspot_pricing import PAY_MODE_OTHER_DEVICES, stk_pay_mode
+
+    pay_mode = stk_pay_mode(stk)
+    payload["pay_mode"] = pay_mode
+    if pay_mode == PAY_MODE_OTHER_DEVICES:
+        payload["other_devices_purchase"] = True
+
     vouchers = list(AccessVoucher.objects.filter(stk_request=stk).order_by("id"))
     if not vouchers and stk.status == StkPushRequest.Status.SUCCESS:
         try:
@@ -1181,7 +1271,11 @@ def attach_voucher_to_stk_status(payload: dict, stk: StkPushRequest) -> dict:
     payload["voucher_fallback"] = bool(
         voucher_valid and payload.get("subscription_applied") and not payload.get("authorized")
     )
-    if voucher_valid and not payload.get("subscription_applied"):
+    if pay_mode == PAY_MODE_OTHER_DEVICES:
+        payload["needs_voucher"] = False
+        if payload.get("subscription_applied"):
+            payload["authorized"] = False
+    elif voucher_valid and not payload.get("subscription_applied"):
         payload["needs_voucher"] = True
         if "authorized" not in payload:
             payload["authorized"] = False
@@ -1270,6 +1364,52 @@ def build_voucher_share(voucher: AccessVoucher, *, request=None, pay_url: str = 
     }
 
 
+def _serialize_voucher_row(voucher, *, request=None, pay_url: str = "") -> dict:
+    share = build_voucher_share(voucher, request=request, pay_url=pay_url)
+    return {
+        "voucher": voucher,
+        "code_display": share["code_display"],
+        "status": voucher.status,
+        "status_label": voucher.get_status_display(),
+        "plan_name": getattr(voucher.plan, "name", "") or "—",
+        "created_at": voucher.created_at,
+        "redeemed_at": voucher.redeemed_at,
+        "invalidated_at": voucher.invalidated_at,
+        "mpesa_receipt": (
+            getattr(voucher.stk_request, "mpesa_receipt", "") or ""
+            if voucher.stk_request_id
+            else ""
+        ),
+        "share": share,
+    }
+
+
+def latest_voucher_batch_for_customer(customer) -> list[AccessVoucher]:
+    """Sibling vouchers from the customer's most recent payment batch."""
+    if customer is None or not getattr(customer, "pk", None):
+        return []
+    anchor = (
+        AccessVoucher.objects.filter(customer_id=customer.pk)
+        .select_related("plan", "organization", "customer", "stk_request", "payment")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if anchor is None:
+        return []
+    return vouchers_for_batch(anchor)
+
+
+def vouchers_for_current_subscription(customer, *, request=None) -> list[dict]:
+    """Serialize used and unused vouchers for the current subscription batch."""
+    if customer is None:
+        return []
+    pay_url = voucher_pay_url_for_customer(customer, request)
+    return [
+        _serialize_voucher_row(voucher, request=request, pay_url=pay_url)
+        for voucher in latest_voucher_batch_for_customer(customer)
+    ]
+
+
 def vouchers_for_customer_billing(customer, *, request=None) -> list[dict]:
     """Serialize customer vouchers for the client billing page."""
     if customer is None:
@@ -1280,25 +1420,7 @@ def vouchers_for_customer_billing(customer, *, request=None) -> list[dict]:
         .select_related("plan", "organization", "customer", "stk_request")
         .order_by("-created_at")[:50]
     )
-    payload = []
-    for voucher in rows:
-        share = build_voucher_share(voucher, request=request, pay_url=pay_url)
-        payload.append(
-            {
-                "voucher": voucher,
-                "code_display": share["code_display"],
-                "status": voucher.status,
-                "status_label": voucher.get_status_display(),
-                "plan_name": getattr(voucher.plan, "name", "") or "—",
-                "created_at": voucher.created_at,
-                "redeemed_at": voucher.redeemed_at,
-                "invalidated_at": voucher.invalidated_at,
-                "mpesa_receipt": (
-                    getattr(voucher.stk_request, "mpesa_receipt", "") or ""
-                    if voucher.stk_request_id
-                    else ""
-                ),
-                "share": share,
-            }
-        )
-    return payload
+    return [
+        _serialize_voucher_row(voucher, request=request, pay_url=pay_url)
+        for voucher in rows
+    ]

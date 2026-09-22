@@ -340,6 +340,18 @@ def _as_int(value, default=0) -> int:
         return default
 
 
+def _usage_sample_network_connected(
+    customer: Customer, payload: dict[str, Any], *, session_active: bool
+) -> bool:
+    """Layer-2 / NAS presence — distinct from authenticated Hotspot surfing."""
+    raw = payload.get("connected")
+    if raw is not None:
+        return bool(raw)
+    if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+        return bool(session_active or payload.get("online"))
+    return session_active
+
+
 def record_customer_usage_sample(
     customer: Customer, payload: dict[str, Any], *, force: bool = False
 ) -> bool:
@@ -358,6 +370,9 @@ def record_customer_usage_sample(
         return False
 
     session_active = bool(payload.get("session_active"))
+    network_connected = _usage_sample_network_connected(
+        customer, payload, session_active=session_active
+    )
     bytes_in = _as_int(payload.get("bytes_in"))
     bytes_out = _as_int(payload.get("bytes_out"))
     # Skip empty offline probes — they drown real traffic history and break
@@ -384,6 +399,7 @@ def record_customer_usage_sample(
         organization_id=customer.organization_id,
         sampled_at=now,
         session_active=session_active,
+        network_connected=network_connected,
         uptime_seconds=uptime_seconds if session_active else 0,
         download_bps=_as_int(payload.get("download_bps")),
         upload_bps=_as_int(payload.get("upload_bps")),
@@ -674,6 +690,7 @@ def merge_hotspot_session_payloads(
     return {
         "ok": True,
         "session_active": True,
+        "connected": True,
         "bytes_in": synth_in,
         "bytes_out": synth_out,
         "download_bps": peak_down or None,
@@ -1167,10 +1184,30 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                         seen_hotspot_macs[compact] = customer
                         entry = dict(payload or {})
                         entry["ok"] = True
-                        entry["session_active"] = True
+                        is_active = bool(entry.get("session_active"))
+                        entry["session_active"] = is_active
+                        entry["connected"] = bool(
+                            entry.get("connected") or is_active
+                        )
                         entry["hotspot_mac"] = compact
-                        hotspot_agg.setdefault(customer.pk, {"customer": customer, "payloads": []})
-                        hotspot_agg[customer.pk]["payloads"].append(entry)
+                        if is_active:
+                            hotspot_agg.setdefault(
+                                customer.pk, {"customer": customer, "payloads": []}
+                            )
+                            hotspot_agg[customer.pk]["payloads"].append(entry)
+                        else:
+                            try:
+                                if record_customer_usage_sample(customer, entry):
+                                    sampled += 1
+                            except Exception:
+                                pass
+                            live_hotspot[customer.pk] = {
+                                "session_active": False,
+                                "download_bps": 0,
+                                "upload_bps": 0,
+                                "gadgets": 1,
+                                "macs": [compact],
+                            }
     except RuntimeError:
         # Autoreload / interpreter shutdown — do not poison the live cache.
         previous = get_org_live_usage(organization)
@@ -1586,15 +1623,28 @@ def _surf_allowed_at(
     return True
 
 
-def _classify_access_state(*, session_active: bool, surf_allowed: bool) -> str:
+def _classify_access_state(
+    *,
+    session_active: bool,
+    surf_allowed: bool,
+    network_connected: bool | None = None,
+) -> str:
     """
     Support-facing presence:
     - surfing: dialed in and package allows internet
     - not_surfing: package blocks internet (expired / paused / unpaid)
+      or on Hotspot Wi‑Fi without an authenticated session
     - disconnected: package allows surfing but no live session
     """
+    connected = (
+        session_active
+        if network_connected is None
+        else bool(network_connected or session_active)
+    )
     if session_active and surf_allowed:
         return "surfing"
+    if connected and surf_allowed:
+        return "not_surfing"
     if not surf_allowed:
         return "not_surfing"
     return "disconnected"
@@ -1664,6 +1714,171 @@ def _client_payment_events(customer: Customer, *, since, until, hours: int) -> l
             }
         )
     return events
+
+
+def build_client_session_breakdown(
+    customer: Customer,
+    *,
+    since=None,
+    until=None,
+) -> dict[str, Any]:
+    """
+    Connection / surfing timeline for the current subscription window.
+
+    Derived from usage samples: connect, start surfing, drop, reconnect, and
+    when surfing ends.
+    """
+    until = _aware_local(until) or timezone.now()
+    bounds = _package_access_bounds(customer)
+    service_type = (getattr(customer, "service_type", "") or "").strip()
+    package_start = _aware_local(bounds.get("package_start"))
+
+    if since is None:
+        since = package_start or (until - timedelta(hours=24))
+    since = _aware_local(since) or (until - timedelta(hours=24))
+
+    window_hours = max(
+        1,
+        int((until - since).total_seconds() // 3600) + 1,
+    )
+
+    samples = list(
+        CustomerUsageSample.objects.filter(
+            customer=customer,
+            sampled_at__gte=since,
+            sampled_at__lte=until,
+        )
+        .order_by("sampled_at")
+        .values("sampled_at", "session_active", "network_connected")
+    )
+
+    events: list[dict[str, Any]] = []
+    prev_state: str | None = None
+    had_disconnect = False
+
+    def _append(kind: str, label: str, detail: str, stamp, *, tone: str) -> None:
+        events.append(
+            {
+                "kind": kind,
+                "label": label,
+                "detail": detail,
+                "at": timezone.localtime(stamp).isoformat(),
+                "at_label": _access_stamp_label(stamp, window_hours),
+                "tone": tone,
+            }
+        )
+
+    for row in samples:
+        stamp = _aware_local(row.get("sampled_at"))
+        if stamp is None:
+            continue
+        active = bool(row.get("session_active"))
+        connected_raw = row.get("network_connected")
+        network_connected = (
+            None if connected_raw is None else bool(connected_raw)
+        )
+        allowed = _surf_allowed_at(stamp, bounds=bounds, service_type=service_type)
+        state = _classify_access_state(
+            session_active=active,
+            surf_allowed=allowed,
+            network_connected=network_connected,
+        )
+        if state == "waiting":
+            continue
+        if prev_state is None:
+            prev_state = state
+            continue
+        if state == prev_state:
+            continue
+
+        if prev_state == "disconnected" and state == "not_surfing":
+            if had_disconnect:
+                _append(
+                    "reconnected",
+                    "Reconnected",
+                    "Device joined the network again",
+                    stamp,
+                    tone="reconnected",
+                )
+            else:
+                _append(
+                    "connected",
+                    "Connected",
+                    "Device joined the network",
+                    stamp,
+                    tone="connected",
+                )
+        elif prev_state == "disconnected" and state == "surfing":
+            if had_disconnect:
+                _append(
+                    "reconnected",
+                    "Reconnected",
+                    "Back online and started surfing",
+                    stamp,
+                    tone="reconnected",
+                )
+            else:
+                _append(
+                    "connected",
+                    "Connected",
+                    "Device connected and started surfing",
+                    stamp,
+                    tone="connected",
+                )
+        elif prev_state == "not_surfing" and state == "surfing":
+            _append(
+                "started_surfing",
+                "Started surfing",
+                "Internet access became active",
+                stamp,
+                tone="surfing",
+            )
+        elif prev_state == "surfing" and state == "not_surfing":
+            _append(
+                "surfing_ended",
+                "Surfing ended",
+                "Still connected, but internet stopped",
+                stamp,
+                tone="blocked",
+            )
+        elif prev_state == "surfing" and state == "disconnected":
+            _append(
+                "dropped",
+                "Dropped",
+                "Session ended — device left the network",
+                stamp,
+                tone="dropped",
+            )
+            had_disconnect = True
+        elif prev_state == "not_surfing" and state == "disconnected":
+            _append(
+                "disconnected",
+                "Disconnected",
+                "Device left the network",
+                stamp,
+                tone="dropped",
+            )
+            had_disconnect = True
+
+        prev_state = state
+
+    current_state = prev_state or "waiting"
+    status, status_hint = _access_state_labels(current_state)
+
+    window_label = ""
+    if package_start:
+        window_label = (
+            f"Since {_access_stamp_label(package_start, window_hours)}"
+        )
+
+    return {
+        "current_state": current_state,
+        "status": status,
+        "status_hint": status_hint,
+        "window_label": window_label,
+        "sample_count": len(samples),
+        "events": events,
+    }
 
 
 def build_client_access_timeline(

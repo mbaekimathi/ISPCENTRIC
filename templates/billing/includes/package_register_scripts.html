@@ -28,7 +28,16 @@
       openModal(modalId);
       // Fresh register: sync max-devices default to the selected service type.
       if (modalId === "billing-package-modal") {
-        applyRegisterMaxDevicesDefault();
+        var pppoeRadio = document.querySelector(
+          '#billing-package-register-form input[name="service_type"][value="pppoe"]'
+        );
+        if (pppoeRadio) pppoeRadio.checked = true;
+        if (registerWizard) {
+          registerWizard.setDeviceMode("single");
+          registerWizard.sync();
+        } else {
+          applyRegisterMaxDevicesDefault();
+        }
       }
     });
   });
@@ -159,8 +168,8 @@
     var checked = document.querySelector(
       '#billing-package-register-form input[name="service_type"]:checked'
     );
-    if (!checked) return;
-    input.value = checked.value === "hotspot" ? "1" : "";
+    if (!checked || checked.value !== "pppoe") return;
+    input.value = "";
   }
 
   function wireRegisterMaxDevicesDefault() {
@@ -196,6 +205,165 @@
   wireOfferFields("#billing-package-register-form");
   wireOfferFields("#billing-package-edit-form");
 
+  var PPPoe_MAX_HINT =
+    "Leave blank for unlimited. PPPoE: CPEs that may dial this username (LAN behind one CPE is already unlimited).";
+  var HOTSPOT_MAX_HINT =
+    "Each device gets its own voucher code. Example: 3 = one payment creates 3 codes.";
+
+  function inferHotspotDeviceMode(maxDevices, otherEnabled, hourlyRate) {
+    if (otherEnabled || (parseFloat(hourlyRate) || 0) > 0) return "multi";
+    var raw = (maxDevices || "").trim();
+    if (!raw) return "multi";
+    var n = parseInt(raw, 10);
+    if (isNaN(n) || n > 1) return "multi";
+    return "single";
+  }
+
+  function wirePackageTypeWizard(formSelector) {
+    var form = document.querySelector(formSelector);
+    if (!form) return { sync: function () {}, setDeviceMode: function () {} };
+
+    var serviceRadios = form.querySelectorAll('input[name="service_type"]');
+    var serviceTabButtons = form.querySelectorAll("[data-service-tab]");
+    var deviceStep = form.querySelector("[data-hotspot-device-step]");
+    var deviceTabButtons = form.querySelectorAll("[data-device-tab]");
+    var maxDevicesWrap = form.querySelector("[data-package-max-devices-wrap]");
+    var maxDevicesLabel = form.querySelector("[data-package-max-devices-label]");
+    var maxDevicesInput = form.querySelector('[name="max_devices"]');
+    var maxDevicesHint = form.querySelector("[data-package-max-devices-wrap] .field-hint");
+    var otherEnabledInput = form.querySelector('[name="hotspot_other_devices_enabled"]');
+    var hourlyRateInput = form.querySelector('[name="hotspot_hourly_rate_per_device"]');
+    var multiPanels = form.querySelectorAll("[data-package-hotspot-multi]");
+      var deviceMode = "single";
+
+    function serviceType() {
+      var checked = form.querySelector('input[name="service_type"]:checked');
+      return checked ? checked.value : "pppoe";
+    }
+
+    function syncOtherEnabledFromRate() {
+      if (!otherEnabledInput) return;
+      var rate = parseFloat(hourlyRateInput && hourlyRateInput.value) || 0;
+      otherEnabledInput.checked = rate > 0;
+    }
+
+    function syncDeviceModeUi() {
+      var isHotspot = serviceType() === "hotspot";
+      var isMulti = deviceMode === "multi";
+
+      deviceTabButtons.forEach(function (btn) {
+        var active = btn.getAttribute("data-device-tab") === deviceMode;
+        btn.classList.toggle("is-active", active);
+        btn.setAttribute("aria-selected", active ? "true" : "false");
+      });
+
+      multiPanels.forEach(function (panel) {
+        panel.hidden = !isHotspot || !isMulti;
+      });
+
+      if (maxDevicesWrap) {
+        if (!isHotspot) {
+          maxDevicesWrap.hidden = false;
+          if (maxDevicesLabel) maxDevicesLabel.innerHTML = 'Max devices <span class="pppoe-optional">optional</span>';
+          if (maxDevicesHint) maxDevicesHint.textContent = PPPoe_MAX_HINT;
+        } else if (isMulti) {
+          maxDevicesWrap.hidden = false;
+          if (maxDevicesLabel) maxDevicesLabel.textContent = "Devices included in one payment";
+          if (maxDevicesHint) maxDevicesHint.textContent = HOTSPOT_MAX_HINT;
+          if (maxDevicesInput && !(maxDevicesInput.value || "").trim()) {
+            maxDevicesInput.value = "2";
+          }
+        } else {
+          maxDevicesWrap.hidden = true;
+          if (maxDevicesInput) maxDevicesInput.value = "1";
+        }
+      }
+
+      if (isHotspot && !isMulti) {
+        if (otherEnabledInput) otherEnabledInput.checked = false;
+        if (hourlyRateInput) hourlyRateInput.value = "0";
+      } else if (isHotspot && isMulti) {
+        syncOtherEnabledFromRate();
+      }
+    }
+
+    function syncServiceTabs() {
+      var st = serviceType();
+      serviceTabButtons.forEach(function (btn) {
+        var active = btn.getAttribute("data-service-tab") === st;
+        btn.classList.toggle("is-active", active);
+        btn.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      if (deviceStep) deviceStep.hidden = st !== "hotspot";
+      if (st !== "hotspot") deviceMode = "single";
+      syncDeviceModeUi();
+      if (formSelector === "#billing-package-register-form" && serviceType() === "pppoe") {
+        applyRegisterMaxDevicesDefault();
+      }
+      if (formSelector === "#billing-package-edit-form" && typeof updateEditMaxDevicesHint === "function") {
+        updateEditMaxDevicesHint();
+      }
+    }
+
+    serviceTabButtons.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var val = btn.getAttribute("data-service-tab");
+        serviceRadios.forEach(function (radio) {
+          if (radio.value === val) {
+            radio.checked = true;
+            radio.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        });
+        syncServiceTabs();
+      });
+    });
+
+    deviceTabButtons.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        deviceMode = btn.getAttribute("data-device-tab") || "single";
+        syncDeviceModeUi();
+      });
+    });
+
+    serviceRadios.forEach(function (radio) {
+      radio.addEventListener("change", syncServiceTabs);
+    });
+
+    if (hourlyRateInput) {
+      hourlyRateInput.addEventListener("input", syncOtherEnabledFromRate);
+    }
+
+    form.addEventListener("submit", function () {
+      if (serviceType() === "hotspot" && deviceMode === "single") {
+        if (maxDevicesInput) maxDevicesInput.value = "1";
+        if (otherEnabledInput) otherEnabledInput.checked = false;
+        if (hourlyRateInput && !(hourlyRateInput.value || "").trim()) {
+          hourlyRateInput.value = "0";
+        }
+      }
+      if (serviceType() === "hotspot" && deviceMode === "multi") {
+        syncOtherEnabledFromRate();
+      }
+    });
+
+    syncServiceTabs();
+
+    return {
+      sync: syncServiceTabs,
+      setDeviceMode: function (mode) {
+        deviceMode = mode === "multi" ? "multi" : "single";
+        syncDeviceModeUi();
+      },
+      inferModeFromValues: function (maxDevices, otherEnabled, hourlyRate) {
+        deviceMode = inferHotspotDeviceMode(maxDevices, otherEnabled, hourlyRate);
+        syncDeviceModeUi();
+      },
+    };
+  }
+
+  var registerWizard = wirePackageTypeWizard("#billing-package-register-form");
+  var editWizard = wirePackageTypeWizard("#billing-package-edit-form");
+
   function setFieldValue(id, value) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -216,6 +384,18 @@
       setFieldValue("id_edit_package_upload_guaranteed", btn.getAttribute("data-package-upload-guaranteed") || "0");
       var maxDevices = btn.getAttribute("data-package-max-devices") || "";
       setFieldValue("id_edit_package_max_devices", maxDevices === "0" ? "" : maxDevices);
+      setFieldValue(
+        "id_edit_package_hotspot_other_base_price",
+        btn.getAttribute("data-package-hotspot-other-base") || ""
+      );
+      setFieldValue(
+        "id_edit_package_hotspot_hourly_rate_per_device",
+        btn.getAttribute("data-package-hotspot-hourly-rate") || ""
+      );
+      var otherEnabled = document.getElementById("id_edit_package_hotspot_other_devices_enabled");
+      if (otherEnabled) {
+        otherEnabled.checked = btn.getAttribute("data-package-hotspot-other-enabled") === "1";
+      }
 
       var offerEnabled = document.getElementById("id_edit_package_offer_enabled");
       if (offerEnabled) {
@@ -256,6 +436,18 @@
 
       if (updateEditSpeedHint) updateEditSpeedHint();
       if (updateEditMaxDevicesHint) updateEditMaxDevicesHint();
+      if (editWizard) {
+        editWizard.sync();
+        if (serviceType === "hotspot") {
+          editWizard.inferModeFromValues(
+            maxDevices,
+            btn.getAttribute("data-package-hotspot-other-enabled") === "1",
+            btn.getAttribute("data-package-hotspot-hourly-rate") || ""
+          );
+        } else {
+          editWizard.setDeviceMode("single");
+        }
+      }
       openModal("billing-package-edit-modal");
       var nameInput = document.getElementById("id_edit_package_name");
       if (nameInput) nameInput.focus();

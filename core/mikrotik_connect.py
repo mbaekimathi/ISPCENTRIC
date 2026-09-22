@@ -1720,7 +1720,6 @@ def set_mikrotik_clean_uplink(
                 provider_networks=provider_networks or None,
             )
             notes.extend(_harden_ip_settings_against_backflow(sock))
-            _ensure_masquerade(sock)
 
         mode_label = (
             "Modem bypass" if mode == "bypass" else "Behind provider router"
@@ -11775,12 +11774,27 @@ def _normalize_hotspot_portal_urls(
 ) -> dict[str, str]:
     """Single place to absolutize Hotspot captive URLs (avoids resolve twice)."""
     pay = _resolve_absolute_captive_url(pay_url or login_url or "")
-    login = _resolve_absolute_captive_url(login_url) or pay
-    welcome = _resolve_absolute_captive_url(
-        welcome_url or redirect_url or alogin_url or ""
+    login = (
+        _resolve_absolute_captive_url(login_url)
+        if (login_url or "").strip()
+        else pay
     )
-    alogin = _resolve_absolute_captive_url(alogin_url) or welcome
-    redirect = _resolve_absolute_captive_url(redirect_url) or welcome
+    welcome_source = welcome_url or redirect_url or alogin_url or ""
+    welcome = (
+        _resolve_absolute_captive_url(welcome_source)
+        if welcome_source.strip()
+        else ""
+    )
+    alogin = (
+        _resolve_absolute_captive_url(alogin_url)
+        if (alogin_url or "").strip()
+        else welcome
+    )
+    redirect = (
+        _resolve_absolute_captive_url(redirect_url)
+        if (redirect_url or "").strip()
+        else welcome
+    )
     return {
         "pay_url": pay,
         "login_url": login,
@@ -14673,7 +14687,11 @@ def _repair_unpaid_hotspot_leak_on_socket(
     notes = _block_orphan_hotspot_users_on_socket(sock, router)
     portal = _billing_portal_base_url(organization=org)
     leak_found = any(
-        "blocked orphan" in n or "purged" in n or "killed" in n for n in notes
+        "blocked orphan" in n
+        or "blocked untagged" in n
+        or "purged" in n
+        or "killed" in n
+        for n in notes
     )
     if leak_found:
         notes.extend(_ensure_hotspot_pool_wan_guard(sock, portal_url=portal))
@@ -14706,7 +14724,12 @@ def _repair_unpaid_hotspot_leak_on_socket(
                 f"warning: captive refresh after leak repair failed: {exc}"
             )
     repaired = sum(
-        1 for n in notes if "blocked orphan" in n or "purged" in n or "killed" in n
+        1
+        for n in notes
+        if "blocked orphan" in n
+        or "blocked untagged" in n
+        or "purged" in n
+        or "killed" in n
     )
     return {
         "ok": True,
@@ -18939,14 +18962,23 @@ def sync_customer_subscription_access(
         customer
     )
     try:
-        from billing.devices import customer_max_devices
+        from billing.devices import (
+            authorized_hotspot_macs_for_customer,
+            customer_max_devices,
+        )
 
         device_key = f"d{int(customer_max_devices(customer) or 0)}"
+        if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+            auth_macs = authorized_hotspot_macs_for_customer(customer)
+            mac_key = ",".join(sorted(auth_macs)) if auth_macs else "none"
+        else:
+            mac_key = ""
     except Exception:
         device_key = "d0"
+        mac_key = ""
     provision_cache_key = (
         f"captive:provision:{customer_id}:{int(bool(allowed))}:"
-        f"{int(bool(reauthenticate))}:{rate_key}:{device_key}"
+        f"{int(bool(reauthenticate))}:{rate_key}:{device_key}:{mac_key}"
         if customer_id
         else ""
     )
@@ -20781,19 +20813,22 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
     )
 
     for row in _print(sock, "/ip/hotspot/user", props=".id,name,disabled,comment"):
-        comment = row.get("comment") or ""
-        if ISP_HOTSPOT_TAG not in comment:
-            continue
         name = _normalize_hotspot_mac(row.get("name") or "")
         if not _is_hotspot_mac_name(name):
             continue
         if name in paid_macs:
             continue
+        comment = row.get("comment") or ""
+        tagged = ISP_HOTSPOT_TAG in comment
+        disabled = _is_ros_true(row.get("disabled"))
+        # Skip MAC users we already disabled; still scrub untagged/enabled leaks.
+        if disabled and tagged:
+            continue
         _ensure_hotspot_user(
             sock,
             username=name,
             password="",
-            comment=f"{ISP_HOTSPOT_TAG} unpaid",
+            comment=f"{ISP_HOTSPOT_TAG} unpaid orphan",
             disabled=True,
             limit_uptime="0s",
         )
@@ -20806,7 +20841,10 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
             host_rows=host_rows,
         )
         purged = _purge_hotspot_ok_list_for_mac(sock, name, active_rows=active_rows)
-        notes.append(f"blocked orphan Hotspot MAC {name} (ok-list purged={purged})")
+        kind = "untagged" if not tagged else "orphan"
+        notes.append(
+            f"blocked {kind} Hotspot MAC {name} (ok-list purged={purged})"
+        )
 
     # Paid surfing IPs only — anything else on the ok-list is a leak (stale
     # dynamic rows after kick, orphan imports, or over-cap MACs).
@@ -20904,22 +20942,23 @@ def block_hotspot_mac_until_paid(
     Push a disabled Hotspot MAC user and kick any live session.
 
     Used when a phone connects or opens the pay page before a package is active.
-    Paid customers are left untouched.
+    Voucher-authorized MACs on a live package are left untouched.
     """
+    from billing.devices import hotspot_mac_can_surf, normalize_device_mac
     from billing.services import customer_can_surf_via_hotspot
 
-    mac = (mac or "").strip().upper()
+    mac = normalize_device_mac(mac) or (mac or "").strip().upper()
     if not mac:
         return {"ok": False, "error": "No device MAC.", "skipped": False}
 
-    if customer is not None and customer_can_surf_via_hotspot(customer):
+    if customer is not None and hotspot_mac_can_surf(customer, mac):
         return {
             "ok": True,
             "skipped": True,
-            "message": "Hotspot package is already active.",
+            "message": "Hotspot MAC is already authorized.",
         }
 
-    if customer is not None:
+    if customer is not None and not customer_can_surf_via_hotspot(customer):
         return sync_customer_subscription_access(
             customer,
             provision=True,
@@ -20985,6 +21024,292 @@ def block_hotspot_mac_until_paid(
         }
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc) or "Could not block Hotspot MAC."}
+
+
+_HOTSPOT_BLOCK_PENDING_PREFIX = "hotspot:block_pending:v1:"
+
+
+def _hotspot_block_pending_cache_key(org_id: int) -> str:
+    return f"{_HOTSPOT_BLOCK_PENDING_PREFIX}{org_id}"
+
+
+def enqueue_hotspot_block_pending(
+    organization,
+    mac: str,
+    *,
+    customer_id: int | None = None,
+) -> None:
+    """Remember MACs that must be blocked once the NAS is reachable again."""
+    from billing.devices import normalize_device_mac
+    from core.subscription_sync import _jobs_cache
+
+    mac = normalize_device_mac(mac)
+    org_id = getattr(organization, "pk", None)
+    if not mac or not org_id:
+        return
+    cache = _jobs_cache()
+    key = _hotspot_block_pending_cache_key(org_id)
+    pending = dict(cache.get(key) or {})
+    pending[mac] = customer_id
+    cache.set(key, pending, timeout=7 * 86400)
+
+
+def process_hotspot_block_pending_for_organization(organization) -> dict[str, Any]:
+    """Retry NAS blocks queued while routers were offline."""
+    from billing.devices import normalize_device_mac
+    from billing.models import Customer
+    from core.subscription_sync import _jobs_cache
+
+    org_id = getattr(organization, "pk", None)
+    if not org_id:
+        return {"ok": False, "drained": 0, "remaining": 0}
+
+    cache = _jobs_cache()
+    key = _hotspot_block_pending_cache_key(org_id)
+    pending = dict(cache.get(key) or {})
+    if not pending:
+        return {"ok": True, "drained": 0, "remaining": 0}
+
+    remaining: dict[str, int | None] = {}
+    drained = 0
+    for raw_mac, customer_id in pending.items():
+        mac = normalize_device_mac(raw_mac) or raw_mac
+        customer = None
+        if customer_id:
+            customer = Customer.objects.filter(pk=customer_id).first()
+        result = block_hotspot_mac_until_paid(
+            organization, mac, customer=customer
+        )
+        if result.get("ok") and not result.get("timeout"):
+            drained += 1
+        else:
+            remaining[mac] = customer_id
+
+    if remaining:
+        cache.set(key, remaining, timeout=7 * 86400)
+    else:
+        cache.delete(key)
+    return {"ok": True, "drained": drained, "remaining": len(remaining)}
+
+
+def process_hotspot_block_pending_fleet(*, organization_id: int = 0) -> dict[str, int]:
+    """Drain pending Hotspot block queues across organizations."""
+    from accounts.models import Organization
+
+    qs = Organization.objects.filter(hotspot_enabled=True).order_by("id")
+    if organization_id:
+        qs = qs.filter(pk=organization_id)
+    total_drained = 0
+    total_remaining = 0
+    for org in qs:
+        result = process_hotspot_block_pending_for_organization(org)
+        total_drained += int(result.get("drained") or 0)
+        total_remaining += int(result.get("remaining") or 0)
+    return {"drained": total_drained, "remaining": total_remaining}
+
+
+def scrub_hotspot_orphans_on_router(router) -> dict[str, Any]:
+    """
+    Disable enabled Hotspot MAC users that billing does not authorize.
+
+    Also purges stale ok-list entries and leaked sessions on the NAS.
+    """
+    from core.models import MikroTikRouter
+
+    router_id = getattr(router, "pk", None)
+    host = (getattr(router, "host", None) or "").strip()
+    api_user = (getattr(router, "username", None) or "").strip()
+    api_password = getattr(router, "password", None) or ""
+    org = getattr(router, "organization", None)
+    suspended = (
+        getattr(router, "account_status", "") == MikroTikRouter.AccountStatus.SUSPENDED
+    )
+
+    if suspended:
+        return {
+            "ok": True,
+            "skipped": True,
+            "router_id": router_id,
+            "blocked": 0,
+            "message": "Router suspended — orphan scrub skipped.",
+        }
+    if not org or not host or not api_user:
+        return {
+            "ok": False,
+            "skipped": True,
+            "router_id": router_id,
+            "blocked": 0,
+            "error": "Router organization or API credentials missing.",
+        }
+
+    hotspot_on = bool(getattr(org, "hotspot_enabled", False))
+    if not hotspot_on:
+        from billing.models import Customer
+
+        hotspot_on = Customer.objects.filter(
+            organization_id=org.pk,
+            service_type=Customer.ServiceType.HOTSPOT,
+        ).exclude(hotspot_mac="").exists()
+    if not hotspot_on:
+        return {
+            "ok": True,
+            "skipped": True,
+            "router_id": router_id,
+            "blocked": 0,
+            "message": "Hotspot not enabled for this organization.",
+        }
+
+    last_error = ""
+    for candidate in _router_api_host_candidates(router, discover=False):
+        try:
+            with _api_session(
+                candidate, api_user, api_password, timeout=12.0, reuse=True
+            ) as sock:
+                notes = _block_orphan_hotspot_users_on_socket(sock, router)
+                blocked = sum(
+                    1
+                    for note in notes
+                    if "blocked orphan" in note or "blocked untagged" in note
+                )
+                return {
+                    "ok": True,
+                    "skipped": blocked == 0
+                    and not any("purged" in n or "killed" in n for n in notes),
+                    "router_id": router_id,
+                    "host": candidate,
+                    "blocked": blocked,
+                    "notes": notes,
+                    "message": (
+                        f"Hotspot orphan scrub: blocked={blocked}"
+                        if blocked
+                        else (
+                            notes[0]
+                            if notes
+                            else "No orphan Hotspot MAC users on this router."
+                        )
+                    ),
+                }
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            continue
+
+    return {
+        "ok": False,
+        "skipped": True,
+        "router_id": router_id,
+        "blocked": 0,
+        "error": last_error or f"{host}: unreachable",
+    }
+
+
+def scrub_hotspot_orphans_fleet(
+    *,
+    organization_id: int = 0,
+    workers: int = 4,
+) -> list[dict[str, Any]]:
+    """
+    Drain pending pay-wall blocks, then scrub orphan Hotspot users on every NAS.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from core.models import MikroTikRouter
+
+    pending = process_hotspot_block_pending_fleet(organization_id=organization_id)
+    qs = (
+        MikroTikRouter.objects.filter(
+            account_status=MikroTikRouter.AccountStatus.ACTIVE,
+        )
+        .exclude(host="")
+        .select_related("organization")
+        .order_by("id")
+    )
+    if organization_id:
+        qs = qs.filter(organization_id=organization_id)
+
+    routers = list(qs)
+    if not routers:
+        return [
+            {
+                "ok": True,
+                "skipped": True,
+                "message": "No active MikroTik routers.",
+                "pending_drained": pending.get("drained", 0),
+            }
+        ]
+
+    results: list[dict[str, Any]] = []
+    worker_count = max(1, min(int(workers), len(routers)))
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures = {
+            pool.submit(scrub_hotspot_orphans_on_router, router): router
+            for router in routers
+        }
+        for future in as_completed(futures):
+            router = futures[future]
+            try:
+                result = future.result() or {}
+            except Exception as exc:  # noqa: BLE001
+                result = {
+                    "ok": False,
+                    "router_id": getattr(router, "pk", None),
+                    "error": str(exc),
+                }
+            result["pending_drained"] = pending.get("drained", 0)
+            results.append(result)
+    return results
+
+
+def enforce_hotspot_pay_wall(
+    organization,
+    mac: str,
+    *,
+    customer=None,
+    schedule_retry: bool = True,
+) -> dict[str, Any]:
+    """
+    Block an unpaid/unregistered MAC immediately and queue a retry when NAS is offline.
+    """
+    from core.mikrotik_jobs import schedule_mikrotik_job
+
+    result = block_hotspot_mac_until_paid(
+        organization, mac, customer=customer
+    )
+    if (
+        schedule_retry
+        and result.get("skipped")
+        and result.get("timeout")
+        and organization is not None
+    ):
+        enqueue_hotspot_block_pending(
+            organization,
+            mac,
+            customer_id=getattr(customer, "pk", None),
+        )
+        org_pk = organization.pk
+        mac_for_job = mac
+        customer_pk = getattr(customer, "pk", None)
+
+        def _retry_block(
+            org_id=org_pk,
+            mac_value=mac_for_job,
+            customer_id=customer_pk,
+        ) -> None:
+            from accounts.models import Organization
+            from billing.models import Customer
+
+            org = Organization.objects.filter(pk=org_id).first()
+            if org is None:
+                return
+            cust = None
+            if customer_id:
+                cust = Customer.objects.filter(pk=customer_id).first()
+            block_hotspot_mac_until_paid(org, mac_value, customer=cust)
+
+        schedule_mikrotik_job(
+            _retry_block,
+            name=f"hotspot-block-retry-{mac_for_job[-8:]}",
+        )
+    return result
 
 
 def disconnect_hotspot_customer(customer, *, router=None) -> dict[str, Any]:
@@ -22030,7 +22355,6 @@ def _ensure_isp_hotspot_stack(
       5. DHCP option 114 + bounce unauthorized clients for instant popup
     """
     notes: list[str] = []
-    notes.extend(_disable_fasttrack_connection_rules(sock))
 
     urls = _normalize_hotspot_portal_urls(
         pay_url=pay_url,
@@ -22050,6 +22374,8 @@ def _ensure_isp_hotspot_stack(
             "Set PUBLIC_BASE_URL to a reachable http://host so phones open "
             "/hotspot/…/pay/ immediately on Wi‑Fi connect."
         )
+
+    notes.extend(_disable_fasttrack_connection_rules(sock))
 
     requested_lan = (lan_interface or "").strip()
     # The saved bridge name is often stale; RouterOS rejects interface-scoped

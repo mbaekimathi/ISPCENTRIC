@@ -124,6 +124,34 @@ class BillingPlan(models.Model):
             "PPPoE always enforces 1 concurrent dial (one CPE); LAN behind it is unlimited."
         ),
     )
+    hotspot_other_devices_enabled = models.BooleanField(
+        "Hotspot other-devices pay",
+        default=True,
+        help_text=(
+            "Offer “Pay for other devices” on the captive page with hourly "
+            "multi-device voucher pricing."
+        ),
+    )
+    hotspot_other_base_price = models.DecimalField(
+        "Other devices base price",
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+        help_text=(
+            "Base KES fee before hourly top-up for other-device purchases. "
+            "Blank = use package price."
+        ),
+    )
+    hotspot_hourly_rate_per_device = models.DecimalField(
+        "Hourly rate per device",
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text="KES per hour per device: total = base + (rate × devices × hours).",
+    )
     offer_enabled = models.BooleanField(
         "Package offer enabled",
         default=False,
@@ -540,6 +568,8 @@ class Customer(models.Model):
         ]
 
     def save(self, *args, **kwargs):
+        from django.db import IntegrityError
+
         from billing.services import normalize_customer_phone_key
 
         mac = (self.hotspot_mac or "").strip()
@@ -547,6 +577,17 @@ class Customer(models.Model):
         key = normalize_customer_phone_key(self.phone)
         if key:
             self.phone_normalized = key
+            if self.organization_id:
+                dup = type(self).objects.filter(
+                    organization_id=self.organization_id,
+                    phone_normalized=key,
+                )
+                if self.pk:
+                    dup = dup.exclude(pk=self.pk)
+                if dup.exists():
+                    raise IntegrityError(
+                        "A client with this phone number already exists in this organization."
+                    )
         else:
             # Never store "" when a unique (org, phone_normalized) index exists.
             # MySQL/MariaDB often cannot apply the partial-index condition, so a
@@ -929,6 +970,8 @@ class CustomerUsageSample(models.Model):
     )
     sampled_at = models.DateTimeField(db_index=True)
     session_active = models.BooleanField(default=False)
+    # Hotspot: on Wi‑Fi / captive network even when not authenticated (surfing).
+    network_connected = models.BooleanField(default=False)
     uptime_seconds = models.PositiveIntegerField(default=0)
     download_bps = models.BigIntegerField(default=0)
     upload_bps = models.BigIntegerField(default=0)

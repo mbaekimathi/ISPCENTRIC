@@ -1640,6 +1640,7 @@ def recharge_customer_cash(
     vouchers = []
     share_vouchers = []
     hotspot_autoconnected = False
+    autoconnect_voucher_id = None
     stacked = customer_subscription_window_active(customer)
     with transaction.atomic():
         update_fields: list[str] = []
@@ -1693,6 +1694,8 @@ def recharge_customer_cash(
             )
             connect = autoconnect_primary_after_cash_recharge(customer, vouchers)
             hotspot_autoconnected = bool(connect.get("autoconnected"))
+            if hotspot_autoconnected:
+                autoconnect_voucher_id = connect.get("claimed_voucher_id")
             share_vouchers = list(connect.get("extra_vouchers") or [])
             customer.refresh_from_db()
 
@@ -1750,6 +1753,7 @@ def recharge_customer_cash(
         "kick_sessions": bool(vouchers),
         "unlink_hotspot_after_sync": bool(vouchers) and not hotspot_autoconnected,
         "hotspot_autoconnected": hotspot_autoconnected,
+        "autoconnect_voucher_id": autoconnect_voucher_id,
         "stacked": stacked,
     }
 

@@ -1,0 +1,28 @@
+{# PPPoE vs Hotspot, then Hotspot single vs multiple devices. #}
+<div class="package-type-wizard" data-package-type-wizard="{{ wizard_id|default:'register' }}">
+  <div class="package-type-tabs" data-package-service-tabs role="tablist" aria-label="Service type">
+    <button type="button" class="package-type-tab tone-pppoe" data-service-tab="pppoe" role="tab" aria-selected="false">
+      <span class="package-type-tab-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
+      </span>
+      <span class="package-type-tab-label">PPPoE</span>
+    </button>
+    <button type="button" class="package-type-tab tone-hotspot" data-service-tab="hotspot" role="tab" aria-selected="false">
+      <span class="package-type-tab-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
+      </span>
+      <span class="package-type-tab-label">Hotspot</span>
+    </button>
+  </div>
+  <div class="package-service-type-toggle package-service-type-sr" aria-hidden="true">
+    {{ ptype_form.service_type }}
+  </div>
+  {% if ptype_form.service_type.errors %}<div class="field-error">{{ ptype_form.service_type.errors|striptags }}</div>{% endif %}
+
+  <div class="package-hotspot-device-step" data-hotspot-device-step hidden>
+    <div class="package-type-tabs package-type-tabs-compact" data-package-device-tabs role="tablist" aria-label="Hotspot devices">
+      <button type="button" class="package-type-tab" data-device-tab="single" role="tab">Single</button>
+      <button type="button" class="package-type-tab" data-device-tab="multi" role="tab">Multiple</button>
+    </div>
+  </div>
+</div>

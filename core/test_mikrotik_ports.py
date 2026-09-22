@@ -3828,6 +3828,10 @@ class HotMultiUplinkApplySimulationTests(SimpleTestCase):
                 side_effect=fake_pcc,
             ),
             patch(
+                "core.mikrotik_connect._balance_member_tables_ready",
+                return_value=[],
+            ),
+            patch(
                 "core.mikrotik_connect._install_smart_balance_monitor",
                 return_value={"ok": True},
             ),

@@ -1247,13 +1247,18 @@ def manager_installed_activate_recharge(request, customer_id):
     customer = result["customer"]
     invoice = result["invoice"]
     provision = customer_needs_nas_provision(customer)
-    enqueue_customer_subscription_sync(
+    from billing.vouchers import burn_claimed_voucher_after_nas
+    from core.subscription_sync import nas_access_ready
+
+    nas_result = enqueue_customer_subscription_sync(
         customer.pk,
         provision,
         wait_first=True,
         quick=True,
         reauthenticate=True,
     )
+    if result.get("hotspot_autoconnected") and nas_access_ready(nas_result):
+        burn_claimed_voucher_after_nas(result.get("autoconnect_voucher_id"))
 
     amount_label = f"{form.cleaned_data['amount']:.2f}"
     end_label = (

@@ -594,6 +594,7 @@ class DynamicAccessPolicyTests(TestCase):
             organization=self.org,
             code=fulfill["voucher_code"],
             customer=customer,
+            mac=customer.hotspot_mac,
         )
         customer.refresh_from_db()
 
@@ -1399,7 +1400,7 @@ class CustomerPhoneUniquenessTests(TestCase):
             Customer.objects.create(
                 organization=self.org,
                 full_name="Client B",
-                phone="0710000010",
+                phone="0700000010",
                 account_number="CLT-B",
                 service_type=Customer.ServiceType.HOTSPOT,
                 hotspot_mac="AA:BB:CC:DD:EE:02",
@@ -1437,7 +1438,7 @@ class CustomerPhoneUniquenessTests(TestCase):
 
         self.assertEqual(
             normalize_customer_phone_key("254700000012"),
-            normalize_customer_phone_key("0710000012"),
+            normalize_customer_phone_key("0700000012"),
         )
         self.assertEqual(
             normalize_customer_phone_key("+254700000012"),
@@ -1461,7 +1462,7 @@ class CustomerPhoneUniquenessTests(TestCase):
             service_type=Customer.ServiceType.HOTSPOT,
             hotspot_mac="AA:BB:CC:DD:EE:02",
         )
-        self.assertEqual(second.phone_normalized, "")
+        self.assertTrue(second.phone_normalized.startswith("anon:"))
 
 
 class FulfillIdempotencyTests(TestCase):
@@ -1770,6 +1771,7 @@ class FulfillIdempotencyTests(TestCase):
             organization=self.org,
             code=result["voucher_code"],
             customer=self.customer,
+            mac=self.customer.hotspot_mac,
         )
         self.customer.refresh_from_db()
         self.assertTrue(redeem["ok"])
@@ -2068,7 +2070,10 @@ class AccessVoucherLifecycleTests(TestCase):
             return_value={"ok": True, "allowed": True},
         ):
             redeem_access_voucher(
-                organization=self.org, code=voucher.code, customer=self.customer
+                organization=self.org,
+                code=voucher.code,
+                customer=self.customer,
+                mac=self.customer.hotspot_mac,
             )
         voucher.refresh_from_db()
         self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
@@ -2165,8 +2170,8 @@ class AccessVoucherLifecycleTests(TestCase):
 
         response = self.client.get(f"/hotspot/{self.org.join_code}/pay/")
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, self.plan.image.url)
-        self.assertContains(response, 'class="plan-image"')
+        self.assertContains(response, self.plan.name)
+        self.assertContains(response, "plan-card")
 
     def test_client_billing_lists_and_shares_voucher(self):
         from billing.models import AccessVoucher, StkPushRequest
@@ -2179,26 +2184,26 @@ class AccessVoucherLifecycleTests(TestCase):
         )
         voucher = AccessVoucher.objects.get(stk_request=stk)
 
-        response = self.client.get(f"/app/clients/{self.customer.pk}/billing/")
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Access vouchers")
-        self.assertContains(response, "Recharge client")
-        self.assertContains(
-            response, f"/app/clients/{self.customer.pk}/?open=recharge"
-        )
-        self.assertContains(response, result["voucher_code"])
-        self.assertContains(response, "WhatsApp")
-        self.assertContains(response, "Copy")
-        self.assertContains(response, "Pay page")
-        self.assertContains(response, "SHARE1")
-        self.assertEqual(response.context["valid_voucher_count"], 1)
+        billing = self.client.get(f"/app/clients/{self.customer.pk}/billing/")
+        self.assertEqual(billing.status_code, 200)
+        self.assertContains(billing, "Recharge client")
+        self.assertContains(billing, "SHARE1")
+
+        vouchers = self.client.get(f"/app/clients/{self.customer.pk}/vouchers/")
+        self.assertEqual(vouchers.status_code, 200)
+        self.assertContains(vouchers, "Access vouchers")
+        self.assertContains(vouchers, result["voucher_code"])
+        self.assertContains(vouchers, "WhatsApp")
+        self.assertContains(vouchers, "Copy")
+        self.assertContains(vouchers, "Pay page")
+        self.assertEqual(vouchers.context["valid_voucher_count"], 1)
         self.assertEqual(voucher.status, AccessVoucher.Status.VALID)
         # Share payload targets the client's phone.
-        row = response.context["vouchers"][0]
+        row = vouchers.context["vouchers"][0]
         self.assertTrue(row["share"]["can_share"])
         self.assertIn(voucher.code[:4], row["share"]["share_text"])
         self.assertIn("wa.me/254700000777", row["share"]["whatsapp_client_url"])
-        payments = response.context["payments"]
+        payments = billing.context["payments"]
         self.assertEqual(len(payments), 1)
         self.assertEqual(payments[0].display_reference, "SHARE1")
 
@@ -2470,11 +2475,13 @@ class AccessVoucherLifecycleTests(TestCase):
 
         response = self.client.get(f"/app/clients/{self.customer.pk}/")
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Available vouchers")
+        self.assertContains(response, "client-available-vouchers")
         self.assertContains(response, display)
         self.assertContains(response, "1 unused voucher")
         self.assertEqual(response.context["valid_voucher_count"], 1)
         self.assertEqual(len(response.context["available_vouchers"]), 1)
+        self.assertEqual(response.context["default_client_tab"], "vouchers")
+        self.assertEqual(len(response.context["subscription_vouchers"]), 1)
 
     def test_refresh_stk_status_auto_applies_package(self):
         from billing.stk import fulfill_successful_stk, refresh_stk_status
@@ -2617,12 +2624,15 @@ class AccessVoucherLifecycleTests(TestCase):
                 return {"ok": False, "allowed": False, "provision": {"ok": False}}
             return {"ok": True, "allowed": True, "provision": {"ok": True}}
 
+        from django.core.cache import cache
+
         with patch(
             "core.subscription_sync.enqueue_customer_subscription_sync",
             side_effect=fake_enqueue,
         ):
             result = {"authorized": False}
             for _ in range(5):
+                cache.delete(f"stk:nas-sync:{stk.pk}")
                 result = refresh_stk_status(stk, wait_for_nas=True)
                 if result.get("authorized") or result.get("surfing"):
                     break
@@ -2838,17 +2848,54 @@ class HotspotMultiDeviceVoucherTests(TestCase):
 
         response = self.client.get(f"/app/clients/{self.customer.pk}/")
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Available vouchers")
-        self.assertContains(response, "3 devices")
+        self.assertContains(response, "client-available-vouchers")
+        self.assertContains(response, "3-device plan")
         self.assertContains(response, "2 unused")
         self.assertContains(response, "1 used")
         self.assertEqual(response.context["valid_voucher_count"], 2)
         self.assertEqual(response.context["voucher_device_cap"], 3)
         for code in codes:
-            if format_voucher_code(used.code) == code:
-                self.assertNotContains(response, code)
-            else:
-                self.assertContains(response, code)
+            self.assertContains(response, code)
+        self.assertEqual(len(response.context["subscription_vouchers"]), 3)
+        self.assertEqual(response.context["default_client_tab"], "vouchers")
+        self.assertContains(response, 'data-client-panel="vouchers"')
+        self.assertContains(response, "Current subscription")
+
+    def test_vouchers_for_current_subscription_returns_latest_batch_only(self):
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk
+        from billing.vouchers import (
+            format_voucher_code,
+            vouchers_for_current_subscription,
+        )
+
+        first = fulfill_successful_stk(
+            self._stk(checkout_request_id="ws_CO_FAM_OLD"),
+            result_code=0,
+            result_desc="ok",
+            mpesa_receipt="OLDBATCH",
+        )
+        second = fulfill_successful_stk(
+            self._stk(checkout_request_id="ws_CO_FAM_NEW"),
+            result_code=0,
+            result_desc="ok",
+            mpesa_receipt="NEWBATCH",
+        )
+        old_codes = {
+            format_voucher_code(v.code)
+            for v in AccessVoucher.objects.filter(stk_request__checkout_request_id="ws_CO_FAM_OLD")
+        }
+        new_codes = {
+            format_voucher_code(v.code)
+            for v in AccessVoucher.objects.filter(stk_request__checkout_request_id="ws_CO_FAM_NEW")
+        }
+        rows = vouchers_for_current_subscription(self.customer)
+        codes = {row["code_display"] for row in rows}
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(codes.issubset(new_codes))
+        self.assertFalse(codes & old_codes)
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
 
     def test_fulfill_is_idempotent_and_does_not_mint_extras(self):
         from billing.models import AccessVoucher
@@ -2882,8 +2929,9 @@ class HotspotMultiDeviceVoucherTests(TestCase):
             )
             blocked = redeem_access_voucher(
                 organization=self.org,
-                code=first.code,
+                code=third.code,
                 customer=self.customer,
+                mac="",
             )
             extra = redeem_access_voucher(
                 organization=self.org,
@@ -2897,6 +2945,7 @@ class HotspotMultiDeviceVoucherTests(TestCase):
         self.assertTrue(used["ok"])
         self.assertEqual(first.status, AccessVoucher.Status.INVALID)
         self.assertFalse(blocked["ok"])
+        self.assertIn("Wi", blocked.get("error", ""))
         self.assertTrue(extra["ok"])
         self.assertEqual(second.status, AccessVoucher.Status.INVALID)
         self.assertEqual(third.status, AccessVoucher.Status.VALID)
@@ -2908,6 +2957,48 @@ class HotspotMultiDeviceVoucherTests(TestCase):
         self.assertEqual(remaining, [format_voucher_code(third.code)])
         self.assertNotIn(format_voucher_code(first.code), remaining)
         self.assertNotIn(format_voucher_code(second.code), remaining)
+
+    def test_sequential_redeems_authorize_all_claimed_macs(self):
+        from billing.devices import authorized_hotspot_macs_for_customer
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk
+        from billing.vouchers import redeem_access_voucher
+
+        stk = self._stk()
+        fulfill_successful_stk(stk, result_code=0, result_desc="ok", mpesa_receipt="FAM5")
+        vouchers = list(AccessVoucher.objects.filter(stk_request=stk).order_by("id"))
+        first, second, _third = vouchers
+        sync_calls: list[list[str]] = []
+
+        def fake_sync(customer, **kwargs):
+            sync_calls.append(list(authorized_hotspot_macs_for_customer(customer)))
+            return {"ok": True, "allowed": True}
+
+        with patch(
+            "core.mikrotik_connect.sync_customer_subscription_access",
+            side_effect=fake_sync,
+        ):
+            first_result = redeem_access_voucher(
+                organization=self.org,
+                code=first.code,
+                customer=self.customer,
+                mac="AA:BB:CC:DD:EE:88",
+            )
+            second_result = redeem_access_voucher(
+                organization=self.org,
+                code=second.code,
+                customer=self.customer,
+                mac="AA:BB:CC:DD:EE:89",
+            )
+
+        self.assertTrue(first_result["ok"])
+        self.assertTrue(second_result["ok"])
+        self.assertEqual(len(sync_calls), 2)
+        self.assertEqual(sync_calls[0], ["AA:BB:CC:DD:EE:88"])
+        self.assertEqual(
+            sorted(sync_calls[1]),
+            sorted(["AA:BB:CC:DD:EE:88", "AA:BB:CC:DD:EE:89"]),
+        )
 
     def test_pay_payload_lists_only_valid_vouchers(self):
         from billing.models import AccessVoucher, StkPushRequest
@@ -3584,10 +3675,15 @@ class HotspotCashRechargeVoucherTests(TestCase):
         )
         self.assertEqual(len(vouchers), 2)
         primary, extra = vouchers
-        self.assertEqual(primary.status, AccessVoucher.Status.INVALID)
+        self.assertEqual(primary.status, AccessVoucher.Status.VALID)
         self.assertEqual(
             (primary.redeemed_mac or "").upper(), "AA:BB:CC:DD:EE:70"
         )
+        from billing.vouchers import burn_claimed_voucher_after_nas
+
+        self.assertTrue(burn_claimed_voucher_after_nas(primary.pk))
+        primary.refresh_from_db()
+        self.assertEqual(primary.status, AccessVoucher.Status.INVALID)
         self.assertEqual(extra.status, AccessVoucher.Status.VALID)
         self.assertTrue(all(v.subscription_applied for v in vouchers))
 
@@ -3625,12 +3721,17 @@ class HotspotCashRechargeVoucherTests(TestCase):
         )
         old.refresh_from_db()
         self.assertEqual(old.status, AccessVoucher.Status.INVALID)
-        # Primary MAC burns one voucher; one unused sibling remains for the 2nd device.
-        self.assertEqual(
+        valid = list(
             AccessVoucher.objects.filter(
                 customer=self.customer, status=AccessVoucher.Status.VALID
-            ).count(),
-            1,
+            ).order_by("id")
+        )
+        # Primary autoconnect claims one voucher (VALID until NAS burn); sibling stays VALID.
+        self.assertEqual(len(valid), 2)
+        claimed = [row for row in valid if (row.redeemed_mac or "").strip()]
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(
+            (claimed[0].redeemed_mac or "").upper(), "AA:BB:CC:DD:EE:70"
         )
 
     def test_hotspot_cash_recharge_without_mac_returns_all_vouchers(self):

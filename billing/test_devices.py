@@ -14,6 +14,8 @@ from billing.devices import (
     customer_devices_unlimited,
     customer_max_devices,
     find_hotspot_customer_for_mac,
+    hotspot_mac_can_surf,
+    hotspot_mac_needs_voucher,
     hotspot_macs_for_customer,
     normalize_device_mac,
     resolve_or_create_hotspot_customer,
@@ -140,6 +142,63 @@ class HotspotDeviceLimitTests(TestCase):
             "AA:BB:CC:DD:EE:77",
             hotspot_macs_for_customer(self.customer),
         )
+
+    def test_linked_mac_without_voucher_cannot_surf(self):
+        now = timezone.now()
+        self.customer.package_start = now - timedelta(hours=1)
+        self.customer.package_end = now + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        attach_hotspot_device(self.customer, "AA:BB:CC:DD:EE:02")
+        self.assertTrue(hotspot_mac_can_surf(self.customer, "AA:BB:CC:DD:EE:01"))
+        self.assertFalse(hotspot_mac_can_surf(self.customer, "AA:BB:CC:DD:EE:02"))
+        self.assertTrue(
+            hotspot_mac_needs_voucher(self.customer, "AA:BB:CC:DD:EE:02")
+        )
+
+    def test_voucher_claimed_mac_can_surf(self):
+        from billing.models import AccessVoucher
+
+        now = timezone.now()
+        self.customer.package_start = now - timedelta(hours=1)
+        self.customer.package_end = now + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="4828K",
+            status=AccessVoucher.Status.VALID,
+            redeemed_mac="AA:BB:CC:DD:EE:02",
+        )
+        self.assertTrue(hotspot_mac_can_surf(self.customer, "AA:BB:CC:DD:EE:02"))
+        self.assertFalse(
+            hotspot_mac_needs_voucher(self.customer, "AA:BB:CC:DD:EE:02")
+        )
+
+    def test_new_voucher_claim_supersedes_old_valid_claim_on_same_mac(self):
+        from billing.models import AccessVoucher
+        from billing.vouchers import _claim_voucher_mac
+
+        first = AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="4829K",
+            status=AccessVoucher.Status.VALID,
+            redeemed_mac="AA:BB:CC:DD:EE:02",
+        )
+        second = AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="4830K",
+            status=AccessVoucher.Status.VALID,
+        )
+        _claim_voucher_mac(second, "AA:BB:CC:DD:EE:02")
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.redeemed_mac, "")
+        self.assertEqual(second.redeemed_mac, "AA:BB:CC:DD:EE:02")
 
     def test_unlimited_plan_accepts_extra_macs(self):
         self.plan.max_devices = 0

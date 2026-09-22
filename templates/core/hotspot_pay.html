@@ -25,7 +25,7 @@
       visibility: visible !important;
     }
   </style>
-  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=3">
+  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=4">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true">
@@ -72,6 +72,11 @@
           <strong>{{ access_banner_title }}</strong>
           {% if access_banner_message %}<p>{{ access_banner_message }}</p>{% endif %}
         </div>
+      {% elif hotspot_needs_voucher %}
+        <div class="access-banner" role="status">
+          <strong>Package active on another device</strong>
+          <p>Enter a voucher code below to connect this gadget. Payment is not required again.</p>
+        </div>
       {% elif hotspot_reconnect_eligible %}
         <div class="access-banner" role="status" data-reconnect-banner>
           <strong>Package active</strong>
@@ -100,7 +105,72 @@
           {% csrf_token %}
           <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">
 
-          <p class="section-label">Choose your access</p>
+          {% if has_other_devices_option %}
+          <section class="pay-mode-section" aria-label="Payment type">
+            <p class="section-label" data-pay-step-label>Step 1 · Who needs internet?</p>
+            <div class="pay-mode-tabs" data-pay-mode-tabs role="tablist" aria-label="Payment type">
+              <label class="pay-mode-tab is-active">
+                <input type="radio" name="pay_mode" value="this_device" checked data-pay-mode-input>
+                <span class="pay-mode-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg>
+                </span>
+                <span class="pay-mode-title">This phone</span>
+                <small>Pay &amp; go online now</small>
+              </label>
+              <label class="pay-mode-tab" data-pay-mode-other-wrap>
+                <input type="radio" name="pay_mode" value="other_devices" data-pay-mode-input>
+                <span class="pay-mode-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="14" height="10" rx="1.5"/><rect x="8" y="5" width="14" height="10" rx="1.5"/></svg>
+                </span>
+                <span class="pay-mode-title">Other phones</span>
+                <small>Get codes for family devices</small>
+              </label>
+            </div>
+
+            <div class="other-devices-panel" data-other-devices-panel hidden>
+              <p class="pay-mode-hint">Pick how many devices and how long. After M-Pesa you get one easy code per device.</p>
+
+              <div class="quick-pick-block">
+                <p class="quick-pick-label">How many devices?</p>
+                <div class="quick-pick-chips" data-device-chips role="group" aria-label="Number of devices">
+                  <button type="button" class="quick-pick-chip is-active" data-device-pick="1">1</button>
+                  <button type="button" class="quick-pick-chip" data-device-pick="2">2</button>
+                  <button type="button" class="quick-pick-chip" data-device-pick="3">3</button>
+                  <button type="button" class="quick-pick-chip" data-device-pick="4">4</button>
+                  <button type="button" class="quick-pick-chip" data-device-pick="custom">More</button>
+                </div>
+                <div class="field field-compact" data-device-custom hidden>
+                  <label for="hotspot-other-device-count">Exact number</label>
+                  <input id="hotspot-other-device-count" name="device_count" type="number" min="1" max="50" value="1" inputmode="numeric" data-other-device-count>
+                </div>
+              </div>
+
+              <div class="quick-pick-block">
+                <p class="quick-pick-label">How long per device?</p>
+                <div class="quick-pick-chips" data-hour-chips role="group" aria-label="Hours per device">
+                  <button type="button" class="quick-pick-chip is-active" data-hour-pick="1">1 hr</button>
+                  <button type="button" class="quick-pick-chip" data-hour-pick="2">2 hr</button>
+                  <button type="button" class="quick-pick-chip" data-hour-pick="4">4 hr</button>
+                  <button type="button" class="quick-pick-chip" data-hour-pick="8">8 hr</button>
+                  <button type="button" class="quick-pick-chip" data-hour-pick="24">1 day</button>
+                </div>
+                <input id="hotspot-other-hours" name="hours" type="hidden" value="1" data-other-hours>
+              </div>
+
+              <div class="quote-simple" data-quote-box aria-live="polite">
+                <p class="quote-simple-label">You pay</p>
+                <p class="quote-simple-amount" data-quote-total>KES 0</p>
+                <p class="quote-simple-meta" data-quote-summary>1 code · 1 hour each</p>
+              </div>
+
+              <p class="pay-mode-alert" data-other-plan-warning hidden role="status">
+                This package is for this phone only. Choose another package above, or tap <strong>This phone</strong>.
+              </p>
+            </div>
+          </section>
+          {% endif %}
+
+          <p class="section-label" data-plan-section-label>{% if has_other_devices_option %}Step 2 · Choose package{% else %}Choose your access{% endif %}</p>
           <div class="plan-categories" data-plan-select>
             {% with hsel=hotspot_selected_plan_id|default:selected_plan_id %}
             {% regroup hotspot_plans by duration_group as plan_groups %}
@@ -118,6 +188,9 @@
                         name="plan_id"
                         value="{{ plan.pk }}"
                         data-price="{{ plan.price }}"
+                        data-other-enabled="{% if plan.hotspot_other_devices_offer %}1{% else %}0{% endif %}"
+                        data-other-base="{{ plan.hotspot_other_base_price }}"
+                        data-hourly-rate="{{ plan.hotspot_hourly_rate }}"
                         {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}checked{% elif not hsel and forloop.parentloop.first and forloop.first %}checked{% endif %}
                         required
                       >
@@ -611,15 +684,20 @@
                 showConnectedVouchers(extra, data.stk_id, data.status_token);
                 return;
               }
-              if (data.authorized && data.stk_id && data.status_token && data.welcome_url) {
+              if (data.authorized && data.welcome_url) {
                 var target = data.welcome_url;
-                var separator = target.indexOf("?") === -1 ? "?" : "&";
-                window.setTimeout(function () {
-                  window.location.replace(
-                    target + separator + "stk=" + encodeURIComponent(data.stk_id) +
-                    "&token=" + encodeURIComponent(data.status_token)
-                  );
-                }, 500);
+                var params = [];
+                if (data.stk_id) params.push("stk=" + encodeURIComponent(data.stk_id));
+                if (data.status_token) params.push("token=" + encodeURIComponent(data.status_token));
+                if (params.length) {
+                  target += (target.indexOf("?") === -1 ? "?" : "&") + params.join("&");
+                }
+                window.setTimeout(function () { window.location.replace(target); }, 500);
+                return;
+              }
+              if (data.voucher_fallback) {
+                setWaiting(true, "Package activated", data.authorization_error || "Enter the voucher again if you are not online yet.");
+                window.setTimeout(function () { window.location.reload(); }, 1200);
                 return;
               }
               setWaiting(true, "You're online", data.authorization_error || "Package activated.");
@@ -664,14 +742,117 @@
         return root.querySelector('input[name="plan_id"]:checked');
       }
 
-      function updatePayButton() {
+      var payModeInputs = root.querySelectorAll("[data-pay-mode-input]");
+      var otherDevicesPanel = root.querySelector("[data-other-devices-panel]");
+      var deviceCountInput = root.querySelector("[data-other-device-count]");
+      var deviceCustomWrap = root.querySelector("[data-device-custom]");
+      var hoursInput = root.querySelector("[data-other-hours]");
+      var quoteTotal = root.querySelector("[data-quote-total]");
+      var quoteSummary = root.querySelector("[data-quote-summary]");
+      var otherPlanWarning = root.querySelector("[data-other-plan-warning]");
+      var deviceChipButtons = root.querySelectorAll("[data-device-pick]");
+      var hourChipButtons = root.querySelectorAll("[data-hour-pick]");
+
+      function payMode() {
+        var checked = root.querySelector('input[name="pay_mode"]:checked');
+        return checked ? checked.value : "this_device";
+      }
+
+      function selectedPlanMeta() {
         var option = selectedPlan();
-        var amount = option ? option.getAttribute("data-price") : "";
-        submit.textContent = amount ? "Pay KES " + amount : "Pay";
+        if (!option) return null;
+        return {
+          price: parseFloat(option.getAttribute("data-price") || "0") || 0,
+          otherEnabled: option.getAttribute("data-other-enabled") === "1",
+          otherBase: parseFloat(option.getAttribute("data-other-base") || option.getAttribute("data-price") || "0") || 0,
+          hourlyRate: parseFloat(option.getAttribute("data-hourly-rate") || "0") || 0,
+        };
+      }
+
+      function formatKes(value, forceInteger) {
+        var n = Math.max(0, Number(value) || 0);
+        if (forceInteger || payMode() === "other_devices") {
+          return "KES " + Math.round(n);
+        }
+        return "KES " + (Math.round(n * 100) / 100).toFixed(n % 1 === 0 ? 0 : 2);
+      }
+
+      function syncDeviceChips() {
+        if (!deviceCountInput) return;
+        var devices = Math.max(1, parseInt(deviceCountInput.value, 10) || 1);
+        var isPreset = [1, 2, 3, 4].indexOf(devices) !== -1;
+        deviceChipButtons.forEach(function (btn) {
+          var pick = btn.getAttribute("data-device-pick");
+          if (pick === "custom") {
+            btn.classList.toggle("is-active", !isPreset);
+          } else {
+            btn.classList.toggle("is-active", parseInt(pick, 10) === devices);
+          }
+        });
+        if (deviceCustomWrap) deviceCustomWrap.hidden = isPreset;
+      }
+
+      function syncHourChips() {
+        if (!hoursInput) return;
+        var hours = Math.max(1, parseInt(hoursInput.value, 10) || 1);
+        hourChipButtons.forEach(function (btn) {
+          btn.classList.toggle("is-active", parseInt(btn.getAttribute("data-hour-pick"), 10) === hours);
+        });
+      }
+
+      function otherDevicesPlanOk(meta) {
+        return !!(meta && meta.otherEnabled && meta.hourlyRate > 0);
+      }
+
+      function updateOtherDevicesQuote() {
+        var meta = selectedPlanMeta();
+        if (!meta || payMode() !== "other_devices") return;
+        var devices = Math.max(1, parseInt(deviceCountInput && deviceCountInput.value, 10) || 1);
+        var hours = Math.max(1, parseInt(hoursInput && hoursInput.value, 10) || 1);
+        var topUp = meta.hourlyRate * devices * hours;
+        var total = Math.round(meta.otherBase + topUp);
+        if (quoteTotal) quoteTotal.textContent = formatKes(total, true);
+        if (quoteSummary) {
+          quoteSummary.textContent =
+            devices + " code" + (devices === 1 ? "" : "s") +
+            " · " + hours + " hour" + (hours === 1 ? "" : "s") + " each";
+        }
+        var planOk = otherDevicesPlanOk(meta);
+        if (otherPlanWarning) otherPlanWarning.hidden = planOk;
+        submit.textContent = planOk ? ("Pay " + formatKes(total, true)) : "Choose a supported package";
+        submit.disabled = !planOk || submit.getAttribute("aria-disabled") === "true";
+      }
+
+      function syncPayModeUi() {
+        var meta = selectedPlanMeta();
+        var mode = payMode();
+        if (otherDevicesPanel) otherDevicesPanel.hidden = mode !== "other_devices";
+        payModeInputs.forEach(function (input) {
+          var tab = input.closest(".pay-mode-tab");
+          if (tab) tab.classList.toggle("is-active", input.checked);
+        });
+        if (mode === "other_devices") {
+          syncDeviceChips();
+          syncHourChips();
+          updateOtherDevicesQuote();
+        } else {
+          if (otherPlanWarning) otherPlanWarning.hidden = true;
+          submit.disabled = submit.getAttribute("aria-disabled") === "true";
+          updatePayButtonSimple();
+        }
+      }
+
+      function updatePayButtonSimple() {
+        var meta = selectedPlanMeta();
+        submit.textContent = meta ? ("Pay " + formatKes(meta.price)) : "Pay with M-Pesa";
+      }
+
+      function updatePayButton() {
         planInputs.forEach(function (input) {
           var card = input.closest(".plan-card");
           if (card) card.classList.toggle("is-selected", input.checked);
         });
+        syncPayModeUi();
       }
 
       function scrollToCheckout() {
@@ -755,6 +936,11 @@
             }
             if (data.mpesa_receipt) showMpesaReceipt(data.mpesa_receipt);
             if (data.success) {
+              if (data.other_devices_purchase || data.pay_mode === "other_devices") {
+                setWaiting(true, "Payment successful", "Opening your voucher codes…", false, true);
+                openInternet(data.stk_id, token);
+                return;
+              }
               setPaymentSteps("connecting");
               if (data.authorized || data.surfing) {
                 var extra = extraVoucherCodes(data);
@@ -837,6 +1023,10 @@
 
       form.addEventListener("submit", function (event) {
         event.preventDefault();
+        if (payMode() === "other_devices" && !otherDevicesPlanOk(selectedPlanMeta())) {
+          offerRetry("This package does not support paying for other phones. Pick another package or tap This phone.");
+          return;
+        }
         var macInput = form.querySelector('input[name="mac"]');
         if (macInput) {
           var macVal = (macInput.value || "").trim();
@@ -947,6 +1137,39 @@
           });
         }
       });
+      payModeInputs.forEach(function (input) {
+        input.addEventListener("change", syncPayModeUi);
+      });
+      deviceChipButtons.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var pick = btn.getAttribute("data-device-pick");
+          if (!deviceCountInput) return;
+          if (pick === "custom") {
+            if (parseInt(deviceCountInput.value, 10) <= 4) deviceCountInput.value = "5";
+            if (deviceCustomWrap) deviceCustomWrap.hidden = false;
+            syncDeviceChips();
+            try { deviceCountInput.focus(); } catch (err) {}
+          } else {
+            deviceCountInput.value = pick;
+            syncDeviceChips();
+          }
+          updateOtherDevicesQuote();
+        });
+      });
+      hourChipButtons.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          if (!hoursInput) return;
+          hoursInput.value = btn.getAttribute("data-hour-pick") || "1";
+          syncHourChips();
+          updateOtherDevicesQuote();
+        });
+      });
+      if (deviceCountInput) {
+        deviceCountInput.addEventListener("input", function () {
+          syncDeviceChips();
+          updateOtherDevicesQuote();
+        });
+      }
       updatePayButton();
 
       var reconnectEligible = {% if hotspot_reconnect_eligible %}true{% else %}false{% endif %};

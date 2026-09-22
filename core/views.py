@@ -1706,11 +1706,14 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
             ),
         },
     ]
-    if customer_supports_live_usage(customer):
+    if customer.service_type in (
+        Customer.ServiceType.PPPOE,
+        Customer.ServiceType.HOTSPOT,
+    ):
         nav.append(
             {
                 "key": "usage",
-                "label": "Client usage",
+                "label": "Usage",
                 "href": reverse(
                     "core:client_usage_analysis",
                     kwargs={"customer_id": customer.pk},
@@ -3380,13 +3383,16 @@ def _port_isp_ready_for_uplink(
         if (p.get("name") or "").strip()
     }
     row = by_name.get((port_name or "").strip()) or {}
-    if port_name in _wan_share_ports_with_traffic(wan_share):
-        # Raw interface counters on Shared ISP can show traffic without a usable
-        # gateway (modem chatter / failed sessions) — require DHCP/PPPoE too.
-        kind = (row.get("uplink_kind") or "").strip().lower()
-        if kind in {"dhcp", "pppoe"} and (
-            row.get("uplink_active") or _port_has_isp_signals(row)
+    share_ports = _wan_share_ports_with_traffic(wan_share)
+    if port_name in share_ports:
+        if _port_has_isp_signals(row) or _uplink_live_isp_ready(
+            port_name, uplink_live
         ):
+            return True
+        # Multi-member PCC/share: traffic on the port is enough when another
+        # WAN link in the same sample is live (guard/sync tests). A lone port
+        # with counters but no DHCP/PPPoE is still modem chatter — not ready.
+        if len(share_ports) >= 2:
             return True
     if row.get("running") and _port_has_isp_signals(row):
         return True
@@ -15115,7 +15121,7 @@ def my_clients(request):
         ("name", "Name A–Z"),
     ]
     if tab == "hotspot" and not pending_view:
-        clients_sort_choices.insert(0, ("session", "Latest surfing"))
+        clients_sort_choices.insert(0, ("session", "Latest paid / offline"))
 
     # Order in the database, paginate with LIMIT/OFFSET, then attach progress
     # only for the current page — avoids materializing every matching client.
@@ -15550,13 +15556,22 @@ def client_detail(request, customer_id: int):
                 voucher_codes = result.get("voucher_codes") or []
                 kick_sessions = bool(result.get("kick_sessions"))
                 provision = customer_needs_nas_provision(customer)
-                enqueue_customer_subscription_sync(
+                from billing.vouchers import burn_claimed_voucher_after_nas
+                from core.subscription_sync import nas_access_ready
+
+                nas_result = enqueue_customer_subscription_sync(
                     customer.pk,
                     provision,
                     wait_first=True,
                     quick=True,
                     reauthenticate=True,
                 )
+                if result.get("hotspot_autoconnected") and nas_access_ready(
+                    nas_result
+                ):
+                    burn_claimed_voucher_after_nas(
+                        result.get("autoconnect_voucher_id")
+                    )
                 if result.get("unlink_hotspot_after_sync"):
                     from billing.devices import unlink_hotspot_devices
 
@@ -15663,17 +15678,20 @@ def client_detail(request, customer_id: int):
                 return redirect("core:client_detail", customer_id=customer.pk)
 
             customer.refresh_from_db()
+            from billing.customer_delete import reset_live_access_for_repay
+
+            reset_live_access_for_repay(customer)
             provision = True
             enqueue_customer_subscription_sync(
                 customer.pk,
                 provision,
-                wait_first=True,
-                quick=True,
+                wait_first=False,
+                quick=False,
                 reauthenticate=True,
             )
             msg = (
-                "Subscription ended. Surfing is blocked immediately. "
-                "Recharge to start a new package period."
+                "Access ended. Active sessions were cleared and surfing is blocked. "
+                "The client must pay on Wi‑Fi again to surf. Recharge here to start a new package."
             )
             if is_ajax:
                 return _package_json_response(
@@ -15688,14 +15706,20 @@ def client_detail(request, customer_id: int):
 
     client_plans = list(recharge_form.fields["plan"].queryset)
 
-    from billing.vouchers import vouchers_for_customer_billing
+    from billing.vouchers import (
+        vouchers_for_current_subscription,
+        vouchers_for_customer_billing,
+    )
 
     voucher_rows = vouchers_for_customer_billing(customer, request=request) if org else []
+    subscription_vouchers = (
+        vouchers_for_current_subscription(customer, request=request) if org else []
+    )
     available_vouchers = [
-        row for row in voucher_rows if row["status"] == AccessVoucher.Status.VALID
+        row for row in subscription_vouchers if row["status"] == AccessVoucher.Status.VALID
     ]
     used_voucher_count = sum(
-        1 for row in voucher_rows if row["status"] != AccessVoucher.Status.VALID
+        1 for row in subscription_vouchers if row["status"] != AccessVoucher.Status.VALID
     )
     try:
         plan_max_devices = (
@@ -15705,7 +15729,7 @@ def client_detail(request, customer_id: int):
         )
     except (TypeError, ValueError):
         plan_max_devices = 0
-    show_available_vouchers = bool(available_vouchers) or bool(voucher_rows) or (
+    show_available_vouchers = bool(subscription_vouchers) or (
         customer.service_type == Customer.ServiceType.HOTSPOT and plan_max_devices > 1
     )
 
@@ -15770,10 +15794,12 @@ def client_detail(request, customer_id: int):
         ),
         open_client_modal=open_client_modal,
         available_vouchers=available_vouchers,
+        subscription_vouchers=subscription_vouchers,
         valid_voucher_count=len(available_vouchers),
         used_voucher_count=used_voucher_count,
         voucher_device_cap=plan_max_devices,
         show_available_vouchers=show_available_vouchers,
+        default_client_tab="vouchers" if show_available_vouchers else "overview",
         voucher_billing_url=reverse(
             "core:client_billing", kwargs={"customer_id": customer.pk}
         ),
@@ -15812,39 +15838,15 @@ def client_delete(request, customer_id: int):
     list_url = f"{reverse('core:my_clients')}?tab={customer.service_type}"
 
     if request.method == "POST":
+        from billing.customer_delete import delete_customer_preserving_transactions
+
         name = customer.full_name
         service_tab = customer.service_type
-        # Best-effort: disable PPPoE secret so the CPE cannot reconnect after delete.
-        if (
-            customer.service_type == Customer.ServiceType.PPPOE
-            and (customer.pppoe_username or "").strip()
-            and customer.router_id
-        ):
-            try:
-                provision_customer_pppoe(
-                    customer, ensure_stack=False, force_disabled=True
-                )
-            except Exception:
-                pass
-        # Best-effort: disable Hotspot MAC users and kick live sessions now,
-        # before the customer (and device MACs) are removed from billing.
-        elif customer.service_type == Customer.ServiceType.HOTSPOT:
-            try:
-                disconnect_hotspot_customer(customer)
-            except Exception:
-                pass
-        # Burn unused vouchers so codes cannot be redeemed after the client is gone.
-        AccessVoucher.objects.filter(
-            customer=customer,
-            status=AccessVoucher.Status.VALID,
-        ).update(
-            status=AccessVoucher.Status.INVALID,
-            invalidated_at=timezone.now(),
-        )
-        customer.delete()
+        delete_customer_preserving_transactions(customer)
         messages.success(
             request,
-            f"Deleted client {name}. Billing history was kept.",
+            f"Deleted client {name}. Sessions and profile removed; payment history kept — "
+            f"they can pay again from the Wi‑Fi page.",
         )
         return redirect(f"{reverse('core:my_clients')}?tab={service_tab}")
 
@@ -17269,10 +17271,18 @@ def client_usage(request, customer_id: int):
 
     cache_key = f"client_usage:v3:{org.pk}:{customer.pk}"
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+
+    def _attach_session_breakdown(body: dict) -> dict:
+        from billing.usage_samples import build_client_session_breakdown
+
+        out = dict(body)
+        out["session_breakdown"] = build_client_session_breakdown(customer)
+        return out
+
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
-            return JsonResponse(cached)
+            return JsonResponse(_attach_session_breakdown(cached))
 
     if is_hotspot:
         macs = _hotspot_macs_for_usage(customer)
@@ -17350,8 +17360,9 @@ def client_usage(request, customer_id: int):
 
         from billing.services import customer_can_surf_via_hotspot
 
+        nas_authenticated = active_count > 0
         internet_allowed = customer_can_surf_via_hotspot(customer)
-        surfing = bool(payload.get("session_active") and internet_allowed)
+        surfing = bool(nas_authenticated and internet_allowed)
         if surfing:
             session_state = "surfing"
             session_label = "Surfing"
@@ -17372,9 +17383,7 @@ def client_usage(request, customer_id: int):
         payload["session_state"] = session_state
         payload["session_label"] = session_label
         payload["hint"] = session_hint
-        # Presence / trend charts track authenticated Hotspot surfing.
-        if payload.get("ok") and payload.get("session_active"):
-            payload["session_active"] = surfing
+        payload["session_active"] = nas_authenticated
     else:
         payload = fetch_customer_pppoe_usage(
             router.host,
@@ -17514,12 +17523,18 @@ def client_usage(request, customer_id: int):
         # Only persist successful router reads — timeouts/errors must not look
         # like the client went offline.
         if payload.get("ok"):
-            record_customer_usage_sample(customer, payload)
+            sample_payload = dict(payload)
+            if is_hotspot:
+                sample_payload["session_active"] = nas_authenticated
+                sample_payload["connected"] = connected
+            record_customer_usage_sample(customer, sample_payload)
     except Exception:
         pass
 
+    payload = _attach_session_breakdown(payload)
     # Short cache so live speeds stay useful without hammering the API.
-    cache.set(cache_key, payload, 8 if payload.get("session_active") else 4)
+    live_for_cache = payload.get("surfing") or payload.get("session_active")
+    cache.set(cache_key, payload, 8 if live_for_cache else 4)
     return JsonResponse(payload)
 
 
@@ -18672,6 +18687,11 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> dict:
                 or "Could not read Hotspot usage from the MikroTik.",
             }
         active_probes = [p for p in probes if p.get("session_active")]
+        connected_probes = [
+            p
+            for p in probes
+            if p.get("connected") or p.get("session_active") or p.get("online")
+        ]
         if active_probes:
             payload = merge_hotspot_session_payloads(customer.pk, active_probes)
             # Preserve live UI fields from the busiest active probe.
@@ -18694,7 +18714,13 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> dict:
                 if key in richest and key not in payload:
                     payload[key] = richest[key]
             payload["online"] = True
+            payload["connected"] = True
             payload["ok"] = True
+        elif connected_probes:
+            payload = dict(connected_probes[0])
+            payload["ok"] = True
+            payload["connected"] = True
+            payload["session_active"] = False
         else:
             payload = probes[0]
         try:
@@ -18934,6 +18960,26 @@ def clients_remote_access_status(request):
     return JsonResponse({"ok": True, "clients": rows})
 
 
+def _filter_surfing_clients_payload(payload: dict, customer_id_raw: str) -> dict:
+    """Return one client row when ``customer_id`` is present (detail page polls)."""
+    if not customer_id_raw or not isinstance(payload, dict):
+        return payload
+    try:
+        customer_id = int(customer_id_raw)
+    except (TypeError, ValueError):
+        return payload
+    clients = payload.get("clients") or []
+    if not isinstance(clients, list):
+        return payload
+    filtered = [row for row in clients if row.get("id") == customer_id]
+    out = dict(payload)
+    out["clients"] = filtered
+    out["checked"] = len(filtered)
+    out["surfing_count"] = sum(1 for row in filtered if row.get("surfing"))
+    out["connected_count"] = sum(1 for row in filtered if row.get("connected"))
+    return out
+
+
 @client_workspace_required
 @require_GET
 def clients_surfing_status(request):
@@ -18948,6 +18994,7 @@ def clients_surfing_status(request):
         return JsonResponse({"ok": False, "error": "No organization.", "clients": []}, status=400)
 
     service = (request.GET.get("service") or "pppoe").strip().lower()
+    customer_id_raw = (request.GET.get("customer_id") or "").strip()
     if service not in {"pppoe", "hotspot"}:
         return JsonResponse(
             {"ok": False, "error": "Unsupported client service.", "clients": []},
@@ -18959,20 +19006,21 @@ def clients_surfing_status(request):
         else Customer.ServiceType.PPPOE
     )
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
-    cache_key = f"clients_surfing:{org.pk}:{service}:v7"
+    cache_key = f"clients_surfing:{org.pk}:{service}:v8"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
+            if customer_id_raw:
+                cached = _filter_surfing_clients_payload(cached, customer_id_raw)
             return JsonResponse(cached)
 
-    customers = list(
-        Customer.objects.filter(
-            organization=org,
-            service_type=service_type,
-        )
-        .select_related("router", "organization", "plan")
-        .order_by("id")
-    )
+    customer_qs = Customer.objects.filter(
+        organization=org,
+        service_type=service_type,
+    ).select_related("router", "organization", "plan")
+    if service == "hotspot":
+        customer_qs = customer_qs.prefetch_related("devices")
+    customers = list(customer_qs.order_by("id"))
 
     from billing.usage_samples import (
         get_org_live_usage,
@@ -19466,6 +19514,31 @@ def clients_surfing_status(request):
                 else:
                     session_uptime_seconds = 0
 
+        package_start_ts = None
+        last_disconnect_at = None
+        last_disconnect_label = ""
+        if service == "hotspot":
+            if customer.package_start:
+                try:
+                    package_start_ts = customer.package_start.timestamp()
+                except (TypeError, ValueError, OSError):
+                    package_start_ts = None
+            if (
+                not connected
+                and internet_allowed
+                and state == "disconnected"
+            ):
+                device_times = [
+                    dev.last_seen_at
+                    for dev in customer.devices.all()
+                    if getattr(dev, "last_seen_at", None)
+                ]
+                if device_times:
+                    last_disconnect_at = max(device_times)
+                    last_disconnect_label = timezone.localtime(
+                        last_disconnect_at
+                    ).strftime("%d %b · %H:%M")
+
         clients_payload.append(
             {
                 "id": customer.pk,
@@ -19493,6 +19566,11 @@ def clients_surfing_status(request):
                 "devices": devices_connected,
                 "gadgets": devices_connected,
                 "session_uptime_seconds": session_uptime_seconds,
+                "package_start_ts": package_start_ts,
+                "last_disconnect_at": (
+                    last_disconnect_at.isoformat() if last_disconnect_at else None
+                ),
+                "last_disconnect_label": last_disconnect_label,
             }
         )
 
@@ -19505,26 +19583,53 @@ def clients_surfing_status(request):
             pass
 
     if service == "hotspot":
-        _hotspot_rank = {"surfing": 0, "not_surfing": 1, "disconnected": 2}
-
         def _hotspot_sort_key(row: dict) -> tuple:
             state = (row.get("state") or "").strip().lower()
-            rank = _hotspot_rank.get(state, 3)
-            if rank == 3 and row.get("surfing"):
+            if row.get("surfing") or state == "surfing":
                 rank = 0
-            elif rank == 3 and row.get("connected"):
+            elif (
+                state == "disconnected"
+                and row.get("internet_allowed")
+            ):
+                # Paid package still active but device offline — after surfers.
                 rank = 1
-            # Among surfing clients, shortest session uptime = started most recently.
-            uptime = row.get("session_uptime_seconds")
-            try:
-                uptime_key = int(uptime) if uptime is not None else 10**12
-            except (TypeError, ValueError):
-                uptime_key = 10**12
-            if rank != 0:
-                uptime_key = 10**12
+            elif state == "not_surfing" or row.get("connected"):
+                rank = 2
+            elif state == "disconnected":
+                rank = 3
+            else:
+                rank = 4
+            paid_key = 10**12
+            if rank == 0:
+                try:
+                    raw_paid = row.get("package_start_ts")
+                    paid_key = (
+                        -int(float(raw_paid))
+                        if raw_paid is not None
+                        else 10**12
+                    )
+                except (TypeError, ValueError):
+                    paid_key = 10**12
+            disconnect_key = 10**12
+            if rank == 1:
+                raw_disc = row.get("last_disconnect_at") or ""
+                if raw_disc:
+                    try:
+                        from datetime import datetime as dt_parse
+
+                        disc_dt = dt_parse.fromisoformat(
+                            str(raw_disc).replace("Z", "+00:00")
+                        )
+                        if timezone.is_naive(disc_dt):
+                            disc_dt = timezone.make_aware(
+                                disc_dt, timezone.get_current_timezone()
+                            )
+                        disconnect_key = -disc_dt.timestamp()
+                    except (TypeError, ValueError, OSError):
+                        disconnect_key = 10**12
             return (
                 rank,
-                uptime_key,
+                paid_key if rank == 0 else disconnect_key if rank == 1 else 10**12,
                 (row.get("full_name") or "").lower(),
                 row.get("id") or 0,
             )
@@ -19562,6 +19667,8 @@ def clients_surfing_status(request):
         except Exception:
             payload["connected_not_surfing_count"] = 0
     cache.set(cache_key, payload, 8)
+    if customer_id_raw:
+        payload = _filter_surfing_clients_payload(payload, customer_id_raw)
     return JsonResponse(payload)
 
 
@@ -20096,8 +20203,15 @@ def _plans_with_customer_default(org, plans, customer):
     def _ensure_present(plan_id: int) -> bool:
         return any(plan.pk == plan_id for plan in plans)
 
+    chosen_id = current_plan_id
     if _ensure_present(current_plan_id):
-        return _sort_plans_by_duration(plans), current_plan_id
+        sorted_plans = _sort_plans_by_duration(plans)
+        for idx, plan in enumerate(sorted_plans):
+            if plan.pk == chosen_id:
+                if idx > 0:
+                    sorted_plans.insert(0, sorted_plans.pop(idx))
+                break
+        return sorted_plans, chosen_id
 
     current = BillingPlan.objects.filter(
         pk=current_plan_id, organization=org
@@ -20135,7 +20249,14 @@ def _plans_with_customer_default(org, plans, customer):
 
     if not _ensure_present(chosen.pk):
         plans.append(chosen)
-    return _sort_plans_by_duration(plans), chosen.pk
+    sorted_plans = _sort_plans_by_duration(plans)
+    chosen_id = chosen.pk
+    for idx, plan in enumerate(sorted_plans):
+        if plan.pk == chosen_id:
+            if idx > 0:
+                sorted_plans.insert(0, sorted_plans.pop(idx))
+            break
+    return sorted_plans, chosen_id
 
 
 def _attach_plan_portal_images(plans, request=None):
@@ -20547,6 +20668,19 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     )
     _attach_plan_portal_images(hotspot_plans, request)
     _attach_plan_offer_progress(hotspot_plans, hotspot_customer)
+    from billing.hotspot_pricing import (
+        hourly_rate_per_device,
+        other_devices_base_price,
+        plan_supports_other_devices,
+    )
+
+    for plan in hotspot_plans:
+        plan.hotspot_other_devices_offer = plan_supports_other_devices(plan)
+        plan.hotspot_other_base_price = other_devices_base_price(plan)
+        plan.hotspot_hourly_rate = hourly_rate_per_device(plan)
+    has_other_devices_option = any(
+        getattr(plan, "hotspot_other_devices_offer", False) for plan in hotspot_plans
+    )
     preview_mode = ""
     if request is not None:
         preview_mode = (request.GET.get("preview") or "").strip().lower()
@@ -20611,6 +20745,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "hotspot_plans": hotspot_plans,
         "pppoe_plans": [],
         "has_payable_plans": has_payable_plans,
+        "has_other_devices_option": has_other_devices_option,
         "portal_mode": portal_mode,
         "portal_setup_hint": setup_hint,
         # Show real packages for staff/client preview even when Daraja/M-Pesa
@@ -20934,6 +21069,8 @@ def hotspot_voucher_redeem(request, join_code: str):
             invalidate_captive_redirect_cache(remote)
         except Exception:
             pass
+    welcome_url = _hotspot_welcome_url(join_code, mac=mac)
+    result["welcome_url"] = welcome_url
     if result.get("stk_id"):
         access_token = signing.dumps(
             {
@@ -20945,9 +21082,6 @@ def hotspot_voucher_redeem(request, join_code: str):
             compress=True,
         )
         result["status_token"] = access_token
-        result["welcome_url"] = reverse(
-            "core:hotspot_welcome", kwargs={"join_code": join_code}
-        )
     return JsonResponse(result)
 
 
@@ -21253,6 +21387,44 @@ def _hotspot_payment_start_impl(request, join_code: str):
             }
         )
 
+    pay_mode = (request.POST.get("pay_mode") or "this_device").strip().lower()
+    pay_metadata: dict = {"pay_mode": "this_device"}
+    stk_amount = None
+    if pay_mode == "other_devices":
+        from decimal import Decimal
+
+        from billing.hotspot_pricing import (
+            PAY_MODE_OTHER_DEVICES,
+            quote_other_devices_purchase,
+        )
+
+        try:
+            device_count = int(request.POST.get("device_count") or 0)
+            hours = int(request.POST.get("hours") or 0)
+        except (TypeError, ValueError):
+            return JsonResponse(
+                {"ok": False, "error": "Enter valid device and hour counts."},
+                status=400,
+            )
+        quote = quote_other_devices_purchase(
+            plan, device_count=device_count, hours=hours
+        )
+        if not quote.get("ok"):
+            _count_pay_failure(quote.get("error") or "")
+            return JsonResponse(
+                {"ok": False, "error": quote.get("error") or "Invalid quote."},
+                status=400,
+            )
+        stk_amount = Decimal(quote["total"])
+        pay_metadata = {
+            "pay_mode": PAY_MODE_OTHER_DEVICES,
+            "device_count": quote["device_count"],
+            "hours": quote["hours"],
+            "package_hours": quote["package_hours"],
+            "voucher_count": quote["voucher_count"],
+            "quoted_total": quote["total"],
+        }
+
     try:
         result = start_subscription_stk_payment(
             organization=org,
@@ -21261,6 +21433,8 @@ def _hotspot_payment_start_impl(request, join_code: str):
             plan=plan,
             request=request,
             mac=mac,
+            amount=stk_amount,
+            pay_metadata=pay_metadata,
         )
     except Exception as exc:
         logger.exception("start_subscription_stk_payment failed customer=%s", customer.pk)
@@ -21534,6 +21708,48 @@ def hotspot_welcome(request, join_code: str):
     from billing.vouchers import valid_hotspot_voucher_codes_for_customer
 
     shareable_voucher_codes = valid_hotspot_voucher_codes_for_customer(customer)
+    other_devices_purchase = False
+    purchase_voucher_codes: list[str] = []
+    purchase_device_count = 0
+    purchase_hours = 0
+    stk_row = None
+    if stk_id.isdigit():
+        from billing.models import StkPushRequest
+
+        stk_row = StkPushRequest.objects.filter(
+            pk=int(stk_id), organization=org
+        ).first()
+    if stk_row is not None:
+        from billing.hotspot_pricing import (
+            PAY_MODE_OTHER_DEVICES,
+            stk_other_devices_meta,
+            stk_pay_mode,
+        )
+        from billing.vouchers import format_voucher_code
+
+        if stk_pay_mode(stk_row) == PAY_MODE_OTHER_DEVICES:
+            other_devices_purchase = True
+            meta = stk_other_devices_meta(stk_row)
+            purchase_device_count = int(meta.get("device_count") or 0)
+            purchase_hours = int(meta.get("package_hours") or meta.get("hours") or 0)
+            purchase_voucher_codes = [
+                format_voucher_code(row.code)
+                for row in AccessVoucher.objects.filter(
+                    stk_request=stk_row,
+                    status=AccessVoucher.Status.VALID,
+                ).order_by("id")
+            ]
+            shareable_voucher_codes = purchase_voucher_codes or shareable_voucher_codes
+            count = purchase_device_count or len(purchase_voucher_codes)
+            hrs = purchase_hours or 1
+            title = "Your voucher codes"
+            message = (
+                f"Payment confirmed. Share each code with a different device — "
+                f"{count} voucher{'s' if count != 1 else ''}, "
+                f"each valid for {hrs} hour{'s' if hrs != 1 else ''} on one gadget."
+            )
+            button_label = "Close this page"
+
     voucher_params: dict[str, str] = {}
     if hotspot_mac:
         voucher_params["mac"] = hotspot_mac
@@ -21572,6 +21788,10 @@ def hotspot_welcome(request, join_code: str):
             "vouchers_url": vouchers_url,
             "shareable_voucher_codes": shareable_voucher_codes,
             "shareable_voucher_count": len(shareable_voucher_codes),
+            "other_devices_purchase": other_devices_purchase,
+            "purchase_voucher_codes": purchase_voucher_codes,
+            "purchase_device_count": purchase_device_count,
+            "purchase_hours": purchase_hours,
             **earn_bits,
         },
     )
@@ -21679,12 +21899,13 @@ def hotspot_connection_status(request, join_code: str):
             }
         )
 
-    from billing.devices import customer_owns_hotspot_mac
+    from billing.devices import hotspot_mac_can_surf, hotspot_mac_needs_voucher
     from billing.services import customer_can_surf_via_hotspot
 
     paid = customer_can_surf_via_hotspot(customer)
-    owns_mac = customer_owns_hotspot_mac(customer, hotspot_mac)
-    authorized = bool(paid and owns_mac)
+    can_surf = hotspot_mac_can_surf(customer, hotspot_mac)
+    needs_voucher = hotspot_mac_needs_voucher(customer, hotspot_mac)
+    authorized = bool(can_surf)
     offline = False
     nas_synced = False
 
@@ -21701,7 +21922,7 @@ def hotspot_connection_status(request, join_code: str):
 
     # sync=1 must push NAS access for paid reconnects. The old path only ran
     # when DB authorization was false, so active subscribers never got a NAS poke.
-    if paid and owns_mac and want_sync:
+    if can_surf and want_sync:
         from core.subscription_sync import (
             enqueue_customer_subscription_sync,
             nas_access_ready,
@@ -21731,12 +21952,15 @@ def hotspot_connection_status(request, join_code: str):
         else:
             authorized = False
 
+    surfing = False
     if authorized and want_live:
         from core import mikrotik_connect
 
-        if not mikrotik_connect.hotspot_mac_has_active_session(
+        if mikrotik_connect.hotspot_mac_has_active_session(
             customer, hotspot_mac
         ):
+            surfing = True
+        else:
             authorized = False
 
     return JsonResponse(
@@ -21744,7 +21968,9 @@ def hotspot_connection_status(request, join_code: str):
             "ok": True,
             "authorized": authorized,
             "paid": paid,
-            "can_retry": bool(paid and owns_mac and not authorized),
+            "surfing": surfing,
+            "needs_voucher": needs_voucher,
+            "can_retry": bool(can_surf and not authorized),
             "offline": offline,
             "live_checked": bool(want_live),
             "nas_synced": nas_synced,
@@ -22275,21 +22501,24 @@ def hotspot_reconnect(request, join_code: str):
         return response
 
     customer = _find_hotspot_customer_for_mac(org, hotspot_mac)
-    from billing.devices import customer_owns_hotspot_mac
-    from billing.services import (
-        customer_can_surf_via_hotspot,
-        customer_package_is_paused,
-    )
+    from billing.devices import hotspot_mac_can_surf
+    from billing.services import customer_package_is_paused
 
     if customer is not None and customer_package_is_paused(customer):
+        try:
+            from core.mikrotik_connect import enforce_hotspot_pay_wall
+
+            enforce_hotspot_pay_wall(org, hotspot_mac, customer=customer)
+        except Exception:
+            logger.exception(
+                "hotspot pause block failed mac=%s customer=%s",
+                hotspot_mac,
+                getattr(customer, "pk", None),
+            )
         response = _redirect_pay_preserving_query(
             request, "core:hotspot_pause", join_code
         )
-    elif (
-        customer is not None
-        and customer_can_surf_via_hotspot(customer)
-        and customer_owns_hotspot_mac(customer, hotspot_mac)
-    ):
+    elif customer is not None and hotspot_mac_can_surf(customer, hotspot_mac):
         try:
             from core.subscription_sync import enqueue_customer_subscription_sync
 
@@ -22307,6 +22536,15 @@ def hotspot_reconnect(request, join_code: str):
             )
         response = redirect(_hotspot_welcome_url(join_code, mac=hotspot_mac))
     else:
+        try:
+            from core.mikrotik_connect import enforce_hotspot_pay_wall
+
+            enforce_hotspot_pay_wall(org, hotspot_mac, customer=customer)
+        except Exception:
+            logger.exception(
+                "hotspot reconnect pay-wall block failed mac=%s",
+                hotspot_mac,
+            )
         response = _redirect_pay_preserving_query(
             request, "core:hotspot_pay", join_code
         )
@@ -22397,11 +22635,16 @@ def _hotspot_captive_page(request, join_code: str, *, expected_page: str):
         _find_hotspot_customer_for_mac(org, hotspot_mac) if hotspot_mac else None
     ) or pre_customer
     if hotspot_mac and expected_page == "pay":
-        from billing.services import customer_can_surf_via_hotspot
+        from billing.devices import hotspot_mac_can_surf, hotspot_mac_needs_voucher
+
+        context["hotspot_needs_voucher"] = bool(
+            hotspot_customer is not None
+            and hotspot_mac_needs_voucher(hotspot_customer, hotspot_mac)
+        )
 
         if not (
             hotspot_customer is not None
-            and customer_can_surf_via_hotspot(hotspot_customer)
+            and hotspot_mac_can_surf(hotspot_customer, hotspot_mac)
         ):
             try:
                 from billing.attempts import record_hotspot_attempt
@@ -22415,70 +22658,56 @@ def _hotspot_captive_page(request, join_code: str, *, expected_page: str):
                 )
             except Exception:
                 logger.exception("Could not record Hotspot portal_hit")
-            mac_for_job = hotspot_mac
-            customer_pk = getattr(hotspot_customer, "pk", None)
+            try:
+                from core.mikrotik_connect import enforce_hotspot_pay_wall
 
-            def _block_unpaid_mac(
-                org_pk=org.pk,
-                mac=mac_for_job,
-                customer_id=customer_pk,
+                enforce_hotspot_pay_wall(
+                    org,
+                    hotspot_mac,
+                    customer=hotspot_customer,
+                )
+            except Exception:
+                logger.exception(
+                    "Could not enforce Hotspot pay wall mac=%s",
+                    hotspot_mac,
+                )
+        else:
+            reconnect_pk = hotspot_customer.pk
+
+            def _reconnect_paid_hotspot(
+                customer_pk=reconnect_pk,
             ) -> None:
-                from accounts.models import Organization
                 from billing.models import Customer
-                from core.mikrotik_connect import block_hotspot_mac_until_paid
+                from core.subscription_sync import (
+                    enqueue_customer_subscription_sync,
+                )
 
-                organization = Organization.objects.filter(pk=org_pk).first()
-                if organization is None:
+                cust = (
+                    Customer.objects.select_related(
+                        "plan", "router", "organization"
+                    )
+                    .filter(pk=customer_pk)
+                    .first()
+                )
+                if cust is None:
                     return
-                customer = None
-                if customer_id:
-                    customer = Customer.objects.filter(pk=customer_id).first()
-                block_hotspot_mac_until_paid(organization, mac, customer=customer)
+                enqueue_customer_subscription_sync(
+                    cust.pk,
+                    True,
+                    wait_first=True,
+                    quick=True,
+                    reauthenticate=True,
+                )
 
             schedule_mikrotik_job(
-                _block_unpaid_mac,
-                name=f"hotspot-block-{hotspot_mac[-8:]}",
+                _reconnect_paid_hotspot,
+                name=f"hotspot-reconnect-{hotspot_mac[-8:]}",
             )
-        else:
-            from billing.devices import customer_owns_hotspot_mac
-
-            if customer_owns_hotspot_mac(hotspot_customer, hotspot_mac):
-                reconnect_pk = hotspot_customer.pk
-
-                def _reconnect_paid_hotspot(
-                    customer_pk=reconnect_pk,
-                ) -> None:
-                    from billing.models import Customer
-                    from core.subscription_sync import (
-                        enqueue_customer_subscription_sync,
-                    )
-
-                    cust = (
-                        Customer.objects.select_related(
-                            "plan", "router", "organization"
-                        )
-                        .filter(pk=customer_pk)
-                        .first()
-                    )
-                    if cust is None:
-                        return
-                    enqueue_customer_subscription_sync(
-                        cust.pk,
-                        True,
-                        wait_first=True,
-                        quick=True,
-                        reauthenticate=True,
-                    )
-
-                schedule_mikrotik_job(
-                    _reconnect_paid_hotspot,
-                    name=f"hotspot-reconnect-{hotspot_mac[-8:]}",
-                )
-                context["hotspot_reconnect_eligible"] = True
-                context["connection_check_url"] = reverse(
-                    "core:hotspot_connection_status",
-                    kwargs={"join_code": join_code},
-                )
+            context["hotspot_reconnect_eligible"] = True
+            context["connection_check_url"] = reverse(
+                "core:hotspot_connection_status",
+                kwargs={"join_code": join_code},
+            )
     _prefetch_daraja_oauth(org)
     response = render(request, "core/hotspot_pay.html", context)
     response = _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")

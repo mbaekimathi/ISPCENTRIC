@@ -9,7 +9,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#0e7c86">
-  <title>{{ page_title }} — {{ org_name }}</title>
+  <title>Connecting… — {{ org_name }}</title>
   <link rel="stylesheet" href="{% static 'css/portal-simple.css' %}?v=1">
 </head>
 <body>
@@ -22,45 +22,84 @@
         >{% if not logo_url %}{{ org_initial }}{% endif %}</span>
         {{ org_name }}
       </p>
-      <a
-        class="hero-cta"
-        id="continue-browsing"
-        href="{{ button_url }}"
-        {% if button_url and button_url != "http://neverssl.com/" %}target="_blank" rel="noopener"{% endif %}
-      >{{ button_label }}</a>
-      {% if adverts_enabled and click_to_earn_url %}
-        <a class="earn-hero" href="{{ click_to_earn_url }}" aria-label="Tap to refer clients and earn">
-          <span class="earn-hero-orb" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="9" cy="8" r="3"/>
-              <circle cx="16.5" cy="9.5" r="2.4"/>
-              <path d="M3.5 19c.6-3 2.8-4.8 5.5-4.8S14 16 14.6 19"/>
-              <path d="M14.2 14.4c1.5-.5 3.1-.3 4.5.8 1 .8 1.6 1.9 1.8 3.1"/>
-            </svg>
-          </span>
-          <span class="earn-hero-copy">
-            <span class="earn-hero-kicker">Limited offer</span>
-            <span class="earn-hero-title">{{ click_to_earn_label|default:"Refer & earn" }}</span>
-            <span class="earn-hero-hint">Invite Wi‑Fi clients · get paid</span>
-          </span>
-          <span class="earn-hero-go">Tap <span aria-hidden="true">→</span></span>
-        </a>
-      {% else %}
-        <div class="welcome-pulse" data-welcome-pulse aria-hidden="true"><i></i><i></i><i></i></div>
-        <div class="check" data-welcome-check hidden aria-hidden="true">
+
+      <div class="welcome-loading" data-welcome-loading>
+        <div class="welcome-pulse" aria-hidden="true"><i></i><i></i><i></i></div>
+        <p class="status" data-welcome-status>Checking your connection…</p>
+      </div>
+
+      <div class="welcome-ready" data-welcome-ready hidden>
+        <div class="check" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
             <path d="M5 13l4 4L19 7"/>
           </svg>
         </div>
-      {% endif %}
-      <p class="status" data-welcome-status>Checking your connection…</p>
-      <p class="status-help" data-welcome-help hidden>
-        <a href="{{ assistance_url|escapejs }}" data-welcome-help-link>Get connection help</a>
-        · <a href="{{ pay_url|escapejs }}">Back to pay</a>
-      </p>
+        <h1 class="welcome-title">{{ page_title }}</h1>
+        <p class="welcome-message">{{ page_message }}</p>
+        <a
+          class="hero-cta"
+          id="continue-browsing"
+          href="{{ button_url }}"
+          {% if button_url and button_url != "http://neverssl.com/" %}target="_blank" rel="noopener"{% endif %}
+        >{{ button_label }}</a>
+        {% if adverts_enabled and click_to_earn_url %}
+          <a class="earn-hero" href="{{ click_to_earn_url }}" aria-label="Tap to refer clients and earn">
+            <span class="earn-hero-orb" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="9" cy="8" r="3"/>
+                <circle cx="16.5" cy="9.5" r="2.4"/>
+                <path d="M3.5 19c.6-3 2.8-4.8 5.5-4.8S14 16 14.6 19"/>
+                <path d="M14.2 14.4c1.5-.5 3.1-.3 4.5.8 1 .8 1.6 1.9 1.8 3.1"/>
+              </svg>
+            </span>
+            <span class="earn-hero-copy">
+              <span class="earn-hero-kicker">Limited offer</span>
+              <span class="earn-hero-title">{{ click_to_earn_label|default:"Refer & earn" }}</span>
+              <span class="earn-hero-hint">Invite Wi‑Fi clients · get paid</span>
+            </span>
+            <span class="earn-hero-go">Tap <span aria-hidden="true">→</span></span>
+          </a>
+        {% endif %}
+        <p class="status" data-welcome-status-ready>
+          {% if other_devices_purchase %}
+            Payment confirmed · Voucher codes ready
+          {% elif paid %}
+            Payment confirmed · Connected
+          {% else %}
+            Connected · You're online
+          {% endif %}
+        </p>
+      </div>
     </header>
 
-    {% if shareable_voucher_count %}
+    <div data-welcome-ready hidden>
+    {% if other_devices_purchase and purchase_voucher_codes %}
+    <section class="panel" aria-label="Voucher codes for other devices">
+      <p class="panel-title">Voucher codes for your devices</p>
+      <p class="meta">
+        {% if purchase_device_count and purchase_hours %}
+          {{ purchase_device_count }} device{{ purchase_device_count|pluralize }} × {{ purchase_hours }} hour{{ purchase_hours|pluralize }} each
+        {% else %}
+          One code per device — enter each on the pay page under <strong>Have a voucher?</strong>
+        {% endif %}
+      </p>
+      <ul class="voucher-list">
+        {% for code in purchase_voucher_codes %}
+          <li>
+            <span>{{ code }}</span>
+            <button type="button" class="copy-btn" data-copy-voucher="{{ code }}">Copy</button>
+          </li>
+        {% endfor %}
+      </ul>
+      <p class="note">Each code works once on one device. This phone does not need a code unless you want internet here too.</p>
+      <p class="steps-title">How to connect another device</p>
+      <ol class="steps">
+        <li><span class="num">1</span><span>Connect the other phone or laptop to <strong>{{ org_name }}</strong> Wi‑Fi.</span></li>
+        <li><span class="num">2</span><span>On the pay page, scroll to <strong>Have a voucher?</strong></span></li>
+        <li><span class="num">3</span><span>Enter one unused code above and tap <strong>Activate voucher</strong>.</span></li>
+      </ol>
+    </section>
+    {% elif shareable_voucher_count %}
     <section class="panel" aria-label="Connect other devices">
       <a class="voucher-share" href="{{ vouchers_url }}" data-welcome-vouchers hidden>
         <span class="voucher-share-icon" aria-hidden="true">{{ shareable_voucher_count }}</span>
@@ -130,6 +169,7 @@
     <section class="actions" data-welcome-body>
       <p class="meta">Hotspot · {{ org_name }}</p>
     </section>
+    </div>
   </main>
 
   <script>
@@ -140,14 +180,18 @@
       var payUrl = "{{ pay_url|escapejs }}";
       var stkId = "{{ stk_id|escapejs }}";
       var statusToken = "{{ status_token|escapejs }}";
+      var hotspotMac = "{{ hotspot_mac|escapejs }}";
+      var pageTitle = "{{ page_title|escapejs }}";
+      var orgName = "{{ org_name|escapejs }}";
       var hasPayment = {% if paid %}true{% else %}false{% endif %};
+      var otherDevicesPurchase = {% if other_devices_purchase %}true{% else %}false{% endif %};
       var root = document.querySelector("[data-welcome-root]");
       var statusEl = document.querySelector("[data-welcome-status]");
-      var pulseEl = document.querySelector("[data-welcome-pulse]");
-      var checkEl = document.querySelector("[data-welcome-check]");
+      var readyBlocks = document.querySelectorAll("[data-welcome-ready]");
       var vouchersLink = document.querySelector("[data-welcome-vouchers]");
       var attempts = 0;
       var activateAttempts = 0;
+      var maxAttempts = 8;
 
       function parseJson(response) {
         return response.text().then(function (text) {
@@ -162,23 +206,30 @@
 
       function showConnected() {
         if (root) root.classList.remove("is-connecting");
-        if (pulseEl) pulseEl.hidden = true;
-        if (checkEl) checkEl.hidden = false;
+        readyBlocks.forEach(function (el) { el.hidden = false; });
+        var loadingEl = document.querySelector("[data-welcome-loading]");
+        if (loadingEl) loadingEl.hidden = true;
         if (vouchersLink) vouchersLink.hidden = false;
-        if (statusEl) {
-          statusEl.textContent = hasPayment
-            ? "Payment confirmed · Connected"
-            : "Connected · You're online";
+        document.title = pageTitle + " — " + orgName;
+      }
+
+      function buildAssistanceUrl() {
+        if (!assistanceUrl) return "";
+        var params = [];
+        if (stkId && statusToken) {
+          params.push("stk=" + encodeURIComponent(stkId));
+          params.push("token=" + encodeURIComponent(statusToken));
         }
+        if (hotspotMac) params.push("mac=" + encodeURIComponent(hotspotMac));
+        if (!params.length) return "";
+        var sep = assistanceUrl.indexOf("?") === -1 ? "?" : "&";
+        return assistanceUrl + sep + params.join("&");
       }
 
       function goAssistance() {
-        if (!assistanceUrl || !stkId || !statusToken) return false;
-        var sep = assistanceUrl.indexOf("?") === -1 ? "?" : "&";
-        window.location.replace(
-          assistanceUrl + sep + "stk=" + encodeURIComponent(stkId) +
-          "&token=" + encodeURIComponent(statusToken)
-        );
+        var target = buildAssistanceUrl();
+        if (!target) return false;
+        window.location.replace(target);
         return true;
       }
 
@@ -187,17 +238,22 @@
       }
 
       function failClosed() {
-        if (goAssistance()) return;
-        var helpEl = document.querySelector("[data-welcome-help]");
-        if (statusEl) statusEl.textContent = "Not connected yet";
-        if (helpEl) helpEl.hidden = false;
-        if (payUrl) {
-          window.setTimeout(goPay, hasPayment ? 2500 : 1800);
+        if (statusEl) {
+          statusEl.textContent = hasPayment
+            ? "Could not confirm internet yet — opening help…"
+            : "Not connected yet — opening pay…";
         }
+        window.setTimeout(function () {
+          if (hasPayment && goAssistance()) return;
+          goPay();
+        }, hasPayment ? 900 : 1200);
+      }
+
+      function setStatus(text) {
+        if (statusEl) statusEl.textContent = text;
       }
 
       function checkConnection(useSync, useLive) {
-        attempts += 1;
         var params = [];
         if (useSync) params.push("sync=1");
         if (useLive) params.push("live=1");
@@ -207,22 +263,20 @@
           credentials: "same-origin"
         })
           .then(parseJson)
-          .then(function (result) {
-            var data = result.data || {};
-            if (data.authorized) {
-              showConnected();
-              return true;
-            }
-            return false;
-          });
+          .then(function (result) { return result.data || {}; });
+      }
+
+      function isSurfing(data) {
+        if (!data || !data.paid) return false;
+        if (data.surfing) return true;
+        // Router unreachable but billing is valid — show welcome after retries.
+        return Boolean(data.offline && data.authorized && attempts >= maxAttempts - 1);
       }
 
       function tryActivate() {
         if (!activateUrl) return Promise.resolve(false);
         activateAttempts += 1;
-        if (statusEl && hasPayment) {
-          statusEl.textContent = "Payment confirmed · Connecting… (" + activateAttempts + "/3)";
-        }
+        setStatus("Payment confirmed · Connecting… (" + activateAttempts + "/3)");
         return fetch(activateUrl, {
           method: "POST",
           keepalive: true,
@@ -230,11 +284,7 @@
         })
           .then(parseJson)
           .then(function (result) {
-            if (result.data && result.data.authorized) {
-              showConnected();
-              return true;
-            }
-            return false;
+            return Boolean(result.data && result.data.authorized);
           })
           .catch(function () { return false; });
       }
@@ -244,39 +294,60 @@
       }
 
       function verifyLoop() {
-        // Fresh payment: confirm a live MikroTik session after activate/sync.
-        // Reconnect (no payment token): DB + NAS sync is enough — live session
-        // may lag while RouterOS rebuilds the Hotspot login.
-        var useSync = !hasPayment || attempts >= 1;
-        var useLive = hasPayment && attempts >= 2;
-        checkConnection(useSync, useLive)
-          .then(function (connected) {
-            if (connected) return null;
+        if (otherDevicesPurchase) {
+          setStatus("Payment confirmed · Your voucher codes are below");
+          showConnected();
+          return;
+        }
+        attempts += 1;
+        var waitMs = attempts <= 2 ? 350 : attempts <= 5 ? 500 : 700;
 
-            if (activateUrl && activateAttempts < 3) {
-              return tryActivate().then(function (ok) {
-                if (ok) return null;
-                return delay(activateAttempts === 1 ? 250 : 400).then(verifyLoop);
-              });
+        if (activateUrl && activateAttempts < 3 && attempts <= 3) {
+          return tryActivate()
+            .then(function () { return delay(waitMs); })
+            .then(verifyLoop);
+        }
+
+        setStatus(
+          hasPayment
+            ? "Payment confirmed · Checking internet… (" + attempts + "/" + maxAttempts + ")"
+            : "Checking your connection… (" + attempts + "/" + maxAttempts + ")"
+        );
+
+        return checkConnection(true, true)
+          .then(function (data) {
+            if (isSurfing(data)) {
+              showConnected();
+              return null;
             }
-
-            if (attempts < 3) {
-              return checkConnection(true, useLive).then(function (ok) {
-                if (ok) return null;
-                return delay(attempts === 1 ? 300 : 450).then(verifyLoop);
-              });
+            if (!data.paid && attempts >= 2) {
+              failClosed();
+              return null;
             }
-
-            failClosed();
-            return null;
+            if (attempts >= maxAttempts) {
+              failClosed();
+              return null;
+            }
+            return delay(waitMs).then(verifyLoop);
           })
           .catch(function () {
-            if (attempts < 2) {
-              return delay(350).then(verifyLoop);
+            if (attempts >= maxAttempts) {
+              failClosed();
+              return null;
             }
-            failClosed();
+            return delay(waitMs).then(verifyLoop);
           });
       }
+
+      document.querySelectorAll("[data-copy-voucher]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var code = btn.getAttribute("data-copy-voucher") || "";
+          if (!code || !navigator.clipboard) return;
+          navigator.clipboard.writeText(code).then(function () {
+            btn.textContent = "Copied";
+          }).catch(function () {});
+        });
+      });
 
       verifyLoop();
     })();

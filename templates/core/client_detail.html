@@ -147,23 +147,10 @@
 {% with initials=customer.full_name|default:customer.account_number|slice:":2"|upper %}
 <div class="client-detail-page client-detail-simple client-cmd{% if customer.service_type == 'hotspot' %} is-hotspot{% endif %}" id="client-overview">
 
-  <nav class="client-cmd-links" aria-label="Client shortcuts">
-    <a class="client-cmd-link is-current" href="{% url 'core:client_detail' customer.id %}" aria-current="page">Overview</a>
-    <a class="client-cmd-link" href="{{ voucher_billing_url }}">
-      Billing
-      {% if payment_count %}<span class="client-cmd-link-badge">{{ payment_count }}</span>{% endif %}
-    </a>
-    {% if show_available_vouchers or voucher_page_url %}
-      <a class="client-cmd-link" href="{{ voucher_page_url }}">
-        Vouchers
-        {% if valid_voucher_count %}<span class="client-cmd-link-badge">{{ valid_voucher_count }}</span>{% endif %}
-      </a>
-    {% endif %}
-    {% if can_live_usage %}
-      <a class="client-cmd-link" href="{% url 'core:client_usage_analysis' customer.id %}">Usage</a>
-    {% endif %}
-    <a class="client-cmd-link client-cmd-link-back" href="{% url 'core:my_clients' %}?tab={{ customer.service_type }}">← All clients</a>
-  </nav>
+  <a class="client-cmd-back" href="{% url 'core:my_clients' %}?tab={{ customer.service_type }}">
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 18l-6-6 6-6"/></svg>
+    All clients
+  </a>
 
   <section class="client-cmd-deck">
     <div class="client-cmd-deck-top">
@@ -211,7 +198,7 @@
           {% endif %}
           {% if valid_voucher_count %}
             <button type="button" class="client-cmd-flag-link" data-client-tab="vouchers">
-              {{ valid_voucher_count }} voucher{{ valid_voucher_count|pluralize }}
+              {{ valid_voucher_count }} unused voucher{{ valid_voucher_count|pluralize }}
             </button>
           {% endif %}
           {% if invoice_count %}
@@ -224,16 +211,6 @@
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v4.59l2.3 2.3-1.42 1.42L10 12V7Z"/></svg>
             Recharge
           </button>
-          <a class="client-cmd-btn" href="{{ voucher_billing_url }}">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h10M4 17h13"/></svg>
-            Billing
-          </a>
-          <button type="button" class="client-cmd-btn" data-open-modal="client-details-modal" data-edit-details-label>
-            Edit
-          </button>
-          {% if can_access_wifi and customer.router %}
-            <a class="client-cmd-btn" href="{% url 'core:client_wifi_settings' customer.id %}" data-client-router-open>Router</a>
-          {% endif %}
           <form
             method="post"
             action="{% url 'core:client_detail' customer.id %}"
@@ -266,11 +243,30 @@
           </form>
 
           <div class="client-cmd-more" data-client-more>
-            <button type="button" class="client-cmd-btn is-ghost" data-client-more-trigger aria-haspopup="menu" aria-expanded="false">
-              More
-              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+            <button type="button" class="client-cmd-btn is-menu" data-client-more-trigger aria-haspopup="menu" aria-expanded="false" aria-label="More actions">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/></svg>
             </button>
             <div class="client-cmd-more-menu" data-client-more-menu hidden role="menu">
+              <button type="button" class="client-cmd-more-item" data-open-modal="client-details-modal" data-edit-details-label role="menuitem">
+                Edit client
+              </button>
+              <div class="client-cmd-more-divider" role="separator"></div>
+              <p class="client-cmd-more-label" role="presentation">Pages</p>
+              <a class="client-cmd-more-item" href="{{ voucher_billing_url }}" role="menuitem">
+                Billing{% if payment_count %} <span class="client-cmd-more-badge">{{ payment_count }}</span>{% endif %}
+              </a>
+              {% if show_available_vouchers or voucher_page_url %}
+                <a class="client-cmd-more-item" href="{{ voucher_page_url }}" role="menuitem">
+                  Vouchers{% if valid_voucher_count %} <span class="client-cmd-more-badge">{{ valid_voucher_count }}</span>{% endif %}
+                </a>
+              {% endif %}
+              {% if customer.service_type == 'pppoe' or customer.service_type == 'hotspot' %}
+                <a class="client-cmd-more-item" href="{% url 'core:client_usage_analysis' customer.id %}" role="menuitem">Usage analysis</a>
+              {% endif %}
+              {% if can_access_wifi and customer.router %}
+                <a class="client-cmd-more-item" href="{% url 'core:client_wifi_settings' customer.id %}" data-client-router-open role="menuitem">Router admin</a>
+              {% endif %}
+              <div class="client-cmd-more-divider" role="separator"></div>
               <button type="button" class="client-cmd-more-item is-danger" data-open-modal="client-end-subscription-modal" data-end-subscription-btn role="menuitem" {% if not can_end_subscription %}disabled aria-disabled="true" hidden{% endif %}>
                 End access
               </button>
@@ -283,24 +279,39 @@
       </div>
     </div>
 
-    <ul class="client-cmd-metrics" aria-label="Live status">
-      <li data-hero-chip="subscription">
+    <ul
+      class="client-cmd-metrics"
+      aria-label="Live status"
+      data-hero-live
+      data-customer-id="{{ customer.id }}"
+      data-service="{{ customer.service_type }}"
+      data-surfing-url="{% url 'core:clients_surfing' %}"
+      data-usage-url="{% url 'core:client_usage' customer.id %}"
+      data-can-live="{% if can_live_usage %}1{% else %}0{% endif %}"
+    >
+      <li data-hero-chip="subscription" class="{% if subscription_paused %}is-idle{% elif subscription_active %}is-good{% else %}is-bad{% endif %}">
         <span class="client-cmd-metric-ico" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 8v5m0 4h.01M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Z"/></svg>
         </span>
         <div class="client-cmd-metric-body">
           <span class="client-cmd-metric-label">Subscription</span>
-          <strong data-hero="subscription">Checking…</strong>
-          <em data-hero-meta="subscription">Package</em>
+          <strong data-hero="subscription">
+            {% if subscription_paused %}Paused{% elif subscription_active %}Active{% elif subscription_expired %}Ended{% else %}Inactive{% endif %}
+          </strong>
+          <em data-hero-meta="subscription">
+            {% if subscription_paused %}Remaining time frozen{% elif subscription_active %}Package active{% elif subscription_expired %}Subscription ended{% else %}Outside package period{% endif %}
+          </em>
         </div>
       </li>
-      <li data-hero-chip="session">
+      <li data-hero-chip="session" class="is-idle">
         <span class="client-cmd-metric-ico" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
         </span>
         <div class="client-cmd-metric-body">
           <span class="client-cmd-metric-label">Session</span>
-          <strong data-hero="session">Checking…</strong>
+          <strong data-hero="session">
+            {% if customer.service_type == "pppoe" or customer.service_type == "hotspot" %}Checking…{% else %}—{% endif %}
+          </strong>
           <em data-hero-meta="session">{% if customer.service_type == "pppoe" %}PPPoE{% else %}{{ customer.get_service_type_display }}{% endif %}</em>
         </div>
       </li>
@@ -314,14 +325,14 @@
           <em data-hero-meta="throughput">Down / up</em>
         </div>
       </li>
-      <li data-hero-chip="plan">
+      <li data-hero-chip="account">
         <span class="client-cmd-metric-ico" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/></svg>
         </span>
         <div class="client-cmd-metric-body">
-          <span class="client-cmd-metric-label">Plan</span>
-          <strong>{% if customer.plan %}{{ customer.plan.name }}{% else %}—{% endif %}</strong>
-          <em>{% if customer.plan %}{{ customer.plan.speed_label }}{% else %}No plan{% endif %}</em>
+          <span class="client-cmd-metric-label">Account</span>
+          <strong>{{ customer.account_number }}</strong>
+          <em>{{ customer.get_service_type_display }}</em>
         </div>
       </li>
     </ul>
@@ -341,7 +352,6 @@
         <p class="client-cmd-period-kicker">Package window</p>
         <h2 class="client-cmd-period-title">Subscription period</h2>
       </div>
-      <a class="btn btn-ghost btn-sm" href="{{ voucher_billing_url }}">View payments</a>
     </header>
 
     {% if customer.package_start or customer.package_end or subscription_paused %}
@@ -398,21 +408,21 @@
 
   <section class="client-cmd-workspace panel">
     <nav class="client-cmd-tabs" aria-label="Client detail sections" data-client-tabs>
-      <button type="button" class="client-cmd-tab is-active" data-client-tab="overview" aria-selected="true">Overview</button>
+      {% if show_available_vouchers %}
+        <button type="button" class="client-cmd-tab{% if default_client_tab == 'vouchers' %} is-active{% endif %}" data-client-tab="vouchers" aria-selected="{% if default_client_tab == 'vouchers' %}true{% else %}false{% endif %}">
+          Vouchers{% if subscription_vouchers %} <span class="client-cmd-tab-badge">{{ subscription_vouchers|length }}</span>{% endif %}
+        </button>
+      {% endif %}
+      <button type="button" class="client-cmd-tab{% if default_client_tab == 'overview' %} is-active{% endif %}" data-client-tab="overview" aria-selected="{% if default_client_tab == 'overview' %}true{% else %}false{% endif %}">Overview</button>
       <button type="button" class="client-cmd-tab" data-client-tab="connection" aria-selected="false">Connection</button>
       <button type="button" class="client-cmd-tab" data-client-tab="live" aria-selected="false">Live</button>
       {% if can_access_wifi and customer.router %}
         <button type="button" class="client-cmd-tab" data-client-tab="router" aria-selected="false">CPE</button>
       {% endif %}
-      {% if show_available_vouchers %}
-        <button type="button" class="client-cmd-tab" data-client-tab="vouchers" aria-selected="false">
-          Vouchers{% if valid_voucher_count %} <span class="client-cmd-tab-badge">{{ valid_voucher_count }}</span>{% endif %}
-        </button>
-      {% endif %}
     </nav>
 
     <div class="client-cmd-panels">
-      <div class="client-cmd-panel is-active" data-client-panel="overview" id="client-panel-overview">
+      <div class="client-cmd-panel{% if default_client_tab == 'overview' %} is-active{% endif %}" data-client-panel="overview" id="client-panel-overview"{% if default_client_tab != 'overview' %} hidden{% endif %}>
         <div class="client-cmd-overview-grid">
           <article class="client-cmd-tile">
             <header class="client-cmd-tile-head">
@@ -471,65 +481,47 @@
 
           <article class="client-cmd-tile is-accent">
             <header class="client-cmd-tile-head">
-              <h3>Quick actions</h3>
-              <p>Common support moves without digging through menus.</p>
+              <h3>Sections</h3>
+              <p>Jump to detailed views on this page.</p>
             </header>
             <div class="client-cmd-quick">
-              <button type="button" class="client-cmd-quick-item" data-open-modal="client-recharge-modal">
+              <button type="button" class="client-cmd-quick-item" data-client-tab="connection">
                 <span class="client-cmd-quick-ico" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v4.59l2.3 2.3-1.42 1.42L10 12V7Z"/></svg>
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                 </span>
                 <span class="client-cmd-quick-copy">
-                  <strong>Recharge</strong>
-                  <span>Extend package with cash received</span>
+                  <strong>Connection</strong>
+                  <span>Credentials and access endpoints</span>
                 </span>
               </button>
-              <button type="button" class="client-cmd-quick-item" data-open-modal="client-details-modal">
+              <button type="button" class="client-cmd-quick-item" data-client-tab="live">
                 <span class="client-cmd-quick-ico" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 19V9m5 10V5m5 14v-7m5 7V8"/></svg>
                 </span>
                 <span class="client-cmd-quick-copy">
-                  <strong>Edit profile</strong>
-                  <span>Name, phone, credentials, router</span>
+                  <strong>Live session</strong>
+                  <span>Throughput and online state</span>
                 </span>
               </button>
-              <a class="client-cmd-quick-item" href="{{ voucher_billing_url }}">
-                <span class="client-cmd-quick-ico" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h10M4 17h13"/></svg>
-                </span>
-                <span class="client-cmd-quick-copy">
-                  <strong>Billing</strong>
-                  <span>{% if payment_count %}{{ payment_count }} payment{{ payment_count|pluralize }}{% else %}Payments &amp; invoices{% endif %}</span>
-                </span>
-              </a>
-              <a class="client-cmd-quick-item" href="{{ voucher_page_url }}">
-                <span class="client-cmd-quick-ico" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 3v2h6V7H9Zm0 4v2h6v-2H9Zm0 4v2h4v-2H9Z"/></svg>
-                </span>
-                <span class="client-cmd-quick-copy">
-                  <strong>Vouchers</strong>
-                  <span>{% if valid_voucher_count %}{{ valid_voucher_count }} unused code{{ valid_voucher_count|pluralize }}{% else %}Access codes{% endif %}</span>
-                </span>
-              </a>
               {% if can_access_wifi and customer.router %}
-                <a class="client-cmd-quick-item" href="{% url 'core:client_wifi_settings' customer.id %}" data-client-router-open>
+                <button type="button" class="client-cmd-quick-item" data-client-tab="router">
                   <span class="client-cmd-quick-ico" aria-hidden="true">
                     <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 12.5a7 7 0 0 1 14 0M8.5 15a3.5 3.5 0 0 1 7 0M12 18.5h.01"/></svg>
                   </span>
                   <span class="client-cmd-quick-copy">
-                    <strong>Open CPE admin</strong>
-                    <span>Configure Wi‑Fi on the client router</span>
+                    <strong>CPE router</strong>
+                    <span>Wi‑Fi, WAN, and connected devices</span>
                   </span>
-                </a>
+                </button>
               {% endif %}
               {% if show_available_vouchers %}
                 <button type="button" class="client-cmd-quick-item" data-client-tab="vouchers">
                   <span class="client-cmd-quick-ico" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7 7h10v10H7zM9 3h6M9 21h6"/></svg>
+                    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 3v2h6V7H9Zm0 4v2h6v-2H9Zm0 4v2h4v-2H9Z"/></svg>
                   </span>
                   <span class="client-cmd-quick-copy">
-                    <strong>Share vouchers</strong>
-                    <span>{{ valid_voucher_count }} unused code{{ valid_voucher_count|pluralize }} ready</span>
+                    <strong>Vouchers</strong>
+                    <span>{% if valid_voucher_count %}{{ valid_voucher_count }} unused code{{ valid_voucher_count|pluralize }}{% else %}Access codes{% endif %}</span>
                   </span>
                 </button>
               {% endif %}
@@ -692,6 +684,19 @@
               <div class="client-cmd-metric-card"><dt>Uploaded</dt><dd><strong data-usage="bytes-out">—</strong><span data-usage="bytes-out-hint"></span></dd></div>
               <div class="client-cmd-metric-card"><dt>CPE IP</dt><dd><strong class="client-usage-mono" data-usage="address">—</strong><span data-usage="caller"></span></dd></div>
             </dl>
+
+            <section class="client-live-breakdown" aria-labelledby="client-live-breakdown-title">
+              <header class="client-live-breakdown-head">
+                <div>
+                  <h4 id="client-live-breakdown-title">Connection breakdown</h4>
+                  <p data-live-breakdown-window>Current subscription</p>
+                </div>
+                <span class="client-live-breakdown-now" data-live-breakdown-now>—</span>
+              </header>
+              <ol class="client-usage-timeline client-live-timeline" data-live-session-timeline aria-label="Connection events">
+                <li class="client-usage-timeline-empty" data-live-breakdown-empty>Collecting connection history…</li>
+              </ol>
+            </section>
           </div>
         {% else %}
           <p class="client-cmd-empty">
@@ -783,73 +788,75 @@
       {% endif %}
 
       {% if show_available_vouchers %}
-      <div class="client-cmd-panel" data-client-panel="vouchers" id="client-available-vouchers" hidden>
-        <header class="client-cmd-panel-head">
-          <div>
-            <h3>Available vouchers</h3>
-            <p>
-              {% if voucher_device_cap > 1 %}
-                Package covers {{ voucher_device_cap }} devices · unused codes for extra gadgets
-              {% else %}
-                Unused one-time access codes from payments
-              {% endif %}
+      <div class="client-cmd-panel client-vouchers-panel{% if default_client_tab == 'vouchers' %} is-active{% endif %}" data-client-panel="vouchers" id="client-available-vouchers"{% if default_client_tab != 'vouchers' %} hidden{% endif %}>
+        <header class="client-cmd-panel-head client-vouchers-panel-head">
+          <div class="client-vouchers-panel-intro">
+            <h3>Current subscription</h3>
+            <p class="client-vouchers-panel-stats">
+              <span class="client-vouchers-stat{% if valid_voucher_count %} is-active{% endif %}">{{ valid_voucher_count }} unused</span>
+              {% if used_voucher_count %}<span class="client-vouchers-stat">{{ used_voucher_count }} used</span>{% endif %}
+              {% if subscription_vouchers %}<span class="client-vouchers-stat">{{ subscription_vouchers|length }} total</span>{% endif %}
+              {% if voucher_device_cap > 1 %}<span class="client-vouchers-stat">{{ voucher_device_cap }}-device plan</span>{% endif %}
             </p>
           </div>
-          <div class="client-simple-badges">
-            <span class="org-status {% if valid_voucher_count %}org-status-active{% endif %}">{{ valid_voucher_count }} unused</span>
-            {% if voucher_device_cap > 1 %}<span class="org-status">{{ voucher_device_cap }} devices</span>{% endif %}
-            {% if used_voucher_count %}<span class="org-status">{{ used_voucher_count }} used</span>{% endif %}
+          <div class="client-cmd-panel-tools">
+            <a class="client-vouchers-history-link" href="{{ voucher_page_url }}">View history</a>
           </div>
         </header>
 
-        {% if available_vouchers %}
-          <ul class="client-voucher-cards" aria-label="Unused access vouchers">
-            {% for row in available_vouchers %}
-              <li class="client-voucher-card is-valid">
+        {% if subscription_vouchers %}
+          <ul class="client-voucher-cards client-voucher-cards-compact" aria-label="Current subscription vouchers">
+            {% for row in subscription_vouchers %}
+              <li class="client-voucher-card{% if row.status == 'valid' %} is-valid{% elif row.status == 'expired' %} is-expired{% else %} is-invalid{% endif %}">
                 <div class="client-voucher-card-kicker">
                   <span>{% if voucher_device_cap > 1 %}Device code{% else %}Access code{% endif %}</span>
-                  <span class="voucher-status-pill is-valid">{{ row.status_label }}</span>
+                  <span class="voucher-status-pill{% if row.status == 'valid' %} is-valid{% elif row.status == 'expired' %} is-expired{% else %} is-invalid{% endif %}">{{ row.status_label }}</span>
                 </div>
-                <button
-                  type="button"
-                  class="org-code voucher-code client-voucher-code-btn"
-                  data-copy-voucher
-                  data-copy-text="{{ row.code_display }}"
-                  title="Copy {{ row.code_display }}"
-                >{{ row.code_display }}</button>
+                {% if row.status == 'valid' %}
+                  <button
+                    type="button"
+                    class="org-code voucher-code client-voucher-code-btn"
+                    data-copy-voucher
+                    data-copy-text="{{ row.code_display }}"
+                    title="Copy {{ row.code_display }}"
+                  >{{ row.code_display }}</button>
+                {% else %}
+                  <span class="org-code voucher-code client-voucher-code-btn is-readonly" aria-label="Voucher code {{ row.code_display }}">{{ row.code_display }}</span>
+                {% endif %}
                 <p class="client-voucher-card-meta">
                   {{ row.plan_name }}
                   {% if row.mpesa_receipt %} · M-Pesa {{ row.mpesa_receipt }}{% endif %}
+                  {% if row.redeemed_at %} · Used {{ row.redeemed_at|date:"M j, g:i A" }}{% endif %}
                 </p>
                 {% if row.share.can_share %}
                   <div class="voucher-share-actions client-voucher-card-actions" data-voucher-share>
-                    <button type="button" class="btn btn-sm" data-copy-voucher data-copy-text="{{ row.share.share_text|escape }}">Copy</button>
+                    <button type="button" class="btn btn-sm btn-ghost" data-copy-voucher data-copy-text="{{ row.share.share_text|escape }}">Copy message</button>
                     {% if row.share.whatsapp_client_url %}
-                      <a class="btn btn-sm voucher-share-wa" href="{{ row.share.whatsapp_client_url }}" target="_blank" rel="noopener noreferrer">WhatsApp client</a>
+                      <a class="btn btn-sm btn-ghost voucher-share-wa" href="{{ row.share.whatsapp_client_url }}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
                     {% else %}
-                      <a class="btn btn-sm voucher-share-wa" href="{{ row.share.whatsapp_share_url }}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
+                      <a class="btn btn-sm btn-ghost voucher-share-wa" href="{{ row.share.whatsapp_share_url }}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
                     {% endif %}
-                    <a class="btn btn-sm" href="{{ row.share.sms_url }}">SMS</a>
+                    <a class="btn btn-sm btn-ghost" href="{{ row.share.sms_url }}">SMS</a>
                   </div>
                 {% endif %}
               </li>
             {% endfor %}
           </ul>
         {% else %}
-          <div class="client-voucher-empty">
-            <p class="empty client-simple-note">
+          <div class="client-vouchers-empty">
+            <div class="client-vouchers-empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="28" height="28"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M7 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 3v2h6V7H9Zm0 4v2h6v-2H9Zm0 4v2h4v-2H9Z"/></svg>
+            </div>
+            <p class="client-vouchers-empty-title">No vouchers yet</p>
+            <p class="client-vouchers-empty-copy">
               {% if voucher_device_cap > 1 %}
-                No unused vouchers yet. After this client pays a {{ voucher_device_cap }}-device package, leftover codes appear here.
+                After a {{ voucher_device_cap }}-device payment, codes for this subscription appear here.
               {% else %}
-                No unused vouchers on this account.
+                Access codes from the current payment will appear here.
               {% endif %}
             </p>
           </div>
         {% endif %}
-        <p class="client-simple-note">
-          {% if used_voucher_count and not available_vouchers %}All vouchers from the last payment have been used.{% endif %}
-          <a href="{{ voucher_page_url }}">Full voucher history</a>
-        </p>
       </div>
       {% endif %}
     </div>
@@ -987,7 +994,7 @@
         <p class="role-modal-kicker pppoe-kicker">End access</p>
         <h2 id="client-end-subscription-title">End subscription</h2>
         <p class="role-modal-sub pppoe-sub">
-          Cuts internet for {{ customer.full_name }} right away. Remaining package time is forfeited.
+          Ends the active package for {{ customer.full_name }}, kicks any live session, and sends the device back to the Wi‑Fi pay page. Remaining time is forfeited.
         </p>
       </div>
       <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
@@ -1006,7 +1013,7 @@
       <div class="pppoe-body">
         <p class="org-delete-warn cc-delete-banner" role="alert">
           <strong>This ends the current package now.</strong>
-          Surfing is blocked immediately. Use Pause if you only want to freeze remaining time.
+          Live sessions are cleared, surfing is blocked, and the client must pay on Wi‑Fi again. Billing history is kept. Use Pause if you only want to freeze remaining time.
         </p>
       </div>
       <footer class="pppoe-foot">
@@ -1118,6 +1125,8 @@
     setClientCmdTab(hash);
   } else if (hash === "client-available-vouchers") {
     setClientCmdTab("vouchers");
+  } else if ("{{ default_client_tab|default:'overview'|escapejs }}" === "vouchers" && document.querySelector('[data-client-panel="vouchers"]')) {
+    setClientCmdTab("vouchers");
   }
 
   document.querySelectorAll("[data-client-more]").forEach(function (wrap) {
@@ -1140,7 +1149,7 @@
       wrap.classList.toggle("is-open", open);
     });
     menu.addEventListener("click", function (e) {
-      if (e.target.closest("[data-open-modal]")) closeMore();
+      if (e.target.closest("[data-open-modal]") || e.target.closest("a[href]")) closeMore();
     });
     document.addEventListener("click", function (e) {
       if (!wrap.contains(e.target)) closeMore();
@@ -1165,6 +1174,122 @@
     chip.classList.remove("is-good", "is-bad", "is-idle");
     if (state) chip.classList.add(state);
   };
+
+  (function () {
+    var rail = document.querySelector("[data-hero-live]");
+    if (!rail) return;
+    var customerId = Number(rail.getAttribute("data-customer-id"));
+    var service = (rail.getAttribute("data-service") || "").toLowerCase();
+    var surfingUrl = rail.getAttribute("data-surfing-url");
+    var usageUrl = rail.getAttribute("data-usage-url");
+    var canLive = rail.getAttribute("data-can-live") === "1";
+    if (service !== "pppoe" && service !== "hotspot") return;
+    if (!customerId || !surfingUrl) return;
+
+    function heroChip(key, value, meta, state) {
+      window.setClientHeroChip(key, value, meta, state);
+    }
+
+    function applySurfingHero(item) {
+      if (!item) {
+        heroChip("session", "Unavailable", "No live data", "is-idle");
+        return;
+      }
+      var state = (item.state || "").trim();
+      var label = (item.label || "").trim();
+      if (!label) {
+        if (item.surfing || state === "surfing") label = "Surfing";
+        else if (state === "not_surfing") label = "Not surfing";
+        else if (state === "expired") label = "Expired";
+        else label = "Disconnected";
+      }
+      var meta = (item.connected_wifi_ssid || item.connection_label || item.reason || "").trim();
+      if (!meta) meta = service === "hotspot" ? "Hotspot" : "PPPoE";
+      var chipState = "is-idle";
+      if (state === "surfing" || item.surfing) chipState = "is-good";
+      else if (state === "disconnected" || state === "expired") chipState = "is-bad";
+      heroChip("session", label, meta, chipState);
+    }
+
+    var surfInFlight = false;
+    var usageInFlight = false;
+
+    function refreshThroughput(force) {
+      if (!canLive || !usageUrl || document.hidden || usageInFlight) return;
+      usageInFlight = true;
+      var url = usageUrl;
+      if (force) url += (url.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+      var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      var timeoutId = controller
+        ? window.setTimeout(function () { controller.abort(); }, 15000)
+        : null;
+      fetch(url, {
+        headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin",
+        signal: controller ? controller.signal : undefined,
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (data && data.session_active && (data.download_label || data.upload_label)) {
+            heroChip(
+              "throughput",
+              (data.download_label || "—") + " ↓ " + (data.upload_label || "—") + " ↑",
+              data.speed_source === "cpe" ? "Measured on the client CPE" : "Measured on the ISP NAS",
+              "is-good"
+            );
+          }
+        })
+        .catch(function () {})
+        .finally(function () {
+          if (timeoutId) window.clearTimeout(timeoutId);
+          usageInFlight = false;
+        });
+    }
+
+    function refreshSurfing(force) {
+      if (document.hidden || surfInFlight) return;
+      surfInFlight = true;
+      var url = surfingUrl + "?service=" + encodeURIComponent(service)
+        + "&customer_id=" + encodeURIComponent(String(customerId));
+      if (force) url += "&refresh=1";
+      fetch(url, {
+        headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin",
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (!data || !data.ok || !data.clients) {
+            heroChip(
+              "session",
+              "Unavailable",
+              (data && data.error) || "Could not check session",
+              "is-idle"
+            );
+            return;
+          }
+          var item = null;
+          data.clients.forEach(function (row) {
+            if (Number(row.id) === customerId) item = row;
+          });
+          applySurfingHero(item);
+          if (item && (item.surfing || item.state === "surfing")) {
+            refreshThroughput(force);
+          } else {
+            heroChip("throughput", "—", "No live traffic", "is-idle");
+          }
+        })
+        .catch(function () {
+          heroChip("session", "Unavailable", "Could not check session", "is-idle");
+        })
+        .finally(function () { surfInFlight = false; });
+    }
+
+    refreshSurfing(true);
+    window.setInterval(function () { refreshSurfing(false); }, 10000);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) refreshSurfing(true);
+    });
+  })();
 
   window.setClientCollapse = function (panel, open) {
     if (!panel) return;
@@ -1846,10 +1971,50 @@
   var subEl = document.getElementById("client-usage-sub");
   var stampEl = document.getElementById("client-usage-stamp");
   var refreshBtn = document.getElementById("client-usage-refresh");
+  var liveTimeline = document.querySelector("[data-live-session-timeline]");
+  var liveBreakdownWindow = document.querySelector("[data-live-breakdown-window]");
+  var liveBreakdownNow = document.querySelector("[data-live-breakdown-now]");
   var planDownBps = Number(root.getAttribute("data-plan-down-mbps") || 0) * 1000000;
   var planUpBps = Number(root.getAttribute("data-plan-up-mbps") || 0) * 1000000;
   var timer = null;
   var inFlight = false;
+
+  function renderSessionBreakdown(breakdown) {
+    if (!liveTimeline) return;
+    var data = breakdown || {};
+    var events = Array.isArray(data.events) ? data.events : [];
+    if (liveBreakdownWindow) {
+      liveBreakdownWindow.textContent = data.window_label || "Current subscription";
+    }
+    if (liveBreakdownNow) {
+      liveBreakdownNow.textContent = data.status || "—";
+      liveBreakdownNow.className = "client-live-breakdown-now";
+      if (data.current_state === "surfing") liveBreakdownNow.classList.add("is-good");
+      else if (data.current_state === "not_surfing") liveBreakdownNow.classList.add("is-idle");
+      else if (data.current_state === "disconnected") liveBreakdownNow.classList.add("is-bad");
+    }
+    liveTimeline.innerHTML = "";
+    if (!events.length) {
+      var empty = document.createElement("li");
+      empty.className = "client-usage-timeline-empty";
+      empty.setAttribute("data-live-breakdown-empty", "");
+      empty.textContent = (data.sample_count || 0) > 0
+        ? "No connection changes recorded for this subscription yet."
+        : "Collecting connection history…";
+      liveTimeline.appendChild(empty);
+      return;
+    }
+    events.slice().reverse().forEach(function (ev) {
+      var item = document.createElement("li");
+      item.className = "client-usage-timeline-item is-" + (ev.tone || ev.kind || "connected");
+      item.innerHTML =
+        '<span class="client-usage-timeline-rail" aria-hidden="true"><span class="client-usage-timeline-dot"></span></span>' +
+        '<time class="client-usage-timeline-time">' + (ev.at_label || "—") + "</time>" +
+        '<span class="client-usage-timeline-badge">' + (ev.label || "Event") + "</span>" +
+        (ev.detail ? '<span class="client-usage-timeline-detail">' + ev.detail + "</span>" : "");
+      liveTimeline.appendChild(item);
+    });
+  }
 
   function setText(sel, value) {
     var el = root.querySelector('[data-usage="' + sel + '"]');
@@ -1974,13 +2139,19 @@
     if (refreshBtn) refreshBtn.disabled = true;
     var url = usageUrl;
     if (force) url += (usageUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var timeoutId = controller
+      ? window.setTimeout(function () { controller.abort(); }, 20000)
+      : null;
     fetch(url, {
       headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
-      credentials: "same-origin"
+      credentials: "same-origin",
+      signal: controller ? controller.signal : undefined,
     })
       .then(function (res) { return res.json(); })
       .then(function (data) {
         if (!data) return;
+        renderSessionBreakdown(data.session_breakdown);
         if (!data.ok && data.error) {
           applyOffline(data.error, data);
           if (subEl) subEl.textContent = data.error;
@@ -2159,6 +2330,7 @@
         stampNow();
       })
       .finally(function () {
+        if (timeoutId) window.clearTimeout(timeoutId);
         inFlight = false;
         root.classList.remove("is-fetching");
         if (refreshBtn && canLive) refreshBtn.disabled = false;
@@ -2309,7 +2481,11 @@
     })
       .then(function (res) { return res.json(); })
       .then(function (data) { applySubscription(data, !!sync); })
-      .catch(function () {})
+      .catch(function () {
+        if (typeof window.setClientHeroChip === "function") {
+          window.setClientHeroChip("subscription", "Unknown", "Could not refresh package", "is-idle");
+        }
+      })
       .finally(function () { inFlight = false; });
   }
 

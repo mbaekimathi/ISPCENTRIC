@@ -42,6 +42,12 @@ _STK_RAW_PRESERVE_KEYS = (
     "awaiting_daraja_confirm",
     "query",
     "hotspot_mac",
+    "pay_mode",
+    "device_count",
+    "hours",
+    "package_hours",
+    "voucher_count",
+    "quoted_total",
 )
 
 
@@ -722,6 +728,8 @@ def start_subscription_stk_payment(
     user=None,
     request=None,
     mac: str = "",
+    amount=None,
+    pay_metadata: dict | None = None,
 ) -> dict:
     """Validate and initiate STK Push for a customer's plan price."""
     if customer.organization_id != organization.pk:
@@ -731,7 +739,7 @@ def start_subscription_stk_payment(
         return {"ok": False, "error": "Assign a billing package before collecting payment."}
     if plan.organization_id != organization.pk or not plan.is_active:
         return {"ok": False, "error": "Choose an active package from this organization."}
-    amount = Decimal(plan.price or 0)
+    amount = Decimal(amount if amount is not None else (plan.price or 0))
     if amount <= 0:
         return {"ok": False, "error": "Package price must be greater than zero."}
 
@@ -756,6 +764,9 @@ def start_subscription_stk_payment(
 
     maybe_set_customer_phone(customer, phone or msisdn)
     paying_mac = normalize_device_mac(mac)
+    pay_payload: dict = {"hotspot_mac": paying_mac} if paying_mac else {}
+    if pay_metadata:
+        pay_payload.update({k: v for k, v in pay_metadata.items() if v is not None})
 
     account_ref = PaymentGateway.account_reference_for_client(customer) or customer.account_number
     environment = (
@@ -771,7 +782,7 @@ def start_subscription_stk_payment(
         account_reference=account_ref[:64],
         initiated_by=user if getattr(user, "is_authenticated", False) else None,
         status=StkPushRequest.Status.PENDING,
-        raw_callback={"hotspot_mac": paying_mac} if paying_mac else {},
+        raw_callback=pay_payload,
     )
 
     def _send(env: str) -> dict:
@@ -832,7 +843,7 @@ def start_subscription_stk_payment(
             "initiate_error": result,
             "environment": used_env,
             **_credential_meta_from_creds(creds),
-            **({"hotspot_mac": paying_mac} if paying_mac else {}),
+            **pay_payload,
         }
         stk.save(
             update_fields=["status", "result_desc", "completed_at", "raw_callback"]
@@ -873,7 +884,7 @@ def start_subscription_stk_payment(
         "initiate": result.get("data") or {},
         "environment": used_env,
         **_credential_meta_from_creds(creds),
-        **({"hotspot_mac": paying_mac} if paying_mac else {}),
+        **pay_payload,
     }
     stk.save(
         update_fields=[

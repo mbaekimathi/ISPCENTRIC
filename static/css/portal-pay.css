@@ -764,6 +764,180 @@
       background: linear-gradient(90deg, #2ee6c7, #9ff8e6);
     }
 
+    .pay-mode-section {
+      display: grid;
+      gap: 0.65rem;
+    }
+
+    .pay-mode-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.55rem;
+    }
+
+    .pay-mode-tab {
+      display: grid;
+      justify-items: center;
+      text-align: center;
+      gap: 0.2rem;
+      padding: 0.85rem 0.65rem;
+      border-radius: 1rem;
+      border: 1.5px solid var(--line);
+      background: rgba(255, 255, 255, 0.5);
+      cursor: pointer;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+    }
+
+    .pay-mode-tab:active {
+      transform: scale(0.98);
+    }
+
+    .pay-mode-tab input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .pay-mode-icon {
+      width: 1.65rem;
+      height: 1.65rem;
+      color: #0d7c72;
+    }
+
+    .pay-mode-icon svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .pay-mode-title {
+      font-size: 0.88rem;
+      font-weight: 800;
+      color: var(--ink);
+      line-height: 1.2;
+    }
+
+    .pay-mode-tab small {
+      font-size: 0.68rem;
+      line-height: 1.35;
+      color: var(--muted);
+      max-width: 9.5rem;
+    }
+
+    .pay-mode-tab.is-active {
+      border-color: rgba(13, 124, 114, 0.65);
+      box-shadow: 0 0 0 1px rgba(13, 124, 114, 0.2), 0 8px 20px rgba(13, 124, 114, 0.12);
+      background: rgba(13, 124, 114, 0.1);
+    }
+
+    .pay-mode-hint {
+      margin: 0;
+      font-size: 0.78rem;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+
+    .other-devices-panel {
+      display: grid;
+      gap: 0.8rem;
+      padding: 0.9rem;
+      border-radius: 1rem;
+      border: 1px solid rgba(13, 124, 114, 0.22);
+      background: rgba(13, 124, 114, 0.06);
+    }
+
+    .quick-pick-block {
+      display: grid;
+      gap: 0.45rem;
+    }
+
+    .quick-pick-label {
+      margin: 0;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .quick-pick-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+    }
+
+    .quick-pick-chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.42rem 0.78rem;
+      background: rgba(255, 255, 255, 0.65);
+      color: var(--ink);
+      font: 700 0.78rem/1 sans-serif;
+      cursor: pointer;
+    }
+
+    .quick-pick-chip.is-active {
+      border-color: rgba(13, 124, 114, 0.55);
+      background: rgba(13, 124, 114, 0.16);
+      color: #0a5c54;
+    }
+
+    .field-compact {
+      margin-top: 0.15rem;
+    }
+
+    .field-compact input {
+      max-width: 7rem;
+    }
+
+    .quote-simple {
+      display: grid;
+      gap: 0.15rem;
+      padding: 0.85rem 0.9rem;
+      border-radius: 0.95rem;
+      text-align: center;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid var(--line);
+    }
+
+    .quote-simple-label {
+      margin: 0;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .quote-simple-amount {
+      margin: 0;
+      font-size: 1.55rem;
+      font-weight: 900;
+      line-height: 1.1;
+      color: var(--ink);
+    }
+
+    .quote-simple-meta {
+      margin: 0;
+      font-size: 0.76rem;
+      color: var(--muted);
+    }
+
+    .pay-mode-alert {
+      margin: 0;
+      padding: 0.65rem 0.75rem;
+      border-radius: 0.75rem;
+      background: rgba(217, 119, 6, 0.1);
+      border: 1px solid rgba(217, 119, 6, 0.22);
+      color: #92400e;
+      font-size: 0.76rem;
+      line-height: 1.45;
+    }
+
+    [data-theme="dark"] .pay-mode-alert {
+      color: #f4b860;
+    }
+
     form.login { display: grid; gap: 0.9rem; }
 
     .checkout {
@@ -1642,6 +1816,22 @@
           calc(0.88rem - (var(--name-len, 8) * 0.014rem)),
           0.8rem
         );
+      }
+
+      .pay-mode-tab {
+        padding: 0.72rem 0.45rem;
+      }
+
+      .pay-mode-title {
+        font-size: 0.8rem;
+      }
+
+      .pay-mode-tab small {
+        font-size: 0.62rem;
+      }
+
+      .quote-simple-amount {
+        font-size: 1.35rem;
       }
 
       .plan-chips span {

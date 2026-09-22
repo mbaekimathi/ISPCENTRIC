@@ -107,6 +107,14 @@ def release_subscription_sweep_lock() -> None:
         logger.exception("subscription sweep lock release failed")
 
 
+def force_clear_subscription_sweep_lock() -> None:
+    """Admin/test override — delete the lock even when another PID holds it."""
+    try:
+        _jobs_cache().delete(_SWEEP_LOCK_NAME)
+    except Exception:
+        logger.exception("subscription sweep lock force-clear failed")
+
+
 def try_acquire_expiry_watch_lock(*, ttl_sec: int = 25) -> bool:
     """
     Near-deadline / paid-repair watch.

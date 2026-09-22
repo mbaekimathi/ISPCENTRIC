@@ -293,6 +293,43 @@ class HotspotPaymentConnectionFlowTests(TestCase):
         self.assertTrue(second.get("already_applied"))
         self.assertEqual(customer.package_end, end_after_first)
 
+    def test_voucher_redeem_passes_reauthenticate(self):
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Reauth Client",
+            phone="254712345682",
+            account_number="HOT-FLOW-4B",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac=self.mac,
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            router=self.router,
+            package_start=timezone.now() - timedelta(hours=1),
+            package_end=timezone.now() + timedelta(hours=20),
+        )
+        voucher = AccessVoucher.objects.create(
+            organization=self.org,
+            customer=customer,
+            plan=self.plan,
+            code="FLOWCODE2",
+            status=AccessVoucher.Status.VALID,
+            subscription_applied=True,
+        )
+        with (
+            patch("core.views._resolve_request_hotspot_mac", return_value=self.mac),
+            patch(
+                "core.subscription_sync.enqueue_customer_subscription_sync",
+                return_value={"ok": True, "allowed": True},
+            ) as sync_mock,
+        ):
+            response = self.client.post(
+                self._voucher_url(),
+                {"voucher_code": voucher.code, "mac": self.mac},
+            )
+        self.assertEqual(response.status_code, 200)
+        sync_mock.assert_called_once()
+        self.assertTrue(sync_mock.call_args.kwargs.get("reauthenticate"))
+
     def test_voucher_redeem_authorizes_device(self):
         customer = Customer.objects.create(
             organization=self.org,
@@ -525,6 +562,7 @@ class HotspotConnectSpeedTests(TestCase):
         self.assertTrue(data["ok"])
         self.assertTrue(data["authorized"])
         self.assertTrue(data["paid"])
+        self.assertFalse(data["surfing"])
 
     def test_connection_status_live_requires_active_session(self):
         url = (
@@ -547,6 +585,31 @@ class HotspotConnectSpeedTests(TestCase):
         self.assertTrue(data["live_checked"])
         live_mock.assert_called_once()
         self.assertFalse(data["authorized"])
+        self.assertFalse(data["surfing"])
+
+    def test_connection_status_live_confirms_surfing(self):
+        url = (
+            reverse(
+                "core:hotspot_connection_status",
+                kwargs={"join_code": self.org.join_code},
+            )
+            + "?sync=1&live=1"
+        )
+        self.customer.package_start = timezone.now() - timedelta(hours=1)
+        self.customer.package_end = timezone.now() + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": True, "allowed": True},
+        ), patch(
+            "core.mikrotik_connect.hotspot_mac_has_active_session",
+            return_value=True,
+        ):
+            response = self.client.get(url, HTTP_COOKIE=f"hs_mac={self.mac}")
+        data = response.json()
+        self.assertTrue(data["authorized"])
+        self.assertTrue(data["surfing"])
+        self.assertTrue(data["live_checked"])
 
     def test_connection_status_sync_pushes_paid_reconnect(self):
         url = (
@@ -612,6 +675,17 @@ class HotspotConnectSpeedTests(TestCase):
         self.assertIn("/reconnect/", urls["reconnect_url"])
         self.assertIn("/pay/", urls["pay_url"])
 
+    def test_welcome_page_starts_in_loading_state(self):
+        url = reverse(
+            "core:hotspot_welcome", kwargs={"join_code": self.org.join_code}
+        )
+        response = self.client.get(url, HTTP_COOKIE=f"hs_mac={self.mac}")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Checking your connection")
+        self.assertContains(response, "data-welcome-loading")
+        self.assertContains(response, "data-welcome-ready")
+        self.assertContains(response, "Connecting…")
+
     def test_reconnect_paid_customer_redirects_to_welcome(self):
         self.customer.package_start = timezone.now() - timedelta(hours=1)
         self.customer.package_end = timezone.now() + timedelta(hours=5)
@@ -640,9 +714,35 @@ class HotspotConnectSpeedTests(TestCase):
             reverse("core:hotspot_reconnect", kwargs={"join_code": self.org.join_code})
             + "?mac=11:22:33:44:55:66"
         )
-        response = self.client.get(url)
+        with patch(
+            "core.mikrotik_connect.enforce_hotspot_pay_wall",
+            return_value={"ok": True, "skipped": False},
+        ) as block_mock:
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn("/pay/", response.url)
+        block_mock.assert_called_once()
+
+    def test_reconnect_linked_mac_without_voucher_redirects_to_pay(self):
+        from billing.devices import attach_hotspot_device
+
+        self.customer.package_start = timezone.now() - timedelta(hours=1)
+        self.customer.package_end = timezone.now() + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        sibling_mac = "11:22:33:44:55:66"
+        attach_hotspot_device(self.customer, sibling_mac)
+        url = (
+            reverse("core:hotspot_reconnect", kwargs={"join_code": self.org.join_code})
+            + f"?mac={sibling_mac}"
+        )
+        with patch(
+            "core.mikrotik_connect.enforce_hotspot_pay_wall",
+            return_value={"ok": True, "skipped": False},
+        ) as block_mock:
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/pay/", response.url)
+        block_mock.assert_called_once()
 
     def test_pay_page_shows_reconnect_banner_for_active_package(self):
         self.customer.package_start = timezone.now() - timedelta(hours=1)

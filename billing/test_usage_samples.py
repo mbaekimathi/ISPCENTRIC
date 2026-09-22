@@ -1,3 +1,5 @@
+import uuid
+
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from unittest.mock import patch
@@ -5,6 +7,7 @@ from unittest.mock import patch
 from accounts.models import Organization, User
 from billing.models import Customer, CustomerUsageSample
 from billing.usage_samples import (
+    build_client_session_breakdown,
     network_performance_drops,
     org_usage_payload,
     parse_uptime_seconds,
@@ -586,6 +589,96 @@ class UsageTrendPayloadTests(TestCase):
         self.assertEqual(CustomerUsageSample.objects.filter(customer=self.customer).count(), 1)
 
 
+class ClientSessionBreakdownTests(TestCase):
+    def setUp(self):
+        owner = User.objects.create_user("session-breakdown-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Session Breakdown Org", owner=owner, join_code="BRK001"
+        )
+        now = timezone.now()
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Breakdown Client",
+            phone="0700000099",
+            account_number="PPP-BRK-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="break1",
+            package_start=now - timezone.timedelta(hours=2),
+            package_end=now + timezone.timedelta(days=7),
+        )
+
+    def test_emits_connect_drop_and_reconnect_events(self):
+        now = timezone.now()
+        base = now - timezone.timedelta(minutes=40)
+        stamps = [
+            base,
+            base + timezone.timedelta(minutes=5),
+            base + timezone.timedelta(minutes=15),
+            base + timezone.timedelta(minutes=25),
+        ]
+        active_flags = [False, True, False, True]
+        for stamp, active in zip(stamps, active_flags):
+            CustomerUsageSample.objects.create(
+                customer=self.customer,
+                organization=self.org,
+                sampled_at=stamp,
+                session_active=active,
+                uptime_seconds=120 if active else 0,
+                download_bps=1000 if active else 0,
+                upload_bps=500 if active else 0,
+                bytes_in=1000 if active else 0,
+                bytes_out=200 if active else 0,
+            )
+
+        payload = build_client_session_breakdown(self.customer)
+        labels = [event["label"] for event in payload["events"]]
+        self.assertIn("Connected", labels)
+        self.assertIn("Dropped", labels)
+        self.assertIn("Reconnected", labels)
+        self.assertEqual(payload["events"][-1]["label"], "Reconnected")
+
+    def test_hotspot_connected_then_surfing_events(self):
+        now = timezone.now()
+        hotspot = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot Breakdown",
+            phone="0700000098",
+            account_number="HS-BRK-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:99",
+            package_start=now - timezone.timedelta(hours=1),
+            package_end=now + timezone.timedelta(days=1),
+        )
+        base = now - timezone.timedelta(minutes=30)
+        rows = [
+            (base, False, False),
+            (base + timezone.timedelta(minutes=5), False, True),
+            (base + timezone.timedelta(minutes=10), True, True),
+            (base + timezone.timedelta(minutes=20), False, True),
+            (base + timezone.timedelta(minutes=25), False, False),
+        ]
+        for stamp, active, connected in rows:
+            CustomerUsageSample.objects.create(
+                customer=hotspot,
+                organization=self.org,
+                sampled_at=stamp,
+                session_active=active,
+                network_connected=connected,
+                uptime_seconds=60 if active else 0,
+                download_bps=800 if active else 0,
+                upload_bps=200 if active else 0,
+                bytes_in=500 if active else 0,
+                bytes_out=100 if active else 0,
+            )
+
+        payload = build_client_session_breakdown(hotspot)
+        labels = [event["label"] for event in payload["events"]]
+        self.assertIn("Connected", labels)
+        self.assertIn("Started surfing", labels)
+        self.assertIn("Surfing ended", labels)
+        self.assertIn("Disconnected", labels)
+
+
 class NetworkPerformanceTrendTests(TestCase):
     def setUp(self):
         owner = User.objects.create_user("net-trend-owner", password="x")
@@ -690,9 +783,11 @@ class NetworkPerformanceTrendTests(TestCase):
 
 class SampleOrganizationUsageTests(TestCase):
     def setUp(self):
-        owner = User.objects.create_user("org-sample-owner", password="x")
+        suffix = uuid.uuid4().hex[:8]
+        join_code = f"{int(uuid.uuid4().int % 900000) + 100000:06d}"
+        owner = User.objects.create_user(f"org-sample-owner-{suffix}", password="x")
         self.org = Organization.objects.create(
-            name="Org Sample", owner=owner, join_code="ORG001"
+            name=f"Org Sample {suffix}", owner=owner, join_code=join_code
         )
         self.router = MikroTikRouter.objects.create(
             organization=self.org,
@@ -706,7 +801,7 @@ class SampleOrganizationUsageTests(TestCase):
             router=self.router,
             full_name="Online Client",
             phone="0700000100",
-            account_number="PPP-ON-1",
+            account_number=f"PPP-ON-{suffix}",
             service_type=Customer.ServiceType.PPPOE,
             pppoe_username="online1",
         )
@@ -715,7 +810,7 @@ class SampleOrganizationUsageTests(TestCase):
             router=self.router,
             full_name="Offline Client",
             phone="0700000101",
-            account_number="PPP-OFF-1",
+            account_number=f"PPP-OFF-{suffix}",
             service_type=Customer.ServiceType.PPPOE,
             pppoe_username="offline1",
         )
@@ -723,10 +818,24 @@ class SampleOrganizationUsageTests(TestCase):
             organization=self.org,
             full_name="Unassigned Client",
             phone="0700000102",
-            account_number="PPP-NONE-1",
+            account_number=f"PPP-NONE-{suffix}",
             service_type=Customer.ServiceType.PPPOE,
             pppoe_username="none1",
         )
+        self._skip_dial = patch(
+            "core.subscription_sync.should_skip_background_router_dial",
+            return_value=False,
+        )
+        self._resolve_host = patch(
+            "core.mikrotik_connect.resolve_nas_api_host",
+            side_effect=lambda router, **kwargs: (router.host or "").strip(),
+        )
+        self._skip_dial.start()
+        self._resolve_host.start()
+
+    def tearDown(self):
+        self._resolve_host.stop()
+        self._skip_dial.stop()
 
     @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
     @patch("core.mikrotik_connect.fetch_router_bulk_live_usage")
@@ -1456,6 +1565,20 @@ class UsageRouterResolutionAndSimulationTests(TestCase):
             service_type=Customer.ServiceType.PPPOE,
             pppoe_username="roamer1",
         )
+        self._skip_dial = patch(
+            "core.subscription_sync.should_skip_background_router_dial",
+            return_value=False,
+        )
+        self._resolve_host = patch(
+            "core.mikrotik_connect.resolve_nas_api_host",
+            side_effect=lambda router, **kwargs: (router.host or "").strip(),
+        )
+        self._skip_dial.start()
+        self._resolve_host.start()
+
+    def tearDown(self):
+        self._resolve_host.stop()
+        self._skip_dial.stop()
 
     def test_supports_live_usage_without_assigned_router(self):
         from core.views import customer_supports_live_usage

@@ -723,6 +723,21 @@ def _run_near_deadline_expiry_sync() -> None:
         if synced:
             logger.info("near-deadline expiry synced %s customer(s)", synced)
 
+        try:
+            from core.mikrotik_connect import process_hotspot_block_pending_fleet
+
+            pending = process_hotspot_block_pending_fleet()
+            drained = int(pending.get("drained") or 0)
+            remaining = int(pending.get("remaining") or 0)
+            if drained:
+                logger.info(
+                    "hotspot pending pay-wall blocks drained=%s remaining=%s",
+                    drained,
+                    remaining,
+                )
+        except Exception:
+            logger.exception("hotspot pending block drain failed")
+
         repaired = 0
         hotspot_repaired = 0
         pppoe_leak_repaired = 0

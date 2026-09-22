@@ -126,7 +126,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         if bool(options.get("clear_lock")):
-            release_subscription_sweep_lock()
+            from core.subscription_sync import force_clear_subscription_sweep_lock
+
+            force_clear_subscription_sweep_lock()
             self._write(self.stdout, "Subscription sweep lock cleared.")
             return
 

@@ -303,6 +303,38 @@ def customer_owns_hotspot_mac(customer, mac: str) -> bool:
     return mac in {m.upper() for m in authorized_hotspot_macs_for_customer(customer)}
 
 
+def hotspot_mac_can_surf(customer, mac: str) -> bool:
+    """
+    True when billing and voucher rules allow this MAC to surf right now.
+
+    Unlike ``customer_owns_hotspot_mac``, linked devices on capped plans still
+    return False until they redeem/claim a voucher for the current period.
+    """
+    from billing.services import customer_can_surf_via_hotspot
+
+    mac = normalize_device_mac(mac)
+    if not mac or customer is None:
+        return False
+    if not customer_can_surf_via_hotspot(customer):
+        return False
+    allowed = {m.upper() for m in authorized_hotspot_macs_for_customer(customer)}
+    return mac in allowed
+
+
+def hotspot_mac_needs_voucher(customer, mac: str) -> bool:
+    """Paid package is live but this MAC still needs a sibling voucher code."""
+    from billing.services import customer_can_surf_via_hotspot
+
+    mac = normalize_device_mac(mac)
+    if not mac or customer is None:
+        return False
+    if not customer_can_surf_via_hotspot(customer):
+        return False
+    if customer_devices_unlimited(customer):
+        return not customer_owns_hotspot_mac(customer, mac)
+    return not hotspot_mac_can_surf(customer, mac)
+
+
 def find_hotspot_customer_for_mac(org, mac: str, *, active_only: bool = True):
     """Look up a Hotspot customer by MAC via CustomerDevice, then hotspot_mac."""
     from billing.models import Customer, CustomerDevice
