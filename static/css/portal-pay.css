@@ -168,7 +168,8 @@
         max(0.85rem, env(safe-area-inset-right, 0px))
         max(1rem, env(safe-area-inset-bottom, 0px))
         max(0.85rem, env(safe-area-inset-left, 0px));
-      animation: rise 0.55s var(--ease) both;
+      opacity: 1;
+      animation: rise 0.55s var(--ease) forwards;
     }
 
     .hero {
@@ -182,7 +183,7 @@
       box-shadow: var(--shadow);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
-      animation: rise 0.55s var(--ease) 0.04s both;
+      animation: rise 0.55s var(--ease) 0.04s forwards;
     }
 
     .hero-top {
@@ -364,7 +365,7 @@
     .stage {
       display: grid;
       gap: 0.9rem;
-      animation: rise 0.55s var(--ease) 0.1s both;
+      animation: rise 0.55s var(--ease) 0.1s forwards;
     }
 
     .section-label {
@@ -484,7 +485,7 @@
       box-shadow:
         0 6px 16px rgba(18, 35, 31, 0.12),
         0 1px 3px rgba(18, 35, 31, 0.05);
-      animation: planIn 0.5s var(--ease) both;
+      animation: planIn 0.5s var(--ease) forwards;
       transition: transform 0.25s var(--ease), border-color 0.2s ease, box-shadow 0.25s ease;
     }
 
@@ -526,7 +527,7 @@
     }
 
     .plan-card.is-selected .plan-price b {
-      animation: pricePop 0.45s var(--ease) both;
+      animation: pricePop 0.45s var(--ease) forwards;
     }
 
     .plan-check {
@@ -1073,11 +1074,11 @@
     }
 
     .pay-overlay:not([hidden]) {
-      animation: overlayIn 0.32s ease both;
+      animation: overlayIn 0.32s ease forwards;
     }
 
     .pay-overlay:not([hidden]) .pay-overlay-card {
-      animation: cardIn 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+      animation: cardIn 0.48s cubic-bezier(0.22, 1, 0.36, 1) forwards;
     }
 
     @keyframes overlayIn {
@@ -1298,7 +1299,7 @@
       border-radius: 50%;
       display: grid;
       place-items: center;
-      animation: markIn 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+      animation: markIn 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
     }
 
     .payment-mark-ok {
@@ -1776,6 +1777,16 @@
 
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation: none !important; transition: none !important; }
+      .shell,
+      .hero,
+      .stage,
+      .plan-card,
+      .pay-dock,
+      .access-banner,
+      .pay-overlay-card {
+        opacity: 1 !important;
+        transform: none !important;
+      }
       .loader-halo,
       .loader-ring,
       .loader-orbit { display: none; }
@@ -1783,4 +1794,4 @@
       .loader-dots i { opacity: 0.7; }
       .payment-mark-ok svg path,
       .payment-mark-err svg path { stroke-dashoffset: 0; }
-    }
+    }

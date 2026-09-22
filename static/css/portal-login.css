@@ -81,7 +81,8 @@
       position: relative;
       z-index: 1;
       width: min(100%, 26.5rem);
-      animation: rise 0.55s var(--ease) both;
+      opacity: 1;
+      animation: rise 0.55s var(--ease) forwards;
     }
 
     @keyframes rise {
@@ -520,7 +521,7 @@
         radial-gradient(ellipse 80% 70% at 50% 0%, rgba(12, 110, 120, 0.1), transparent 65%),
         var(--wash);
       text-align: center;
-      animation: rise 0.35s var(--ease) both;
+      animation: rise 0.35s var(--ease) forwards;
     }
 
     .payment-waiting[hidden] { display: none !important; }
@@ -539,7 +540,7 @@
       background: rgba(10, 22, 34, 0.48);
       backdrop-filter: blur(10px);
       -webkit-backdrop-filter: blur(10px);
-      animation: fadeIn 0.22s ease both;
+      animation: fadeIn 0.22s ease forwards;
     }
 
     .pay-overlay[hidden] { display: none !important; }
@@ -562,7 +563,7 @@
         rgba(255, 255, 255, 0.96);
       box-shadow: 0 24px 60px rgba(8, 18, 30, 0.28);
       text-align: center;
-      animation: rise 0.35s var(--ease) both;
+      animation: rise 0.35s var(--ease) forwards;
     }
 
     .pay-overlay.is-error .pay-overlay-card {
@@ -811,6 +812,14 @@
         animation: none !important;
         transition: none !important;
       }
+      .shell,
+      .stage,
+      .hero,
+      .body,
+      .pay-strip {
+        opacity: 1 !important;
+        transform: none !important;
+      }
       .payment-loader .arc { stroke-dasharray: none; opacity: 0.85; }
       .payment-loader .pulse-dot { opacity: 1; transform: none; }
-    }
+    }
