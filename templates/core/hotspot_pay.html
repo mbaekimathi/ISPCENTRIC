@@ -20,12 +20,13 @@
       background: #e8f2ee;
     }
     /* Captive fallback: never leave pay UI invisible (animation fill-mode bug). */
-    .shell, .hero, .stage, .pay-dock, .access-banner {
+    .shell, .hero, .stage, .pay-dock, .access-banner,
+    .plan-categories, .plan-card, .pay-mode-tab, form.login {
       opacity: 1 !important;
       visibility: visible !important;
     }
   </style>
-  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=4">
+  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=5">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true">

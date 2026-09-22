@@ -465,6 +465,7 @@
       --card-accent: #2ee6c7;
       --name-len: 8;
       --offer-len: 12;
+      opacity: 1;
       position: relative;
       display: grid;
       grid-template-rows: auto minmax(3.6rem, 1fr) auto;
@@ -1965,14 +1966,30 @@
       .pay-overlay-card { max-height: 92dvh; }
     }
 
+    /* Captive mini-browsers often disable animations without prefers-reduced-motion. */
+    .shell,
+    .hero,
+    .stage,
+    .plan-categories,
+    .plan-card,
+    .pay-dock,
+    .access-banner,
+    .pay-mode-tab,
+    form.login[data-payment-form] {
+      opacity: 1;
+    }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation: none !important; transition: none !important; }
       .shell,
       .hero,
       .stage,
+      .plan-categories,
       .plan-card,
       .pay-dock,
       .access-banner,
+      .pay-mode-tab,
+      form.login[data-payment-form],
       .pay-overlay-card {
         opacity: 1 !important;
         transform: none !important;
