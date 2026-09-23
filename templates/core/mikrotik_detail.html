@@ -219,6 +219,7 @@
     data-tunnel-managed="{% if router.vpn_address %}1{% else %}0{% endif %}"
     data-management-mode="{{ router_management_mode|default:'lan' }}"
     data-hosted="{% if is_hosted_dashboard %}1{% else %}0{% endif %}"
+    data-poll-ms="{{ mikrotik_poll_ms|default:20000 }}"
     data-hosted-url="{{ hosted_dashboard_url|default:'' }}"
   >
     <div class="mikrotik-live-loading" id="mikrotik-live-loading" {% if is_suspended or initial_live %}hidden{% endif %} role="status" aria-live="polite">
@@ -340,6 +341,7 @@
     data-ports-setup-url="{{ ports_setup_url }}"
     data-assigned-ports-url="{{ assigned_ports_url }}"
     data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
+    data-poll-ms="{{ mikrotik_poll_ms|default:30000 }}"
     aria-label="Router analytics"
   >
     <section class="mk-detail-analytics-block" data-detail-health-analytics>
@@ -1348,7 +1350,9 @@
   }
   loadLive(false);
   if (!suspended) {
-    timer = setInterval(function () { loadLive(false); }, 10000);
+    var pollAttr = parseInt(liveRoot.getAttribute("data-poll-ms") || "", 10);
+    var livePollMs = pollAttr >= 10000 ? pollAttr : 20000;
+    timer = setInterval(function () { loadLive(false); }, livePollMs);
   }
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) loadLive(false);

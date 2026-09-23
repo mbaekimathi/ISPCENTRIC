@@ -255,6 +255,14 @@ MIKROTIK_AUTO_RESTORE_ALERTS = env_flag(
 MIKROTIK_AUTO_RESTORE_ALERT_COOLDOWN_SEC = int(
     os.getenv("MIKROTIK_AUTO_RESTORE_ALERT_COOLDOWN_SEC") or "3600"
 )
+# RouterOS /interface/monitor-traffic is CPU-heavy — default off; byte-delta polling instead.
+MIKROTIK_USE_MONITOR_TRAFFIC = env_flag("MIKROTIK_USE_MONITOR_TRAFFIC", "false")
+# Live admin page poll intervals (milliseconds). Longer = less RouterOS API load.
+MIKROTIK_PORTS_POLL_MS = int(os.getenv("MIKROTIK_PORTS_POLL_MS") or ("20000" if HOSTED else "12000"))
+MIKROTIK_ASSIGNED_PORTS_POLL_MS = int(
+    os.getenv("MIKROTIK_ASSIGNED_PORTS_POLL_MS") or ("25000" if HOSTED else "15000")
+)
+MIKROTIK_DETAIL_POLL_MS = int(os.getenv("MIKROTIK_DETAIL_POLL_MS") or ("25000" if HOSTED else "20000"))
 # PPP profile keepalive for dead-peer cleanup (only-one redial). Gentle default
 # avoids bouncing flaky-but-live CPEs on deploy; tighten later if needed (30s).
 PPPOE_KEEPALIVE_TIMEOUT = (os.getenv("PPPOE_KEEPALIVE_TIMEOUT") or "2m").strip() or "2m"

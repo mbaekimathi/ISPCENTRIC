@@ -1,9 +1,9 @@
 [Unit]
-Description=Sample customer usage every minute for General usage charts
+Description=Sample customer usage every 90 seconds for General usage charts
 
 [Timer]
-OnBootSec=1min
-OnUnitInactiveSec=1min
+OnBootSec=90s
+OnUnitInactiveSec=90s
 # Measured from the end of the last run, so slow runs cannot overlap.
 AccuracySec=10s
 Unit=ispcentric-usage-sample.service

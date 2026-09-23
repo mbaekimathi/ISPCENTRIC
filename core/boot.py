@@ -49,6 +49,18 @@ def _subscription_sweep_enabled() -> bool:
     }
 
 
+def _expiry_watch_enabled() -> bool:
+    """Near-deadline enforcement — can run without the full subscription sweep."""
+    if "--no-sweep" in sys.argv:
+        return False
+    env = os.getenv("SUBSCRIPTION_EXPIRY_WATCH_ENABLED", "").strip().lower()
+    if env in {"0", "false", "no"}:
+        return False
+    if env in {"1", "true", "yes"}:
+        return True
+    return _subscription_sweep_enabled()
+
+
 def _tunnel_sync_enabled() -> bool:
     if "--no-tunnel-sync" in sys.argv:
         return False
@@ -60,12 +72,12 @@ def _tunnel_sync_enabled() -> bool:
 
 
 def _subscription_sweep_interval_sec() -> float:
-    # Match deploy/systemd/ispcentric-sweep.timer (2 min) so local runserver
+    # Match deploy/systemd/ispcentric-sweep.timer (3 min) so local runserver
     # does not leave expired clients surfing for ~5 minutes.
     try:
-        return max(60.0, float(os.getenv("SUBSCRIPTION_SWEEP_INTERVAL_SEC", "120")))
+        return max(60.0, float(os.getenv("SUBSCRIPTION_SWEEP_INTERVAL_SEC", "180")))
     except (TypeError, ValueError):
-        return 120.0
+        return 180.0
 
 
 def _subscription_sweep_startup_delay_sec() -> float:
@@ -91,10 +103,10 @@ def _usage_sample_enabled() -> bool:
 def _usage_sample_interval_sec() -> float:
     """How often to snapshot PPPoE/Hotspot usage from every org's MikroTiks."""
     try:
-        # Default 60s — dense enough for trend charts, light on RouterOS.
-        return max(30.0, float(os.getenv("USAGE_SAMPLE_INTERVAL_SEC", "60")))
+        # Default 90s — dense enough for trend charts, light on RouterOS.
+        return max(30.0, float(os.getenv("USAGE_SAMPLE_INTERVAL_SEC", "90")))
     except (TypeError, ValueError):
-        return 60.0
+        return 90.0
 
 
 def _usage_sample_startup_delay_sec() -> float:
@@ -154,6 +166,16 @@ def run_usage_sample_all_orgs(*, label: str = "interval") -> dict:
     from django.core.cache import cache
 
     interval = int(_usage_sample_interval_sec())
+    heartbeat_age = usage_sampling_heartbeat_age_sec()
+    if heartbeat_age is not None and heartbeat_age < max(30.0, interval * 0.75):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "external_timer",
+            "sampled": 0,
+            "organizations": 0,
+            "label": label,
+        }
     # Hold the lock for the whole run so a slow MikroTik fleet cannot overlap
     # with the next timer tick / gunicorn worker.
     lock_ttl = max(180, interval * 3)
@@ -201,7 +223,7 @@ def run_usage_sample_all_orgs(*, label: str = "interval") -> dict:
         for org in Organization.objects.order_by("id").iterator():
             org_count += 1
             try:
-                result = sample_organization_usage(org, force=True)
+                result = sample_organization_usage(org, force=False)
                 sampled_total += int((result or {}).get("sampled") or 0)
             except Exception:
                 logger.exception(
@@ -275,9 +297,9 @@ def _smart_balance_monitor_enabled() -> bool:
 
 def _smart_balance_monitor_interval_sec() -> float:
     try:
-        return max(45.0, float(os.getenv("SMART_BALANCE_MONITOR_INTERVAL_SEC", "60")))
+        return max(45.0, float(os.getenv("SMART_BALANCE_MONITOR_INTERVAL_SEC", "90")))
     except (TypeError, ValueError):
-        return 60.0
+        return 90.0
 
 
 def _smart_balance_monitor_startup_delay_sec() -> float:
@@ -423,7 +445,7 @@ def run_smart_balance_monitor_fleet(
                 "label": label,
             }
 
-        worker_count = max(1, min(int(workers or 4), len(routers)))
+        worker_count = max(1, min(int(workers or 2), len(routers)))
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
             futures = {pool.submit(_maintain, router): router for router in routers}
             for future in as_completed(futures):
@@ -628,9 +650,9 @@ def _start_usage_sample_loop() -> None:
 def _expiry_watch_interval_sec() -> float:
     """How often to check customers near their access deadline."""
     try:
-        return max(15.0, float(os.getenv("SUBSCRIPTION_EXPIRY_WATCH_INTERVAL_SEC", "30")))
+        return max(15.0, float(os.getenv("SUBSCRIPTION_EXPIRY_WATCH_INTERVAL_SEC", "60")))
     except (TypeError, ValueError):
-        return 30.0
+        return 60.0
 
 
 def _run_subscription_sweep(*, label: str = "sweep") -> None:
@@ -683,6 +705,11 @@ def _run_near_deadline_expiry_sync() -> None:
         return
 
     try:
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        from billing.services import subscription_access_deadline
+
         # past_seconds is wide so a missed tick / lock contention cannot leave
         # an expired client surfing until the next full sweep.
         near = list(
@@ -690,6 +717,19 @@ def _run_near_deadline_expiry_sync() -> None:
                 past_seconds=600, future_seconds=45
             )
         )
+        now = timezone.now()
+        urgent_deadline = False
+        for customer in near:
+            deadline = subscription_access_deadline(customer)
+            if deadline is None:
+                continue
+            delta = (deadline - now).total_seconds()
+            if delta <= 90:
+                urgent_deadline = True
+                break
+        repair_tick = int(cache.get("expiry_watch_repair_tick") or 0) + 1
+        cache.set("expiry_watch_repair_tick", repair_tick, 3600)
+        run_fleet_repair = urgent_deadline or (repair_tick % 3 == 0)
         synced = 0
         for customer in near:
             try:
@@ -749,7 +789,7 @@ def _run_near_deadline_expiry_sync() -> None:
             .select_related("organization")
             .order_by("id")
         )
-        if routers:
+        if routers and run_fleet_repair:
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             def _repair_one_router(router):
@@ -769,7 +809,7 @@ def _run_near_deadline_expiry_sync() -> None:
                     )
                     return []
 
-            workers = min(8, len(routers))
+            workers = min(4, len(routers))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [
                     pool.submit(_repair_one_router, router) for router in routers
@@ -810,7 +850,9 @@ def _run_near_deadline_expiry_sync() -> None:
 
 
 def _start_subscription_sweep_loop() -> None:
-    if not _subscription_sweep_enabled():
+    sweep_enabled = _subscription_sweep_enabled()
+    watch_enabled = _expiry_watch_enabled()
+    if not sweep_enabled and not watch_enabled:
         return
     interval = _subscription_sweep_interval_sec()
     watch_interval = _expiry_watch_interval_sec()
@@ -826,15 +868,17 @@ def _start_subscription_sweep_loop() -> None:
                 delay,
             )
             time.sleep(delay)
-        _run_subscription_sweep(label="startup")
-        next_full = time.monotonic() + interval
+        if sweep_enabled:
+            _run_subscription_sweep(label="startup")
+        next_full = time.monotonic() + interval if sweep_enabled else 0.0
         while True:
             time.sleep(watch_interval)
-            try:
-                _run_near_deadline_expiry_sync()
-            except Exception:
-                logger.exception("near-deadline expiry watch failed")
-            if time.monotonic() >= next_full:
+            if watch_enabled:
+                try:
+                    _run_near_deadline_expiry_sync()
+                except Exception:
+                    logger.exception("near-deadline expiry watch failed")
+            if sweep_enabled and time.monotonic() >= next_full:
                 _run_subscription_sweep(label="interval")
                 next_full = time.monotonic() + interval
 
@@ -843,12 +887,26 @@ def _start_subscription_sweep_loop() -> None:
         name="subscription-sweep",
         daemon=True,
     ).start()
-    logger.info(
-        "Subscription sweep armed (full every %.0fs, expiry+paid-repair watch every %.0fs). "
-        "Disable with SUBSCRIPTION_SWEEP_ENABLED=false.",
-        interval,
-        watch_interval,
-    )
+    if sweep_enabled and watch_enabled:
+        logger.info(
+            "Subscription sweep armed (full every %.0fs, expiry watch every %.0fs). "
+            "Disable sweep with SUBSCRIPTION_SWEEP_ENABLED=false; "
+            "watch alone with SUBSCRIPTION_EXPIRY_WATCH_ENABLED=true.",
+            interval,
+            watch_interval,
+        )
+    elif sweep_enabled:
+        logger.info(
+            "Subscription sweep armed (full every %.0fs). "
+            "Disable with SUBSCRIPTION_SWEEP_ENABLED=false.",
+            interval,
+        )
+    else:
+        logger.info(
+            "Expiry watch armed (every %.0fs, no in-process full sweep). "
+            "Disable with SUBSCRIPTION_EXPIRY_WATCH_ENABLED=false.",
+            watch_interval,
+        )
 
 
 def _sync_wireguard() -> None:

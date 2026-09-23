@@ -56,8 +56,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--workers",
             type=int,
-            default=4,
-            help="How many MikroTiks to sync in parallel (default 4).",
+            default=2,
+            help="How many MikroTiks to sync in parallel (default 2).",
         )
 
     def _write(self, stream, message, style=None):

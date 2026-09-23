@@ -13,6 +13,7 @@
     data-ports-loading="{% if ports_loading %}1{% else %}0{% endif %}"
     data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
     data-hosted="{% if hosted_server %}1{% else %}0{% endif %}"
+    data-poll-ms="{{ mikrotik_poll_ms|default:12000 }}"
     data-router-id="{{ router.id }}"
     data-router-detail-url="{% url 'core:mikrotik_detail' router.id %}"
     data-csrf-token="{{ csrf_token }}"

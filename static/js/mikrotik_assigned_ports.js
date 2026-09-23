@@ -10,7 +10,8 @@
   var hosted = root.getAttribute("data-hosted") === "1";
   var loading = root.getAttribute("data-ports-loading") === "1";
   var pollTimer = null;
-  var pollMs = hosted ? 10000 : 5000;
+  var pollAttr = parseInt(root.getAttribute("data-poll-ms") || "", 10);
+  var pollMs = pollAttr >= 5000 ? pollAttr : hosted ? 25000 : 15000;
   var livePill = document.querySelector("[data-assigned-live-pill]");
   var jobWatcher = null;
   var applyInFlight = false;

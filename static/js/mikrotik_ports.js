@@ -5,7 +5,8 @@
   var csrf = root.getAttribute("data-csrf-token") || "";
   var suspended = root.getAttribute("data-is-suspended") === "1";
   var hosted = root.getAttribute("data-hosted") === "1";
-  var livePollMs = hosted ? 8000 : 3000;
+  var pollAttr = parseInt(root.getAttribute("data-poll-ms") || "", 10);
+  var livePollMs = pollAttr >= 5000 ? pollAttr : hosted ? 20000 : 12000;
   var loading = root.getAttribute("data-ports-loading") === "1";
   var routerId = root.getAttribute("data-router-id") || "";
   var routerDetailUrl = root.getAttribute("data-router-detail-url") || "";

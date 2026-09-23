@@ -1155,15 +1155,15 @@ def _invalidate_mikrotik_router_caches(org_pk: int, router_pk: int) -> None:
 
 def _mikrotik_status_cache_ttl(all_connected: bool) -> int:
     if getattr(settings, "HOSTED", False):
-        return 45 if all_connected else 25
-    return 12 if all_connected else 8
+        return 60 if all_connected else 35
+    return 20 if all_connected else 12
 
 
 def _mikrotik_live_poll_cache_ttl(*, assigned: bool = False) -> int:
     """Server-side cache for ports/assigned live JSON — longer on hosted VPS."""
     if getattr(settings, "HOSTED", False):
-        return 10 if assigned else 7
-    return 6 if assigned else 4
+        return 20 if assigned else 15
+    return 12 if assigned else 10
 
 
 def _mikrotik_live_probe_timeout() -> float:
@@ -1414,6 +1414,7 @@ def mikrotik_assigned_ports(request, router_id: int):
         mikrotik_quicknav_set="ports",
         mikrotik_quicknav_active="assigned_ports",
         hosted_server=bool(getattr(settings, "HOSTED", False)),
+        mikrotik_poll_ms=int(getattr(settings, "MIKROTIK_ASSIGNED_PORTS_POLL_MS", 15000)),
     )
     return render(
         request,
@@ -9519,6 +9520,7 @@ def mikrotik_detail(request, router_id: int):
     ctx["is_hosted_dashboard"] = is_hosted_dashboard
     ctx["mikrotik_quicknav_set"] = "ports"
     ctx["mikrotik_quicknav_active"] = "overview"
+    ctx["mikrotik_poll_ms"] = int(getattr(settings, "MIKROTIK_DETAIL_POLL_MS", 20000))
     ctx["detail_analytics_url"] = reverse("core:mikrotik_detail_analytics", args=[router.pk])
     ctx["ports_setup_url"] = reverse("core:mikrotik_ports", args=[router.pk])
     ctx["assigned_ports_url"] = reverse("core:mikrotik_assigned_ports", args=[router.pk])
@@ -11904,6 +11906,7 @@ def mikrotik_ports(request, router_id: int):
         mikrotik_quicknav_set="ports",
         mikrotik_quicknav_active="ports",
         hosted_server=bool(getattr(settings, "HOSTED", False)),
+        mikrotik_poll_ms=int(getattr(settings, "MIKROTIK_PORTS_POLL_MS", 12000)),
     )
     return render(
         request,
@@ -12496,7 +12499,7 @@ def _ports_live_payload(
                 samples, previous=previous if isinstance(previous, dict) else None
             )
             if next_state:
-                cache.set(share_cache_key, next_state, 90)
+                cache.set(share_cache_key, next_state, 120)
         except Exception:
             wan_share = {"ok": False, "shares": [], "total_bps": 0}
 

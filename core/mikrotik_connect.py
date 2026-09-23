@@ -23,6 +23,11 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
+def _use_monitor_traffic() -> bool:
+    """True only when MIKROTIK_USE_MONITOR_TRAFFIC is set — monitor-traffic stresses RouterOS CPU."""
+    return bool(getattr(settings, "MIKROTIK_USE_MONITOR_TRAFFIC", False))
+
+
 WIFI_PACKAGES = (
     # Prefer modern RouterOS 7 wifi drivers first (wifi-qcom / wifiwave2 rename).
     {
@@ -7033,7 +7038,7 @@ def _speed_from_byte_delta(
         dt = max(0.0, now - float(previous["t"]))
     except (TypeError, ValueError):
         return None
-    if dt < 0.35 or dt > 20.0:
+    if dt < 0.35 or dt > 45.0:
         return None
     prev_rx = max(0, _parse_int(previous.get("rx")))
     prev_tx = max(0, _parse_int(previous.get("tx")))
@@ -7059,7 +7064,7 @@ def _monitor_interface_speed(
     *,
     sample_key: str = "",
 ) -> dict[str, Any]:
-    """Read live rx/tx bit rates for one interface via monitor-traffic."""
+    """Read live rx/tx bit rates — byte-delta by default; monitor-traffic only when opted in."""
     interface = (interface or "").strip()
     empty = {
         "wan_download_bps": None,
@@ -7069,6 +7074,21 @@ def _monitor_interface_speed(
         "wan_speed_interface": "",
     }
     if not interface:
+        return empty
+
+    rx_bytes, tx_bytes = _interface_byte_counters(sock, interface)
+    if sample_key:
+        delta = _speed_from_byte_delta(sample_key, interface, rx_bytes, tx_bytes)
+        if delta:
+            return delta
+
+    if not _use_monitor_traffic():
+        if rx_bytes or tx_bytes:
+            return {
+                **empty,
+                "wan_speed_interface": interface,
+                "wan_speed_source": "counters",
+            }
         return empty
 
     previous = sock.gettimeout()
@@ -7102,13 +7122,11 @@ def _monitor_interface_speed(
         ) > 0:
             return monitor
 
-        rx_bytes, tx_bytes = _interface_byte_counters(sock, interface)
         delta = _speed_from_byte_delta(sample_key, interface, rx_bytes, tx_bytes)
         if delta:
             return delta
         return monitor if monitor.get("wan_speed_interface") else empty
     except (TimeoutError, OSError):
-        rx_bytes, tx_bytes = _interface_byte_counters(sock, interface)
         delta = _speed_from_byte_delta(sample_key, interface, rx_bytes, tx_bytes)
         return delta or empty
     finally:
@@ -7252,8 +7270,8 @@ def read_wan_traffic_share(
     """
     Live traffic share across WAN interfaces (percent of combined rx+tx bit rate).
 
-    Prefers ``monitor-traffic`` rates; falls back to ``rx-byte``/``tx-byte`` when
-    monitor is empty or unavailable. ``interfaces`` may be physical or PPPoE names.
+    Uses byte-counter deltas only — avoids ``monitor-traffic`` which stresses
+    RouterOS CPU on every poll.
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -7267,70 +7285,38 @@ def read_wan_traffic_share(
     try:
         with _api_session(host, username, password, port=port, timeout=timeout) as sock:
             byte_map: dict[str, tuple[int, int]] = {}
-            try:
-                for row in _print(sock, "/interface", props="name,rx-byte,tx-byte"):
-                    iname = (row.get("name") or "").strip()
-                    if iname:
-                        byte_map[iname] = (
-                            max(0, _parse_int(row.get("rx-byte"))),
-                            max(0, _parse_int(row.get("tx-byte"))),
-                        )
-            except (TimeoutError, OSError, ConnectionError):
-                byte_map = {}
-
-            samples: list[dict[str, Any]] = []
-            live_ok = False
             for name in names:
-                speed = _monitor_interface_speed(sock, name)
-                rx = speed.get("wan_download_bps")
-                tx = speed.get("wan_upload_bps")
-                if rx is not None or tx is not None:
-                    live_ok = True
-                rx_i = max(0, int(rx or 0))
-                tx_i = max(0, int(tx or 0))
-                total = rx_i + tx_i
-                brx, btx = byte_map.get(name, (0, 0))
-                samples.append(
-                    {
-                        "name": name,
-                        "bps": total,
-                        "download_bps": rx_i if rx is not None else None,
-                        "upload_bps": tx_i if tx is not None else None,
-                        "rate_label": _bits_per_sec_label(total) if live_ok else "—",
-                        "download_label": speed.get("wan_download_label") or "—",
-                        "upload_label": speed.get("wan_upload_label") or "—",
-                        "rx_byte": brx,
-                        "tx_byte": btx,
-                        "bytes": brx + btx,
-                    }
-                )
+                rx_bytes, tx_bytes = _interface_byte_counters(sock, name)
+                byte_map[name] = (rx_bytes, tx_bytes)
 
-            grand_live = sum(int(s["bps"] or 0) for s in samples)
-            if live_ok and grand_live > 0:
-                pcts = _pct_shares_from_weights([int(s["bps"] or 0) for s in samples])
-                shares = [
-                    {**sample, "pct": pcts[i] if i < len(pcts) else 0}
-                    for i, sample in enumerate(samples)
-                ]
-                return {
-                    "ok": True,
-                    "shares": shares,
-                    "total_bps": grand_live,
-                    "source": "monitor",
+            samples = [
+                {
+                    "name": name,
+                    "monitor": name,
+                    "rx_byte": byte_map.get(name, (0, 0))[0],
+                    "tx_byte": byte_map.get(name, (0, 0))[1],
                 }
+                for name in names
+            ]
+            cache_key = f"mikrotik_wan_bytes:{host}:{'|'.join(names)}"
+            previous = None
+            try:
+                from django.core.cache import cache
 
-            # Idle monitor or trap — share from cumulative interface bytes.
-            built, _ = build_wan_traffic_share(
-                [
-                    {
-                        "name": s["name"],
-                        "monitor": s["name"],
-                        "rx_byte": s.get("rx_byte") or 0,
-                        "tx_byte": s.get("tx_byte") or 0,
-                    }
-                    for s in samples
-                ]
-            )
+                cached = cache.get(cache_key)
+                if isinstance(cached, dict):
+                    previous = cached
+            except Exception:
+                previous = None
+
+            built, next_state = build_wan_traffic_share(samples, previous=previous)
+            if next_state:
+                try:
+                    from django.core.cache import cache
+
+                    cache.set(cache_key, next_state, 120)
+                except Exception:
+                    pass
             if built.get("ok"):
                 return built
             return {**empty, "error": "No traffic counters for those interfaces."}
@@ -7787,7 +7773,7 @@ def fetch_mikrotik_live_snapshot(
             speed = _monitor_interface_speed(
                 sock,
                 speed_iface,
-                sample_key=f"{host}:{speed_iface}" if speed_iface else "",
+                sample_key=f"live:{host}:{speed_iface}" if speed_iface else "",
             )
             uplink.update(speed)
 
@@ -8142,22 +8128,15 @@ def fetch_customer_pppoe_usage(
                 candidates.append(f"<pppoe-{session_name[1:]}>")
             elif session_name and not session_name.startswith("+"):
                 candidates.append(f"<pppoe-+{session_name}>")
-            try:
-                interfaces = _print(
-                    sock,
-                    "/interface",
-                    props="name,type,rx-byte,tx-byte,running",
-                )
-            except Exception:
-                interfaces = []
-            by_name = {(row.get("name") or "").strip(): row for row in interfaces}
+            by_name = _pppoe_interface_counters(
+                sock, [session_name, pppoe_username]
+            )
             for candidate in candidates:
                 if candidate in by_name:
                     iface_name = candidate
                     break
             if not iface_name:
-                for row in interfaces:
-                    name = (row.get("name") or "").strip()
+                for name in by_name:
                     lower = name.lower()
                     if pppoe_username.lower() in lower and "pppoe" in lower:
                         iface_name = name
@@ -8168,12 +8147,20 @@ def fetch_customer_pppoe_usage(
                 bytes_in = _parse_int(iface.get("rx-byte"))
                 bytes_out = _parse_int(iface.get("tx-byte"))
 
-            speed = _monitor_interface_speed(sock, iface_name) if iface_name else {
+            speed = (
+                _monitor_interface_speed(
+                    sock,
+                    iface_name,
+                    sample_key=f"{host}:{pppoe_username}",
+                )
+                if iface_name
+                else {
                 "wan_download_bps": None,
                 "wan_upload_bps": None,
                 "wan_download_label": "—",
                 "wan_upload_label": "—",
-            }
+                }
+            )
             # monitor-traffic / byte-delta helpers label RX=download for WAN ports.
             # On a <pppoe-user> interface RX is traffic from the client (upload)
             # and TX is traffic to the client (download) — swap for subscriber view.
@@ -13341,13 +13328,20 @@ def _pppoe_live_state_maps(sock: socket.socket) -> dict[str, Any]:
     from these maps instead of N round-trips per username.
     """
     secret_profiles: dict[str, str] = {}
+    secret_rows: dict[str, dict[str, str]] = {}
     try:
-        for row in _print(sock, "/ppp/secret", props="name,profile"):
+        for row in _print(
+            sock,
+            "/ppp/secret",
+            props=".id,name,profile,disabled,comment,password",
+        ):
             name = (row.get("name") or "").strip().lower()
             if name:
                 secret_profiles[name] = (row.get("profile") or "").strip()
+                secret_rows[name] = row
     except Exception:
         secret_profiles = {}
+        secret_rows = {}
 
     active_names: set[str] = set()
     active_addresses: dict[str, set[str]] = {}
@@ -13379,11 +13373,37 @@ def _pppoe_live_state_maps(sock: socket.socket) -> dict[str, Any]:
 
     return {
         "secret_profiles": secret_profiles,
+        "secret_rows": secret_rows,
         "active_names": active_names,
         "active_addresses": active_addresses,
         "blocked_list_addresses": blocked_list_addresses,
         "arp_complete": _pppoe_arp_complete_map(sock),
     }
+
+
+def _ppp_secret_needs_update(
+    live: dict[str, Any],
+    *,
+    username: str,
+    profile: str,
+    disabled: bool,
+    comment: str,
+    password: str,
+) -> bool:
+    """True when billing state differs from the preloaded /ppp/secret row."""
+    row = (live.get("secret_rows") or {}).get((username or "").strip().lower())
+    if not row:
+        return True
+    if (row.get("profile") or "").strip() != (profile or "").strip():
+        return True
+    if _is_disabled(row) != bool(disabled):
+        return True
+    if (row.get("comment") or "").strip() != (comment or "").strip():
+        return True
+    stored_password = row.get("password") or ""
+    if _pppoe_password_is_readable(stored_password) and stored_password != (password or ""):
+        return True
+    return False
 
 
 def _pppoe_session_blocked_from_maps(live: dict[str, Any], username: str) -> bool:
@@ -13642,6 +13662,7 @@ def _ensure_ppp_secret(
     disabled: bool = False,
     rate_limit: str = "",
     kick: bool = True,
+    live: dict[str, Any] | None = None,
 ) -> str:
     """
     Create or update /ppp/secret so a CPE can dial this username/password.
@@ -13692,25 +13713,34 @@ def _ensure_ppp_secret(
     previous_disabled = ""
     previous_password = ""
     previous_rate_limit = ""
-    rows = _print(
-        sock,
-        "/ppp/secret",
-        props=".id,name,profile,service,disabled,comment,password",
-        query={"name": username},
-    )
-    if not rows:
+    preloaded = None
+    if live is not None:
+        preloaded = (live.get("secret_rows") or {}).get(username.lower())
+    if preloaded:
+        secret_id = (preloaded.get(".id") or "").strip()
+        previous_profile = (preloaded.get("profile") or "").strip()
+        previous_disabled = (preloaded.get("disabled") or "").strip().lower()
+        previous_password = preloaded.get("password") or ""
+    if not secret_id:
         rows = _print(
             sock,
             "/ppp/secret",
             props=".id,name,profile,service,disabled,comment,password",
+            query={"name": username},
         )
-    for row in rows:
-        if (row.get("name") or "").strip().lower() == username.lower():
-            secret_id = (row.get(".id") or "").strip()
-            previous_profile = (row.get("profile") or "").strip()
-            previous_disabled = (row.get("disabled") or "").strip().lower()
-            previous_password = row.get("password") or ""
-            break
+        if not rows:
+            rows = _print(
+                sock,
+                "/ppp/secret",
+                props=".id,name,profile,service,disabled,comment,password",
+            )
+        for row in rows:
+            if (row.get("name") or "").strip().lower() == username.lower():
+                secret_id = (row.get(".id") or "").strip()
+                previous_profile = (row.get("profile") or "").strip()
+                previous_disabled = (row.get("disabled") or "").strip().lower()
+                previous_password = row.get("password") or ""
+                break
 
     if previous_profile and previous_profile.startswith("ispcentric-pppoe-"):
         previous_rate_limit = _read_profile_rate_limit(
@@ -14164,16 +14194,25 @@ def _pppoe_batch_write_on_socket(
                 session_was_blocked = _active_pppoe_session_is_blocked(
                     sock, username, live=live
                 )
-            _ensure_ppp_secret(
-                sock,
+            if _ppp_secret_needs_update(
+                live,
                 username=username,
-                password=password,
                 profile=profile,
-                comment=comment,
                 disabled=disabled,
-                rate_limit=rate_limit,
-                kick=False,
-            )
+                comment=comment,
+                password=password,
+            ):
+                _ensure_ppp_secret(
+                    sock,
+                    username=username,
+                    password=password,
+                    profile=profile,
+                    comment=comment,
+                    disabled=disabled,
+                    rate_limit=rate_limit,
+                    kick=False,
+                    live=live,
+                )
             restoring_surf = bool(
                 internet_allowed
                 and not disabled
@@ -14537,6 +14576,7 @@ def sync_hotspot_subscription_batch_on_router(
     for candidate in _router_api_host_candidates(router, discover=False):
         try:
             with _api_session(candidate, api_user, api_password, timeout=20.0) as sock:
+                _remove_lan_wide_hotspot_bypasses(sock)
                 active_rows = _print(
                     sock, "/ip/hotspot/active", props=".id,user,mac-address"
                 )
@@ -14562,6 +14602,7 @@ def sync_hotspot_subscription_batch_on_router(
                             reauthenticate=reauth,
                             active_rows=active_rows,
                             host_rows=host_rows,
+                            skip_bypass_cleanup=True,
                         )
                         if not result.get("ok"):
                             errors += 1
@@ -14714,7 +14755,7 @@ def _repair_unpaid_hotspot_leak_on_socket(
             notes.extend(
                 _ensure_captive_portal_dhcp_option(
                     sock,
-                    urls.get("pay_url") or portal,
+                    _local_hotspot_captive_portal_uri(),
                     comment=ISP_HOTSPOT_TAG,
                 )
             )
@@ -16425,6 +16466,17 @@ def _ensure_captive_dns(sock: socket.socket, gateway_ip: str, comment: str) -> i
 CAPTIVE_PORTAL_DHCP_OPTION_NAME = "ispcentric-captive-portal"
 
 
+def _local_hotspot_captive_portal_uri(hotspot_address: str = "") -> str:
+    """
+    RFC 8910 captive-portal URI on the NAS gateway.
+
+    Always reachable before Hotspot auth (no WAN / walled garden needed). RouterOS
+    serves login.html there, which redirects to the billing reconnect/pay URL.
+    """
+    gateway = (hotspot_address or ISP_HOTSPOT_ADDRESS).strip()
+    return f"http://{gateway}/login"
+
+
 def _ensure_captive_portal_dhcp_option(
     sock: socket.socket,
     pay_url: str,
@@ -16432,13 +16484,16 @@ def _ensure_captive_portal_dhcp_option(
     comment: str,
 ) -> list[str]:
     """
-    Advertise the payment page through DHCP option 114 (RFC 8910).
+    Advertise a captive-portal URI through DHCP option 114 (RFC 8910).
 
     Without this, a phone only discovers the portal when one of its probe URLs
     happens to be plain HTTP, so the sign-in popup is late or never appears on
     devices that probe over HTTPS. Option 114 is read straight from the DHCP
     lease, so Android 11+, iOS 14+ and Windows 11 raise the popup the moment
     the client joins.
+
+    ISP Hotspot stacks pass the local gateway ``/login`` URL so the popup opens
+    even when the remote billing host is not yet reachable from the pool.
     """
     notes: list[str] = []
     pay_url = (pay_url or "").strip()
@@ -20608,22 +20663,24 @@ def _ensure_hotspot_user(
     user_id = ""
     used_uptime = 0
     existing_limit = 0
+    matched_row: dict[str, str] | None = None
     # Filter server-side by name so a router with thousands of MAC users does
     # not stream its whole /ip/hotspot/user table for a single authorization.
     rows = _print(
         sock,
         "/ip/hotspot/user",
-        props=".id,name,comment,disabled,uptime,limit-uptime",
+        props=".id,name,profile,comment,disabled,uptime,limit-uptime",
         query={"name": username},
     )
     if not rows:
         rows = _print(
             sock,
             "/ip/hotspot/user",
-            props=".id,name,comment,disabled,uptime,limit-uptime",
+            props=".id,name,profile,comment,disabled,uptime,limit-uptime",
         )
     for row in rows:
         if (row.get("name") or "").strip().lower() == username.lower():
+            matched_row = row
             user_id = (row.get(".id") or "").strip()
             used_uptime = _parse_ros_duration(row.get("uptime"))
             existing_limit = _parse_ros_duration(row.get("limit-uptime"))
@@ -20660,6 +20717,24 @@ def _ensure_hotspot_user(
                     remaining,
                 )
             uptime_cap = _format_ros_duration(used_uptime + remaining)
+    if matched_row is not None:
+        existing_disabled = _is_disabled(matched_row)
+        existing_profile = (matched_row.get("profile") or "").strip()
+        existing_comment = (matched_row.get("comment") or "").strip()
+        desired_limit = _parse_ros_duration(uptime_cap)
+        limit_drift = abs(desired_limit - existing_limit)
+        profile_ok = existing_profile == profile_name or (
+            not existing_profile and profile_name == ISP_HOTSPOT_USER_PROFILE
+        )
+        if (
+            existing_disabled == bool(disabled)
+            and profile_ok
+            and existing_comment == tag
+            and (limit_drift <= 30 or (disabled and uptime_cap in {"", "0s"}))
+            and (not user_rate or not disabled)
+        ):
+            return "unchanged"
+
     # Prefer profile + per-user rate-limit so package Mbps stick even if a
     # shared profile is reused. Soft fallbacks drop rate-limit then profile.
     attempts: list[dict[str, str]] = []
@@ -21671,6 +21746,7 @@ def _apply_hotspot_customer_on_socket(
     now=None,
     active_rows: list[dict[str, str]] | None = None,
     host_rows: list[dict[str, str]] | None = None,
+    skip_bypass_cleanup: bool = False,
 ) -> dict[str, Any]:
     """Create/update Hotspot MAC users for this customer and expire stale sessions."""
     from billing.devices import (
@@ -21680,7 +21756,8 @@ def _apply_hotspot_customer_on_socket(
     )
 
     # Heal routers that still have the old tunnel-script LAN-wide bypasses.
-    _remove_lan_wide_hotspot_bypasses(sock)
+    if not skip_bypass_cleanup:
+        _remove_lan_wide_hotspot_bypasses(sock)
     pruned = prune_over_cap_hotspot_devices(customer)
     primary, disabled, limit_uptime, comment = _hotspot_customer_access_fields(
         customer, now=now
@@ -22661,9 +22738,13 @@ def _ensure_isp_hotspot_stack(
 
     # RFC 8910 option 114: Android 11+ / iOS 14+ / Win11 raise the sign-in
     # popup the moment Wi‑Fi associates — do not wait for an HTTP probe.
+    # Use the local gateway /login URL so the popup opens before WAN auth;
+    # login.html there redirects to the billing reconnect/pay page.
     notes.extend(
         _ensure_captive_portal_dhcp_option(
-            sock, login_url or pay_url or garden_url, comment=ISP_HOTSPOT_TAG
+            sock,
+            _local_hotspot_captive_portal_uri(hotspot_address),
+            comment=ISP_HOTSPOT_TAG,
         )
     )
     # Hard-stop unpaid pool clients (QUIC/app leak) even when Hotspot dynamic
@@ -26813,12 +26894,12 @@ def _ping_wan_via_api(
             [
                 "/ping",
                 f"=address={target}",
-                "=count=3",
-                "=interval=200ms",
+                "=count=2",
+                "=interval=500ms",
                 f"=interface={iface}",
             ],
         )
-        total_sent += 3
+        total_sent += 2
         if terminal.get("_reply") in {"!trap", "!fatal"}:
             continue
         last = rows[-1] if rows else {}
@@ -27013,7 +27094,7 @@ def run_smart_balance_monitor_via_api(
     try:
         from django.core.cache import cache
 
-        cache.set(cache_key, "1", 55)
+        cache.set(cache_key, "1", 90)
     except Exception:
         pass
 
@@ -27275,11 +27356,25 @@ def read_smart_balance_status(
         pcc_total = 0
         pcc_disabled = 0
         try:
-            for row in _print(
+            mangle_rows = _print(
                 sock,
                 "/ip/firewall/mangle",
                 props="chain,action,new-connection-mark,per-connection-classifier,disabled,comment",
-            ):
+                query={"comment~": UPLINK_TAG},
+            )
+        except Exception:
+            mangle_rows = []
+        if not mangle_rows:
+            try:
+                mangle_rows = _print(
+                    sock,
+                    "/ip/firewall/mangle",
+                    props="chain,action,new-connection-mark,per-connection-classifier,disabled,comment",
+                )
+            except Exception:
+                mangle_rows = []
+        try:
+            for row in mangle_rows:
                 if UPLINK_TAG not in (row.get("comment") or ""):
                     continue
                 if (row.get("chain") or "").strip() != "prerouting":
@@ -29461,7 +29556,7 @@ def maintain_router_smart_balance(
             monitor_result = run_smart_balance_monitor_via_api(
                 sock,
                 monitor_members,
-                force=True,
+                force=False,
                 host=host,
             )
             smart_status = read_smart_balance_status(sock, ordered)
@@ -29911,15 +30006,7 @@ def _read_client_wan_usage_on_sock(
         )
     except Exception:
         conn_rows = []
-    if not conn_rows:
-        try:
-            conn_rows = _print(
-                sock,
-                "/ip/firewall/connection",
-                props="src-address,connection-mark,repl-connection-mark",
-            )
-        except Exception:
-            conn_rows = []
+    # Unfiltered connection dumps stress RouterOS RAM/CPU on busy boards — skip.
 
     for row in conn_rows:
         mark = (row.get("connection-mark") or "").strip()

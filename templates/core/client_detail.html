@@ -1285,7 +1285,7 @@
     }
 
     refreshSurfing(true);
-    window.setInterval(function () { refreshSurfing(false); }, 10000);
+    window.setInterval(function () { refreshSurfing(false); }, 20000);
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden) refreshSurfing(true);
     });
@@ -2339,7 +2339,7 @@
 
   if (canLive) {
     refresh(true);
-    timer = setInterval(function () { refresh(false); }, 10000);
+    timer = setInterval(function () { refresh(false); }, 20000);
     if (refreshBtn) {
       refreshBtn.addEventListener("click", function () { refresh(true); });
     }
@@ -2673,7 +2673,7 @@
   }
 
   refresh(true, true);
-  timer = setInterval(function () { refresh(true, false); }, 10000);
+  timer = setInterval(function () { refresh(true, false); }, 20000);
   if (refreshButton) refreshButton.addEventListener("click", function () { refresh(true, true); });
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) refresh(true, false);

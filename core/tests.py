@@ -8667,7 +8667,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         self.assertEqual(order, ["pages", "dhcp", "bounce"])
         self.assertEqual(
             dhcp_calls,
-            ["http://billing.example/hotspot/505050/pay/"],
+            ["http://10.50.50.1/login"],
         )
         self.assertTrue(any("option 114" in n for n in notes))
         self.assertTrue(any("Hotspot pay popup" in n for n in notes))

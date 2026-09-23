@@ -5,7 +5,8 @@
   var analyticsUrl = root.getAttribute("data-detail-analytics-url") || "";
   var suspended = root.getAttribute("data-is-suspended") === "1";
   var pollTimer = null;
-  var pollMs = 15000;
+  var pollAttr = parseInt(root.getAttribute("data-poll-ms") || "", 10);
+  var pollMs = pollAttr >= 10000 ? pollAttr : 30000;
   var healthChart = null;
   var inFlight = false;
   var lastLiveStatus = "";
