@@ -8795,6 +8795,20 @@ class ExpiredCaptivePayTests(SimpleTestCase):
 class IspHotspotInstantPayTests(SimpleTestCase):
     """Non-PPPoE ISP Hotspot: connect Wi‑Fi → /hotspot/…/pay/ immediately."""
 
+    def test_captive_flow_check_parses_http_host_from_base(self):
+        from core.management.commands.test_hotspot_captive_flow import (
+            _http_host_from_base,
+        )
+
+        self.assertEqual(
+            _http_host_from_base("http://isp.richcom.co.ke"),
+            "isp.richcom.co.ke",
+        )
+        self.assertEqual(
+            _http_host_from_base("https://billing.example:8443/path"),
+            "billing.example:8443",
+        )
+
     def test_prefer_http_captive_url(self):
         from core.mikrotik_connect import _prefer_http_captive_url
 

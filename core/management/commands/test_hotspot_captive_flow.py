@@ -10,9 +10,21 @@ from __future__ import annotations
 
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 
 from django.core.management.base import BaseCommand, CommandError
 from django.test import Client
+
+
+def _http_host_from_base(base: str) -> str:
+    """Host header Django expects (PUBLIC_BASE_URL domain, not testserver)."""
+    candidate = (base or "").strip()
+    if not candidate:
+        return ""
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+    parsed = urlparse(candidate)
+    return (parsed.netloc or parsed.path.split("/")[0] or "").strip()
 
 
 class Command(BaseCommand):
@@ -56,6 +68,10 @@ class Command(BaseCommand):
         if not base:
             raise CommandError("No base URL — set PUBLIC_BASE_URL or pass --base")
 
+        http_host = _http_host_from_base(base)
+        if not http_host:
+            raise CommandError(f"Could not parse HTTP host from base URL {base!r}")
+
         pay_url = urls.get("pay_url") or ""
         captive_fetch = _hotspot_captive_login_fetch_url(pay_url)
         paths = {
@@ -70,7 +86,7 @@ class Command(BaseCommand):
         for loop in range(1, loops + 1):
             self.stdout.write(f"\n=== Loop {loop}/{loops} ===")
             for label, path in paths.items():
-                response = client.get(path, follow=False)
+                response = client.get(path, follow=False, HTTP_HOST=http_host)
                 status = response.status_code
                 body_len = len(response.content or b"")
                 ok = status in {200, 302}
