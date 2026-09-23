@@ -14949,7 +14949,8 @@ def _repair_unpaid_hotspot_leak_on_socket(
                     comment=ISP_HOTSPOT_TAG,
                 )
             )
-            notes.extend(_bounce_isp_hotspot_clients(sock))
+            # Orphan purge already kills stray WAN sessions; bouncing Wi‑Fi here
+            # drops captive browsers mid-load and causes ERR_CONNECTION_ABORTED.
         except Exception as exc:  # noqa: BLE001
             notes.append(
                 f"warning: captive refresh after leak repair failed: {exc}"
@@ -18731,11 +18732,70 @@ def find_hotspot_mac_for_ip(organization, client_ip: str) -> str:
                             _captive_cache_set(
                                 cache_key, mac, _CAPTIVE_PPPOE_IP_CACHE_TTL
                             )
+                            compact = _mac_compact(mac)
+                            if compact:
+                                _captive_cache_set(
+                                    f"captive:hs-mac:{org_id}:{compact}",
+                                    router.pk,
+                                    _CAPTIVE_SESSION_CACHE_TTL,
+                                )
+                            _captive_cache_set(
+                                f"captive:hs-ip-router:{org_id}:{client_ip}",
+                                router.pk,
+                                _CAPTIVE_SESSION_CACHE_TTL,
+                            )
                             return mac
         except Exception:
             continue
     _captive_cache_set(cache_key, "", _CAPTIVE_IDENTITY_MISS_TTL)
     return ""
+
+
+def find_hotspot_router_for_ip(organization, client_ip: str):
+    """
+    Return the NAS currently serving this Hotspot client IP.
+
+    Uses a short-lived cache populated by ``find_hotspot_mac_for_ip`` so pay-wall
+    blocks hit the router the phone is actually on, not the first org router row.
+    """
+    from core.models import MikroTikRouter
+
+    client_ip = (client_ip or "").strip()
+    org_id = getattr(organization, "pk", None)
+    if not client_ip or not org_id:
+        return None
+
+    cache_key = f"captive:hs-ip-router:{org_id}:{client_ip}"
+    cached_id = _captive_cache_get(cache_key)
+    if cached_id:
+        cached = (
+            MikroTikRouter.objects.filter(
+                pk=cached_id,
+                organization=organization,
+                account_status=MikroTikRouter.AccountStatus.ACTIVE,
+            )
+            .first()
+        )
+        if cached is not None:
+            return cached
+
+    mac = find_hotspot_mac_for_ip(organization, client_ip)
+    if not mac:
+        return None
+
+    cached_id = _captive_cache_get(cache_key)
+    if cached_id:
+        cached = (
+            MikroTikRouter.objects.filter(
+                pk=cached_id,
+                organization=organization,
+                account_status=MikroTikRouter.AccountStatus.ACTIVE,
+            )
+            .first()
+        )
+        if cached is not None:
+            return cached
+    return find_hotspot_router_for_mac(organization, mac, live_walk=False)
 
 
 def remember_hotspot_mac_for_ip(organization, client_ip: str, mac_address: str) -> None:
@@ -21712,6 +21772,7 @@ def enforce_hotspot_pay_wall(
     mac: str,
     *,
     customer=None,
+    router=None,
     schedule_retry: bool = True,
 ) -> dict[str, Any]:
     """
@@ -21720,7 +21781,7 @@ def enforce_hotspot_pay_wall(
     from core.mikrotik_jobs import schedule_mikrotik_job
 
     result = block_hotspot_mac_until_paid(
-        organization, mac, customer=customer
+        organization, mac, customer=customer, router=router
     )
     if (
         schedule_retry
@@ -21751,7 +21812,9 @@ def enforce_hotspot_pay_wall(
             cust = None
             if customer_id:
                 cust = Customer.objects.filter(pk=customer_id).first()
-            block_hotspot_mac_until_paid(org, mac_value, customer=cust)
+            block_hotspot_mac_until_paid(
+                org, mac_value, customer=cust, router=router
+            )
 
         schedule_mikrotik_job(
             _retry_block,
@@ -21765,6 +21828,8 @@ def defer_hotspot_pay_wall(
     mac: str,
     *,
     customer=None,
+    client_ip: str = "",
+    router=None,
     delay_seconds: float = 60.0,
 ) -> None:
     """
@@ -21783,14 +21848,19 @@ def defer_hotspot_pay_wall(
 
     org_pk = organization.pk
     customer_pk = getattr(customer, "pk", None)
+    router_pk = getattr(router, "pk", None)
+    client_ip_value = (client_ip or "").strip()
 
     def _run(
         org_id=org_pk,
         mac_value=mac,
         customer_id=customer_pk,
+        router_id=router_pk,
+        ip_value=client_ip_value,
     ) -> None:
         from accounts.models import Organization
         from billing.models import Customer
+        from core.models import MikroTikRouter
 
         org = Organization.objects.filter(pk=org_id).first()
         if org is None:
@@ -21798,7 +21868,17 @@ def defer_hotspot_pay_wall(
         cust = None
         if customer_id:
             cust = Customer.objects.filter(pk=customer_id).first()
-        enforce_hotspot_pay_wall(org, mac_value, customer=cust)
+        target_router = None
+        if router_id:
+            target_router = MikroTikRouter.objects.filter(pk=router_id).first()
+        if target_router is None and ip_value:
+            target_router = find_hotspot_router_for_ip(org, ip_value)
+        enforce_hotspot_pay_wall(
+            org,
+            mac_value,
+            customer=cust,
+            router=target_router,
+        )
 
     def _schedule() -> None:
         schedule_mikrotik_job(_run, name=f"hotspot-wall-{mac[-8:]}")
@@ -22793,6 +22873,8 @@ def _fetch_isp_hotspot_pages(
             "warning: payment login page was not installed — "
             "set PUBLIC_BASE_URL to a reachable http://host and push Hotspot again"
         )
+    elif pay:
+        notes.append(f"Hotspot login redirects to {pay} (direct /pay/ hop)")
     return notes
 
 
@@ -22901,6 +22983,7 @@ def _ensure_isp_hotspot_stack(
     pay_url: str = "",
     welcome_url: str = "",
     wifi_ssid: str = "",
+    bounce_clients: bool = False,
 ) -> list[str]:
     """
     Enable Hotspot on the ISP MikroTik LAN so Wi‑Fi/LAN clients authenticate.
@@ -22910,7 +22993,7 @@ def _ensure_isp_hotspot_stack(
       2. Hotspot profile/server + always prefer dedicated 10.50.50 pool
       3. Clear probe DNS hijack; walled garden / HTTP bind
       4. Install login.html → /hotspot/…/pay/
-      5. DHCP option 114 + bounce unauthorized clients for instant popup
+      5. DHCP option 114 (+ optional bounce for first-time popup)
     """
     notes: list[str] = []
 
@@ -23165,7 +23248,8 @@ def _ensure_isp_hotspot_stack(
             enabled=bool(getattr(organization, "hotspot_block_tethering", True)),
         )
     )
-    notes.extend(_bounce_isp_hotspot_clients(sock))
+    if bounce_clients:
+        notes.extend(_bounce_isp_hotspot_clients(sock))
     return notes
 
 
@@ -23201,6 +23285,7 @@ def _push_hotspot_enabled_on_socket(
         pay_url=pay_url,
         welcome_url=welcome_url or redirect_url,
         wifi_ssid=(getattr(router, "wifi_ssid", None) or "").strip(),
+        bounce_clients=False,
     )
     notes.extend(
         _ensure_hotspot_management_access(

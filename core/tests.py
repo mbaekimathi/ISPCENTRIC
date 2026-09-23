@@ -8918,6 +8918,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 lan_interface="bridge",
                 organization=org,
                 pay_url="https://billing.example/hotspot/505050/pay/",
+                bounce_clients=True,
             )
 
         self.assertEqual(order, ["pages", "dhcp", "bounce"])

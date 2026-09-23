@@ -22683,6 +22683,7 @@ def _hotspot_captive_page(request, join_code: str, *, expected_page: str):
                     org,
                     hotspot_mac,
                     customer=hotspot_customer,
+                    client_ip=remote,
                 )
             except Exception:
                 logger.exception(
