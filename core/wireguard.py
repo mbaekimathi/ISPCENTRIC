@@ -1309,12 +1309,61 @@ def apply_server_peer(label: str, address: str, public_key: str) -> dict:
     return result
 
 
+def _wireguard_sync_script_problem() -> str:
+    """
+    Return a single actionable hint when WIREGUARD_SYNC_COMMAND points at a
+    missing or broken helper script (common after deploy without vps_deploy.sh).
+    """
+    sync_cmd = (
+        (getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "")
+        .strip()
+        .strip('"')
+        .strip("'")
+    )
+    if not sync_cmd:
+        return ""
+    for token in shlex.split(sync_cmd):
+        if not (token.endswith(".sh") and os.path.isabs(token)):
+            continue
+        path = Path(token)
+        if not path.is_file():
+            app_root = Path(getattr(settings, "BASE_DIR", "/opt/ispcentric"))
+            return (
+                f"helper missing at {token}. On the VPS run: "
+                f"cd {app_root} && git pull && sed -i 's/\\r$//' scripts/*.sh "
+                f"&& chmod +x scripts/*.sh "
+                f"&& .venv/bin/python manage.py wireguard_peer --sync-server"
+            )
+        try:
+            if b"\r" in path.read_bytes()[:256]:
+                return (
+                    f"helper has Windows CRLF line endings: {token}. "
+                    f"Run: sed -i 's/\\r$//' {token} && chmod +x {token}"
+                )
+        except OSError:
+            pass
+        if not os.access(token, os.X_OK):
+            return f"helper not executable: chmod +x {token}"
+    return ""
+
+
 def sync_all_server_peers() -> dict:
     """Apply every onboarded router and pending reservation to the local wg0."""
     from core.models import MikroTikRouter, WireGuardReservation
 
     if not can_apply_server_peers():
         return {"ok": False, "skipped": True, "reason": "not_on_tunnel", "synced": 0}
+
+    script_problem = _wireguard_sync_script_problem()
+    if script_problem:
+        logger.warning("WireGuard peer sync: %s", script_problem)
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "sync_script_missing",
+            "synced": 0,
+            "errors": [script_problem],
+        }
 
     synced = 0
     errors: list[str] = []
