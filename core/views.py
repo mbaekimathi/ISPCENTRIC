@@ -22512,16 +22512,6 @@ def hotspot_reconnect(request, join_code: str):
     from billing.services import customer_package_is_paused
 
     if customer is not None and customer_package_is_paused(customer):
-        try:
-            from core.mikrotik_connect import defer_hotspot_pay_wall
-
-            defer_hotspot_pay_wall(org, hotspot_mac, customer=customer)
-        except Exception:
-            logger.exception(
-                "hotspot pause block failed mac=%s customer=%s",
-                hotspot_mac,
-                getattr(customer, "pk", None),
-            )
         response = _redirect_pay_preserving_query(
             request, "core:hotspot_pause", join_code
         )
@@ -22543,15 +22533,6 @@ def hotspot_reconnect(request, join_code: str):
             )
         response = redirect(_hotspot_welcome_url(join_code, mac=hotspot_mac))
     else:
-        try:
-            from core.mikrotik_connect import defer_hotspot_pay_wall
-
-            defer_hotspot_pay_wall(org, hotspot_mac, customer=customer)
-        except Exception:
-            logger.exception(
-                "hotspot reconnect pay-wall block failed mac=%s",
-                hotspot_mac,
-            )
         response = _redirect_pay_preserving_query(
             request, "core:hotspot_pay", join_code
         )
