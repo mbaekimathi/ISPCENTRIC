@@ -22490,6 +22490,51 @@ def authorize_hotspot_customer(
     }
 
 
+_MIN_HOTSPOT_LOGIN_BYTES = 200
+
+
+def _hotspot_login_file_size(sock: socket.socket, dst_path: str) -> int:
+    """Return Hotspot HTML file size in bytes, 0 if empty, -1 if missing."""
+    dst_path = (dst_path or "").strip()
+    if not dst_path:
+        return -1
+    for row in _print(sock, "/file", props=".id,name,size"):
+        if (row.get("name") or "").strip() != dst_path:
+            continue
+        try:
+            return max(int((row.get("size") or "0").strip() or "0"), 0)
+        except ValueError:
+            return 0
+    return -1
+
+
+def _hotspot_login_file_ok(sock: socket.socket, dst_path: str = "hotspot/login.html") -> bool:
+    return _hotspot_login_file_size(sock, dst_path) >= _MIN_HOTSPOT_LOGIN_BYTES
+
+
+def _hotspot_captive_login_fetch_url(login_url: str) -> str:
+    """
+    URL MikroTik ``/tool/fetch`` should pull for login.html.
+
+    ``/reconnect/`` returns 302 with an empty body — fetching it leaves a blank
+    captive page. ``/captive-login/`` returns the redirect HTML as HTTP 200.
+    """
+    resolved = _resolve_absolute_captive_url(login_url or "")
+    if not resolved:
+        return ""
+    parsed = urlparse(resolved)
+    path = (parsed.path or "").rstrip("/")
+    if path.endswith("/reconnect"):
+        path = f"{path[: -len('/reconnect')]}/captive-login"
+    elif "/reconnect/" in path:
+        path = path.replace("/reconnect/", "/captive-login/", 1).rstrip("/")
+    else:
+        return ""
+    if not path.endswith("/"):
+        path = f"{path}/"
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
 def _write_hotspot_html_file(sock: socket.socket, dst_path: str, html: str) -> bool:
     """Write HTML into the router Hotspot folder via API (no HTTP fetch required)."""
     dst_path = (dst_path or "").strip()
@@ -22503,9 +22548,17 @@ def _write_hotspot_html_file(sock: socket.socket, dst_path: str, html: str) -> b
             break
     if file_id:
         terminal = _set(sock, "/file", file_id, contents=html)
-        return terminal.get("_reply") != "!trap"
+        if terminal.get("_reply") == "!trap":
+            _remove(sock, "/file", file_id)
+            file_id = ""
+        elif _hotspot_login_file_ok(sock, dst_path):
+            return True
+        _remove(sock, "/file", file_id)
+        file_id = ""
     terminal = _add(sock, "/file", name=dst_path, contents=html)
-    return terminal.get("_reply") != "!trap"
+    if terminal.get("_reply") == "!trap":
+        return False
+    return _hotspot_login_file_ok(sock, dst_path)
 
 
 def _captive_pay_redirect_html(pay_url: str) -> str:
@@ -22696,11 +22749,10 @@ def _fetch_isp_hotspot_pages(
             else:
                 notes.append(f"could not write {dst}")
 
-    # Optional fallback: try HTTP fetch when API write failed and a URL is available.
-    missing_login = not any(
-        n.startswith("installed hotspot/login.html") for n in notes
-    )
-    fetch_src = login or _resolve_absolute_captive_url(login_url)
+    # Optional fallback: HTTP-fetch the captive-login page (200 + HTML body).
+    # Never fetch /reconnect/ — it 302s with an empty body and blank login.html.
+    missing_login = not _hotspot_login_file_ok(sock)
+    fetch_src = _hotspot_captive_login_fetch_url(login_url or pay_url or login)
     if missing_login and fetch_src:
         fetch_words = [
             "/tool/fetch",
@@ -22711,7 +22763,7 @@ def _fetch_isp_hotspot_pages(
         ]
         try:
             _, terminal = _command(sock, fetch_words)
-            if terminal.get("_reply") != "!trap":
+            if terminal.get("_reply") != "!trap" and _hotspot_login_file_ok(sock):
                 notes.append("installed hotspot/login.html via fetch")
                 missing_login = False
             else:
@@ -23066,13 +23118,11 @@ def _ensure_isp_hotspot_stack(
         welcome_url=welcome_url or redirect_url or alogin_url,
     )
     notes.extend(page_notes)
-    login_ready = any(
-        n.startswith("installed hotspot/login.html") for n in page_notes
-    )
+    login_ready = _hotspot_login_file_ok(sock)
     if not login_ready:
         raise ConnectionError(
-            "ISP Hotspot enabled but hotspot/login.html was not installed. "
-            "Phones would show no internet without a pay popup. "
+            "ISP Hotspot enabled but hotspot/login.html is missing or empty. "
+            "Phones would show a blank captive page. "
             + "; ".join(page_notes[-4:])
         )
 

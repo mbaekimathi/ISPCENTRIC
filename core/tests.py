@@ -5888,6 +5888,17 @@ class ClientsSurfingStatusTests(TestCase):
         # mac must lead the appended query so other fields cannot erase it.
         self.assertIn("t=signed.token.value&mac=$(mac)", html)
 
+    def test_hotspot_captive_login_fetch_url_uses_html_endpoint(self):
+        from core.mikrotik_connect import _hotspot_captive_login_fetch_url
+
+        url = _hotspot_captive_login_fetch_url(
+            "http://isp.richcom.co.ke/hotspot/534970/reconnect/"
+        )
+        self.assertEqual(
+            url,
+            "http://isp.richcom.co.ke/hotspot/534970/captive-login/",
+        )
+
     def test_pppoe_pay_ignores_mac_query_on_pppoe_only_page(self):
         """PPPoE pay stays PPPoE-only; MAC belongs on /hotspot/…/pay/."""
         from django.core import signing
@@ -9068,16 +9079,24 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 "core.mikrotik_connect._write_hotspot_html_file",
                 side_effect=fake_write,
             ),
+            patch(
+                "core.mikrotik_connect._hotspot_login_file_ok",
+                return_value=True,
+            ),
         ):
             notes = _fetch_isp_hotspot_pages(
                 MagicMock(),
+                login_url="https://billing.example/hotspot/505050/reconnect/",
                 pay_url="https://billing.example/hotspot/505050/pay/",
                 welcome_url="https://billing.example/hotspot/505050/welcome/",
             )
 
         self.assertTrue(any("installed hotspot/login.html" in n for n in notes))
         login = written["hotspot/login.html"]
-        self.assertIn("http://billing.example/hotspot/505050/pay", login)
+        self.assertIn(
+            "http://billing.example/hotspot/505050/reconnect/?mac=$(mac)",
+            login,
+        )
         self.assertIn("mac=$(mac)", login)
         self.assertIn("$(if http-status == 302)", login)
         self.assertIn(

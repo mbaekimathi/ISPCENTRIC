@@ -22488,6 +22488,36 @@ def hotspot_portal_track(request, join_code: str):
 
 
 @require_GET
+def hotspot_captive_login(request, join_code: str):
+    """
+    Return the RouterOS login.html redirect body (HTTP 200).
+
+    MikroTik ``/tool/fetch`` must not pull ``/reconnect/`` — that endpoint 302s
+    with an empty body and leaves ``hotspot/login.html`` blank on the NAS.
+    """
+    org = get_object_or_404(Organization, join_code=join_code)
+    from core.hotspot_portal import hotspot_portal_urls
+    from core.mikrotik_connect import _captive_pay_redirect_html, _prefer_http_captive_url
+
+    urls = hotspot_portal_urls(join_code, request)
+    target = _prefer_http_captive_url(
+        urls.get("reconnect_url") or urls.get("login_url") or ""
+    )
+    html = _captive_pay_redirect_html(target)
+    if not html:
+        return HttpResponse(
+            "Hotspot portal URL is not configured.",
+            status=503,
+            content_type="text/plain; charset=utf-8",
+        )
+    response = HttpResponse(html, content_type="text/html; charset=utf-8")
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    return response
+
+
+@require_GET
 def hotspot_reconnect(request, join_code: str):
     """
     Fast captive gateway for returning Hotspot clients.
