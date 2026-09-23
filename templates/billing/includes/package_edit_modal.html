@@ -30,7 +30,7 @@
               {{ package_edit_form.name }}
               {% if package_edit_form.name.errors %}<div class="field-error">{{ package_edit_form.name.errors|striptags }}</div>{% endif %}
             </div>
-            <div class="field field-span-2">
+            <div class="field field-span-2 package-billing-period">
               <label for="{{ package_edit_form.duration_value.id_for_label }}">Billing period</label>
               <div class="package-duration-custom">
                 <span class="package-duration-every">Every</span>

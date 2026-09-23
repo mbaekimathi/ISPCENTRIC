@@ -35024,31 +35024,51 @@ textarea.form-control {
   }
 }
 
-/* Billing package register / edit — compact, simple popup */
+/* Billing package register / edit — compact popup (account payments) */
 .client-action-modal.pppoe-modal.pppoe-modal--package .role-modal-panel.pppoe-panel {
-  width: min(100%, 26rem);
-  max-height: min(92dvh, 36rem);
+  width: min(100%, 28rem);
+  max-height: min(92dvh, 40rem);
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-panel::before {
   display: none;
 }
 
+.client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-head,
+.client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-foot {
+  flex: 0 0 auto;
+}
+
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-head {
   align-items: center;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.9rem 1.15rem;
+  border-bottom: 1px solid var(--modal-border, rgba(255, 255, 255, 0.08));
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-head h2 {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: clamp(1.05rem, 3vw, 1.18rem);
   line-height: 1.25;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-body {
-  gap: 0.65rem;
-  padding: 0.75rem 1rem 0.85rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 0.85rem;
+  padding: 0.95rem 1.15rem 1rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-section {
@@ -35064,150 +35084,139 @@ textarea.form-control {
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-grid {
-  gap: 0.55rem;
+  gap: 0.75rem;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-grid .form-control {
-  min-height: 2.45rem;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.9rem;
-  border-radius: 10px;
+  min-height: 2.55rem;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.92rem;
+  border-radius: 11px;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-grid label {
-  margin-bottom: 0.2rem;
-  font-size: 0.72rem;
-  font-weight: 650;
+  margin-bottom: 0.28rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--modal-ink, var(--ink, #e8f2f4));
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .field-hint {
-  margin-top: 0.2rem;
-  font-size: 0.68rem;
-  line-height: 1.35;
-  opacity: 0.75;
+  margin-top: 0.28rem;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--modal-ink-soft, var(--ink-soft, rgba(232, 242, 244, 0.64)));
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-advanced {
   margin: 0;
   padding: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-top: 1px solid var(--modal-border, rgba(255, 255, 255, 0.08));
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-advanced > summary {
-  padding: 0.55rem 0;
-  font-size: 0.76rem;
+  padding: 0.65rem 0;
+  font-size: 0.8rem;
+  color: var(--modal-ink, var(--ink, #e8f2f4));
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-advanced-hint {
+  color: var(--modal-muted, var(--ink-soft, rgba(232, 242, 244, 0.55)));
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-advanced .pppoe-grid {
-  padding-bottom: 0.35rem;
+  padding-bottom: 0.45rem;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-foot--package {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0.55rem;
-  padding: 0.65rem 1rem calc(0.65rem + env(safe-area-inset-bottom, 0px));
+  gap: 0.65rem;
+  padding: 0.75rem 1.15rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--modal-border, rgba(255, 255, 255, 0.08));
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-foot-active {
   margin: 0;
-  font-size: 0.82rem;
+  font-size: 0.86rem;
+  color: var(--modal-ink, var(--ink, #e8f2f4));
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-foot-actions {
   display: flex;
-  gap: 0.45rem;
+  gap: 0.55rem;
   flex: 1 1 auto;
   justify-content: flex-end;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-foot-actions .btn {
   flex: 0 1 auto;
-  min-width: 5.5rem;
-  padding: 0.55rem 0.85rem;
-  font-size: 0.88rem;
+  min-width: 5.75rem;
+  padding: 0.6rem 0.95rem;
+  font-size: 0.9rem;
 }
 
+/* Service type tabs — inherit global wizard styles; only size tweaks here */
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-type-wizard {
-  padding: 0.55rem;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
+  padding: 0.75rem;
+  border-radius: 14px;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tabs {
-  gap: 0.4rem;
+  gap: 0.5rem;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tab {
-  min-height: 2.5rem;
-  padding: 0.45rem 0.55rem;
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
+  min-height: 2.65rem;
+  padding: 0.5rem 0.65rem;
   justify-content: center;
+  color: var(--ink-soft, rgba(232, 242, 244, 0.78));
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tab-ico {
-  width: 1.5rem;
-  height: 1.5rem;
-  border-radius: 8px;
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 9px;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tab-label {
-  font-size: 0.82rem;
+  font-size: 0.86rem;
   font-weight: 750;
-  color: rgba(232, 242, 244, 0.88);
+  color: inherit;
 }
 
-.client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tab.tone-pppoe.is-active {
-  color: #7ee8df;
-  border-color: rgba(14, 124, 134, 0.55);
-  background: rgba(14, 124, 134, 0.16);
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tab.tone-pppoe:not(.is-active) {
+  color: color-mix(in srgb, var(--sea, #0e7c86) 72%, var(--ink-soft, #64748b));
 }
 
-.client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tab.tone-hotspot.is-active {
-  color: #6ee7b7;
-  border-color: rgba(5, 150, 105, 0.55);
-  background: rgba(5, 150, 105, 0.16);
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tab.tone-hotspot:not(.is-active) {
+  color: color-mix(in srgb, #059669 72%, var(--ink-soft, #64748b));
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-hotspot-device-step {
-  margin-top: 0.45rem;
-  padding-top: 0.45rem;
-  border-top: 1px dashed rgba(255, 255, 255, 0.1);
+  margin-top: 0.65rem;
+  padding-top: 0.65rem;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tabs-compact .package-type-tab {
-  min-height: 2.15rem;
-  font-size: 0.78rem;
+  min-height: 2.25rem;
+  font-size: 0.8rem;
   font-weight: 700;
-  color: rgba(232, 242, 244, 0.78);
-}
-
-.client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tabs-compact .package-type-tab.is-active {
-  color: #6ee7b7;
-}
-
-.client-action-modal.pppoe-modal.pppoe-modal--package .package-hotspot-other-panel {
-  padding: 0.55rem 0.65rem;
-  border-radius: 10px;
-  border: 1px dashed rgba(5, 150, 105, 0.28);
-  background: rgba(5, 150, 105, 0.08);
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-inline-label {
-  margin: 0 0 0.4rem;
-  font-size: 0.72rem;
+  margin: 0 0 0.45rem;
+  font-size: 0.74rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: rgba(232, 242, 244, 0.62);
+  color: var(--ink-soft, rgba(232, 242, 244, 0.62));
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-image-upload--compact {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.5rem;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-image-preview--compact {
@@ -35215,26 +35224,73 @@ textarea.form-control {
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-image-preview--compact img {
-  max-height: 4.5rem;
+  max-height: 4.75rem;
   width: auto;
   border-radius: 8px;
 }
 
+/* Billing period — single horizontal row */
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-billing-period label {
+  display: block;
+}
+
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-duration-custom {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: auto 4.25rem minmax(0, 1fr);
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.55rem;
+  margin-top: 0.1rem;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-duration-custom .package-duration-every {
+  font-size: 0.84rem;
+  font-weight: 650;
+  color: var(--modal-ink-soft, var(--ink-soft, rgba(232, 242, 244, 0.72)));
+  white-space: nowrap;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-duration-custom .form-control {
-  width: 4.5rem;
-  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  text-align: center;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-duration-unit {
-  flex: 1 1 8rem;
   min-width: 0;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-duration-unit select.form-control {
+  width: 100%;
+}
+
+[data-theme="light"] .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-head {
+  border-bottom-color: rgba(11, 31, 42, 0.08);
+}
+
+[data-theme="light"] .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-advanced {
+  border-top-color: rgba(11, 31, 42, 0.08);
+}
+
+[data-theme="light"] .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-body {
+  scrollbar-color: rgba(11, 31, 42, 0.22) transparent;
+}
+
+[data-theme="light"] .client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tab {
+  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--surface-solid, #fff) 96%, transparent);
+  border-color: var(--border-strong);
+}
+
+[data-theme="light"] .client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tab.tone-pppoe:not(.is-active) {
+  color: color-mix(in srgb, #0e7c86 78%, var(--ink-soft));
+}
+
+[data-theme="light"] .client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tab.tone-hotspot:not(.is-active) {
+  color: color-mix(in srgb, #059669 78%, var(--ink-soft));
+}
+
+[data-theme="light"] .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-panel::before {
+  background: rgba(11, 31, 42, 0.18);
 }
 
 @media (min-width: 34rem) {
@@ -35262,15 +35318,27 @@ textarea.form-control {
   }
 
   .client-action-modal.pppoe-modal.pppoe-modal--package .role-modal-panel.pppoe-panel {
-    width: min(100%, 28rem);
-    max-height: min(88dvh, 34rem);
-    border-radius: 16px;
+    width: min(100%, 32rem);
+    max-height: min(88dvh, 38rem);
+    border-radius: 18px;
+  }
+
+  .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-head {
+    padding: 1rem 1.25rem;
+  }
+
+  .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-body {
+    padding: 1rem 1.25rem 1.1rem;
+  }
+
+  .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-foot--package {
+    padding: 0.85rem 1.25rem calc(0.85rem + env(safe-area-inset-bottom, 0px));
   }
 }
 
 @media (min-width: 1024px) {
   .client-action-modal.pppoe-modal.pppoe-modal--package .role-modal-panel.pppoe-panel {
-    width: min(100%, 30rem);
+    width: min(100%, 34rem);
   }
 }
 
@@ -35283,7 +35351,7 @@ textarea.form-control {
   .client-action-modal.pppoe-modal.pppoe-modal--package .role-modal-panel.pppoe-panel {
     width: 100%;
     max-height: min(94dvh, 100%);
-    border-radius: 16px 16px 0 0;
+    border-radius: 18px 18px 0 0;
   }
 
   .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-panel::before {
@@ -35292,7 +35360,7 @@ textarea.form-control {
     height: 0.25rem;
     margin: 0.45rem auto 0;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.22);
+    background: var(--modal-border-strong, rgba(255, 255, 255, 0.22));
   }
 
   .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-grid {
@@ -35305,6 +35373,13 @@ textarea.form-control {
 
   .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-foot-actions .btn {
     flex: 1 1 0;
+  }
+}
+
+@media (max-width: 22rem) {
+  .client-action-modal.pppoe-modal.pppoe-modal--package .package-duration-custom {
+    grid-template-columns: auto 3.5rem minmax(0, 1fr);
+    gap: 0.4rem;
   }
 }
 
