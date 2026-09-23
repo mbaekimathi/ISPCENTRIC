@@ -20644,7 +20644,11 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     hotspot_customer = _find_hotspot_customer_for_mac(org, hotspot_mac)
     portal_router = getattr(hotspot_customer, "router", None)
     if hotspot_mac and portal_router is None:
-        portal_router = find_hotspot_router_for_mac(org, hotspot_mac)
+        # Never live-walk NAS tables while rendering the pay page — captive
+        # mini-browsers time out on a blank screen when this blocks for seconds.
+        portal_router = find_hotspot_router_for_mac(
+            org, hotspot_mac, live_walk=False
+        )
     hotspot_plans = list(
         plans_for_router(
             org, portal_router, service_type=BillingPlan.ServiceType.HOTSPOT

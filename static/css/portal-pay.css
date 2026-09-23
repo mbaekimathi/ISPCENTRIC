@@ -1976,7 +1976,10 @@
     .access-banner,
     .pay-mode-tab,
     form.login[data-payment-form] {
-      opacity: 1;
+      opacity: 1 !important;
+      visibility: visible !important;
+      animation: none !important;
+      transform: none !important;
     }
 
     @media (prefers-reduced-motion: reduce) {

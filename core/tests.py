@@ -3191,6 +3191,42 @@ class HotspotPortalContextTests(SimpleTestCase):
         self.assertTrue(ctx["show_renew_payment"])
         self.assertFalse(ctx["subscription_paused"])
 
+    def test_hotspot_portal_skips_live_router_walk(self):
+        """Pay page must not block on a multi-router MikroTik API scan."""
+        from django.test import RequestFactory
+
+        from core.views import _hotspot_portal_context
+
+        org = type(
+            "Org",
+            (),
+            {
+                "name": "Portal ISP",
+                "join_code": "404040",
+                "hotspot_portal_title": "",
+                "hotspot_login_message": "",
+                "mpesa_payment_type": "paybill",
+                "mpesa_number": "123456",
+                "mpesa_account": "",
+                "pppoe_compulsory": False,
+                "effective_daraja_credentials": lambda self: {"ready": True},
+                "pk": 1,
+            },
+        )()
+        request = RequestFactory().get("/hotspot/404040/pay/", {"mac": "AABBCCDDEEFF"})
+        with (
+            patch("billing.services.plans_for_router", return_value=[]),
+            patch("core.views._find_hotspot_customer_for_mac", return_value=None),
+            patch(
+                "core.mikrotik_connect.find_hotspot_router_for_mac",
+                return_value=None,
+            ) as find_router,
+        ):
+            _hotspot_portal_context(org, mikrotik_login=False, request=request)
+        find_router.assert_called_once_with(
+            org, "AA:BB:CC:DD:EE:FF", live_walk=False
+        )
+
     def test_hotspot_portal_context_handles_anonymous_client(self):
         """Captive open with no MAC must still render (no NameError / 500)."""
         from django.test import RequestFactory
