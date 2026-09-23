@@ -76,9 +76,17 @@ mkdir -p logs media .cache
 
 echo "==> Ensuring deploy scripts are executable (Unix line endings)"
 # Windows checkouts can leave CRLF shebangs; sudo then prints "command not found".
-find "$ROOT/scripts" -maxdepth 1 -name '*.sh' -type f -print0 \
-  | xargs -0 -r sed -i 's/\r$//'
-chmod +x "$ROOT/scripts"/*.sh 2>/dev/null || true
+# www-data often owns the tree but cannot chmod after root-owned edits — fall back to sudo.
+_fix_scripts() {
+  find "$ROOT/scripts" -maxdepth 1 -name '*.sh' -type f -print0 \
+    | xargs -0 -r sed -i 's/\r$//'
+  chmod +x "$ROOT/scripts"/*.sh
+}
+if ! _fix_scripts 2>/dev/null; then
+  echo "   (needs root for script permissions — retrying with sudo)"
+  sudo sed -i 's/\r$//' "$ROOT"/scripts/*.sh
+  sudo chmod +x "$ROOT"/scripts/*.sh
+fi
 
 echo "==> Syncing WireGuard peers to wg0"
 set +e

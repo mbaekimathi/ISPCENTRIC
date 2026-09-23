@@ -66,6 +66,17 @@ class Command(BaseCommand):
         if options["sync_server"]:
             outcome = wireguard.sync_all_server_peers()
             if outcome.get("skipped"):
+                errors = [str(e).strip() for e in (outcome.get("errors") or []) if str(e).strip()]
+                if errors:
+                    raise CommandError(errors[0])
+                reason = (outcome.get("reason") or "").strip()
+                if reason == "sync_script_missing":
+                    raise CommandError(
+                        "WireGuard sync helper script is missing or not runnable. "
+                        "On the VPS run as root: "
+                        "sed -i 's/\\r$//' /opt/ispcentric/scripts/*.sh && "
+                        "chmod +x /opt/ispcentric/scripts/*.sh"
+                    )
                 raise CommandError(
                     "Cannot update WireGuard peers from this process "
                     f"(not bound to {wireguard.server_address()} and "
