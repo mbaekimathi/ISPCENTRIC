@@ -16160,6 +16160,9 @@ def provision_customer_pppoe(
     kicked = 0
     session_blocked_after = False
     session_active_after = False
+    active_session_profile = ""
+    speed_stale_session = False
+    restoring_surf = False
     probe_timeout = 1.5 if ensure_stack else 0.8
 
     for candidate in hosts:
@@ -16195,6 +16198,7 @@ def provision_customer_pppoe(
                 timeout=attempt_timeout,
                 reuse=not ensure_stack,
             ) as sock:
+                notes.extend(_disable_fasttrack_connection_rules(sock))
                 if ensure_stack:
                     portal_url = _billing_portal_base_url()
                     _, stack_notes = _ensure_pppoe_stack(
@@ -16252,6 +16256,7 @@ def provision_customer_pppoe(
                     internet_allowed=internet_allowed,
                     session_was_blocked=session_was_blocked,
                     session_active_before=session_active_before,
+                    sock=sock,
                 )
                 stuck_unblocked_session = bool(
                     profile == PPPOE_BLOCKED_PROFILE_NAME
@@ -16393,6 +16398,18 @@ def provision_customer_pppoe(
                                 "address-list after block — unpaid client may "
                                 "still surf until next leak repair"
                             )
+                if session_active_after:
+                    active_session_profile = _active_pppoe_session_profile(
+                        sock, username
+                    )
+                    speed_stale_session = bool(
+                        restoring_surf
+                        and _pppoe_active_session_profile_stale(
+                            sock,
+                            username,
+                            expected_profile=profile,
+                        )
+                    )
             working_host = candidate
             break
         except TimeoutError:
@@ -16442,18 +16459,6 @@ def provision_customer_pppoe(
         and session_active_after
         and not session_blocked_after
     )
-    active_session_profile = ""
-    speed_stale_session = False
-    if session_active_after:
-        active_session_profile = _active_pppoe_session_profile(sock, username)
-        speed_stale_session = bool(
-            restoring_surf
-            and _pppoe_active_session_profile_stale(
-                sock,
-                username,
-                expected_profile=profile,
-            )
-        )
     if disabled:
         access_note = " (dial-in disabled — account inactive)."
     elif leak_remaining:
@@ -16486,6 +16491,8 @@ def provision_customer_pppoe(
         "kicked": kicked,
         "session_active": session_active_after,
         "session_blocked": bool(session_blocked_after),
+        "active_session_profile": active_session_profile,
+        "speed_stale_session": speed_stale_session,
         "leak_remaining": leak_remaining,
         "notes": notes,
         "message": (
