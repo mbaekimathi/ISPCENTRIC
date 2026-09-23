@@ -1,0 +1,66 @@
+{# Core package fields for register/edit modals. Expects `pform`. #}
+<div class="field field-span-2">
+  <label for="{{ pform.name.id_for_label }}">Package name</label>
+  {{ pform.name }}
+  {% if pform.name.errors %}<div class="field-error">{{ pform.name.errors|striptags }}</div>{% endif %}
+</div>
+
+<div class="field field-span-2 package-billing-period" data-package-billing-field>
+  <label for="{{ pform.duration_value.id_for_label }}">Billing period</label>
+  <div class="package-duration-custom" data-package-duration-row>
+    <span class="package-duration-every">Every</span>
+    {{ pform.duration_value }}
+    <div class="pppoe-select package-duration-unit">{{ pform.duration_unit }}</div>
+  </div>
+  <p class="field-hint">How long this package lasts for one payment.</p>
+  {% if pform.duration_value.errors %}<div class="field-error">{{ pform.duration_value.errors|striptags }}</div>{% endif %}
+  {% if pform.duration_unit.errors %}<div class="field-error">{{ pform.duration_unit.errors|striptags }}</div>{% endif %}
+</div>
+
+<div class="field" data-package-price-wrap>
+  <label for="{{ pform.price.id_for_label }}">Price (KES)</label>
+  {{ pform.price }}
+  {% if pform.price.errors %}<div class="field-error">{{ pform.price.errors|striptags }}</div>{% endif %}
+</div>
+
+<div class="package-hotspot-multi-pricing field-span-2" data-package-hotspot-multi-pricing hidden>
+  <p class="package-multi-formula">
+    Pay page total = <strong>standard price</strong> + (<strong>per hour per device</strong> × devices × hours).
+    Customers pick device and hour counts; the cost is calculated automatically.
+  </p>
+  <div class="pppoe-grid">
+    <div class="field">
+      <label for="{{ pform.hotspot_other_base_price.id_for_label }}">Standard price (KES)</label>
+      {{ pform.hotspot_other_base_price }}
+      {% if pform.hotspot_other_base_price.errors %}<div class="field-error">{{ pform.hotspot_other_base_price.errors|striptags }}</div>{% endif %}
+      <p class="field-hint">First device, first hour — the base fee before the hourly top-up.</p>
+    </div>
+    <div class="field">
+      <label for="{{ pform.hotspot_hourly_rate_per_device.id_for_label }}">Per hour per device (KES)</label>
+      {{ pform.hotspot_hourly_rate_per_device }}
+      {% if pform.hotspot_hourly_rate_per_device.errors %}<div class="field-error">{{ pform.hotspot_hourly_rate_per_device.errors|striptags }}</div>{% endif %}
+      <p class="field-hint">Added for each device × each hour the customer selects.</p>
+    </div>
+  </div>
+  <div class="visually-hidden" aria-hidden="true">
+    {{ pform.hotspot_other_devices_enabled }}
+  </div>
+</div>
+
+<div class="field">
+  <label for="{{ pform.download_speed_mbps.id_for_label }}">Download (Mbps)</label>
+  {{ pform.download_speed_mbps }}
+  {% if pform.download_speed_mbps.errors %}<div class="field-error">{{ pform.download_speed_mbps.errors|striptags }}</div>{% endif %}
+</div>
+<div class="field">
+  <label for="{{ pform.upload_speed_mbps.id_for_label }}">Upload (Mbps)</label>
+  {{ pform.upload_speed_mbps }}
+  {% if pform.upload_speed_mbps.errors %}<div class="field-error">{{ pform.upload_speed_mbps.errors|striptags }}</div>{% endif %}
+</div>
+
+<div class="field" data-package-max-devices-wrap>
+  <label for="{{ pform.max_devices.id_for_label }}" data-package-max-devices-label>Max devices</label>
+  {{ pform.max_devices }}
+  {% if pform.max_devices.errors %}<div class="field-error">{{ pform.max_devices.errors|striptags }}</div>{% endif %}
+  <p class="field-hint" data-package-max-devices-hint>PPPoE: leave blank for unlimited.</p>
+</div>

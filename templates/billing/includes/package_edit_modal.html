@@ -25,55 +25,7 @@
 
         <section class="pppoe-section pppoe-section--slim">
           <div class="pppoe-grid">
-            <div class="field field-span-2">
-              <label for="{{ package_edit_form.name.id_for_label }}">Package name</label>
-              {{ package_edit_form.name }}
-              {% if package_edit_form.name.errors %}<div class="field-error">{{ package_edit_form.name.errors|striptags }}</div>{% endif %}
-            </div>
-            <div class="field field-span-2 package-billing-period">
-              <label for="{{ package_edit_form.duration_value.id_for_label }}">Billing period</label>
-              <div class="package-duration-custom">
-                <span class="package-duration-every">Every</span>
-                {{ package_edit_form.duration_value }}
-                <div class="pppoe-select package-duration-unit">{{ package_edit_form.duration_unit }}</div>
-              </div>
-              {% if package_edit_form.duration_value.errors %}<div class="field-error">{{ package_edit_form.duration_value.errors|striptags }}</div>{% endif %}
-              {% if package_edit_form.duration_unit.errors %}<div class="field-error">{{ package_edit_form.duration_unit.errors|striptags }}</div>{% endif %}
-            </div>
-            <div class="field">
-              <label for="{{ package_edit_form.price.id_for_label }}">Price (KES)</label>
-              {{ package_edit_form.price }}
-              {% if package_edit_form.price.errors %}<div class="field-error">{{ package_edit_form.price.errors|striptags }}</div>{% endif %}
-            </div>
-            <div class="field">
-              <label for="{{ package_edit_form.download_speed_mbps.id_for_label }}">Download (Mbps)</label>
-              {{ package_edit_form.download_speed_mbps }}
-            </div>
-            <div class="field">
-              <label for="{{ package_edit_form.upload_speed_mbps.id_for_label }}">Upload (Mbps)</label>
-              {{ package_edit_form.upload_speed_mbps }}
-            </div>
-            <div class="field" data-package-max-devices-wrap>
-              <label for="{{ package_edit_form.max_devices.id_for_label }}" data-package-max-devices-label>Max devices</label>
-              {{ package_edit_form.max_devices }}
-              <p class="field-hint" id="edit-package-max-devices-hint">PPPoE: leave blank for unlimited.</p>
-            </div>
-            <div class="package-hotspot-other-panel field-span-2" data-package-hotspot-multi data-package-hotspot-other-panel hidden>
-              <p class="package-inline-label">Other phones on pay page</p>
-              <div class="pppoe-grid">
-                <div class="field">
-                  <label for="{{ package_edit_form.hotspot_hourly_rate_per_device.id_for_label }}">Hourly / device (KES)</label>
-                  {{ package_edit_form.hotspot_hourly_rate_per_device }}
-                </div>
-                <div class="field">
-                  <label for="{{ package_edit_form.hotspot_other_base_price.id_for_label }}">Starting price (KES)</label>
-                  {{ package_edit_form.hotspot_other_base_price }}
-                </div>
-              </div>
-              <div class="visually-hidden" aria-hidden="true">
-                {{ package_edit_form.hotspot_other_devices_enabled }}
-              </div>
-            </div>
+            {% include "billing/includes/package_modal_core_fields.html" with pform=package_edit_form %}
           </div>
         </section>
 

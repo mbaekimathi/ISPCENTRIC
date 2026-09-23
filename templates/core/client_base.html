@@ -600,6 +600,9 @@
       modal.setAttribute("aria-hidden", "false");
       document.body.classList.add("role-modal-open");
       syncEditClientForm(modal);
+      if (typeof window.syncPackageWizardForModal === "function") {
+        window.syncPackageWizardForModal(id);
+      }
       if (id === "client-recharge-modal" && typeof window.syncRechargeFormUi === "function") {
         window.syncRechargeFormUi();
       }

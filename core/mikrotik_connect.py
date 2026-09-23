@@ -14126,6 +14126,7 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
     CPEs reconnect in parallel after MikroTik reconnect / NAS refresh.
     """
     customers = list(_pppoe_customers_for_router(router))
+    _disable_fasttrack_connection_rules(sock)
     live = _pppoe_live_state_maps(sock)
     kick_usernames: list[str] = []
     clear_usernames: list[str] = []
@@ -14153,31 +14154,42 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
             # routine NAS refresh disconnects every paid CPE in account order.
             kick=False,
         )
+        internet_allowed = _customer_internet_allowed(customer)
         restoring = (
             not disabled
             and profile != PPPOE_BLOCKED_PROFILE_NAME
-            and _customer_internet_allowed(customer)
+            and internet_allowed
         )
-        profile_changed = bool(previous_profile and previous_profile != profile)
         session_active_before = _pppoe_has_active_session(
             sock, username, live=live
         )
         session_blocked = False
         if restoring and (
-            profile_changed
+            (previous_profile and previous_profile != profile)
             or previous_profile == PPPOE_BLOCKED_PROFILE_NAME
             or session_active_before
         ):
             session_blocked = _active_pppoe_session_is_blocked(
                 sock, username, live=live
             )
+        needs_kick = _pppoe_customer_needs_session_kick(
+            customer,
+            previous_profile=previous_profile,
+            profile=profile,
+            disabled=disabled,
+            internet_allowed=internet_allowed,
+            session_was_blocked=session_blocked,
+            session_active_before=session_active_before,
+            sock=sock,
+            live=live,
+        )
         # Restore path: clear leftover ispcentric-blocked address-list rows and
         # kick so the CPE redials onto the paid profile. Without this, a deploy
         # bulk rewrite leaves some clients "PPPoE active, no surf".
-        if restoring and (profile_changed or session_blocked):
+        if restoring and (needs_kick or session_blocked):
             clear_usernames.append(username)
             kick_usernames.append(username)
-        elif profile_changed:
+        elif needs_kick:
             kick_usernames.append(username)
         synced += 1
 
@@ -14187,6 +14199,12 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
         )
     if kick_usernames:
         _disconnect_pppoe_sessions_many(sock, kick_usernames)
+    live_after = _pppoe_live_state_maps(sock)
+    speed_stale_retry = _pppoe_speed_stale_usernames(
+        sock, customers, live=live_after
+    )
+    if speed_stale_retry:
+        _disconnect_pppoe_sessions_many(sock, speed_stale_retry)
 
     orphan_notes = _block_orphan_pppoe_secrets_on_socket(sock, router)
     if orphan_notes:
@@ -14833,6 +14851,14 @@ def _scan_pppoe_repair_targets_on_socket(
                 or expected != PPPOE_BLOCKED_PROFILE_NAME
             )
         )
+        active_profile = _active_pppoe_session_profile(sock, username, live=live)
+        if (
+            active
+            and expected not in {PPPOE_BLOCKED_PROFILE_NAME, PPPOE_PROFILE_NAME}
+            and active_profile
+            and active_profile != expected
+        ):
+            wrong_profile = True
         if active and _pppoe_session_looks_ghost(sock, username, live=live):
             ghost_noted += 1
         renew_pending = cpe_renew_clear_is_pending(customer)
@@ -16474,6 +16500,11 @@ def provision_customer_pppoe(
         access_note = (
             " (secret restored, but live PPPoE session still WAN-blocked — "
             "awaiting CPE redial)."
+        )
+    elif speed_stale_session:
+        access_note = (
+            " (secret on new package profile, but live session still on old "
+            "Mbps — awaiting CPE redial)."
         )
     else:
         access_note = ". The client router can dial with this username and password."

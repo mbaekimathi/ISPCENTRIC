@@ -13212,10 +13212,17 @@ a.packages-stat:focus-visible {
 
 /* Package register/edit wizard (PPPoE vs Hotspot, single vs multi device) */
 .package-type-wizard {
+  position: relative;
+  z-index: 0;
   border: 1px solid color-mix(in srgb, var(--sea, #0e7c86) 18%, var(--border));
   border-radius: 14px;
   padding: 1rem 1.05rem;
   background: color-mix(in srgb, var(--sea, #0e7c86) 5%, var(--surface));
+}
+
+.package-type-wizard .package-type-tabs {
+  position: relative;
+  z-index: 2;
 }
 
 .package-wizard-step {
@@ -13249,6 +13256,8 @@ a.packages-stat:focus-visible {
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   cursor: pointer;
   text-align: left;
+  pointer-events: auto;
+  touch-action: manipulation;
   transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -13307,6 +13316,8 @@ a.packages-stat:focus-visible {
 }
 
 .package-hotspot-device-step {
+  position: relative;
+  z-index: 2;
   margin-top: 0.85rem;
   padding-top: 0.85rem;
   border-top: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
@@ -13326,6 +13337,7 @@ a.packages-stat:focus-visible {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+  pointer-events: none;
 }
 
 .package-hotspot-other-panel {
@@ -35200,9 +35212,33 @@ textarea.form-control {
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tabs-compact .package-type-tab {
-  min-height: 2.25rem;
+  min-height: 2.75rem;
   font-size: 0.8rem;
   font-weight: 700;
+  justify-content: flex-start;
+  padding: 0.5rem 0.65rem;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tabs-compact .package-type-tab .package-type-tab-copy {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 0;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tabs-compact .package-type-tab .package-type-tab-copy strong {
+  font-size: 0.82rem;
+  line-height: 1.2;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-type-tabs-compact .package-type-tab .package-type-tab-copy small {
+  font-size: 0.68rem;
+  line-height: 1.3;
+  color: var(--ink-soft, rgba(232, 242, 244, 0.58));
+  font-weight: 500;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-hotspot-device-step .package-wizard-step {
+  margin-bottom: 0.45rem;
 }
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-inline-label {
@@ -35261,6 +35297,48 @@ textarea.form-control {
 
 .client-action-modal.pppoe-modal.pppoe-modal--package .package-duration-unit select.form-control {
   width: 100%;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-duration-custom.is-hours-only {
+  grid-template-columns: auto 4.25rem auto;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-duration-hours-label {
+  font-size: 0.84rem;
+  font-weight: 650;
+  color: var(--modal-ink-soft, var(--ink-soft, rgba(232, 242, 244, 0.72)));
+  white-space: nowrap;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-hotspot-multi-pricing {
+  padding: 0.75rem 0.85rem;
+  border-radius: 12px;
+  border: 1px dashed color-mix(in srgb, #059669 30%, var(--border, rgba(255, 255, 255, 0.14)));
+  background: color-mix(in srgb, #059669 7%, transparent);
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-multi-formula {
+  margin: 0 0 0.75rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--modal-ink-soft, var(--ink-soft, rgba(232, 242, 244, 0.72)));
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package [data-package-billing-field][hidden] {
+  display: none !important;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package .package-hotspot-multi-pricing .pppoe-grid {
+  gap: 0.65rem;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--package [data-package-price-wrap][hidden] {
+  display: none !important;
+}
+
+[data-theme="light"] .client-action-modal.pppoe-modal.pppoe-modal--package .package-hotspot-multi-pricing {
+  border-color: color-mix(in srgb, #059669 28%, var(--border));
+  background: color-mix(in srgb, #059669 6%, var(--surface-solid, #fff));
 }
 
 [data-theme="light"] .client-action-modal.pppoe-modal.pppoe-modal--package .pppoe-head {

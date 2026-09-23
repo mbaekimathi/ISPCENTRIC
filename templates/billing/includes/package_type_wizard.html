@@ -20,9 +20,20 @@
   {% if ptype_form.service_type.errors %}<div class="field-error">{{ ptype_form.service_type.errors|striptags }}</div>{% endif %}
 
   <div class="package-hotspot-device-step" data-hotspot-device-step hidden>
+    <p class="package-wizard-step">Hotspot type</p>
     <div class="package-type-tabs package-type-tabs-compact" data-package-device-tabs role="tablist" aria-label="Hotspot devices">
-      <button type="button" class="package-type-tab" data-device-tab="single" role="tab">Single</button>
-      <button type="button" class="package-type-tab" data-device-tab="multi" role="tab">Multiple</button>
+      <button type="button" class="package-type-tab" data-device-tab="single" role="tab">
+        <span class="package-type-tab-copy">
+          <strong>Single</strong>
+          <small>One phone · fixed price</small>
+        </span>
+      </button>
+      <button type="button" class="package-type-tab" data-device-tab="multi" role="tab">
+        <span class="package-type-tab-copy">
+          <strong>Multiple</strong>
+          <small>Vouchers · devices &amp; hours</small>
+        </span>
+      </button>
     </div>
   </div>
 </div>

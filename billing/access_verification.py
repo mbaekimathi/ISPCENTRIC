@@ -257,7 +257,22 @@ def evaluate_nas_policy(
                 speed_ok = profile == expected_profile
             elif expected_rate and rate_limit:
                 speed_ok = _rate_limits_match(expected_rate, rate_limit)
-        if not speed_ok:
+        active_session_profile = (provision.get("active_session_profile") or "").strip()
+        details["active_session_profile"] = active_session_profile
+        speed_stale = bool(provision.get("speed_stale_session"))
+        if speed_stale or (
+            active_session_profile
+            and expected_profile
+            and expected_profile
+            not in {
+                PPPOE_BLOCKED_PROFILE_NAME,
+                "",
+            }
+            and active_session_profile != expected_profile
+        ):
+            speed_ok = False
+            details["surf_gap"] = "speed_stale_session"
+        elif not speed_ok:
             details["surf_gap"] = "wrong_speed_profile"
 
         session_blocked = bool(provision.get("session_blocked"))
@@ -405,6 +420,7 @@ def run_access_correction_loop(
                 and surf_gap
                 in {
                     "wrong_speed_profile",
+                    "speed_stale_session",
                     "device_cap_exceeded",
                     "over_cap_not_disabled",
                 }

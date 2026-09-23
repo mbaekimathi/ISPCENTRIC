@@ -7163,6 +7163,134 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
             )
         )
 
+    def test_stale_active_profile_kicks_even_when_secret_read_flaked(self):
+        from core.mikrotik_connect import (
+            clear_cpe_renew_clear_pending,
+            _pppoe_customer_needs_session_kick,
+        )
+
+        customer = type(
+            "Customer",
+            (),
+            {"pk": 9, "pppoe_username": "alice"},
+        )()
+        clear_cpe_renew_clear_pending(customer)
+        live = {
+            "active_names": {"alice"},
+            "active_profiles": {"alice": "ispcentric-pppoe-5u-10d"},
+        }
+        self.assertTrue(
+            _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile="",
+                profile="ispcentric-pppoe-20u-10d",
+                disabled=False,
+                internet_allowed=True,
+                session_was_blocked=False,
+                session_active_before=True,
+                sock=object(),
+                live=live,
+            )
+        )
+
+    def test_matching_active_profile_does_not_kick_when_secret_read_flaked(self):
+        from core.mikrotik_connect import (
+            clear_cpe_renew_clear_pending,
+            _pppoe_customer_needs_session_kick,
+        )
+
+        customer = type(
+            "Customer",
+            (),
+            {"pk": 10, "pppoe_username": "bob"},
+        )()
+        clear_cpe_renew_clear_pending(customer)
+        live = {
+            "active_names": {"bob"},
+            "active_profiles": {"bob": "ispcentric-pppoe-5u-10d"},
+        }
+        self.assertFalse(
+            _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile="",
+                profile="ispcentric-pppoe-5u-10d",
+                disabled=False,
+                internet_allowed=True,
+                session_was_blocked=False,
+                session_active_before=True,
+                sock=object(),
+                live=live,
+            )
+        )
+
+
+class PppoeSpeedStaleSessionTests(SimpleTestCase):
+    def test_active_session_profile_stale_detects_old_package_profile(self):
+        from core.mikrotik_connect import _pppoe_active_session_profile_stale
+
+        live = {
+            "active_names": {"alice"},
+            "active_profiles": {"alice": "ispcentric-pppoe-5u-10d"},
+        }
+        self.assertTrue(
+            _pppoe_active_session_profile_stale(
+                object(),
+                "alice",
+                expected_profile="ispcentric-pppoe-20u-10d",
+                live=live,
+            )
+        )
+        self.assertFalse(
+            _pppoe_active_session_profile_stale(
+                object(),
+                "alice",
+                expected_profile="ispcentric-pppoe-5u-10d",
+                live=live,
+            )
+        )
+
+    def test_batch_write_disables_fasttrack_before_secret_sync(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import _pppoe_batch_write_on_socket
+
+        disabled = []
+
+        def fake_disable(sock):
+            disabled.append(sock)
+            return ["disabled 1 FastTrack rule(s) so package speed queues apply"]
+
+        router = type("Router", (), {"pk": 1})()
+        with (
+            patch(
+                "core.mikrotik_connect._disable_fasttrack_connection_rules",
+                side_effect=fake_disable,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value={
+                    "secret_profiles": {},
+                    "secret_rows": {},
+                    "active_names": set(),
+                    "active_addresses": {},
+                    "active_profiles": {},
+                    "blocked_list_addresses": set(),
+                    "arp_complete": {},
+                },
+            ),
+        ):
+            result = _pppoe_batch_write_on_socket(
+                object(),
+                router,
+                [],
+                need_block_stack=False,
+            )
+
+        self.assertEqual(len(disabled), 1)
+        self.assertTrue(
+            any("FastTrack" in note for note in (result.get("notes") or []))
+        )
+
 
 class HotspotIntermittentDropTests(SimpleTestCase):
     """Paid Hotspot surfing must not be bounced by soft sweeps / leak repair."""

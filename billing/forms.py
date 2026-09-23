@@ -1773,7 +1773,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "hotspot_other_base_price": forms.NumberInput(
                 attrs={
                     "class": "form-control",
-                    "placeholder": "Same as package price",
+                    "placeholder": "e.g. 30.00 — first device, first hour",
                     "step": "0.01",
                     "min": "0",
                     "id": "id_package_hotspot_other_base_price",
@@ -1782,7 +1782,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "hotspot_hourly_rate_per_device": forms.NumberInput(
                 attrs={
                     "class": "form-control",
-                    "placeholder": "0.00",
+                    "placeholder": "e.g. 10.00 — per device × per hour",
                     "step": "0.01",
                     "min": "0",
                     "id": "id_package_hotspot_hourly_rate_per_device",
@@ -1866,10 +1866,12 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "are already unlimited — this field does not add extra PPPoE sessions."
         )
         self.fields["hotspot_other_base_price"].help_text = (
-            "Base fee for “Pay for other devices”. Blank uses the package price."
+            "Hotspot multi-device: standard price for the first device, first hour. "
+            "Blank uses the package price."
         )
         self.fields["hotspot_hourly_rate_per_device"].help_text = (
-            "KES per hour per device added to the base (devices × hours × rate)."
+            "Hotspot multi-device: KES per hour per device. "
+            "Pay page total = standard price + (rate × devices × hours)."
         )
         self.fields["offer_enabled"].required = False
         self.fields["offer_pay_count"].required = False
