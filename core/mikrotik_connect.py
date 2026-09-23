@@ -21225,6 +21225,7 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
         return []
 
     paid_macs = _paid_hotspot_mac_set(org)
+    billing_preserve = _portal_billing_ipv4s(organization=org)
     notes: list[str] = []
     active_rows = _print(
         sock,
@@ -21264,8 +21265,14 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
             reauthenticate=True,
             active_rows=active_rows,
             host_rows=host_rows,
+            preserve_connection_dst=billing_preserve,
         )
-        purged = _purge_hotspot_ok_list_for_mac(sock, name, active_rows=active_rows)
+        purged = _purge_hotspot_ok_list_for_mac(
+            sock,
+            name,
+            active_rows=active_rows,
+            preserve_connection_dst=billing_preserve,
+        )
         kind = "untagged" if not tagged else "orphan"
         notes.append(
             f"blocked {kind} Hotspot MAC {name} (ok-list purged={purged})"
@@ -21305,7 +21312,11 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
             f"purged {removed_ips} unpaid/stale Hotspot IP(s) from {ISP_HOTSPOT_OK_LIST}"
         )
     if leak_ips:
-        killed = _kill_firewall_connections_for_addresses(sock, leak_ips)
+        killed = _kill_firewall_connections_for_addresses(
+            sock,
+            leak_ips,
+            preserve_dst=billing_preserve,
+        )
         if killed:
             notes.append(f"killed {killed} leaked Hotspot connection(s)")
     return notes
@@ -21754,7 +21765,7 @@ def defer_hotspot_pay_wall(
     mac: str,
     *,
     customer=None,
-    delay_seconds: float = 30.0,
+    delay_seconds: float = 60.0,
 ) -> None:
     """
     Block an unpaid MAC off the request thread.
@@ -22512,14 +22523,14 @@ def _hotspot_login_file_ok(sock: socket.socket, dst_path: str = "hotspot/login.h
     return _hotspot_login_file_size(sock, dst_path) >= _MIN_HOTSPOT_LOGIN_BYTES
 
 
-def _hotspot_captive_login_fetch_url(login_url: str) -> str:
+def _hotspot_captive_login_fetch_url(portal_url: str) -> str:
     """
     URL MikroTik ``/tool/fetch`` should pull for login.html.
 
     ``/reconnect/`` returns 302 with an empty body — fetching it leaves a blank
     captive page. ``/captive-login/`` returns the redirect HTML as HTTP 200.
     """
-    resolved = _resolve_absolute_captive_url(login_url or "")
+    resolved = _resolve_absolute_captive_url(portal_url or "")
     if not resolved:
         return ""
     parsed = urlparse(resolved)
@@ -22528,6 +22539,10 @@ def _hotspot_captive_login_fetch_url(login_url: str) -> str:
         path = f"{path[: -len('/reconnect')]}/captive-login"
     elif "/reconnect/" in path:
         path = path.replace("/reconnect/", "/captive-login/", 1).rstrip("/")
+    elif path.endswith("/pay"):
+        path = f"{path[: -len('/pay')]}/captive-login"
+    elif "/pay/" in path:
+        path = path.replace("/pay/", "/captive-login/", 1).rstrip("/")
     else:
         return ""
     if not path.endswith("/"):
@@ -22705,20 +22720,22 @@ def _fetch_isp_hotspot_pages(
     not left without an instant pay popup.
     """
     notes: list[str] = []
-    login = _resolve_absolute_captive_url(login_url or pay_url or "")
     pay = _resolve_absolute_captive_url(pay_url or login_url or "")
     welcome = _resolve_absolute_captive_url(welcome_url or alogin_url or "") or (
         welcome_url or alogin_url or ""
     ).strip()
 
-    if not login:
+    if not pay:
         notes.append(
-            "warning: refused relative/empty Hotspot login URL — "
+            "warning: refused relative/empty Hotspot pay URL — "
             "login.html not installed (would stick clients on http://10.50.50.…)"
         )
         return notes
 
-    pay_html = _captive_pay_redirect_html(login)
+    # login.html sends unpaid clients straight to /pay/ (one hop). Paid MACs
+    # still reconnect from the pay page banner without an extra /reconnect/ load
+    # that captive browsers abort when leak repair drops WAN mid-request.
+    pay_html = _captive_pay_redirect_html(pay)
     alogin_html = _captive_alogin_html(welcome) if welcome else ""
 
     for dst in _STALE_PROBE_FILES:
@@ -22752,7 +22769,7 @@ def _fetch_isp_hotspot_pages(
     # Optional fallback: HTTP-fetch the captive-login page (200 + HTML body).
     # Never fetch /reconnect/ — it 302s with an empty body and blank login.html.
     missing_login = not _hotspot_login_file_ok(sock)
-    fetch_src = _hotspot_captive_login_fetch_url(login_url or pay_url or login)
+    fetch_src = _hotspot_captive_login_fetch_url(pay_url or login_url)
     if missing_login and fetch_src:
         fetch_words = [
             "/tool/fetch",

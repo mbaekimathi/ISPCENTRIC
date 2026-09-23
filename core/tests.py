@@ -5898,6 +5898,87 @@ class ClientsSurfingStatusTests(TestCase):
             url,
             "http://isp.richcom.co.ke/hotspot/534970/captive-login/",
         )
+        pay_url = _hotspot_captive_login_fetch_url(
+            "http://isp.richcom.co.ke/hotspot/534970/pay/"
+        )
+        self.assertEqual(
+            pay_url,
+            "http://isp.richcom.co.ke/hotspot/534970/captive-login/",
+        )
+
+    def test_orphan_hotspot_leak_repair_preserves_billing_connections(self):
+        from unittest.mock import MagicMock, patch
+
+        from core.mikrotik_connect import _block_orphan_hotspot_users_on_socket
+
+        router = MagicMock()
+        router.organization = MagicMock(pk=1)
+        kill_calls: list[dict] = []
+        expire_calls: list[dict] = []
+        purge_calls: list[dict] = []
+
+        def fake_expire(*args, **kwargs):
+            expire_calls.append(kwargs)
+            return None
+
+        def fake_purge(*args, **kwargs):
+            purge_calls.append(kwargs)
+            return 0
+
+        def fake_kill(sock, addresses, *, preserve_dst=None):
+            kill_calls.append({"addresses": set(addresses), "preserve_dst": preserve_dst})
+            return 0
+
+        with (
+            patch(
+                "core.mikrotik_connect._paid_hotspot_mac_set",
+                return_value=set(),
+            ),
+            patch(
+                "core.mikrotik_connect._portal_billing_ipv4s",
+                return_value=frozenset({"178.162.241.99"}),
+            ),
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=[
+                    [],
+                    [],
+                    [
+                        {
+                            "name": "CE:75:A2:D3:50:49",
+                            "disabled": "false",
+                            "comment": "",
+                        }
+                    ],
+                    [],
+                ],
+            ),
+            patch("core.mikrotik_connect._ensure_hotspot_user"),
+            patch(
+                "core.mikrotik_connect._expire_hotspot_mac_sessions",
+                side_effect=fake_expire,
+            ),
+            patch(
+                "core.mikrotik_connect._purge_hotspot_ok_list_for_mac",
+                side_effect=fake_purge,
+            ),
+            patch(
+                "core.mikrotik_connect._kill_firewall_connections_for_addresses",
+                side_effect=fake_kill,
+            ),
+        ):
+            _block_orphan_hotspot_users_on_socket(MagicMock(), router)
+
+        self.assertTrue(expire_calls)
+        self.assertEqual(
+            expire_calls[0].get("preserve_connection_dst"),
+            frozenset({"178.162.241.99"}),
+        )
+        self.assertTrue(purge_calls)
+        self.assertEqual(
+            purge_calls[0].get("preserve_connection_dst"),
+            frozenset({"178.162.241.99"}),
+        )
 
     def test_pppoe_pay_ignores_mac_query_on_pppoe_only_page(self):
         """PPPoE pay stays PPPoE-only; MAC belongs on /hotspot/…/pay/."""
@@ -9094,7 +9175,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         self.assertTrue(any("installed hotspot/login.html" in n for n in notes))
         login = written["hotspot/login.html"]
         self.assertIn(
-            "http://billing.example/hotspot/505050/reconnect/?mac=$(mac)",
+            "http://billing.example/hotspot/505050/pay/?mac=$(mac)",
             login,
         )
         self.assertIn("mac=$(mac)", login)

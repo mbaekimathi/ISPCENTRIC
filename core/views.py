@@ -22501,7 +22501,7 @@ def hotspot_captive_login(request, join_code: str):
 
     urls = hotspot_portal_urls(join_code, request)
     target = _prefer_http_captive_url(
-        urls.get("reconnect_url") or urls.get("login_url") or ""
+        urls.get("pay_url") or urls.get("reconnect_url") or urls.get("login_url") or ""
     )
     html = _captive_pay_redirect_html(target)
     if not html:
