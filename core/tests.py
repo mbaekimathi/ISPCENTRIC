@@ -9954,9 +9954,14 @@ class AccessFlowCorrectionLoopTests(TestCase):
         def fake_print(sock, path, **kwargs):
             self.assertEqual(path, "/ip/firewall/connection")
             return [
-                {".id": "*1", "src-address": "10.50.50.40/50001"},
-                {".id": "*2", "src-address": "10.50.50.99/443"},
-                {".id": "*3", "src-address": "10.20.0.5/443"},
+                {".id": "*1", "src-address": "10.50.50.40/50001", "dst-address": "1.2.3.4/443"},
+                {".id": "*2", "src-address": "10.50.50.99/443", "dst-address": "8.8.8.8/443"},
+                {
+                    ".id": "*3",
+                    "src-address": "10.50.50.40/50002",
+                    "dst-address": "203.0.113.10/80",
+                },
+                {".id": "*4", "src-address": "10.20.0.5/443", "dst-address": "1.2.3.4/443"},
             ]
 
         with (
@@ -9969,7 +9974,9 @@ class AccessFlowCorrectionLoopTests(TestCase):
             ),
         ):
             killed = _kill_firewall_connections_for_addresses(
-                MagicMock(), {"10.50.50.40", "10.50.50.99"}
+                MagicMock(),
+                {"10.50.50.40", "10.50.50.99"},
+                preserve_dst=frozenset({"203.0.113.10"}),
             )
 
         self.assertEqual(killed, 2)

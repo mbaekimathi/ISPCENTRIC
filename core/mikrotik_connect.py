@@ -11860,27 +11860,55 @@ def _billing_portal_base_url(explicit: str = "", organization=None) -> str:
     except Exception:
         return (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
 
-def _portal_target_ipv4(portal_url: str) -> str:
+def _portal_target_ipv4s(portal_url: str) -> list[str]:
     """
-    IPv4 the portal is reachable at, resolving a hostname when needed.
+    IPv4 address(es) the portal hostname resolves to.
 
-    dst-nat needs a literal address, so a domain-based PUBLIC_BASE_URL (the
-    normal setup once billing runs on a VPS) has to be resolved here or the
-    expired-client redirect would silently never install.
+    dst-nat / walled-garden need literal addresses. A domain-based
+    PUBLIC_BASE_URL (normal on a VPS) must be resolved here or unpaid Hotspot
+    clients get TCP reset (ERR_CONNECTION_ABORTED) when the router only knows
+    one stale A record.
     """
+    portal_url = (portal_url or "").strip()
     direct = _routable_ipv4_from_url(portal_url)
     if direct:
-        return direct
+        return [direct]
     try:
-        host = (urlparse((portal_url or "").strip()).hostname or "").strip()
+        host = (urlparse(portal_url).hostname or "").strip()
         if not host:
-            return ""
-        resolved = ipaddress.ip_address(socket.gethostbyname(host))
-    except (ValueError, OSError):
-        return ""
-    if resolved.version != 4 or resolved.is_loopback or resolved.is_unspecified:
-        return ""
-    return str(resolved)
+            return []
+    except Exception:
+        return []
+    found: list[str] = []
+    try:
+        for info in socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM):
+            ip = (info[4][0] or "").strip()
+            if not ip or ip in found:
+                continue
+            try:
+                addr = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+            if addr.version != 4 or addr.is_loopback or addr.is_unspecified:
+                continue
+            found.append(ip)
+    except OSError:
+        return []
+    return found
+
+
+def _portal_target_ipv4(portal_url: str) -> str:
+    """First IPv4 from :func:`_portal_target_ipv4s` (backward compatible)."""
+    ips = _portal_target_ipv4s(portal_url)
+    return ips[0] if ips else ""
+
+
+def _portal_billing_ipv4s(
+    portal_url: str = "", *, organization=None
+) -> frozenset[str]:
+    """Billing-server IPv4 set — keep pay-page TCP alive while blocking WAN."""
+    portal = _billing_portal_base_url(portal_url, organization=organization)
+    return frozenset(_portal_target_ipv4s(portal))
 
 
 def _portal_http_port(portal_url: str) -> str:
@@ -12133,10 +12161,15 @@ def _ensure_pppoe_fast_captive_reject(sock: socket.socket) -> list[str]:
 def _kill_firewall_connections_for_addresses(
     sock: socket.socket,
     addresses: set[str] | list[str] | tuple[str, ...],
+    *,
+    preserve_dst: frozenset[str] | set[str] | None = None,
 ) -> int:
     """
     Remove tracked connections so blocked clients cannot keep surfing on
     already-established HTTPS/QUIC sockets after Hotspot/PPPoE access is revoked.
+
+    ``preserve_dst`` keeps billing-server sockets alive so captive pay pages
+    are not aborted mid-load (ERR_CONNECTION_ABORTED).
     """
     targets = {
         (addr or "").strip()
@@ -12145,6 +12178,11 @@ def _kill_firewall_connections_for_addresses(
     }
     if not targets:
         return 0
+    keep_dst = {
+        (addr or "").strip()
+        for addr in (preserve_dst or ())
+        if (addr or "").strip()
+    }
     removed = 0
     try:
         rows = _print(
@@ -12157,6 +12195,9 @@ def _kill_firewall_connections_for_addresses(
     for row in rows:
         src = _parse_connection_address(row.get("src-address") or "")
         if src not in targets:
+            continue
+        dst = _parse_connection_address(row.get("dst-address") or "")
+        if dst and dst in keep_dst:
             continue
         item_id = (row.get(".id") or "").strip()
         if not item_id:
@@ -12219,10 +12260,7 @@ def _ensure_hotspot_pool_wan_guard(
             place_before = (row.get(".id") or "").strip() or place_before
             break
 
-    billing_ip = ""
-    portal = _billing_portal_base_url(portal_url)
-    if portal:
-        billing_ip = _portal_target_ipv4(portal)
+    billing_ips = _portal_target_ipv4s(_billing_portal_base_url(portal_url) or "")
 
     rules: list[dict[str, str]] = [
         {
@@ -12233,7 +12271,7 @@ def _ensure_hotspot_pool_wan_guard(
             "comment": f"{ISP_HOTSPOT_TAG} pool wan ok",
         },
     ]
-    if billing_ip:
+    for billing_ip in billing_ips:
         rules.append(
             {
                 "chain": "forward",
@@ -20002,8 +20040,8 @@ def _ensure_hotspot_walled_garden(sock: socket.socket, redirect_url: str) -> lis
     elif host:
         # Hostname billing (VPS): TCP dials the resolved IPv4 — dst-host alone
         # is not enough on many RouterOS builds for remote billing servers.
-        billing_ip = _portal_target_ipv4((redirect_url or "").strip())
-        if billing_ip:
+        billing_ips = _portal_target_ipv4s((redirect_url or "").strip())
+        if billing_ips:
             existing_ip = {
                 ((row.get("dst-address") or "").strip(), (row.get("comment") or "")): (
                     row.get(".id") or ""
@@ -20014,30 +20052,36 @@ def _ensure_hotspot_walled_garden(sock: socket.socket, redirect_url: str) -> lis
                     props=".id,dst-address,action,comment",
                 )
             }
-            for dst in (billing_ip, f"{billing_ip}/32"):
-                item_id = existing_ip.get((dst, ISP_HOTSPOT_TAG)) or existing_ip.get(
-                    (dst, "")
-                )
-                attempts = [
-                    {
-                        "dst-address": dst,
-                        "action": "accept",
-                        "comment": ISP_HOTSPOT_TAG,
-                    },
-                    {
-                        "dst-address": dst,
-                        "action": "accept",
-                    },
-                ]
-                terminal, _ = _add_or_set_attempts(
-                    sock,
-                    "/ip/hotspot/walled-garden/ip",
-                    item_id,
-                    attempts,
-                    required=("dst-address",),
-                )
-                if terminal.get("_reply") != "!trap":
-                    notes.append(f"walled garden ip {dst} ({host})")
+            for billing_ip in billing_ips:
+                for dst in (billing_ip, f"{billing_ip}/32"):
+                    item_id = existing_ip.get((dst, ISP_HOTSPOT_TAG)) or existing_ip.get(
+                        (dst, "")
+                    )
+                    attempts = [
+                        {
+                            "dst-address": dst,
+                            "action": "accept",
+                            "comment": ISP_HOTSPOT_TAG,
+                        },
+                        {
+                            "dst-address": dst,
+                            "action": "accept",
+                        },
+                    ]
+                    terminal, _ = _add_or_set_attempts(
+                        sock,
+                        "/ip/hotspot/walled-garden/ip",
+                        item_id,
+                        attempts,
+                        required=("dst-address",),
+                    )
+                    if terminal.get("_reply") != "!trap":
+                        notes.append(f"walled garden ip {dst} ({host})")
+        else:
+            notes.append(
+                f"warning: could not resolve billing IP for {host} — "
+                "Hotspot pay page may be blocked"
+            )
     return notes
 
 
@@ -21005,6 +21049,7 @@ def _purge_hotspot_ok_list_for_mac(
     mac: str,
     *,
     active_rows: list[dict[str, str]] | None = None,
+    preserve_connection_dst: frozenset[str] | set[str] | None = None,
 ) -> int:
     """Remove paid-surf allow-list entries for one MAC when access is revoked."""
     mac = (mac or "").strip().upper()
@@ -21041,7 +21086,11 @@ def _purge_hotspot_ok_list_for_mac(
             ) != "!trap":
                 removed += 1
     if ips:
-        _kill_firewall_connections_for_addresses(sock, ips)
+        _kill_firewall_connections_for_addresses(
+            sock,
+            ips,
+            preserve_dst=frozenset(preserve_connection_dst or ()),
+        )
     return removed
 
 
@@ -21082,7 +21131,7 @@ def block_hotspot_mac_until_paid(
     org = organization
     target = router
     if target is None and org is not None:
-        target = find_hotspot_router_for_mac(org, mac)
+        target = find_hotspot_router_for_mac(org, mac, live_walk=False)
     if target is None and org is not None:
         from core.models import MikroTikRouter
 
@@ -21112,6 +21161,8 @@ def block_hotspot_mac_until_paid(
             "message": "Router offline — block deferred.",
         }
 
+    billing_preserve = _portal_billing_ipv4s(organization=org)
+
     try:
         with _api_session(host, username, password, timeout=8.0) as sock:
             _remove_lan_wide_hotspot_bypasses(sock)
@@ -21128,8 +21179,13 @@ def block_hotspot_mac_until_paid(
                 mac,
                 disabled=True,
                 reauthenticate=True,
+                preserve_connection_dst=billing_preserve,
             )
-            purged = _purge_hotspot_ok_list_for_mac(sock, mac)
+            purged = _purge_hotspot_ok_list_for_mac(
+                sock,
+                mac,
+                preserve_connection_dst=billing_preserve,
+            )
         return {
             "ok": True,
             "skipped": False,
@@ -21665,6 +21721,7 @@ def _expire_hotspot_mac_sessions(
     reauthenticate: bool,
     active_rows: list[dict[str, str]] | None = None,
     host_rows: list[dict[str, str]] | None = None,
+    preserve_connection_dst: frozenset[str] | set[str] | None = None,
 ) -> None:
     """Expire Hotspot active/host/cookie rows for one MAC when access changes.
 
@@ -21719,7 +21776,11 @@ def _expire_hotspot_mac_sessions(
             if should_remove and item_id:
                 _remove(sock, path, item_id)
     if disabled and session_ips:
-        _kill_firewall_connections_for_addresses(sock, session_ips)
+        _kill_firewall_connections_for_addresses(
+            sock,
+            session_ips,
+            preserve_dst=frozenset(preserve_connection_dst or ()),
+        )
     if not disabled:
         return
     cookie_rows = _print(
