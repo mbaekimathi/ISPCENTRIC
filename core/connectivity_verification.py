@@ -196,6 +196,69 @@ def evaluate_nas_connectivity(router, *, timeout: float = 2.5) -> dict:
     }
 
 
+def evaluate_nas_connectivity_cached(
+    router,
+    *,
+    force: bool = False,
+    org_pk: int | None = None,
+    timeout: float = 2.5,
+) -> dict:
+    """
+    NAS reachability for client-list CPE probes — one result per router per TTL.
+
+    Reuses the MikroTik live dashboard cache when recent so twenty clients on
+    the same NAS do not open twenty competing API sessions (which looked like
+    “NAS down” on the Remote column).
+    """
+    from django.conf import settings
+    from django.core.cache import cache
+
+    router_id = int(getattr(router, "pk", 0) or 0)
+    if not router_id:
+        return evaluate_nas_connectivity(router, timeout=timeout)
+
+    cache_key = f"cpe_list_nas:{router_id}"
+    if not force:
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict) and cached.get("router_id") == router_id:
+            return cached
+
+        organization_id = int(org_pk or getattr(router, "organization_id", 0) or 0)
+        if organization_id:
+            live = cache.get(f"mikrotik_live:{organization_id}:{router_id}")
+            if isinstance(live, dict) and live.get("ok") and live.get("online"):
+                dial = (
+                    (live.get("dial_host") or "").strip()
+                    or (getattr(router, "vpn_address", None) or "").strip()
+                    or (getattr(router, "host", None) or "").strip()
+                )
+                if dial:
+                    result = {
+                        "ok": True,
+                        "reachable": True,
+                        "api_ok": True,
+                        "error": "",
+                        "hint": "",
+                        "details": {
+                            "router_id": router_id,
+                            "router_name": getattr(router, "name", "") or "",
+                            "host": dial,
+                            "working_host": dial,
+                            "from_mikrotik_live_cache": True,
+                        },
+                    }
+                    cache.set(cache_key, result, 22)
+                    return result
+
+    result = evaluate_nas_connectivity(router, timeout=timeout)
+    details = dict(result.get("details") or {})
+    details["router_id"] = router_id
+    result = {**result, "details": details}
+    ttl = 22 if result.get("api_ok") else 12
+    cache.set(cache_key, result, ttl)
+    return result
+
+
 def evaluate_cpe_connectivity(customer, *, timeout: float = 6.0, deep: bool = False) -> dict:
     """
     Check PPPoE session on NAS and optional CPE API reachability via NAS proxy.
@@ -923,6 +986,8 @@ def evaluate_layered_cpe_access(
     timeout: float = 8.0,
     try_api: bool = True,
     auto_enable: bool = True,
+    nas_evaluation: dict | None = None,
+    enable_cpe_web: bool = False,
 ) -> dict:
     """
     Layered remote CPE access check used by Open client router:
@@ -982,7 +1047,10 @@ def evaluate_layered_cpe_access(
             "details": details,
         }
 
-    nas = evaluate_nas_connectivity(router, timeout=min(timeout, 3.0))
+    if nas_evaluation is not None:
+        nas = nas_evaluation
+    else:
+        nas = evaluate_nas_connectivity(router, timeout=min(timeout, 4.0))
     details["nas"] = nas.get("details") or {}
     layers["nas_ok"] = bool(nas.get("api_ok"))
     if not layers["nas_ok"]:
@@ -1009,7 +1077,7 @@ def evaluate_layered_cpe_access(
         cpe_password=getattr(customer, "cpe_password", "") or "",
         pppoe_password=getattr(customer, "pppoe_password", "") or "",
         timeout=timeout,
-        auto_enable_www=bool(auto_enable and try_api),
+        auto_enable_www=bool(enable_cpe_web or (auto_enable and try_api)),
     )
     details["probe"] = {
         "ok": probe.get("ok"),

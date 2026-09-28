@@ -438,6 +438,14 @@ class WireGuardReservation(models.Model):
     these keys, then onboard using the reserved address as the router's host.
     """
 
+    organization = models.ForeignKey(
+        "accounts.Organization",
+        on_delete=models.CASCADE,
+        related_name="wireguard_reservations",
+        null=True,
+        blank=True,
+        help_text="ISP workspace that owns this onboarding tunnel (unique keys per tenant).",
+    )
     label = models.CharField(max_length=150, help_text="Site name, for your reference.")
     address = models.GenericIPAddressField(protocol="IPv4", unique=True)
     lan_address = models.GenericIPAddressField(
@@ -454,6 +462,13 @@ class WireGuardReservation(models.Model):
     class Meta:
         db_table = "core_wireguard_reservation"
         ordering = ["address"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "label"],
+                name="core_wg_reservation_org_label_uniq",
+                condition=models.Q(organization__isnull=False),
+            ),
+        ]
 
     def __str__(self):
         return f"{self.label} ({self.address})"

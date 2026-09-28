@@ -376,20 +376,205 @@ def _server_public_key() -> str:
     return key
 
 
-def reserve_peer(label: str):
-    """
-    Create or reuse a WireGuardReservation for a router that is not onboarded yet.
+def _reservation_purge_enabled() -> bool:
+    raw = (os.getenv("WIREGUARD_RESERVATION_PURGE_ENABLED") or "").strip().lower()
+    if raw in {"0", "false", "no"}:
+        return False
+    if raw in {"1", "true", "yes"}:
+        return True
+    return bool(getattr(settings, "HOSTED", False))
 
-    Returns (reservation, peer_sync). Same label (case-insensitive) keeps one peer
-    so the Connect modal can regenerate the paste script without burning addresses.
+
+def _reservation_never_handshake_grace_sec() -> float:
+    """Drop pending onboardings that never handshook after this long."""
+    try:
+        hours = float(os.getenv("WIREGUARD_RESERVATION_NEVER_HANDSHAKE_HOURS", "6"))
+    except (TypeError, ValueError):
+        hours = 6.0
+    return max(1.0, hours) * 3600.0
+
+
+def _reservation_stale_handshake_sec() -> int:
+    """Abandoned tunnel — router stopped dialing or keys were replaced."""
+    try:
+        days = float(os.getenv("WIREGUARD_RESERVATION_STALE_DAYS", "3"))
+    except (TypeError, ValueError):
+        days = 3.0
+    return max(int(handshake_max_age_sec()), int(days * 86400))
+
+
+def remove_server_peer(public_key: str) -> dict:
+    """Remove one peer from runtime wg0 (best-effort; conf file may retain a stub)."""
+    public_key = (public_key or "").strip()
+    if not public_key or not configured():
+        return {"ok": False, "skipped": True, "reason": "missing_key"}
+    if not can_apply_server_peers():
+        return {"ok": False, "skipped": True, "reason": "not_on_tunnel"}
+    iface = _wireguard_interface()
+    wg_bin = shutil.which("wg") or "/usr/bin/wg"
+    try:
+        proc = subprocess.run(
+            [wg_bin, "set", iface, "peer", public_key, "remove"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return {"ok": True}
+        err = (proc.stderr or proc.stdout or "wg peer remove failed").strip()
+        return {"ok": False, "error": err}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _active_router_public_keys() -> set[str]:
+    from core.models import MikroTikRouter
+
+    keys: set[str] = set()
+    for row in MikroTikRouter.objects.exclude(vpn_public_key="").values_list(
+        "vpn_public_key", flat=True
+    ):
+        value = (row or "").strip()
+        if value:
+            keys.add(value)
+    return keys
+
+
+def reservation_connect_is_stale(reservation, *, keep: bool = False) -> bool:
+    """
+    True when a pending onboarding reservation will not pass Connect checks.
+
+    ``keep`` skips purge for the site the operator is actively connecting.
+    """
+    if keep:
+        return False
+    from django.utils import timezone
+
+    created_age = (
+        timezone.now() - reservation.created_at
+    ).total_seconds()
+    grace = _reservation_never_handshake_grace_sec()
+    stale_limit = _reservation_stale_handshake_sec()
+    peer = inspect_server_peer((reservation.public_key or "").strip())
+    age = peer.get("handshake_age_sec")
+    if age is not None:
+        try:
+            return int(age) > stale_limit
+        except (TypeError, ValueError):
+            return created_age > grace
+    if not peer.get("present"):
+        return created_age > grace
+    return created_age > grace
+
+
+def reservation_for_address(address: str, *, organization=None):
+    """Return a pending reservation when it belongs to the given ISP workspace."""
+    address = (address or "").strip()
+    if not address:
+        return None
+    from core.models import WireGuardReservation
+
+    reservation = WireGuardReservation.objects.filter(address=address).first()
+    if reservation is None:
+        return None
+    org_id = getattr(organization, "pk", organization)
+    if org_id and reservation.organization_id not in (None, org_id):
+        return None
+    return reservation
+
+
+def purge_stale_wireguard_reservations(
+    *,
+    keep_labels: set[str] | None = None,
+    organization=None,
+    remove_runtime_peers: bool = True,
+) -> dict:
+    """
+    Delete abandoned WireGuardReservation rows and drop their wg0 peers.
+
+    Called when generating a Connect script and during ``--sync-server`` so old
+    onboarding attempts do not block the UI with ``handshake missing``.
     """
     from core.models import WireGuardReservation
 
+    if not _reservation_purge_enabled():
+        return {"ok": True, "skipped": True, "purged": 0, "labels": []}
+
+    keep_norm = {
+        (label or "").strip().lower()
+        for label in (keep_labels or set())
+        if (label or "").strip()
+    }
+    router_keys = _active_router_public_keys()
+    purged_labels: list[str] = []
+    errors: list[str] = []
+
+    org_id = getattr(organization, "pk", organization)
+
+    for reservation in list(WireGuardReservation.objects.order_by("id")):
+        label = (reservation.label or "").strip()
+        keep = label.lower() in keep_norm if label else False
+        if keep and org_id and reservation.organization_id not in (None, org_id):
+            keep = False
+        if not reservation_connect_is_stale(reservation, keep=keep):
+            continue
+        public_key = (reservation.public_key or "").strip()
+        address = (reservation.address or "").strip()
+        if public_key in router_keys:
+            continue
+        if remove_runtime_peers and public_key:
+            outcome = remove_server_peer(public_key)
+            if not outcome.get("ok") and not outcome.get("skipped"):
+                errors.append(
+                    f"{address or label}: {outcome.get('error') or 'peer remove failed'}"
+                )
+        reservation.delete()
+        purged_labels.append(label or address or public_key[:8])
+
+    if purged_labels:
+        logger.info(
+            "Purged %s stale WireGuard reservation(s): %s",
+            len(purged_labels),
+            ", ".join(purged_labels[:8])
+            + ("…" if len(purged_labels) > 8 else ""),
+        )
+    return {
+        "ok": not errors,
+        "skipped": False,
+        "purged": len(purged_labels),
+        "labels": purged_labels,
+        "errors": errors,
+    }
+
+
+def reserve_peer(label: str, *, organization=None):
+    """
+    Create or reuse a WireGuardReservation for a router that is not onboarded yet.
+
+    Returns (reservation, peer_sync). Same label (case-insensitive) within one ISP
+    workspace keeps one peer so the Connect modal can regenerate the paste script
+    without burning addresses. Each organization gets its own keys and tunnel IP.
+    """
+    from core.models import WireGuardReservation
+
+    if organization is None:
+        raise ValueError(
+            "An organization is required to reserve a WireGuard onboarding peer."
+        )
+
     label = (label or "").strip() or "New MikroTik"
-    reservation = WireGuardReservation.objects.filter(label__iexact=label).first()
+    purge_stale_wireguard_reservations(keep_labels={label}, organization=organization)
+    reservation = (
+        WireGuardReservation.objects.filter(
+            organization=organization,
+            label__iexact=label,
+        ).first()
+    )
     if reservation is None:
         private_key, public_key = generate_keypair()
         reservation = WireGuardReservation.objects.create(
+            organization=organization,
             label=label,
             address=allocate_address(),
             lan_address=allocate_lan_address(),
@@ -444,6 +629,14 @@ def adopt_reservation_for_router(router) -> bool:
     if reservation is None and host:
         reservation = WireGuardReservation.objects.filter(address=host).first()
     if reservation is None:
+        return False
+
+    router_org_id = getattr(router, "organization_id", None)
+    if (
+        router_org_id
+        and reservation.organization_id
+        and reservation.organization_id != router_org_id
+    ):
         return False
 
     changed: list[str] = []
@@ -942,7 +1135,7 @@ def peer_sync_report(peer_sync: dict | None) -> dict:
     }
 
 
-def onboard_tunnel_peer_ready(tunnel_address: str) -> dict:
+def onboard_tunnel_peer_ready(tunnel_address: str, *, organization=None) -> dict:
     """
     Return whether the VPS wg0 peer for a pending onboarding reservation exists.
 
@@ -955,14 +1148,26 @@ def onboard_tunnel_peer_ready(tunnel_address: str) -> dict:
         return {"ok": True, "required": False}
 
     try:
-        from core.models import WireGuardReservation
-
-        reservation = WireGuardReservation.objects.filter(address=address).first()
+        reservation = reservation_for_address(address, organization=organization)
     except Exception:
         reservation = None
 
     public_key = (getattr(reservation, "public_key", None) or "").strip()
     if not reservation or not public_key:
+        org_id = getattr(organization, "pk", organization)
+        if org_id:
+            from core.models import WireGuardReservation
+
+            foreign = WireGuardReservation.objects.filter(address=address).first()
+            if foreign and foreign.organization_id not in (None, org_id):
+                return {
+                    "ok": False,
+                    "required": True,
+                    "error": (
+                        "This tunnel address belongs to another ISP account. "
+                        "Generate a new script from your Connect router wizard."
+                    ),
+                }
         return {"ok": True, "required": False}
 
     sync = apply_server_peer(
@@ -1440,8 +1645,15 @@ def sync_all_server_peers() -> dict:
     """Apply every onboarded router and pending reservation to the local wg0."""
     from core.models import MikroTikRouter, WireGuardReservation
 
+    purge_meta = purge_stale_wireguard_reservations(
+        remove_runtime_peers=can_apply_server_peers(),
+    )
+
     if not can_apply_server_peers():
-        return {"ok": False, "skipped": True, "reason": "not_on_tunnel", "synced": 0}
+        out = {"ok": False, "skipped": True, "reason": "not_on_tunnel", "synced": 0}
+        if purge_meta.get("purged"):
+            out["reservations_purged"] = int(purge_meta["purged"])
+        return out
 
     script_problem = _wireguard_sync_script_problem()
     if script_problem:
@@ -1478,7 +1690,11 @@ def sync_all_server_peers() -> dict:
             synced += 1
         elif not outcome.get("skipped") and outcome.get("error"):
             errors.append(f"{reservation.address}: {outcome['error']}")
-    return {"ok": not errors, "synced": synced, "errors": errors}
+    result = {"ok": not errors, "synced": synced, "errors": errors}
+    if purge_meta.get("purged"):
+        result["reservations_purged"] = int(purge_meta["purged"])
+        result["purged_labels"] = list(purge_meta.get("labels") or [])
+    return result
 
 
 def tunnel_verification_checks(

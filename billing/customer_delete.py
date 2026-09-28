@@ -48,8 +48,8 @@ def clear_customer_live_caches(customer) -> None:
     if org_id:
         keys.extend(
             [
-                f"clients_surfing:{org_id}:pppoe:v8",
-                f"clients_surfing:{org_id}:hotspot:v8",
+                f"clients_surfing:{org_id}:pppoe:v9",
+                f"clients_surfing:{org_id}:hotspot:v9",
             ]
         )
     cache.delete_many([k for k in keys if k and "None" not in k])

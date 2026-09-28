@@ -38,6 +38,12 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--organization",
+            type=int,
+            metavar="ID",
+            help="Organization id for --new (required on multi-tenant servers).",
+        )
+        parser.add_argument(
             "--rotate",
             action="store_true",
             help="Replace existing keys instead of reusing them.",
@@ -82,10 +88,12 @@ class Command(BaseCommand):
                     f"(not bound to {wireguard.server_address()} and "
                     "WIREGUARD_SYNC_COMMAND is unset)."
                 )
+            purged = int(outcome.get("reservations_purged") or 0)
             self.stdout.write(
                 self.style.SUCCESS(
                     f"Synced {outcome.get('synced', 0)} peer(s) to "
                     f"{wireguard._wireguard_interface()}."
+                    + (f" Purged {purged} stale reservation(s)." if purged else "")
                 )
             )
             for err in outcome.get("errors") or []:
@@ -99,7 +107,7 @@ class Command(BaseCommand):
             return
 
         if options["new"]:
-            self._reserve(options["new"])
+            self._reserve(options["new"], organization_id=options.get("organization"))
         else:
             for router in self._select_routers(options):
                 self._provision(router, rotate=options["rotate"])
@@ -147,8 +155,21 @@ class Command(BaseCommand):
             f"  python manage.py wireguard_peer --server-config '{private_key}'"
         )
 
-    def _reserve(self, label: str):
-        reservation, peer_sync = wireguard.reserve_peer(label)
+    def _reserve(self, label: str, *, organization_id=None):
+        from accounts.models import Organization
+
+        organization = None
+        if organization_id:
+            organization = Organization.objects.filter(pk=organization_id).first()
+            if organization is None:
+                raise CommandError(f"No organization with id {organization_id}.")
+        elif Organization.objects.count() == 1:
+            organization = Organization.objects.first()
+        else:
+            raise CommandError(
+                'Pass --organization ID with --new on servers with multiple ISP accounts.'
+            )
+        reservation, peer_sync = wireguard.reserve_peer(label, organization=organization)
         self._report(
             f"{reservation.label} (not onboarded yet) -> {reservation.address}",
             address=reservation.address,

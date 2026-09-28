@@ -8736,9 +8736,9 @@ def mikrotik(request):
 
             script_lan = ""
             if tunnel_host:
-                reservation = WireGuardReservation.objects.filter(
-                    address=tunnel_host
-                ).first()
+                reservation = wireguard.reservation_for_address(
+                    tunnel_host, organization=org
+                )
                 if reservation:
                     script_lan = (reservation.lan_address or "").strip()
 
@@ -8894,7 +8894,7 @@ def mikrotik(request):
             connect_serial = (request.POST.get("connect_serial_number") or "").strip()
             connect_software_id = (request.POST.get("connect_software_id") or "").strip()
             reservation = (
-                WireGuardReservation.objects.filter(address=tunnel_host).first()
+                wireguard.reservation_for_address(tunnel_host, organization=org)
                 if tunnel_host
                 else None
             )
@@ -9317,6 +9317,64 @@ def mikrotik_edit(request, router_id: int):
     )
 
 
+def _hard_delete_mikrotik_router(router: MikroTikRouter) -> None:
+    """
+    Remove the router row from the database and detach linked billing data.
+
+    Raises ValueError when the row could not be deleted (already gone or blocked).
+    """
+    from django.db import transaction
+    from django.db.models.deletion import ProtectedError
+
+    from billing.models import Customer
+
+    org_pk = int(router.organization_id or 0)
+    router_pk = int(router.pk or 0)
+    if not org_pk or not router_pk:
+        raise ValueError("Invalid router.")
+
+    vpn_address = (router.vpn_address or "").strip()
+    tunnel_public_key = (router.vpn_public_key or "").strip()
+
+    try:
+        with transaction.atomic():
+            Customer.objects.filter(organization_id=org_pk, router_id=router_pk).update(
+                router_id=None
+            )
+            if vpn_address:
+                WireGuardReservation.objects.filter(
+                    organization_id=org_pk,
+                    address=vpn_address,
+                ).delete()
+            _deleted, breakdown = MikroTikRouter.objects.filter(
+                pk=router_pk,
+                organization_id=org_pk,
+            ).delete()
+    except ProtectedError as exc:
+        raise ValueError(
+            "This router is still referenced by another record and cannot be deleted yet."
+        ) from exc
+
+    if int(breakdown.get("core.MikroTikRouter") or 0) < 1:
+        raise ValueError("Router was not found in the database.")
+
+    if tunnel_public_key:
+        try:
+            wireguard.remove_server_peer(tunnel_public_key)
+        except Exception:
+            logger.exception(
+                "Could not remove WireGuard peer for deleted router %s", router_pk
+            )
+
+    _invalidate_mikrotik_router_caches(org_pk, router_pk)
+    cache.delete(f"cpe_list_nas:{router_pk}")
+    cache.delete(_router_surf_probe_snapshot_key(router_pk))
+    cache.delete(f"mikrotik_detail_analytics:{org_pk}:{router_pk}")
+    cache.delete(f"comms:mikrotik_usage:{org_pk}:{router_pk}")
+    cache.delete(f"mikrotik_auto_restore_pending:{router_pk}")
+    cache.delete(f"mikrotik_auto_restore_cd:{router_pk}")
+
+
 @client_workspace_required
 @require_http_methods(["GET", "POST"])
 def mikrotik_delete(request, router_id: int):
@@ -9332,10 +9390,24 @@ def mikrotik_delete(request, router_id: int):
         return redirect("core:mikrotik")
 
     name = router.name
-    router_pk = router.pk
-    router.delete()
-    cache.delete(f"mikrotik_live:{org.pk}:{router_pk}")
-    cache.delete(_wifi_fields_cache_key(org.pk, router_pk))
+    try:
+        _hard_delete_mikrotik_router(router)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return redirect("core:mikrotik")
+
+    try:
+        from accounts.audit import record_audit
+
+        record_audit(
+            action="mikrotik_delete",
+            request=request,
+            target=str(router_id),
+            detail={"name": name, "organization_id": org.pk},
+        )
+    except Exception:
+        pass
+
     messages.success(
         request,
         f"Deleted “{name}” from this workspace. Linked clients were kept and unassigned.",
@@ -14123,7 +14195,7 @@ def mikrotik_tunnel_script(request):
             )
 
     try:
-        reservation, peer_sync = wireguard.reserve_peer(label)
+        reservation, peer_sync = wireguard.reserve_peer(label, organization=org)
         payload = wireguard.peer_payload(
             reservation.label,
             reservation.address,
@@ -14178,7 +14250,11 @@ def mikrotik_tunnel_script(request):
             "peer_sync_error": sync_info["peer_sync_error"],
             "peer_sync_reason": sync_info["peer_sync_reason"],
             "status_token": signing.dumps(
-                {"address": payload["address"], "user_id": request.user.pk},
+                {
+                    "address": payload["address"],
+                    "user_id": request.user.pk,
+                    "org_id": org.pk,
+                },
                 salt="mikrotik-tunnel-status",
                 compress=True,
             ),
@@ -14333,8 +14409,16 @@ def mikrotik_tunnel_status(request):
     if signed.get("user_id") != request.user.pk:
         return JsonResponse({"ok": False, "error": "This tunnel check is not yours."}, status=403)
 
+    org = resolve_organization(request.user, request)
+    token_org_id = signed.get("org_id")
+    if token_org_id and org and int(token_org_id) != org.pk:
+        return JsonResponse(
+            {"ok": False, "error": "This tunnel check belongs to another ISP account."},
+            status=403,
+        )
+
     address = (signed.get("address") or "").strip()
-    reservation = WireGuardReservation.objects.filter(address=address).first()
+    reservation = wireguard.reservation_for_address(address, organization=org)
     if not address or reservation is None:
         return JsonResponse({"ok": False, "error": "Tunnel reservation was not found."}, status=404)
 
@@ -14601,6 +14685,10 @@ def mikrotik_tunnel_status(request):
 
     diagnosis = {"code": "ok", "message": "", "peer_sync": {}, "peer": {}}
     if not tunnel_reachable:
+        wireguard.purge_stale_wireguard_reservations(
+            keep_labels={(reservation.label or "").strip()},
+            organization=org,
+        )
         diagnosis = wireguard.ensure_reservation_peer(reservation)
         # Peer may have just been applied — re-probe once.
         if diagnosis.get("peer_sync", {}).get("ok"):
@@ -14686,7 +14774,9 @@ def mikrotik_connect(request):
     tunnel_host = normalize_mikrotik_host(request.POST.get("tunnel_host") or "")
 
     if tunnel_host:
-        peer_gate = wireguard.onboard_tunnel_peer_ready(tunnel_host)
+        peer_gate = wireguard.onboard_tunnel_peer_ready(
+            tunnel_host, organization=org
+        )
         if peer_gate.get("required") and not peer_gate.get("ok"):
             # Last resort: if the tunnel IP already answers, let Connect try API login.
             if not wireguard._tunnel_host_reachable(tunnel_host):
@@ -19002,7 +19092,12 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> dict:
     return {"ok": True, "written": written, "error": ""}
 
 
-def _client_remote_access_row(customer, *, force: bool = False) -> dict:
+def _client_remote_access_row(
+    customer,
+    *,
+    force: bool = False,
+    nas_evaluation: dict | None = None,
+) -> dict:
     """
     Per-client CPE remote-access status for the clients list Remote column.
 
@@ -19013,7 +19108,7 @@ def _client_remote_access_row(customer, *, force: bool = False) -> dict:
     from core.mikrotik_connect import customer_cpe_access_eligible
 
     customer_id = int(customer.pk)
-    cache_key = f"client_remote_access:{customer_id}:v2"
+    cache_key = f"client_remote_access:{customer_id}:v3"
     if not force:
         cached = cache.get(cache_key)
         if isinstance(cached, dict) and cached.get("id") == customer_id:
@@ -19031,12 +19126,21 @@ def _client_remote_access_row(customer, *, force: bool = False) -> dict:
         cache.set(cache_key, row, 120)
         return row
 
+    has_cpe_login = bool(
+        (getattr(customer, "cpe_password", None) or "")
+        or (getattr(customer, "pppoe_password", None) or "")
+        or (getattr(customer, "cpe_username", None) or "").strip()
+    )
+    enable_cpe_web = bool(force and has_cpe_login)
+
     try:
         evaluation = evaluate_layered_cpe_access(
             customer,
-            timeout=6.0,
+            timeout=8.0 if force else 6.0,
             try_api=False,
             auto_enable=False,
+            nas_evaluation=nas_evaluation,
+            enable_cpe_web=enable_cpe_web,
         )
     except Exception as exc:
         row = {
@@ -19066,26 +19170,39 @@ def _client_remote_access_row(customer, *, force: bool = False) -> dict:
         cache.set(cache_key, row, 90)
         return row
 
-    if failure in {"wan_mgmt_blocked", "firewall_blocked", "bad_credentials"} or (
-        layers.get("session_active") and layers.get("ping_ok")
-    ):
+    if failure in {"wan_mgmt_blocked", "firewall_blocked", "bad_credentials"}:
         labels = {
-            "wan_mgmt_blocked": "Blocked",
+            "wan_mgmt_blocked": "Setup",
             "firewall_blocked": "Firewall",
             "bad_credentials": "Password",
+        }
+        default_titles = {
+            "wan_mgmt_blocked": (
+                "PPPoE is up and the NAS can ping the CPE, but the admin web UI is "
+                "closed from the ISP side. Enable remote/WAN management on the CPE "
+                "or run the unlock script on the client detail page."
+            ),
+            "firewall_blocked": (
+                "CPE firewall is blocking management from the ISP MikroTik. "
+                "Run the unlock script from the client detail page."
+            ),
+            "bad_credentials": (
+                "Saved CPE admin password does not work — update it on the client detail page."
+            ),
         }
         row = {
             "id": customer_id,
             "status": "blocked",
-            "label": labels.get(failure, "Blocked"),
-            "title": hint
-            or "Client is online but remote management ports are closed from the ISP side",
+            "label": labels.get(failure, "Setup"),
+            "title": hint or default_titles.get(failure, default_titles["wan_mgmt_blocked"]),
             "failure_class": failure or "wan_mgmt_blocked",
         }
         cache.set(cache_key, row, 60)
         return row
 
-    if layers.get("session_active") and not layers.get("ping_ok"):
+    if failure == "proxy_failed" or (
+        layers.get("session_active") and not layers.get("ping_ok")
+    ):
         row = {
             "id": customer_id,
             "status": "blocked",
@@ -19102,10 +19219,14 @@ def _client_remote_access_row(customer, *, force: bool = False) -> dict:
             "id": customer_id,
             "status": "offline",
             "label": "NAS down",
-            "title": hint or "Assigned ISP MikroTik is unreachable",
+            "title": hint
+            or (
+                "Assigned ISP MikroTik is unreachable from the billing server. "
+                "Fix tunnel/API on the MikroTik page first — this is not a client CPE issue."
+            ),
             "failure_class": "nas_down",
         }
-        cache.set(cache_key, row, 30)
+        cache.set(cache_key, row, 25)
         return row
 
     row = {
@@ -19170,11 +19291,33 @@ def clients_remote_access_status(request):
         by_id = {c.pk: c for c in customers}
         customers = [by_id[i] for i in customer_ids if i in by_id]
 
+    from core.connectivity_verification import evaluate_nas_connectivity_cached
+
+    hosted = bool(getattr(settings, "HOSTED", False))
+    nas_timeout = 4.0 if hosted else 3.0
+    nas_by_router: dict[int, dict] = {}
+    for customer in customers:
+        router = getattr(customer, "router", None)
+        rid = int(getattr(customer, "router_id", 0) or 0)
+        if not router or not rid or rid in nas_by_router:
+            continue
+        nas_by_router[rid] = evaluate_nas_connectivity_cached(
+            router,
+            force=force,
+            org_pk=org.pk,
+            timeout=nas_timeout,
+        )
+
     rows: list[dict] = []
-    workers = min(4, max(1, len(customers)))
+    workers = min(2, max(1, len(customers)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(_client_remote_access_row, customer, force=force): customer.pk
+            pool.submit(
+                _client_remote_access_row,
+                customer,
+                force=force,
+                nas_evaluation=nas_by_router.get(customer.router_id),
+            ): customer.pk
             for customer in customers
         }
         by_pk: dict[int, dict] = {}
@@ -19195,11 +19338,140 @@ def clients_remote_access_status(request):
     return JsonResponse({"ok": True, "clients": rows})
 
 
-_SHARED_SURFING_PROBE_TTL = 14  # seconds — dedupe PPPoE + Hotspot dashboard probes
+_SHARED_SURFING_PROBE_TTL = 22  # seconds — dedupe PPPoE + Hotspot dashboard probes
+_CLIENT_SURF_STABLE_TTL = 120
+_CLIENT_SURF_PENDING_TTL = 90
+_CLIENT_SURF_SOFT_FAILURES = 2
 
 
 def _shared_surfing_probe_cache_key(organization_id: int) -> str:
     return f"clients_surfing_shared_probe:v1:{int(organization_id)}"
+
+
+def _router_surf_probe_snapshot_key(router_id: int) -> str:
+    return f"clients_surfing_router_probe:v1:{int(router_id)}"
+
+
+def _client_surf_stable_key(organization_id: int, customer_id: int) -> str:
+    return f"client_surf_stable:v1:{organization_id}:{customer_id}"
+
+
+def _client_surf_pending_key(organization_id: int, customer_id: int) -> str:
+    return f"client_surf_pending:v1:{organization_id}:{customer_id}"
+
+
+def _surf_probe_failure_is_soft(row: dict) -> bool:
+    """True when a disconnected row is likely a flaky NAS poll, not a real drop."""
+    state = (row.get("state") or "").strip().lower()
+    if state != "disconnected":
+        return False
+    if row.get("session_online"):
+        return False
+    if row.get("router_reachable") is False:
+        return True
+    reason = (row.get("reason") or "").lower()
+    return any(
+        token in reason
+        for token in (
+            "cooling down",
+            "timed out",
+            "timeout",
+            "unreachable",
+            "check failed",
+            "recently unreachable",
+            "router disconnected",
+            "no active session on any router",
+        )
+    )
+
+
+def stabilize_client_surfing_row(
+    organization_id: int,
+    row: dict,
+    *,
+    force: bool = False,
+) -> dict:
+    """
+    Hold the last Surfing badge through brief NAS/API probe failures so the
+    clients list does not flash Disconnected on every WireGuard timeout.
+    """
+    if force or not organization_id or not isinstance(row, dict):
+        return row
+    try:
+        customer_id = int(row.get("id") or 0)
+    except (TypeError, ValueError):
+        return row
+    if not customer_id:
+        return row
+
+    stable_key = _client_surf_stable_key(organization_id, customer_id)
+    pending_key = _client_surf_pending_key(organization_id, customer_id)
+    state = (row.get("state") or "").strip().lower()
+
+    if row.get("surfing") or state == "surfing":
+        cache.set(stable_key, dict(row), _CLIENT_SURF_STABLE_TTL)
+        cache.delete(pending_key)
+        return row
+
+    if state in {"expired", "not_surfing"}:
+        cache.delete(stable_key)
+        cache.delete(pending_key)
+        return row
+
+    last_good = cache.get(stable_key)
+    if not isinstance(last_good, dict) or not last_good.get("surfing"):
+        return row
+
+    if not _surf_probe_failure_is_soft(row):
+        cache.delete(stable_key)
+        cache.delete(pending_key)
+        return row
+
+    pending = cache.get(pending_key)
+    count = 1
+    if isinstance(pending, dict):
+        count = int(pending.get("count") or 0) + 1
+    if count < _CLIENT_SURF_SOFT_FAILURES:
+        cache.set(pending_key, {"count": count}, _CLIENT_SURF_PENDING_TTL)
+        held = dict(last_good)
+        held["stabilized"] = True
+        held["probe_state"] = state
+        held["probe_reason"] = row.get("reason") or ""
+        return held
+
+    cache.delete(pending_key)
+    cache.delete(stable_key)
+    return row
+
+
+def stabilize_client_surfing_rows(
+    organization_id: int,
+    rows: list[dict],
+    *,
+    force: bool = False,
+) -> list[dict]:
+    if force or not organization_id:
+        return rows
+    return [
+        stabilize_client_surfing_row(organization_id, row, force=force)
+        for row in rows
+    ]
+
+
+def _load_router_surf_probe_snapshot(router_id: int) -> dict | None:
+    cached = cache.get(_router_surf_probe_snapshot_key(router_id))
+    return dict(cached) if isinstance(cached, dict) else None
+
+
+def _save_router_surf_probe_snapshot(row: dict) -> None:
+    try:
+        router_id = int(row.get("router_id") or 0)
+    except (TypeError, ValueError):
+        return
+    if not router_id:
+        return
+    if row.get("pppoe_active") or row.get("hotspot_active") or row.get("hotspot_connected"):
+        cache.set(_router_surf_probe_snapshot_key(router_id), dict(row), 90)
 
 
 def _probe_mikrotik_router_combined(router) -> dict:
@@ -19221,15 +19493,21 @@ def _probe_mikrotik_router_combined(router) -> dict:
     if router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
         empty["error"] = "Router suspended"
         return empty
-    api_host = _resolve_working_nas_host(router, timeout=0.8)
+    api_host = _resolve_working_nas_host(router, timeout=1.5)
     if is_mikrotik_host_cooling_down(api_host):
+        stale = _load_router_surf_probe_snapshot(router_id)
+        if stale:
+            stale = dict(stale)
+            stale["error"] = "Router recently unreachable — showing last known sessions"
+            stale["stale"] = True
+            return stale
         empty["error"] = "Router recently unreachable"
         return empty
     pppoe = fetch_active_pppoe_usernames(
-        api_host, router.username, router.password, timeout=3.5
+        api_host, router.username, router.password, timeout=4.0
     )
     hotspot = fetch_hotspot_client_macs(
-        api_host, router.username, router.password, timeout=3.5
+        api_host, router.username, router.password, timeout=4.0
     )
     err_parts = []
     if not pppoe.get("ok"):
@@ -19237,7 +19515,7 @@ def _probe_mikrotik_router_combined(router) -> dict:
     if not hotspot.get("ok"):
         err_parts.append(hotspot.get("error") or "Hotspot check failed")
     live_ssid = (hotspot.get("wifi_ssid") or "").strip() or stored_ssid
-    return {
+    result = {
         "router_id": router_id,
         "pppoe_active": [
             str(n).lower() for n in (pppoe.get("usernames") or []) if n
@@ -19259,6 +19537,40 @@ def _probe_mikrotik_router_combined(router) -> dict:
         "error": "; ".join(err_parts).strip(),
         "wifi_ssid": live_ssid,
     }
+    probe_soft_fail = bool(
+        err_parts
+        and (
+            pppoe.get("cooling_down")
+            or pppoe.get("timeout")
+            or hotspot.get("cooling_down")
+            or hotspot.get("timeout")
+            or "timed out" in (result["error"] or "").lower()
+            or "cooling down" in (result["error"] or "").lower()
+        )
+    )
+    if probe_soft_fail and not (result["pppoe_active"] or result["hotspot_active"]):
+        stale = _load_router_surf_probe_snapshot(router_id)
+        if stale:
+            if not result["pppoe_active"]:
+                result["pppoe_active"] = list(stale.get("pppoe_active") or [])
+            if not result["pppoe_blocked"]:
+                result["pppoe_blocked"] = list(stale.get("pppoe_blocked") or [])
+            if not result["hotspot_active"]:
+                result["hotspot_active"] = list(stale.get("hotspot_active") or [])
+            if not result["hotspot_connected"]:
+                result["hotspot_connected"] = list(stale.get("hotspot_connected") or [])
+            if not result["hotspot_uptime"]:
+                result["hotspot_uptime"] = dict(stale.get("hotspot_uptime") or {})
+            if not live_ssid and stale.get("wifi_ssid"):
+                result["wifi_ssid"] = stale.get("wifi_ssid")
+            result["stale_merged"] = True
+            result["error"] = (
+                (result["error"] or "Probe failed")
+                + " — merged last known sessions"
+            ).strip()
+    if result["pppoe_active"] or result["hotspot_active"] or result["hotspot_connected"]:
+        _save_router_surf_probe_snapshot(result)
+    return result
 
 
 def _pack_shared_surfing_probe(rows: dict[int, dict]) -> dict:
@@ -19355,7 +19667,7 @@ def _workspace_initial_client_access(org) -> dict:
     seen: set[int] = set()
     newest_at = ""
     for svc in ("pppoe", "hotspot"):
-        blob = cache.get(f"clients_surfing:{org.pk}:{svc}:v8")
+        blob = cache.get(f"clients_surfing:{org.pk}:{svc}:v9")
         if not isinstance(blob, dict):
             continue
         for row in blob.get("clients") or []:
@@ -19436,7 +19748,7 @@ def clients_surfing_status(request):
         if service == "hotspot"
         else Customer.ServiceType.PPPOE
     )
-    cache_key = f"clients_surfing:{org.pk}:{service}:v8"
+    cache_key = f"clients_surfing:{org.pk}:{service}:v9"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -19523,7 +19835,7 @@ def clients_surfing_status(request):
             ) = hydrated
         else:
             combined: dict[int, dict] = {}
-            workers = min(8, len(routers_by_id))
+            workers = min(3, max(1, len(routers_by_id)))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [
                     pool.submit(_probe_mikrotik_router_combined, router)
@@ -19562,8 +19874,6 @@ def clients_surfing_status(request):
                 ) = hydrated
 
     clients_payload = []
-    surfing_count = 0
-    surfing_customers = []
     connected_count = 0
     active_any_router = set().union(*active_by_router.values()) if active_by_router else set()
     connected_any_router = (
@@ -19800,8 +20110,6 @@ def clients_surfing_status(request):
         if surfing:
             state = "surfing"
             label = "Surfing"
-            surfing_count += 1
-            surfing_customers.append(customer)
         elif service == "hotspot":
             # Hotspot Session column: connected → Surfing/Not surfing, else Disconnected.
             if connected:
@@ -19976,6 +20284,23 @@ def clients_surfing_status(request):
             }
         )
 
+    clients_payload = stabilize_client_surfing_rows(
+        org.pk, clients_payload, force=force
+    )
+    surfing_count = sum(1 for row in clients_payload if row.get("surfing"))
+    customer_by_id = {customer.pk: customer for customer in customers}
+    surfing_customers = []
+    for row in clients_payload:
+        if not row.get("surfing"):
+            continue
+        try:
+            cid = int(row.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        customer = customer_by_id.get(cid)
+        if customer is not None:
+            surfing_customers.append(customer)
+
     if surfing_customers:
         try:
             from billing.vouchers import invalidate_vouchers_for_surfing_customers
@@ -20083,7 +20408,7 @@ def clients_surfing_status(request):
         payload["access_summary"] = merged_access
     except Exception:
         payload["access_summary"] = {}
-    cache.set(cache_key, payload, 8)
+    cache.set(cache_key, payload, 18)
     if customer_id_raw:
         payload = _filter_surfing_clients_payload(payload, customer_id_raw)
     return JsonResponse(payload)

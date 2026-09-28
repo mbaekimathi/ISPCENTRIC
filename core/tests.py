@@ -1066,8 +1066,13 @@ class ReservationTests(TestCase):
     def test_reserved_peer_is_adopted_by_the_router_onboarded_onto_it(self):
         from core.models import WireGuardReservation
 
-        call_command("wireguard_peer", new="Kariobangi", stdout=StringIO())
-        reservation = WireGuardReservation.objects.get()
+        call_command(
+            "wireguard_peer",
+            new="Kariobangi",
+            organization=self.org.pk,
+            stdout=StringIO(),
+        )
+        reservation = WireGuardReservation.objects.get(organization=self.org)
 
         # The operator onboards using the reserved address as the router's host.
         router = MikroTikRouter.objects.create(
@@ -1089,19 +1094,162 @@ class ReservationTests(TestCase):
     def test_a_second_reservation_does_not_reuse_the_first_address(self):
         from core.models import WireGuardReservation
 
-        call_command("wireguard_peer", new="Site A", stdout=StringIO())
-        call_command("wireguard_peer", new="Site B", stdout=StringIO())
+        call_command(
+            "wireguard_peer",
+            new="Site A",
+            organization=self.org.pk,
+            stdout=StringIO(),
+        )
+        call_command(
+            "wireguard_peer",
+            new="Site B",
+            organization=self.org.pk,
+            stdout=StringIO(),
+        )
 
-        addresses = set(WireGuardReservation.objects.values_list("address", flat=True))
+        addresses = set(
+            WireGuardReservation.objects.filter(organization=self.org).values_list(
+                "address", flat=True
+            )
+        )
         self.assertEqual(addresses, {"10.9.0.2", "10.9.0.3"})
 
     def test_reserving_the_same_site_twice_keeps_one_peer(self):
         from core.models import WireGuardReservation
 
-        call_command("wireguard_peer", new="Site A", stdout=StringIO())
-        call_command("wireguard_peer", new="Site A", stdout=StringIO())
+        call_command(
+            "wireguard_peer",
+            new="Site A",
+            organization=self.org.pk,
+            stdout=StringIO(),
+        )
+        call_command(
+            "wireguard_peer",
+            new="Site A",
+            organization=self.org.pk,
+            stdout=StringIO(),
+        )
 
+        self.assertEqual(
+            WireGuardReservation.objects.filter(organization=self.org).count(), 1
+        )
+
+    @override_settings(HOSTED=True)
+    def test_purge_stale_reservations_keeps_active_label(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from core import wireguard
+        from core.models import WireGuardReservation
+
+        old = WireGuardReservation.objects.create(
+            organization=self.org,
+            label="Old Site",
+            address="10.9.0.50",
+            public_key="a" * 43 + "=",
+            private_key="b" * 43 + "=",
+        )
+        WireGuardReservation.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(days=5)
+        )
+        fresh = WireGuardReservation.objects.create(
+            organization=self.org,
+            label="Active Site",
+            address="10.9.0.51",
+            public_key="c" * 43 + "=",
+            private_key="d" * 43 + "=",
+        )
+
+        with (
+            patch.dict(os.environ, {"WIREGUARD_RESERVATION_PURGE_ENABLED": "true"}, clear=False),
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={
+                    "checked": True,
+                    "present": True,
+                    "handshake_age_sec": None,
+                },
+            ),
+            patch("core.wireguard.remove_server_peer", return_value={"ok": True}),
+        ):
+            result = wireguard.purge_stale_wireguard_reservations(
+                keep_labels={"Active Site"},
+            )
+
+        self.assertEqual(result.get("purged"), 1)
+        self.assertFalse(
+            WireGuardReservation.objects.filter(label="Old Site").exists()
+        )
+        self.assertTrue(
+            WireGuardReservation.objects.filter(pk=fresh.pk).exists()
+        )
+
+    @override_settings(HOSTED=True)
+    def test_reserve_peer_purges_stale_before_apply(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from core import wireguard
+        from core.models import WireGuardReservation
+
+        stale = WireGuardReservation.objects.create(
+            organization=self.org,
+            label="Stale",
+            address="10.9.0.52",
+            public_key="e" * 43 + "=",
+            private_key="f" * 43 + "=",
+        )
+        WireGuardReservation.objects.filter(pk=stale.pk).update(
+            created_at=timezone.now() - timedelta(days=4)
+        )
+
+        with (
+            patch.dict(os.environ, {"WIREGUARD_RESERVATION_PURGE_ENABLED": "true"}, clear=False),
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={
+                    "checked": True,
+                    "present": True,
+                    "handshake_age_sec": None,
+                },
+            ),
+            patch("core.wireguard.remove_server_peer", return_value={"ok": True}),
+            patch(
+                "core.wireguard.apply_server_peer",
+                return_value={"ok": True},
+            ),
+        ):
+            wireguard.reserve_peer("New Connect", organization=self.org)
+
+        self.assertFalse(WireGuardReservation.objects.filter(label="Stale").exists())
         self.assertEqual(WireGuardReservation.objects.count(), 1)
+        self.assertEqual(WireGuardReservation.objects.get().label, "New Connect")
+
+    @override_settings(HOSTED=True)
+    def test_same_site_name_gets_distinct_peers_per_organization(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+        from core import wireguard
+
+        other = Organization.objects.create(
+            name="Other ISP",
+            owner=User.objects.create_user("other-owner", password="x"),
+            join_code="654321",
+        )
+        with patch(
+            "core.wireguard.apply_server_peer",
+            return_value={"ok": True},
+        ):
+            first, _ = wireguard.reserve_peer("Branch Office", organization=self.org)
+            second, _ = wireguard.reserve_peer("Branch Office", organization=other)
+
+        self.assertNotEqual(first.address, second.address)
+        self.assertNotEqual(first.public_key, second.public_key)
+        self.assertEqual(first.organization_id, self.org.pk)
+        self.assertEqual(second.organization_id, other.pk)
 
 
 class RouterDialTargetTests(SimpleTestCase):
@@ -4793,6 +4941,7 @@ class TunnelStatusTests(TestCase):
             join_code="445566",
         )
         self.reservation = WireGuardReservation.objects.create(
+            organization=self.org,
             label="Kariobangi",
             address="10.9.0.4",
             public_key=SERVER_PUBLIC_KEY,
@@ -4805,7 +4954,11 @@ class TunnelStatusTests(TestCase):
         from django.core import signing
 
         return signing.dumps(
-            {"address": self.reservation.address, "user_id": self.owner.pk},
+            {
+                "address": self.reservation.address,
+                "user_id": self.owner.pk,
+                "org_id": self.org.pk,
+            },
             salt="mikrotik-tunnel-status",
             compress=True,
         )
@@ -5120,7 +5273,16 @@ class TunnelStatusTests(TestCase):
     def test_reserve_peer_treats_existing_wg_peer_as_synced(self):
         from core.models import WireGuardReservation
 
+        from accounts.models import Organization
+        from django.contrib.auth.models import User
+
+        org = Organization.objects.create(
+            name="Peer Sync ISP",
+            owner=User.objects.create_user("peer-sync", password="x"),
+            join_code="778899",
+        )
         reservation = WireGuardReservation.objects.create(
+            organization=org,
             label="Existing Peer Site",
             address="10.9.0.44",
             lan_address="192.168.88.1",
@@ -5149,7 +5311,9 @@ class TunnelStatusTests(TestCase):
                 return_value={"checked": True, "present": True},
             ),
         ):
-            reserved, peer_sync = wireguard.reserve_peer(reservation.label)
+            reserved, peer_sync = wireguard.reserve_peer(
+                reservation.label, organization=org
+            )
         self.assertEqual(reserved.pk, reservation.pk)
         self.assertTrue(peer_sync.get("ok"))
         self.assertTrue(peer_sync.get("already_present"))
@@ -5326,6 +5490,46 @@ class MikroTikDeleteTests(TestCase):
         self.assertEqual(response.url, "/app/mikrotik/")
         self.assertTrue(MikroTikRouter.objects.filter(pk=self.router.pk).exists())
 
+    def test_delete_removes_status_samples_and_pending_reservation(self):
+        from django.utils import timezone
+
+        from core.models import MikroTikStatusSample, WireGuardReservation
+
+        self.router.vpn_address = "10.9.0.77"
+        self.router.vpn_public_key = SERVER_PUBLIC_KEY
+        self.router.save(update_fields=["vpn_address", "vpn_public_key", "updated_at"])
+        MikroTikStatusSample.objects.create(
+            organization=self.org,
+            router=self.router,
+            sampled_at=timezone.now(),
+            status="online",
+            score=90,
+            online=True,
+        )
+        WireGuardReservation.objects.create(
+            organization=self.org,
+            label="Stale onboard",
+            address="10.9.0.77",
+            public_key=SERVER_PUBLIC_KEY,
+            private_key=SERVER_PUBLIC_KEY,
+        )
+
+        self.client.force_login(self.owner)
+        with patch("core.wireguard.remove_server_peer", return_value={"ok": True}):
+            response = self.client.post(
+                f"/app/mikrotik/{self.router.pk}/delete/",
+                follow=False,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(MikroTikRouter.objects.filter(pk=self.router.pk).exists())
+        self.assertFalse(
+            MikroTikStatusSample.objects.filter(router_id=self.router.pk).exists()
+        )
+        self.assertFalse(
+            WireGuardReservation.objects.filter(address="10.9.0.77").exists()
+        )
+
 
 class ClientsSurfingStatusTests(TestCase):
     def setUp(self):
@@ -5376,6 +5580,43 @@ class ClientsSurfingStatusTests(TestCase):
         "active_uptime_by_mac": {},
         "wifi_ssid": "",
     }
+
+    @patch("core.views.fetch_hotspot_client_macs")
+    @patch("core.views.fetch_active_pppoe_usernames")
+    def test_surfing_holds_through_single_nas_timeout(self, fetch_active, fetch_hotspot):
+        """One failed PPPoE poll must not flash Disconnected while the session is up."""
+        from django.core.cache import cache
+
+        cache.clear()
+        self.customer.router = self.router
+        self.customer.save(update_fields=["router"])
+        fetch_hotspot.return_value = dict(self._HOTSPOT_PROBE_OK)
+        fetch_active.side_effect = [
+            {"ok": True, "usernames": ["liveuser"], "blocked": [], "error": ""},
+            {
+                "ok": False,
+                "usernames": [],
+                "blocked": [],
+                "error": "Connection timed out.",
+                "timeout": True,
+            },
+        ]
+
+        first = self.client.get(
+            "/app/clients/surfing/",
+            {"service": "pppoe", "refresh": "1"},
+        ).json()
+        self.assertTrue(first["clients"][0]["surfing"])
+
+        second = self.client.get(
+            "/app/clients/surfing/",
+            {"service": "pppoe", "refresh": "1"},
+        ).json()
+        client = second["clients"][0]
+        self.assertTrue(client["surfing"])
+        self.assertTrue(
+            client.get("stabilized") or client.get("session_online")
+        )
 
     @patch("core.views.fetch_hotspot_client_macs")
     @patch("core.views.fetch_active_pppoe_usernames")
@@ -11360,6 +11601,31 @@ class RouterConnectivityLoopTests(TestCase):
         self.assertFalse(result["cpe_ok"])
         self.assertFalse(result["management_ok"])
 
+    def test_nas_connectivity_cached_reuses_mikrotik_live_snapshot(self):
+        from django.core.cache import cache
+
+        from core.connectivity_verification import evaluate_nas_connectivity_cached
+
+        cache.clear()
+        cache.set(
+            f"mikrotik_live:{self.org.pk}:{self.router.pk}",
+            {"ok": True, "online": True, "dial_host": "10.9.0.5"},
+            30,
+        )
+        with patch(
+            "core.connectivity_verification.evaluate_nas_connectivity",
+        ) as live_probe:
+            result = evaluate_nas_connectivity_cached(
+                self.router,
+                org_pk=self.org.pk,
+            )
+        live_probe.assert_not_called()
+        self.assertTrue(result.get("api_ok"))
+        self.assertEqual(
+            (result.get("details") or {}).get("working_host"),
+            "10.9.0.5",
+        )
+
     def test_layered_cpe_classifies_wan_mgmt_blocked(self):
         from core.connectivity_verification import evaluate_layered_cpe_access
 
@@ -12867,6 +13133,7 @@ class MikroTikOnboardPeerGateTests(TestCase):
         from core.models import WireGuardReservation
 
         WireGuardReservation.objects.create(
+            organization=self.org,
             label="Site A",
             address="10.9.0.81",
             public_key=SERVER_PUBLIC_KEY,
@@ -12909,6 +13176,7 @@ class MikroTikOnboardPeerGateTests(TestCase):
         from core.models import WireGuardReservation
 
         WireGuardReservation.objects.create(
+            organization=self.org,
             label="Site Reach",
             address="10.9.0.83",
             public_key=SERVER_PUBLIC_KEY,
@@ -12955,6 +13223,7 @@ class MikroTikOnboardPeerGateTests(TestCase):
         from core.models import WireGuardReservation
 
         WireGuardReservation.objects.create(
+            organization=self.org,
             label="Site B",
             address="10.9.0.82",
             public_key=SERVER_PUBLIC_KEY,
@@ -13004,6 +13273,7 @@ class MikroTikOnboardPeerGateTests(TestCase):
         from core.wireguard import onboard_tunnel_peer_ready
 
         WireGuardReservation.objects.create(
+            organization=self.org,
             label="Gate Site",
             address="10.9.0.91",
             lan_address="192.168.88.1",
@@ -13026,6 +13296,7 @@ class MikroTikOnboardPeerGateTests(TestCase):
         from core.wireguard import onboard_tunnel_peer_ready
 
         WireGuardReservation.objects.create(
+            organization=self.org,
             label="Reachable Site",
             address="10.9.0.92",
             lan_address="192.168.88.1",
