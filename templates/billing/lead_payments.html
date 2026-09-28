@@ -3,83 +3,106 @@
 {% block title %}Lead payments — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">
-  {% if page_subtitle %}
-    {{ page_subtitle }}
-  {% elif organization %}
-    {{ organization.name }} — allocation fees and reversals.
-  {% else %}
-    Lead allocation payments.
-  {% endif %}
-</p>
-
-<div class="stat-grid">
-  <div class="stat">
-    <div class="label">Lead payments</div>
-    <div class="value">{{ lead_payment_count|default:0 }}</div>
-  </div>
-  <div class="stat">
-    <div class="label">Reversed</div>
-    <div class="value">{{ lead_reversal_count|default:0 }}</div>
-  </div>
-</div>
-
-<section class="panel staff-panel stack-gap" id="lead-payments">
-  <div class="panel-head-row">
-    <div>
-      <h2>Lead payments</h2>
-      <p class="panel-sub">Sales ticket allocation fees paid by your ISP — including reversed payments.</p>
+<div class="ops-page">
+  <header class="packages-hero ops-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3z"/></svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Billing</p>
+        <h1 class="packages-title">Lead payments</h1>
+        <p class="packages-lead">
+          {% if page_subtitle %}
+            {{ page_subtitle }}
+          {% elif organization %}
+            {{ organization.name }} — allocation fees and reversals.
+          {% else %}
+            Lead allocation payments.
+          {% endif %}
+        </p>
+      </div>
     </div>
-    <div class="panel-head-actions">
-      <a class="btn btn-ghost" href="{% url 'core:leads' %}">Open leads</a>
-      <a class="btn btn-ghost" href="{% url 'billing:dashboard' %}">Billing overview</a>
+    <div class="packages-hero-actions">
+      <a class="btn btn-ghost btn-sm" href="{% url 'core:leads' %}">Leads</a>
+      <a class="btn btn-ghost btn-sm" href="{% url 'billing:dashboard' %}">Billing</a>
     </div>
+  </header>
+
+  <div class="packages-stats" aria-label="Lead payment counts">
+    <article class="packages-stat tone-total" style="--i:0">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 9h16M4 15h16M8 5v14M16 5v14"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Lead payments</p>
+        <p class="packages-stat-value">{{ lead_payment_count|default:0 }}</p>
+      </div>
+    </article>
+    <article class="packages-stat tone-warn" style="--i:1">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M3 10h13M7 15h1m4 0h1m-7 4h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Reversed</p>
+        <p class="packages-stat-value">{{ lead_reversal_count|default:0 }}</p>
+      </div>
+    </article>
   </div>
-  {% if lead_payments %}
-    <div class="org-table-shell lead-payments-table-shell">
-      <table class="org-table lead-payments-table">
-        <thead>
-          <tr>
-            <th>Ticket</th>
-            <th>Client</th>
-            <th>Amount</th>
-            <th>M-Pesa Ref</th>
-            <th>Paid</th>
-            <th>Status</th>
-            <th>Reason</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in lead_payments %}
-            <tr class="{% if row.reversed %}is-reversed-lead-payment{% endif %}">
-              <td data-label="Ticket">
-                <span class="org-code">{{ row.customer.sales_ticket_number|default:row.customer.account_number }}</span>
-              </td>
-              <td data-label="Client">{{ row.customer.full_name }}</td>
-              <td data-label="Amount">KES {{ row.amount }}</td>
-              <td data-label="M-Pesa Ref">{{ row.receipt|default:"—" }}</td>
-              <td data-label="Paid">
-                {% if row.completed_at %}
-                  {{ row.completed_at|date:"d M Y H:i" }}
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-              <td data-label="Status">
-                {% if row.reversed %}
-                  <span class="badge badge-warn">Reversed</span>
-                {% else %}
-                  <span class="badge badge-success">Paid</span>
-                {% endif %}
-              </td>
-              <td data-label="Reason">{% if row.reversed %}{{ row.reversal_reason|default:"—" }}{% else %}—{% endif %}</td>
+
+  <section class="panel staff-panel stack-gap ops-panel" id="lead-payments">
+    <div class="panel-head-row">
+      <div>
+        <h2>Transactions</h2>
+        <p class="panel-sub">Sales ticket allocation fees paid by your ISP — including reversed payments.</p>
+      </div>
+    </div>
+    {% if lead_payments %}
+      <div class="org-table-shell lead-payments-table-shell">
+        <table class="org-table lead-payments-table">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>Client</th>
+              <th>Amount</th>
+              <th>M-Pesa Ref</th>
+              <th>Paid</th>
+              <th>Status</th>
+              <th>Reason</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <p class="empty">No lead allocation payments yet. Accepted leads paid via STK will appear here, including reversals.</p>
-  {% endif %}
-</section>
+          </thead>
+          <tbody>
+            {% for row in lead_payments %}
+              <tr class="{% if row.reversed %}is-reversed-lead-payment{% endif %}">
+                <td data-label="Ticket">
+                  <span class="org-code">{{ row.customer.sales_ticket_number|default:row.customer.account_number }}</span>
+                </td>
+                <td data-label="Client">{{ row.customer.full_name }}</td>
+                <td data-label="Amount">KES {{ row.amount }}</td>
+                <td data-label="M-Pesa Ref">{{ row.receipt|default:"—" }}</td>
+                <td data-label="Paid">
+                  {% if row.completed_at %}
+                    {{ row.completed_at|date:"d M Y H:i" }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td data-label="Status">
+                  {% if row.reversed %}
+                    <span class="badge badge-warn">Reversed</span>
+                  {% else %}
+                    <span class="badge badge-success">Paid</span>
+                  {% endif %}
+                </td>
+                <td data-label="Reason">{% if row.reversed %}{{ row.reversal_reason|default:"—" }}{% else %}—{% endif %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty">No lead allocation payments yet. Accepted leads paid via STK will appear here, including reversals.</p>
+    {% endif %}
+  </section>
+</div>
 {% endblock %}

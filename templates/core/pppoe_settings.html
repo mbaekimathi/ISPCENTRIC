@@ -3,21 +3,25 @@
 {% block title %}PPPoE settings — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="access-settings-shell account-page-shell" data-access-mode="pppoe">
-  <header class="access-settings-hero">
-    <div class="access-settings-hero-mark" aria-hidden="true">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 3v10"/><path d="M8 7h8"/><rect x="5" y="13" width="14" height="8" rx="2"/>
-      </svg>
+<div class="access-settings-shell account-page-shell ops-page" data-access-mode="pppoe">
+  <header class="packages-hero ops-hero access-settings-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v10"/><path d="M8 7h8"/><rect x="5" y="13" width="14" height="8" rx="2"/>
+        </svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Access · {{ router.name }}</p>
+        <h1 class="packages-title">PPPoE settings</h1>
+        <p class="packages-lead">{{ page_subtitle }}</p>
+      </div>
     </div>
-    <div class="access-settings-hero-copy">
-      <p class="account-page-kicker">Access · {{ router.name }}</p>
-      <h2 class="access-settings-title">PPPoE settings</h2>
-      <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+    <div class="packages-hero-actions">
+      <span class="mikrotik-wifi-pill{% if pppoe_compulsory %} is-on{% else %} is-off{% endif %}" id="pppoe-status-pill">
+        {% if pppoe_compulsory %}Enforcement on{% else %}Enforcement off{% endif %}
+      </span>
     </div>
-    <span class="mikrotik-wifi-pill{% if pppoe_compulsory %} is-on{% else %} is-off{% endif %}" id="pppoe-status-pill">
-      {% if pppoe_compulsory %}Enforcement on{% else %}Enforcement off{% endif %}
-    </span>
   </header>
 
   {% include "core/includes/access_settings_tabs.html" %}

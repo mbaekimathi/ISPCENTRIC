@@ -4,26 +4,63 @@
 
 {% block client_content %}
 <div
-  class="client-detail-page clients-general-usage-page clients-usage-table-page is-tab-{{ active_tab|default:'pppoe' }} is-view-{{ view_mode|default:'visual' }}"
+  class="client-detail-page clients-general-usage-page clients-usage-table-page ops-page is-tab-{{ active_tab|default:'pppoe' }} is-view-{{ view_mode|default:'visual' }}"
   data-active-tab="{{ active_tab|default:'pppoe' }}"
   data-view-mode="{{ view_mode|default:'visual' }}"
 >
-  <section class="clients-usage-workspace">
-    <header class="clients-usage-workspace-head">
-      <div class="clients-usage-workspace-title">
-        <p class="clients-usage-workspace-kicker">Subscribers</p>
-        <h1>General usage</h1>
-        <p class="clients-usage-workspace-lead">
+  <header class="packages-hero ops-hero clients-usage-page-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.7">
+          <path d="M4 19V9m5 10V5m5 14v-7m5 7V8" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Subscribers</p>
+        <h1 class="packages-title">General usage</h1>
+        <p class="packages-lead">
           {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %}
           · {{ range_label|default:trend_hours }}{% if router_filter_label %} · {{ router_filter_label }}{% elif clients_router_param == "none" %} · Unassigned{% endif %}.
         </p>
       </div>
-      <div class="clients-usage-workspace-actions">
-        <a class="btn btn-ghost btn-sm" href="{% url 'core:my_clients' %}?tab={{ active_tab|default:'pppoe' }}">Clients</a>
-        <button type="button" class="btn btn-primary btn-sm" data-usage-refresh>Refresh</button>
-      </div>
-    </header>
+    </div>
+    <div class="packages-hero-actions">
+      <a class="btn btn-ghost btn-sm" href="{% url 'core:my_clients' %}?tab={{ active_tab|default:'pppoe' }}">Clients</a>
+      <button type="button" class="btn btn-primary btn-sm" data-usage-refresh>Refresh</button>
+    </div>
+  </header>
 
+  <div class="packages-stats clients-usage-overview-stats" aria-label="Usage scope">
+    <a class="packages-stat tone-pppoe{% if active_tab == 'pppoe' %} is-active-audit{% endif %}" href="?{{ usage_filter_qs_pppoe }}" style="--i:0">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">PPPoE</p>
+        <p class="packages-stat-value">{% if active_tab == 'pppoe' %}Active{% else %}View{% endif %}</p>
+      </div>
+    </a>
+    <a class="packages-stat tone-hotspot{% if active_tab == 'hotspot' %} is-active-audit{% endif %}" href="?{{ usage_filter_qs_hotspot }}" style="--i:1">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Hotspot</p>
+        <p class="packages-stat-value">{% if active_tab == 'hotspot' %}Active{% else %}View{% endif %}</p>
+      </div>
+    </a>
+    <div class="packages-stat tone-total" style="--i:2">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Tracked</p>
+        <p class="packages-stat-value">{% if trends.users_total_count %}{{ trends.users_total_count }}{% elif trends.summary.clients_total %}{{ trends.summary.clients_total }}{% else %}—{% endif %}</p>
+      </div>
+    </div>
+  </div>
+
+  <section class="clients-usage-workspace ops-panel">
     <div class="clients-usage-control-deck">
       <div class="clients-usage-toolbar">
         <nav class="clients-seg clients-general-usage-tabs" aria-label="Service type">

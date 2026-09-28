@@ -3,22 +3,63 @@
 {% block title %}Attempted connections — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="client-detail-page clients-attempted-page">
-  <section class="clients-usage-workspace">
-    <header class="clients-usage-workspace-head">
-      <div class="clients-usage-workspace-title">
-        <p class="clients-usage-workspace-kicker">My clients</p>
-        <h1>Attempted connections</h1>
-        <p class="clients-usage-workspace-lead">
-          Captive Hotspot funnel for the last {{ attempt_days }} day{{ attempt_days|pluralize }}.
-          Devices are registered in My clients only after payment and MikroTik authorize succeed.
-        </p>
+<div class="client-detail-page clients-attempted-page ops-page">
+  <header class="packages-hero ops-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Z"/></svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Hotspot funnel</p>
+        <h1 class="packages-title">Attempted connections</h1>
+        <p class="packages-lead">Portal visits and payments for the last {{ attempt_days }} day{{ attempt_days|pluralize }}. Clients appear in My clients after pay + authorize.</p>
       </div>
-      <div class="clients-usage-workspace-actions">
-        <a class="btn btn-ghost btn-sm" href="{% url 'core:my_clients' %}?tab=hotspot">Hotspot clients</a>
-      </div>
-    </header>
+    </div>
+    <div class="packages-hero-actions">
+      <a class="btn btn-ghost btn-sm" href="{% url 'core:my_clients' %}?tab=hotspot">Hotspot clients</a>
+    </div>
+  </header>
 
+  <div class="packages-stats clients-attempted-overview-stats" aria-label="Funnel summary">
+    <article class="packages-stat tone-hotspot" style="--i:0">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M3 12h4l3 9 4-18 3 9h4"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Portal visits</p>
+        <p class="packages-stat-value">{{ attempt_summary.portal_hits }}</p>
+      </div>
+    </article>
+    <article class="packages-stat tone-total" style="--i:1">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 9h16M4 15h16M8 5v14M16 5v14"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Pay attempts</p>
+        <p class="packages-stat-value">{{ attempt_summary.payment_attempts }}</p>
+      </div>
+    </article>
+    <article class="packages-stat tone-good" style="--i:2">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M20 6 9 17l-5-5"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Succeeded</p>
+        <p class="packages-stat-value">{{ attempt_summary.payment_success }}</p>
+      </div>
+    </article>
+    <article class="packages-stat tone-active" style="--i:3">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Surfing</p>
+        <p class="packages-stat-value">{{ attempt_summary.authorized }}</p>
+      </div>
+    </article>
+  </div>
+
+  <section class="clients-usage-workspace ops-panel">
     <nav class="clients-seg clients-attempted-range" aria-label="Time range">
       {% for d in attempt_day_choices %}
         <a
@@ -31,34 +72,11 @@
       {% endfor %}
     </nav>
 
-    <div class="clients-attempted-stat-grid" aria-label="Funnel summary">
-      <article class="clients-attempted-stat">
-        <p class="clients-attempted-stat-label">Portal visits</p>
-        <p class="clients-attempted-stat-value">{{ attempt_summary.portal_hits }}</p>
-        <p class="clients-attempted-stat-meta">{{ attempt_summary.unique_devices }} unique device{{ attempt_summary.unique_devices|pluralize }}</p>
-      </article>
-      <article class="clients-attempted-stat">
-        <p class="clients-attempted-stat-label">Payment attempts</p>
-        <p class="clients-attempted-stat-value">{{ attempt_summary.payment_attempts }}</p>
-      </article>
-      <article class="clients-attempted-stat">
-        <p class="clients-attempted-stat-label">Payments succeeded</p>
-        <p class="clients-attempted-stat-value">{{ attempt_summary.payment_success }}</p>
-      </article>
-      <article class="clients-attempted-stat">
-        <p class="clients-attempted-stat-label">Payments failed</p>
-        <p class="clients-attempted-stat-value">{{ attempt_summary.payment_failed }}</p>
-      </article>
-      <article class="clients-attempted-stat">
-        <p class="clients-attempted-stat-label">Connected (surfing)</p>
-        <p class="clients-attempted-stat-value">{{ attempt_summary.authorized }}</p>
-      </article>
-      <article class="clients-attempted-stat">
-        <p class="clients-attempted-stat-label">Paid, not surfing</p>
-        <p class="clients-attempted-stat-value">{{ attempt_summary.paid_not_surfing }}</p>
-        <p class="clients-attempted-stat-meta">Paid / package applied but MikroTik did not authorize</p>
-      </article>
-    </div>
+    <p class="clients-attempted-extra-meta">
+      {{ attempt_summary.unique_devices }} unique device{{ attempt_summary.unique_devices|pluralize }}
+      · {{ attempt_summary.payment_failed }} failed
+      · {{ attempt_summary.paid_not_surfing }} paid, not surfing
+    </p>
 
     <section class="clients-attempted-feed">
       <header class="clients-attempted-feed-head">

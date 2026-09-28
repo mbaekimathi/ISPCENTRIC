@@ -3,16 +3,21 @@
 {% block title %}Shop — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="shop-page" data-shop-page>
-  <header class="shop-hero">
-    <div class="shop-hero-copy">
-      <p class="shop-kicker">Network store</p>
-      <h2 class="shop-title">Equipment for your ISP</h2>
-      <p class="shop-lead">{{ page_subtitle }}</p>
+<div class="shop-page ops-page" data-shop-page>
+  <header class="packages-hero ops-hero shop-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5v-9Zm8 1.1L7.2 6.1 12 3.4l4.8 2.7L12 8.6Z"/></svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Network store</p>
+        <h1 class="packages-title">Equipment</h1>
+        <p class="packages-lead">{{ page_subtitle }}</p>
+      </div>
     </div>
-    <div class="shop-hero-aside" aria-label="Catalog summary">
+    <div class="packages-hero-actions shop-hero-aside" aria-label="Catalog summary">
       <p class="shop-hero-aside-value">{{ total_active }}</p>
-      <p class="shop-hero-aside-label">products ready to order</p>
+      <p class="shop-hero-aside-label">products ready</p>
       {% if on_sale_count %}
         <p class="shop-hero-aside-sale">{{ on_sale_count }} on sale</p>
       {% endif %}

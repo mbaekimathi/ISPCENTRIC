@@ -1147,7 +1147,12 @@ def _api_session_on_any(
     for host in _api_hosts_for_uplink_apply("", api_hosts=hosts):
         try:
             with _api_session(
-                host, username, password, port=port, timeout=timeout
+                host,
+                username,
+                password,
+                port=port,
+                timeout=timeout,
+                reuse=True,
             ) as sock:
                 yield sock, host
                 return
@@ -1197,7 +1202,9 @@ def check_router_tunnel_management(
     api_host = ""
     for target in dial_targets:
         try:
-            with _api_session(target, username, password, timeout=timeout):
+            with _api_session(
+                target, username, password, timeout=timeout, reuse=True
+            ):
                 api_ok = True
                 api_host = target
                 break
@@ -1210,9 +1217,12 @@ def check_router_tunnel_management(
             from core.wireguard import inspect_server_peer
 
             peer = inspect_server_peer(public_key)
+            from core.wireguard import handshake_max_age_sec
+
             age = peer.get("handshake_age_sec")
+            max_age = handshake_max_age_sec()
             handshake_ok = bool(
-                peer.get("present") and age is not None and int(age) < 300
+                peer.get("present") and age is not None and int(age) < max_age
             )
         except Exception:
             handshake_ok = False
@@ -1275,7 +1285,11 @@ def reconnect_after_uplink_apply(
             try:
                 login_timeout = max(timeout, mikrotik_login_timeout(host, base=4.0))
                 with _api_session(
-                    host, username, password, timeout=min(login_timeout, 10.0)
+                    host,
+                    username,
+                    password,
+                    timeout=min(login_timeout, 10.0),
+                    reuse=True,
                 ) as sock:
                     ensure_routeros_api_enabled(sock)
                     return {"ok": True, "host": host, "attempts": attempt}
@@ -2143,10 +2157,11 @@ def _api_pool_enabled() -> bool:
 
 
 def _api_pool_ttl_sec() -> float:
+    default = "8" if getattr(settings, "HOSTED", False) else "5"
     try:
-        return max(1.0, float(os.getenv("MIKROTIK_API_POOL_TTL_SEC", "5")))
+        return max(1.0, float(os.getenv("MIKROTIK_API_POOL_TTL_SEC", default)))
     except (TypeError, ValueError):
-        return 5.0
+        return float(default)
 
 
 def _api_pool_key(dial: str, username: str, port: int) -> str:
@@ -7727,7 +7742,9 @@ def fetch_mikrotik_live_snapshot(
         }
 
     try:
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+        with _api_session(
+            host, username, password, port=port, timeout=timeout, reuse=True
+        ) as sock:
             identity = ""
             version = ""
             board = ""
@@ -9650,6 +9667,34 @@ def test_mikrotik_api_login(
         return {"ok": False, "error": "Enter a MikroTik IP address."}
     if not username:
         return {"ok": False, "error": "Enter the router username."}
+
+    if not include_wifi:
+        try:
+            with _api_session(
+                host, username, password, port=port, timeout=timeout, reuse=True
+            ) as sock:
+                result = _fetch_identity(sock, host)
+                result["wifi_ssid"] = ""
+                result["wifi_password"] = ""
+                result["wifi_mode"] = ""
+                return result
+        except TimeoutError:
+            return {
+                "ok": False,
+                "error": "Connection timed out. Is the router reachable on API port 8728?",
+            }
+        except OSError as exc:
+            return {
+                "ok": False,
+                "error": (
+                    f"Could not reach {host}:8728. Paste the latest ISPCENTRIC tunnel "
+                    "script in Winbox → New Terminal (it enables API and bypasses Hotspot), "
+                    "then retry Connect."
+                ),
+                "detail": str(exc),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"Connection failed: {exc}"}
 
     try:
         with socket.create_connection((dial_host(host), port), timeout=timeout) as sock:
@@ -14443,6 +14488,55 @@ def _pppoe_batch_write_on_socket(
     }
 
 
+def _pppoe_batch_run_kicks_on_socket(
+    sock: socket.socket,
+    customers: list,
+    *,
+    kick_usernames: list[str],
+    block_kick_usernames: list[str],
+) -> tuple[int, list[str]]:
+    """Kick PPPoE sessions and leak/speed retries on an open API session."""
+    notes: list[str] = []
+    kicked = 0
+    if kick_usernames:
+        kicked = _disconnect_pppoe_sessions_many(sock, kick_usernames)
+    live_after = _pppoe_live_state_maps(sock)
+    leak_retry: list[str] = []
+    if block_kick_usernames:
+        for uname in {
+            (n or "").strip().lower()
+            for n in block_kick_usernames
+            if (n or "").strip()
+        }:
+            if not _pppoe_has_active_session(sock, uname, live=live_after):
+                continue
+            if _active_pppoe_session_is_blocked(sock, uname, live=live_after):
+                continue
+            leak_retry.append(uname)
+    if leak_retry:
+        re_kicked = _disconnect_pppoe_sessions_many(sock, leak_retry)
+        kicked += re_kicked
+        notes.append(
+            f"leak-retry kicked {re_kicked} unpaid "
+            f"session(s) still surfing "
+            f"({len(leak_retry)} account(s))"
+        )
+    speed_stale_retry = _pppoe_speed_stale_usernames(
+        sock,
+        customers,
+        live=live_after,
+    )
+    if speed_stale_retry:
+        re_kicked = _disconnect_pppoe_sessions_many(sock, speed_stale_retry)
+        kicked += re_kicked
+        notes.append(
+            f"speed-stale retry kicked {re_kicked} paid "
+            f"session(s) still on old package profile "
+            f"({len(speed_stale_retry)} account(s))"
+        )
+    return kicked, notes
+
+
 def _pppoe_batch_finish_on_router(
     router,
     customers: list,
@@ -14453,6 +14547,7 @@ def _pppoe_batch_finish_on_router(
     allowed: int,
     blocked: int,
     write_state: dict[str, Any],
+    kick_sock: socket.socket | None = None,
 ) -> dict[str, Any]:
     """CPE renew portals, kick sessions, and follow-ups after the write phase."""
     router_id = getattr(router, "pk", None)
@@ -14480,53 +14575,28 @@ def _pppoe_batch_finish_on_router(
         if _customer_internet_allowed(customer)
         and not _customer_pppoe_secret_disabled(customer)
     ]
-    if kick_usernames or paid_customers:
+    needs_kick_phase = bool(kick_usernames or paid_customers)
+    if needs_kick_phase:
         try:
-            with _api_session(
-                candidate, api_user, api_password, timeout=12.0, reuse=True
-            ) as kick_sock:
-                if kick_usernames:
-                    kicked = _disconnect_pppoe_sessions_many(kick_sock, kick_usernames)
-                live_after = _pppoe_live_state_maps(kick_sock)
-                leak_retry: list[str] = []
-                if block_kick_usernames:
-                    for uname in {
-                        (n or "").strip().lower()
-                        for n in block_kick_usernames
-                        if (n or "").strip()
-                    }:
-                        if not _pppoe_has_active_session(
-                            kick_sock, uname, live=live_after
-                        ):
-                            continue
-                        if _active_pppoe_session_is_blocked(
-                            kick_sock, uname, live=live_after
-                        ):
-                            continue
-                        leak_retry.append(uname)
-                if leak_retry:
-                    re_kicked = _disconnect_pppoe_sessions_many(kick_sock, leak_retry)
-                    kicked += re_kicked
-                    notes.append(
-                        f"leak-retry kicked {re_kicked} unpaid "
-                        f"session(s) still surfing "
-                        f"({len(leak_retry)} account(s))"
-                    )
-                speed_stale_retry = _pppoe_speed_stale_usernames(
+            if kick_sock is not None:
+                kicked, kick_notes = _pppoe_batch_run_kicks_on_socket(
                     kick_sock,
                     customers,
-                    live=live_after,
+                    kick_usernames=kick_usernames,
+                    block_kick_usernames=block_kick_usernames,
                 )
-                if speed_stale_retry:
-                    re_kicked = _disconnect_pppoe_sessions_many(
-                        kick_sock, speed_stale_retry
+                notes.extend(kick_notes)
+            else:
+                with _api_session(
+                    candidate, api_user, api_password, timeout=12.0, reuse=True
+                ) as session_sock:
+                    kicked, kick_notes = _pppoe_batch_run_kicks_on_socket(
+                        session_sock,
+                        customers,
+                        kick_usernames=kick_usernames,
+                        block_kick_usernames=block_kick_usernames,
                     )
-                    kicked += re_kicked
-                    notes.append(
-                        f"speed-stale retry kicked {re_kicked} paid "
-                        f"session(s) still on old package profile "
-                        f"({len(speed_stale_retry)} account(s))"
-                    )
+                    notes.extend(kick_notes)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "PPPoE batch kick failed router=%s: %s",
@@ -14668,6 +14738,7 @@ def sync_pppoe_subscription_batch_on_router(
                 allowed=allowed,
                 blocked=blocked,
                 write_state=write_state,
+                kick_sock=write_sock,
             )
         except Exception as exc:  # noqa: BLE001
             return {
@@ -14701,16 +14772,17 @@ def sync_pppoe_subscription_batch_on_router(
                     customers,
                     need_block_stack=need_block_stack,
                 )
-            return _pppoe_batch_finish_on_router(
-                router,
-                customers,
-                candidate=candidate,
-                api_user=api_user,
-                api_password=api_password,
-                allowed=allowed,
-                blocked=blocked,
-                write_state=write_state,
-            )
+                return _pppoe_batch_finish_on_router(
+                    router,
+                    customers,
+                    candidate=candidate,
+                    api_user=api_user,
+                    api_password=api_password,
+                    allowed=allowed,
+                    blocked=blocked,
+                    write_state=write_state,
+                    kick_sock=sock,
+                )
         except TimeoutError:
             last_error = f"{candidate}: timed out on API port 8728"
         except OSError as exc:
@@ -14757,7 +14829,15 @@ def sync_hotspot_subscription_batch_on_router(
     last_error = ""
     for candidate in _router_api_host_candidates(router, discover=False):
         try:
-            with _api_session(candidate, api_user, api_password, timeout=20.0) as sock:
+            with socket.create_connection((dial_host(candidate), 8728), timeout=1.2):
+                pass
+        except OSError:
+            if candidate != host:
+                continue
+        try:
+            with _api_session(
+                candidate, api_user, api_password, timeout=20.0, reuse=True
+            ) as sock:
                 _remove_lan_wide_hotspot_bypasses(sock)
                 active_rows = _print(
                     sock, "/ip/hotspot/active", props=".id,user,mac-address"
@@ -16039,7 +16119,12 @@ def resolve_nas_api_host(router, *, timeout: float = 1.5) -> str:
                 try:
                     from django.core.cache import cache
 
-                    cache.set(_nas_api_host_cache_key(router), host, 90)
+                    ttl = 90
+                    if getattr(settings, "HOSTED", False) and _is_wireguard_tunnel_host(
+                        host
+                    ):
+                        ttl = 180
+                    cache.set(_nas_api_host_cache_key(router), host, ttl)
                 except Exception:
                     pass
                 return host
@@ -19412,6 +19497,7 @@ def sync_customer_subscription_access(
             and router is not None
             and getattr(router, "account_status", "")
             == MikroTikRouter.AccountStatus.ACTIVE
+            and bool(resolve_nas_api_host(router, timeout=0.9))
         )
         if not trust_bound:
             for lookup_mac in lookup_macs:

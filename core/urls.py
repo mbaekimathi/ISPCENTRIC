@@ -14,6 +14,11 @@ urlpatterns = [
         views.workspace_analytics,
         name="workspace_analytics",
     ),
+    path(
+        "app/live/",
+        views.workspace_live,
+        name="workspace_live",
+    ),
     path("app/noc/", views.noc, name="noc"),
     path("app/noc/summary/", views.noc_summary, name="noc_summary"),
     path("app/audits/", views.audits, name="audits"),

@@ -378,6 +378,50 @@ class WireGuardKeyTests(SimpleTestCase):
 
         self.assertEqual(wireguard.public_key_for(private_key), public_key)
 
+    def test_handshake_max_age_and_keepalive_defaults(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("WIREGUARD_HANDSHAKE_MAX_AGE_SEC", None)
+            os.environ.pop("WIREGUARD_KEEPALIVE_SEC", None)
+            self.assertEqual(wireguard.handshake_max_age_sec(), 180)
+            self.assertEqual(wireguard.router_keepalive_interval(), "15s")
+
+    def test_check_router_tunnel_respects_handshake_max_age(self):
+        from types import SimpleNamespace
+
+        from core.mikrotik_connect import check_router_tunnel_management
+
+        private_key, public_key = wireguard.generate_keypair()
+        router = SimpleNamespace(
+            vpn_address="10.9.0.44",
+            host="192.168.88.1",
+            username="admin",
+            password="x",
+            vpn_public_key=public_key,
+        )
+        peer_state = {
+            "checked": True,
+            "present": True,
+            "handshake_age_sec": 200,
+        }
+        with (
+            patch(
+                "core.mikrotik_connect._api_session",
+                side_effect=ConnectionError("down"),
+            ),
+            patch("core.wireguard.inspect_server_peer", return_value=peer_state),
+            patch("core.mikrotik_connect.on_router_lan", return_value=False),
+        ):
+            with patch.dict(
+                os.environ, {"WIREGUARD_HANDSHAKE_MAX_AGE_SEC": "180"}, clear=False
+            ):
+                out = check_router_tunnel_management(router, require_api=False)
+                self.assertFalse(out["handshake_ok"])
+            with patch.dict(
+                os.environ, {"WIREGUARD_HANDSHAKE_MAX_AGE_SEC": "300"}, clear=False
+            ):
+                out = check_router_tunnel_management(router, require_api=False)
+                self.assertTrue(out["handshake_ok"])
+
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
         WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
@@ -475,6 +519,14 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("dst-address=10.9.0.0/24", script)
         # Prove reachability to the VPS tunnel address (retried, one line per paste).
         self.assertIn("/ping 10.9.0.1 count=2", script)
+        self.assertIn("/ping 8.8.8.8 count=2", script)
+        self.assertIn("WAN check — ping 8.8.8.8 before tunnel test", script)
+        self.assertIn('comment="ispcentric-vpn-wg-udp-out"', script)
+        self.assertIn("chain=output", script)
+        self.assertIn("protocol=udp dst-address=", script)
+        self.assertIn("persistent-keepalive=15s", script)
+        self.assertIn("ispcentric-tunnel-watch", script)
+        self.assertIn("Tunnel watchdog scheduler every 3m", script)
         self.assertIn(":delay 5s", script)
         self.assertNotIn(":global IspWanOk", script)
         self.assertNotIn("/tool fetch url=$IspUrlInst", script)
@@ -507,7 +559,7 @@ class WireGuardKeyTests(SimpleTestCase):
             for line in script.splitlines()
             if "/ping 10.9.0.1 count=2" in line and line.startswith(":if")
         ]
-        self.assertEqual(len(ping_checks), 6)
+        self.assertEqual(len(ping_checks), 8)
         self.assertIn(
             '[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server 10.9.0.1 - '
             'click Connect in ISPCENTRIC',
@@ -1612,6 +1664,10 @@ class PppoeSecretProfileSyncTests(SimpleTestCase):
         router = type("Router", (), {"pk": 1})()
         with (
             patch(
+                "core.mikrotik_connect._disable_fasttrack_connection_rules",
+                return_value=[],
+            ),
+            patch(
                 "core.mikrotik_connect._pppoe_customers_for_router",
                 return_value=[paid, unpaid],
             ),
@@ -1679,6 +1735,10 @@ class PppoeSecretProfileSyncTests(SimpleTestCase):
         }
         router = type("Router", (), {"pk": 1})()
         with (
+            patch(
+                "core.mikrotik_connect._disable_fasttrack_connection_rules",
+                return_value=[],
+            ),
             patch(
                 "core.mikrotik_connect._pppoe_customers_for_router",
                 return_value=[paid],
@@ -2653,6 +2713,10 @@ class HotspotAuthorizeFastPathTests(TestCase):
 
         with (
             patch("socket.create_connection"),
+            patch(
+                "core.mikrotik_connect._disable_fasttrack_connection_rules",
+                return_value=[],
+            ),
             patch(
                 "core.mikrotik_connect._router_api_host_candidates",
                 return_value=["10.0.0.1"],
@@ -5305,9 +5369,18 @@ class ClientsSurfingStatusTests(TestCase):
         )
         self.client.force_login(self.owner)
 
+    _HOTSPOT_PROBE_OK = {
+        "ok": True,
+        "active_macs": [],
+        "connected_macs": [],
+        "active_uptime_by_mac": {},
+        "wifi_ssid": "",
+    }
+
+    @patch("core.views.fetch_hotspot_client_macs")
     @patch("core.views.fetch_active_pppoe_usernames")
     def test_dialed_session_on_blocked_profile_is_not_reported_as_surfing(
-        self, fetch_active
+        self, fetch_active, fetch_hotspot
     ):
         fetch_active.return_value = {
             "ok": True,
@@ -5315,6 +5388,7 @@ class ClientsSurfingStatusTests(TestCase):
             "blocked": ["liveuser"],
             "error": "",
         }
+        fetch_hotspot.return_value = dict(self._HOTSPOT_PROBE_OK)
 
         response = self.client.get(
             "/app/clients/surfing/",
@@ -5328,8 +5402,9 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertEqual(data["clients"][0]["label"], "Not surfing")
         self.assertIn("blocked on the router", data["clients"][0]["reason"])
 
+    @patch("core.views.fetch_hotspot_client_macs")
     @patch("core.views.fetch_active_pppoe_usernames")
-    def test_dialed_but_expired_package_is_not_surfing(self, fetch_active):
+    def test_dialed_but_expired_package_is_not_surfing(self, fetch_active, fetch_hotspot):
         """Past midnight cut-off: dialed session must not count as surfing."""
         from datetime import timedelta
 
@@ -5341,6 +5416,7 @@ class ClientsSurfingStatusTests(TestCase):
             "blocked": [],
             "error": "",
         }
+        fetch_hotspot.return_value = dict(self._HOTSPOT_PROBE_OK)
         self.customer.package_start = timezone.now() - timedelta(days=3)
         self.customer.package_end = timezone.now() - timedelta(days=1)
         self.customer.save(update_fields=["package_start", "package_end"])
@@ -5360,14 +5436,16 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertEqual(client["label"], "Expired")
         self.assertIn("subscription ended", client["reason"].lower())
 
+    @patch("core.views.fetch_hotspot_client_macs")
     @patch("core.views.fetch_active_pppoe_usernames")
-    def test_unreachable_router_shows_disconnected(self, fetch_active):
+    def test_unreachable_router_shows_disconnected(self, fetch_active, fetch_hotspot):
         fetch_active.return_value = {
             "ok": False,
             "usernames": [],
             "blocked": [],
             "error": "Connection timed out.",
         }
+        fetch_hotspot.return_value = dict(self._HOTSPOT_PROBE_OK)
         self.customer.router = self.router
         self.customer.save(update_fields=["router"])
 
@@ -5384,8 +5462,9 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertFalse(client["router_reachable"])
         self.assertIn("timed out", client["reason"].lower())
 
+    @patch("core.views.fetch_hotspot_client_macs")
     @patch("core.views.fetch_active_pppoe_usernames")
-    def test_undialed_client_shows_disconnected(self, fetch_active):
+    def test_undialed_client_shows_disconnected(self, fetch_active, fetch_hotspot):
         """Router reachable but no PPPoE session → Internet column = Disconnected."""
         fetch_active.return_value = {
             "ok": True,
@@ -5393,6 +5472,7 @@ class ClientsSurfingStatusTests(TestCase):
             "blocked": [],
             "error": "",
         }
+        fetch_hotspot.return_value = dict(self._HOTSPOT_PROBE_OK)
         self.customer.router = self.router
         self.customer.save(update_fields=["router"])
 
@@ -5409,8 +5489,9 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertEqual(client["label"], "Disconnected")
         self.assertTrue(client["router_reachable"])
 
+    @patch("core.views.fetch_hotspot_client_macs")
     @patch("core.views.fetch_active_pppoe_usernames")
-    def test_expired_undialed_client_shows_expired(self, fetch_active):
+    def test_expired_undialed_client_shows_expired(self, fetch_active, fetch_hotspot):
         """Ended package with no session still shows Expired (not Disconnected)."""
         from datetime import timedelta
 
@@ -5422,6 +5503,7 @@ class ClientsSurfingStatusTests(TestCase):
             "blocked": [],
             "error": "",
         }
+        fetch_hotspot.return_value = dict(self._HOTSPOT_PROBE_OK)
         self.customer.router = self.router
         self.customer.package_start = timezone.now() - timedelta(days=3)
         self.customer.package_end = timezone.now() - timedelta(days=1)
@@ -5439,14 +5521,18 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertEqual(client["state"], "expired")
         self.assertEqual(client["label"], "Expired")
 
+    @patch("core.views.fetch_hotspot_client_macs")
     @patch("core.views.fetch_active_pppoe_usernames")
-    def test_unassigned_client_matches_live_session_on_any_org_router(self, fetch_active):
+    def test_unassigned_client_matches_live_session_on_any_org_router(
+        self, fetch_active, fetch_hotspot
+    ):
         fetch_active.return_value = {
             "ok": True,
             "usernames": ["liveuser"],
             "blocked": [],
             "error": "",
         }
+        fetch_hotspot.return_value = dict(self._HOTSPOT_PROBE_OK)
 
         response = self.client.get(
             "/app/clients/surfing/",
@@ -5466,7 +5552,7 @@ class ClientsSurfingStatusTests(TestCase):
             self.router.host,
             self.router.username,
             self.router.password,
-            timeout=4.0,
+            timeout=3.5,
         )
 
     @patch("core.views.fetch_customer_pppoe_usage")
@@ -7100,6 +7186,10 @@ class PackageSpeedLimitTests(SimpleTestCase):
         router = type("Router", (), {"pk": 1})()
         with (
             patch(
+                "core.mikrotik_connect._disable_fasttrack_connection_rules",
+                return_value=[],
+            ),
+            patch(
                 "core.mikrotik_connect._pppoe_customers_for_router",
                 return_value=[paid, unpaid],
             ),
@@ -8122,6 +8212,10 @@ class ExpiredCaptivePayTests(SimpleTestCase):
 
         with (
             patch(
+                "core.mikrotik_connect._disable_fasttrack_connection_rules",
+                return_value=[],
+            ),
+            patch(
                 "core.mikrotik_connect._customer_internet_allowed",
                 return_value=False,
             ),
@@ -8162,6 +8256,10 @@ class ExpiredCaptivePayTests(SimpleTestCase):
                 return_value=True,
             ),
             patch(
+                "core.mikrotik_connect._pppoe_customer_needs_session_kick",
+                return_value=True,
+            ),
+            patch(
                 "core.mikrotik_connect._ensure_pppoe_expired_access",
                 return_value=[],
             ),
@@ -8176,6 +8274,10 @@ class ExpiredCaptivePayTests(SimpleTestCase):
             patch(
                 "core.mikrotik_connect._disconnect_pppoe_sessions",
                 side_effect=lambda sock, username: disconnects.append(username) or 1,
+            ),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_profile",
+                return_value="",
             ),
             patch(
                 "core.mikrotik_connect._billing_portal_base_url",
@@ -8252,6 +8354,10 @@ class ExpiredCaptivePayTests(SimpleTestCase):
 
         with (
             patch(
+                "core.mikrotik_connect._disable_fasttrack_connection_rules",
+                return_value=[],
+            ),
+            patch(
                 "core.mikrotik_connect._customer_internet_allowed",
                 return_value=False,
             ),
@@ -8306,6 +8412,10 @@ class ExpiredCaptivePayTests(SimpleTestCase):
             patch(
                 "core.mikrotik_connect._disconnect_pppoe_sessions",
                 side_effect=lambda sock, username: disconnects.append(username) or 1,
+            ),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_profile",
+                return_value="",
             ),
             patch(
                 "core.mikrotik_connect._billing_portal_base_url",
@@ -8915,6 +9025,10 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 side_effect=track_pages,
             ),
             patch(
+                "core.mikrotik_connect._hotspot_login_file_ok",
+                return_value=True,
+            ),
+            patch(
                 "core.mikrotik_connect._ensure_captive_portal_dhcp_option",
                 side_effect=track_dhcp,
             ),
@@ -9034,6 +9148,10 @@ class IspHotspotInstantPayTests(SimpleTestCase):
             patch(
                 "core.mikrotik_connect._fetch_isp_hotspot_pages",
                 return_value=["installed hotspot/login.html"],
+            ),
+            patch(
+                "core.mikrotik_connect._hotspot_login_file_ok",
+                return_value=True,
             ),
             patch(
                 "core.mikrotik_connect._ensure_captive_portal_dhcp_option",
@@ -11839,9 +11957,15 @@ class MikroTikStatusOfflineTests(TestCase):
                 }
             return {"ok": False, "online": False, "error": "timed out"}
 
-        with patch(
-            "core.mikrotik_connect.fetch_mikrotik_live_snapshot",
-            side_effect=fake_snapshot,
+        with (
+            patch(
+                "core.mikrotik_connect.resolve_nas_api_host",
+                return_value="",
+            ),
+            patch(
+                "core.mikrotik_connect.fetch_mikrotik_live_snapshot",
+                side_effect=fake_snapshot,
+            ),
         ):
             snap = fetch_mikrotik_live_snapshot_for_router(self.router)
         self.assertTrue(snap.get("ok"))
@@ -12166,6 +12290,55 @@ class MikroTikStatusOfflineTests(TestCase):
             self.org.pk, self.router.pk, fail_row, tunnel=True
         )
         self.assertEqual(third["status"], "disconnected")
+
+    @override_settings(HOSTED=True)
+    def test_hosted_tunnel_holds_connected_through_three_flaky_polls(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import stabilize_live_status_row
+
+        cache.clear()
+        connected = {
+            "id": self.router.pk,
+            "status": "connected",
+            "online": True,
+            "error": "",
+        }
+        stabilize_live_status_row(
+            self.org.pk, self.router.pk, connected, tunnel=True
+        )
+        fail_row = {
+            "id": self.router.pk,
+            "status": "disconnected",
+            "online": False,
+            "error": "timed out",
+        }
+        for _ in range(3):
+            held = stabilize_live_status_row(
+                self.org.pk, self.router.pk, fail_row, tunnel=True
+            )
+            self.assertEqual(held["status"], "connected")
+        fourth = stabilize_live_status_row(
+            self.org.pk, self.router.pk, fail_row, tunnel=True
+        )
+        self.assertEqual(fourth["status"], "disconnected")
+
+    def test_api_login_probe_reuses_pooled_session_when_wifi_skipped(self):
+        from core.mikrotik_connect import test_mikrotik_api_login
+
+        with patch("core.mikrotik_connect._api_session") as session_cm:
+            session_cm.return_value.__enter__ = lambda self: object()
+            session_cm.return_value.__exit__ = lambda *args: None
+            with patch(
+                "core.mikrotik_connect._fetch_identity",
+                return_value={"ok": True, "host": "10.9.0.2"},
+            ):
+                result = test_mikrotik_api_login(
+                    "10.9.0.2", "admin", "secret", include_wifi=False
+                )
+        self.assertTrue(result.get("ok"))
+        session_cm.assert_called_once()
+        self.assertTrue(session_cm.call_args.kwargs.get("reuse"))
 
     def test_post_onboard_grace_extends_stabilization(self):
         from django.core.cache import cache

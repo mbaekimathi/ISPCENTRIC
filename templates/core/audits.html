@@ -3,66 +3,55 @@
 {% block title %}Audits — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="audits-page" data-audits-page data-audit-tab="{{ audit_tab }}">
-  <section class="audits-shell">
-    <header class="audits-hero">
-      <div class="audits-hero-main">
-        <div class="audits-brand">
-          <span class="audits-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/>
-              <path d="M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2"/>
-              <path d="m9 14 2 2 4-4"/>
-            </svg>
-          </span>
-          <div>
-            <p class="audits-kicker">Operations</p>
-            <h1>Audits</h1>
-          </div>
-        </div>
-        <p class="audits-lead">Track payment edits, subscription period fit, and who registered each PPPoE client — built for quick ops review on any screen.</p>
-        <p class="audits-summary">
-          <span><strong>{{ audit_summary.payment_count }}</strong> payments</span>
-          <span class="audits-pill tone-warn">{{ audit_summary.payment_edited_count }} edited recharges</span>
-          <span class="audits-pill tone-good">{{ audit_summary.period_standard_count }} on package</span>
-          <span class="audits-pill">{{ audit_summary.registration_count }} PPPoE</span>
-        </p>
+<div class="audits-page ops-page" data-audits-page data-audit-tab="{{ audit_tab }}">
+  <header class="packages-hero ops-hero audits-page-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/>
+          <path d="M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2"/>
+          <path d="m9 14 2 2 4-4"/>
+        </svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Operations</p>
+        <h1 class="packages-title">Audits</h1>
+        <p class="packages-lead">Payment edits, subscription periods, and PPPoE registration history for quick review.</p>
       </div>
+    </div>
+  </header>
 
-      <div class="audits-hero-stats" aria-label="Jump to audit type">
-        <a class="audits-stat tone-pay{% if audit_tab == 'payments' %} is-active{% endif %}" href="{% url 'core:audits' %}?tab=payments" style="--i:0">
-          <span class="audits-stat-ico" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 9h16M4 15h16M8 5v14M16 5v14"/></svg>
-          </span>
-          <span class="audits-stat-body">
-            <span class="audits-stat-label">Payments</span>
-            <span class="audits-stat-value">{{ audit_summary.payment_count }}</span>
-            <span class="audits-stat-meta">{{ audit_summary.payment_edited_count }} edited</span>
-          </span>
-        </a>
-        <a class="audits-stat tone-period{% if audit_tab == 'periods' %} is-active{% endif %}" href="{% url 'core:audits' %}?tab=periods" style="--i:1">
-          <span class="audits-stat-ico" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M8 2v3M16 2v3M4 8h16M6 4h12a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>
-          </span>
-          <span class="audits-stat-body">
-            <span class="audits-stat-label">Periods</span>
-            <span class="audits-stat-value">{{ audit_summary.period_count }}</span>
-            <span class="audits-stat-meta">{{ audit_summary.period_edited_count }} outside</span>
-          </span>
-        </a>
-        <a class="audits-stat tone-reg{% if audit_tab == 'registration' %} is-active{% endif %}" href="{% url 'core:audits' %}?tab=registration" style="--i:2">
-          <span class="audits-stat-ico" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm13 10v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-          </span>
-          <span class="audits-stat-body">
-            <span class="audits-stat-label">PPPoE</span>
-            <span class="audits-stat-value">{{ audit_summary.registration_count }}</span>
-            <span class="audits-stat-meta">Registered</span>
-          </span>
-        </a>
+  <div class="packages-stats audits-overview-stats" aria-label="Jump to audit type">
+    <a class="packages-stat tone-total{% if audit_tab == 'payments' %} is-active-audit{% endif %}" href="{% url 'core:audits' %}?tab=payments" style="--i:0">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 9h16M4 15h16M8 5v14M16 5v14"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Payments</p>
+        <p class="packages-stat-value">{{ audit_summary.payment_count }}</p>
       </div>
-    </header>
+    </a>
+    <a class="packages-stat tone-warn{% if audit_tab == 'periods' %} is-active-audit{% endif %}" href="{% url 'core:audits' %}?tab=periods" style="--i:1">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M8 2v3M16 2v3M4 8h16M6 4h12a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Periods</p>
+        <p class="packages-stat-value">{{ audit_summary.period_count }}</p>
+      </div>
+    </a>
+    <a class="packages-stat tone-pppoe{% if audit_tab == 'registration' %} is-active-audit{% endif %}" href="{% url 'core:audits' %}?tab=registration" style="--i:2">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm13 10v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">PPPoE registered</p>
+        <p class="packages-stat-value">{{ audit_summary.registration_count }}</p>
+      </div>
+    </a>
+  </div>
 
+  <section class="audits-shell ops-panel">
     <div class="audits-toolbar" data-audits-toolbar>
       <nav class="audits-seg" aria-label="Audit types" role="tablist">
         <a

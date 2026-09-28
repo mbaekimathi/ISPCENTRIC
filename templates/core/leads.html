@@ -3,48 +3,54 @@
 {% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="leads-page">
-  <header class="leads-hero">
-    <div class="leads-hero-top">
-      <div class="leads-hero-main">
-        <span class="leads-hero-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.9 2 2 2 3.4V19h7v-2.5c0-2.3-4.7-3.5-8-3.5z"/></svg>
-        </span>
-        <div class="leads-hero-copy">
-          <p class="leads-hero-kicker">Sales pipeline</p>
-          <h1>Leads</h1>
-          <p class="leads-hero-lead">
-            Hotspot portal interest ranked by engagement — earn clicks rise first.
-          </p>
-        </div>
-      </div>
-      <div class="leads-hero-actions">
-        <a class="btn btn-ghost btn-sm leads-billing-btn" href="{% url 'billing:lead_payments' %}">
-          Leads billing
-        </a>
+<div class="leads-page ops-page">
+  <header class="packages-hero ops-hero leads-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3z"/></svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Sales pipeline</p>
+        <h1 class="packages-title">Leads</h1>
+        <p class="packages-lead">Hotspot portal interest ranked by engagement — earn clicks rise first.</p>
       </div>
     </div>
-
-    <div class="leads-pulse" aria-label="Leads overview">
-      <article class="leads-pulse-item">
-        <p class="leads-pulse-label">Contacts</p>
-        <p class="leads-pulse-value">{{ portal_summary.contacts|default:0 }}</p>
-        <p class="leads-pulse-meta">{{ portal_summary.today|default:0 }} active today</p>
-      </article>
-      <article class="leads-pulse-item is-hot">
-        <p class="leads-pulse-label">Hot leads</p>
-        <p class="leads-pulse-value">{{ portal_summary.hot|default:0 }}</p>
-        <p class="leads-pulse-meta">{{ portal_summary.matched|default:0 }} matched clients</p>
-      </article>
-      <article class="leads-pulse-item is-earn">
-        <p class="leads-pulse-label">Earn clicks</p>
-        <p class="leads-pulse-value">{{ portal_summary.earn_clicks|default:0 }}</p>
-        <p class="leads-pulse-meta">{{ portal_summary.partner_clicks|default:0 }} partner taps</p>
-      </article>
+    <div class="packages-hero-actions">
+      <a class="btn btn-ghost btn-sm leads-billing-btn" href="{% url 'billing:lead_payments' %}">Lead payments</a>
     </div>
   </header>
 
-  <section class="leads-board" id="portal-leads">
+  <div class="packages-stats leads-pulse" aria-label="Leads overview">
+    <article class="packages-stat tone-total" style="--i:0">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Contacts</p>
+        <p class="packages-stat-value">{{ portal_summary.contacts|default:0 }}</p>
+      </div>
+    </article>
+    <article class="packages-stat tone-warn" style="--i:1">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 9v4m0 4h.01"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Hot leads</p>
+        <p class="packages-stat-value">{{ portal_summary.hot|default:0 }}</p>
+      </div>
+    </article>
+    <article class="packages-stat tone-hotspot" style="--i:2">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M15 3h6v6M10 14 21 3"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Earn clicks</p>
+        <p class="packages-stat-value">{{ portal_summary.earn_clicks|default:0 }}</p>
+      </div>
+    </article>
+  </div>
+
+  <section class="leads-board ops-panel" id="portal-leads">
     <div class="leads-board-head">
       <div>
         <p class="leads-board-kicker">Live feed</p>

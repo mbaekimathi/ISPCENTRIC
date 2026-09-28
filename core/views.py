@@ -7690,6 +7690,9 @@ def workspace(request):
         snapshot["network_trend"] = router_network_performance_trend(org, hours=24)
         snapshot["network_drops"] = network_performance_drops(org, hours=24)
         snapshot["not_surfing_trend"] = pppoe_connected_not_surfing_trend(org, hours=24)
+        from billing.usage_samples import workspace_client_access_trend
+
+        snapshot["client_access_trend"] = workspace_client_access_trend(org, hours=24)
     except Exception:
         snapshot["network_trend"] = {
             "ok": False,
@@ -7704,6 +7707,17 @@ def workspace(request):
             "labels": [],
             "datasets": [],
             "summary": {"current": 0, "peak": 0, "sample_points": 0},
+        }
+        snapshot["client_access_trend"] = {
+            "ok": False,
+            "labels": [],
+            "datasets": [],
+            "summary": {
+                "surfing": 0,
+                "not_surfing": 0,
+                "disconnected": 0,
+                "expired": 0,
+            },
         }
     referral_enabled = bool(ClientSettings.get_solo().referral_enabled)
     referral_count = 0
@@ -7729,7 +7743,11 @@ def workspace(request):
             page_subtitle="Collections, renewals, and network health for today.",
             analytics=snapshot,
             analytics_json=json.dumps(snapshot),
+            initial_client_access_json=json.dumps(
+                _workspace_initial_client_access(org)
+            ),
             analytics_url=reverse("core:workspace_analytics"),
+            workspace_live_url=reverse("core:workspace_live"),
             mikrotik_status_url=reverse("core:mikrotik_status"),
             audits_url=reverse("core:audits"),
             referral_count=referral_count,
@@ -8162,15 +8180,12 @@ def _mikrotik_performance_from_status(routers: list[dict]) -> dict:
     }
 
 
-@client_workspace_required
-@require_GET
-def workspace_analytics(request):
-    """Live dashboard payload for day money/renewals + MikroTik performance trend."""
-    org = resolve_organization(request.user, request)
-    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+def _workspace_analytics_payload(org, *, force: bool = False, hours: int = 24) -> dict:
+    """Dashboard analytics dict (shared by workspace_analytics and workspace_live)."""
     snapshot = _workspace_day_snapshot(org, force=force)
     if not org:
-        return JsonResponse(snapshot, status=400)
+        snapshot["ok"] = False
+        return snapshot
 
     routers = cache.get(f"mikrotik_status:{org.pk}")
     if routers is not None:
@@ -8183,11 +8198,7 @@ def workspace_analytics(request):
             "online_ratio": perf["online_ratio"],
         }
         snapshot["outages"] = perf["outages"]
-    hours = 24
-    try:
-        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
-    except (TypeError, ValueError):
-        hours = 24
+    hours = max(1, min(int(hours or 24), 168))
     try:
         from core.mikrotik_status_samples import (
             mikrotik_performance_drops,
@@ -8234,6 +8245,25 @@ def workspace_analytics(request):
         snapshot["not_surfing_trend"] = pppoe_connected_not_surfing_trend(
             org, hours=hours
         )
+        from billing.usage_samples import workspace_client_access_trend
+
+        parts = cache.get(f"workspace_access_parts:v1:{org.pk}") or {}
+        live_access = None
+        if parts:
+            live_access = {
+                "surfing": 0,
+                "not_surfing": 0,
+                "disconnected": 0,
+                "expired": 0,
+            }
+            for part in parts.values():
+                if not isinstance(part, dict):
+                    continue
+                for key in live_access:
+                    live_access[key] += max(0, int(part.get(key) or 0))
+        snapshot["client_access_trend"] = workspace_client_access_trend(
+            org, hours=hours, live=live_access
+        )
     except Exception:
         snapshot["network_trend"] = {
             "ok": False,
@@ -8249,8 +8279,210 @@ def workspace_analytics(request):
             "datasets": [],
             "summary": {"current": 0, "peak": 0, "sample_points": 0},
         }
+        snapshot["client_access_trend"] = {
+            "ok": False,
+            "labels": [],
+            "datasets": [],
+            "summary": {
+                "surfing": 0,
+                "not_surfing": 0,
+                "disconnected": 0,
+                "expired": 0,
+            },
+        }
 
+    return snapshot
+
+
+@client_workspace_required
+@require_GET
+def workspace_analytics(request):
+    """Live dashboard payload for day money/renewals + MikroTik performance trend."""
+    org = resolve_organization(request.user, request)
+    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+    hours = 24
+    try:
+        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
+    except (TypeError, ValueError):
+        hours = 24
+    snapshot = _workspace_analytics_payload(org, force=force, hours=hours)
+    if not org:
+        return JsonResponse(snapshot, status=400)
     return JsonResponse(snapshot)
+
+
+def _patch_request_get(request, overrides: dict):
+    """Temporarily override query params (sub-calls for bundled live API)."""
+    from django.http import QueryDict
+
+    q = QueryDict(mutable=True)
+    for key in request.GET:
+        q.setlist(key, request.GET.getlist(key))
+    for key, value in overrides.items():
+        if value is None:
+            if key in q:
+                del q[key]
+        else:
+            q[key] = str(value)
+    previous = request.GET
+    request.GET = q
+    return previous
+
+
+def _clients_surfing_all_payload(
+    request, org, *, force: bool, customer_id_raw: str = ""
+) -> dict:
+    """Merged PPPoE + Hotspot surfing payload (one dashboard round-trip)."""
+    cache_key = f"clients_surfing:{org.pk}:all:v9"
+    if not force:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            if customer_id_raw:
+                cached = _filter_surfing_clients_payload(cached, customer_id_raw)
+            return cached
+
+    prev_pppoe = _patch_request_get(
+        request,
+        {"service": "pppoe", "refresh": "1" if force else None},
+    )
+    try:
+        pppoe_resp = clients_surfing_status(request)
+        pppoe_data = json.loads(pppoe_resp.content)
+    finally:
+        request.GET = prev_pppoe
+
+    prev_hs = _patch_request_get(
+        request,
+        {"service": "hotspot", "refresh": None},
+    )
+    try:
+        hotspot_resp = clients_surfing_status(request)
+        hotspot_data = json.loads(hotspot_resp.content)
+    finally:
+        request.GET = prev_hs
+
+    clients = []
+    seen: set[int] = set()
+    for blob in (pppoe_data, hotspot_data):
+        if not isinstance(blob, dict) or blob.get("ok") is False:
+            continue
+        for row in blob.get("clients") or []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                cid = int(row.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if cid in seen:
+                continue
+            seen.add(cid)
+            clients.append(row)
+
+    summary = {
+        "surfing": 0,
+        "not_surfing": 0,
+        "disconnected": 0,
+        "expired": 0,
+    }
+    parts = cache.get(f"workspace_access_parts:v1:{org.pk}") or {}
+    if isinstance(parts, dict):
+        for part in parts.values():
+            if not isinstance(part, dict):
+                continue
+            for key in summary:
+                summary[key] += max(0, int(part.get(key) or 0))
+
+    payload = {
+        "ok": True,
+        "service": "all",
+        "clients": clients,
+        "access_summary": summary,
+        "surfing_count": sum(1 for row in clients if row.get("surfing")),
+        "connected_count": sum(
+            1 for row in clients if row.get("connected") or row.get("session_online")
+        ),
+        "checked": len(clients),
+        "connected_not_surfing_count": int(
+            (pppoe_data or {}).get("connected_not_surfing_count") or 0
+        ),
+    }
+    if customer_id_raw:
+        payload = _filter_surfing_clients_payload(payload, customer_id_raw)
+    cache.set(cache_key, payload, 8)
+    return payload
+
+
+@client_workspace_required
+@require_GET
+def workspace_live(request):
+    """
+    Bundled dashboard poll: analytics + MikroTik status + client access.
+
+    Query flags:
+    - refresh=1 — refresh day snapshot + analytics trends
+    - clients_refresh=1 — live client access (service=all, one NAS sweep)
+    - mikrotik_refresh=1 — probe router health
+    """
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization."}, status=400)
+
+    def _flag(name: str) -> bool:
+        return (request.GET.get(name) or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+
+    refresh_all = _flag("refresh")
+    clients_refresh = _flag("clients_refresh") or refresh_all
+    mikrotik_refresh = _flag("mikrotik_refresh") or refresh_all
+    hours = 24
+    try:
+        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
+    except (TypeError, ValueError):
+        hours = 24
+
+    bundle: dict = {"ok": True, "hours": hours}
+
+    bundle["analytics"] = _workspace_analytics_payload(
+        org, force=refresh_all, hours=hours
+    )
+
+    routers = cache.get(f"mikrotik_status:{org.pk}") or []
+    mikrotik_meta = {"ok": True, "routers": routers}
+    if mikrotik_refresh:
+        prev = _patch_request_get(request, {"refresh": "1"})
+        try:
+            mt_resp = mikrotik_status(request)
+            mikrotik_meta = json.loads(mt_resp.content)
+            routers = mikrotik_meta.get("routers") or []
+        finally:
+            request.GET = prev
+    elif not isinstance(routers, list):
+        routers = []
+        mikrotik_meta = {"ok": True, "routers": []}
+
+    bundle["mikrotik"] = mikrotik_meta
+    perf = _mikrotik_performance_from_status(routers if isinstance(routers, list) else [])
+    bundle["mikrotik_performance"] = perf
+
+    if clients_refresh:
+        customer_id_raw = (request.GET.get("customer_id") or "").strip()
+        bundle["client_access"] = _clients_surfing_all_payload(
+            request,
+            org,
+            force=True,
+            customer_id_raw=customer_id_raw,
+        )
+    else:
+        cached_all = cache.get(f"clients_surfing:{org.pk}:all:v9")
+        if isinstance(cached_all, dict) and cached_all.get("clients") is not None:
+            bundle["client_access"] = cached_all
+        else:
+            bundle["client_access"] = _workspace_initial_client_access(org)
+
+    return JsonResponse(bundle)
 
 
 def _mikrotik_list_routers(org):
@@ -18963,6 +19195,192 @@ def clients_remote_access_status(request):
     return JsonResponse({"ok": True, "clients": rows})
 
 
+_SHARED_SURFING_PROBE_TTL = 14  # seconds — dedupe PPPoE + Hotspot dashboard probes
+
+
+def _shared_surfing_probe_cache_key(organization_id: int) -> str:
+    return f"clients_surfing_shared_probe:v1:{int(organization_id)}"
+
+
+def _probe_mikrotik_router_combined(router) -> dict:
+    """One NAS round-trip per router: PPPoE sessions + Hotspot hosts (dashboard)."""
+    from core.mikrotik_connect import is_mikrotik_host_cooling_down
+
+    router_id = router.pk
+    stored_ssid = (getattr(router, "wifi_ssid", None) or "").strip()
+    empty = {
+        "router_id": router_id,
+        "pppoe_active": [],
+        "pppoe_blocked": [],
+        "hotspot_active": [],
+        "hotspot_connected": [],
+        "hotspot_uptime": {},
+        "error": "",
+        "wifi_ssid": stored_ssid,
+    }
+    if router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
+        empty["error"] = "Router suspended"
+        return empty
+    api_host = _resolve_working_nas_host(router, timeout=0.8)
+    if is_mikrotik_host_cooling_down(api_host):
+        empty["error"] = "Router recently unreachable"
+        return empty
+    pppoe = fetch_active_pppoe_usernames(
+        api_host, router.username, router.password, timeout=3.5
+    )
+    hotspot = fetch_hotspot_client_macs(
+        api_host, router.username, router.password, timeout=3.5
+    )
+    err_parts = []
+    if not pppoe.get("ok"):
+        err_parts.append(pppoe.get("error") or "PPPoE check failed")
+    if not hotspot.get("ok"):
+        err_parts.append(hotspot.get("error") or "Hotspot check failed")
+    live_ssid = (hotspot.get("wifi_ssid") or "").strip() or stored_ssid
+    return {
+        "router_id": router_id,
+        "pppoe_active": [
+            str(n).lower() for n in (pppoe.get("usernames") or []) if n
+        ],
+        "pppoe_blocked": [
+            str(n).lower() for n in (pppoe.get("blocked") or []) if n
+        ],
+        "hotspot_active": [
+            str(m).upper() for m in (hotspot.get("active_macs") or []) if m
+        ],
+        "hotspot_connected": [
+            str(m).upper() for m in (hotspot.get("connected_macs") or []) if m
+        ],
+        "hotspot_uptime": {
+            str(mac).upper(): str(uptime)
+            for mac, uptime in (hotspot.get("active_uptime_by_mac") or {}).items()
+            if mac and uptime
+        },
+        "error": "; ".join(err_parts).strip(),
+        "wifi_ssid": live_ssid,
+    }
+
+
+def _pack_shared_surfing_probe(rows: dict[int, dict]) -> dict:
+    return {
+        "at": timezone.now().isoformat(),
+        "routers": {str(rid): row for rid, row in rows.items()},
+    }
+
+
+def _hydrate_shared_surfing_probe(
+    packed: dict, service: str
+) -> tuple[dict, dict, dict, dict, dict, dict] | None:
+    if not isinstance(packed, dict):
+        return None
+    raw_at = (packed.get("at") or "").strip()
+    if not raw_at:
+        return None
+    try:
+        from datetime import datetime as dt_parse
+
+        stamp = dt_parse.fromisoformat(raw_at)
+    except ValueError:
+        return None
+    if timezone.is_naive(stamp):
+        stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+    if (timezone.now() - stamp).total_seconds() > _SHARED_SURFING_PROBE_TTL:
+        return None
+    routers = packed.get("routers") or {}
+    if not isinstance(routers, dict):
+        return None
+
+    active_by_router: dict[int, set[str]] = {}
+    connected_by_router: dict[int, set[str]] = {}
+    nas_blocked_by_router: dict[int, set[str]] = {}
+    active_uptime_by_router: dict[int, dict[str, str]] = {}
+    router_errors: dict[int, str] = {}
+    wifi_ssid_by_router: dict[int, str] = {}
+
+    for raw_rid, row in routers.items():
+        if not isinstance(row, dict):
+            continue
+        try:
+            rid = int(raw_rid)
+        except (TypeError, ValueError):
+            rid = int(row.get("router_id") or 0)
+        if not rid:
+            continue
+        if service == "hotspot":
+            active_by_router[rid] = set(row.get("hotspot_active") or [])
+            connected_by_router[rid] = set(row.get("hotspot_connected") or [])
+            nas_blocked_by_router[rid] = set()
+            active_uptime_by_router[rid] = dict(row.get("hotspot_uptime") or {})
+        else:
+            active_by_router[rid] = set(row.get("pppoe_active") or [])
+            connected_by_router[rid] = set()
+            nas_blocked_by_router[rid] = set(row.get("pppoe_blocked") or [])
+            active_uptime_by_router[rid] = {}
+        ssid = (row.get("wifi_ssid") or "").strip()
+        if ssid:
+            wifi_ssid_by_router[rid] = ssid
+        err = (row.get("error") or "").strip()
+        if err:
+            router_errors[rid] = err
+
+    return (
+        active_by_router,
+        connected_by_router,
+        nas_blocked_by_router,
+        active_uptime_by_router,
+        router_errors,
+        wifi_ssid_by_router,
+    )
+
+
+def _workspace_initial_client_access(org) -> dict:
+    """Last cached surfing rows for instant dashboard paint (no MikroTik wait)."""
+    empty_summary = {
+        "surfing": 0,
+        "not_surfing": 0,
+        "disconnected": 0,
+        "expired": 0,
+    }
+    if not org:
+        return {"ok": False, "clients": [], "summary": empty_summary, "cached_at": ""}
+    summary = dict(empty_summary)
+    parts = cache.get(f"workspace_access_parts:v1:{org.pk}") or {}
+    if isinstance(parts, dict):
+        for part in parts.values():
+            if not isinstance(part, dict):
+                continue
+            for key in summary:
+                summary[key] += max(0, int(part.get(key) or 0))
+    clients = []
+    seen: set[int] = set()
+    newest_at = ""
+    for svc in ("pppoe", "hotspot"):
+        blob = cache.get(f"clients_surfing:{org.pk}:{svc}:v8")
+        if not isinstance(blob, dict):
+            continue
+        for row in blob.get("clients") or []:
+            if not isinstance(row, dict):
+                continue
+            cid = row.get("id")
+            try:
+                cid = int(cid)
+            except (TypeError, ValueError):
+                continue
+            if cid in seen:
+                continue
+            seen.add(cid)
+            clients.append(row)
+    live = cache.get(f"org_live_usage:v1:{org.pk}")
+    if isinstance(live, dict) and (live.get("at") or "").strip():
+        newest_at = str(live.get("at"))
+    return {
+        "ok": bool(clients),
+        "clients": clients,
+        "summary": summary,
+        "cached_at": newest_at,
+    }
+
+
 def _filter_surfing_clients_payload(payload: dict, customer_id_raw: str) -> dict:
     """Return one client row when ``customer_id`` is present (detail page polls)."""
     if not customer_id_raw or not isinstance(payload, dict):
@@ -18998,6 +19416,16 @@ def clients_surfing_status(request):
 
     service = (request.GET.get("service") or "pppoe").strip().lower()
     customer_id_raw = (request.GET.get("customer_id") or "").strip()
+    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+    if service == "all":
+        payload = _clients_surfing_all_payload(
+            request,
+            org,
+            force=force,
+            customer_id_raw=customer_id_raw,
+        )
+        status = 400 if payload.get("ok") is False else 200
+        return JsonResponse(payload, status=status)
     if service not in {"pppoe", "hotspot"}:
         return JsonResponse(
             {"ok": False, "error": "Unsupported client service.", "clients": []},
@@ -19008,7 +19436,6 @@ def clients_surfing_status(request):
         if service == "hotspot"
         else Customer.ServiceType.PPPOE
     )
-    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
     cache_key = f"clients_surfing:{org.pk}:{service}:v8"
     if not force:
         cached = cache.get(cache_key)
@@ -19073,94 +19500,66 @@ def clients_surfing_status(request):
     }
     router_errors: dict[int, str] = {}
 
-    def _probe_router(router) -> tuple[int, set[str], set[str], set[str], dict[str, str], str, str]:
-        from core.mikrotik_connect import is_mikrotik_host_cooling_down
-
-        router_id = router.pk
-        stored_ssid = (getattr(router, "wifi_ssid", None) or "").strip()
-        if router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
-            return router_id, set(), set(), set(), {}, "Router suspended", stored_ssid
-        api_host = _resolve_working_nas_host(router, timeout=0.8)
-        if is_mikrotik_host_cooling_down(api_host):
-            return (
-                router_id,
-                set(),
-                set(),
-                set(),
-                {},
-                "Router recently unreachable",
-                stored_ssid,
-            )
-        if service == "hotspot":
-            result = fetch_hotspot_client_macs(
-                api_host,
-                router.username,
-                router.password,
-                timeout=4.0,
-            )
-            active = set(result.get("active_macs") or [])
-            connected = set(result.get("connected_macs") or [])
-            nas_blocked: set[str] = set()
-            active_uptime = {
-                str(mac).upper(): str(uptime)
-                for mac, uptime in (result.get("active_uptime_by_mac") or {}).items()
-                if mac and uptime
-            }
-            live_ssid = (result.get("wifi_ssid") or "").strip() or stored_ssid
-        else:
-            result = fetch_active_pppoe_usernames(
-                api_host,
-                router.username,
-                router.password,
-                timeout=4.0,
-            )
-            active = {name.lower() for name in (result.get("usernames") or [])}
-            connected = set()
-            nas_blocked = {name.lower() for name in (result.get("blocked") or [])}
-            active_uptime = {}
-            live_ssid = stored_ssid
-        if result.get("ok"):
-            return router_id, active, connected, nas_blocked, active_uptime, "", live_ssid
-        return (
-            router_id,
-            set(),
-            set(),
-            set(),
-            {},
-            result.get("error") or "Could not reach router",
-            live_ssid,
-        )
-
     if not use_live_snapshot and routers_by_id:
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        workers = min(8, len(routers_by_id))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [
-                pool.submit(_probe_router, router)
-                for router in routers_by_id.values()
-            ]
-            for future in as_completed(futures):
-                try:
-                    (
-                        router_id,
-                        active,
-                        connected,
-                        nas_blocked,
-                        active_uptime,
-                        error,
-                        wifi_ssid,
-                    ) = future.result(timeout=12.0)
-                except Exception:
-                    continue
-                active_by_router[router_id] = active
-                connected_by_router[router_id] = connected
-                nas_blocked_by_router[router_id] = nas_blocked
-                active_uptime_by_router[router_id] = active_uptime or {}
-                if wifi_ssid:
-                    wifi_ssid_by_router[router_id] = wifi_ssid
-                if error:
-                    router_errors[router_id] = error
+        shared_key = _shared_surfing_probe_cache_key(org.pk)
+        if force:
+            cache.delete(shared_key)
+        hydrated = None
+        if not force:
+            packed = cache.get(shared_key)
+            if isinstance(packed, dict):
+                hydrated = _hydrate_shared_surfing_probe(packed, service)
+
+        if hydrated:
+            (
+                active_by_router,
+                connected_by_router,
+                nas_blocked_by_router,
+                active_uptime_by_router,
+                router_errors,
+                wifi_ssid_by_router,
+            ) = hydrated
+        else:
+            combined: dict[int, dict] = {}
+            workers = min(8, len(routers_by_id))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [
+                    pool.submit(_probe_mikrotik_router_combined, router)
+                    for router in routers_by_id.values()
+                ]
+                for future in as_completed(futures):
+                    try:
+                        row = future.result(timeout=14.0)
+                    except Exception:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    rid = row.get("router_id")
+                    try:
+                        rid = int(rid)
+                    except (TypeError, ValueError):
+                        continue
+                    combined[rid] = row
+            if combined:
+                cache.set(
+                    shared_key,
+                    _pack_shared_surfing_probe(combined),
+                    _SHARED_SURFING_PROBE_TTL,
+                )
+                hydrated = _hydrate_shared_surfing_probe(
+                    _pack_shared_surfing_probe(combined), service
+                )
+            if hydrated:
+                (
+                    active_by_router,
+                    connected_by_router,
+                    nas_blocked_by_router,
+                    active_uptime_by_router,
+                    router_errors,
+                    wifi_ssid_by_router,
+                ) = hydrated
 
     clients_payload = []
     surfing_count = 0
@@ -19669,6 +20068,21 @@ def clients_surfing_status(request):
             payload["clients"] = clients_payload
         except Exception:
             payload["connected_not_surfing_count"] = 0
+    try:
+        from billing.usage_samples import (
+            breakdown_client_access_states,
+            merge_workspace_access_service_parts,
+            record_workspace_client_access_snapshot,
+        )
+
+        access_breakdown = breakdown_client_access_states(clients_payload)
+        merged_access = merge_workspace_access_service_parts(
+            org.pk, service, access_breakdown
+        )
+        record_workspace_client_access_snapshot(org.pk, merged_access)
+        payload["access_summary"] = merged_access
+    except Exception:
+        payload["access_summary"] = {}
     cache.set(cache_key, payload, 8)
     if customer_id_raw:
         payload = _filter_surfing_clients_payload(payload, customer_id_raw)

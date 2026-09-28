@@ -1033,9 +1033,19 @@ a {
   align-items: flex-start;
   gap: 0.65rem;
   margin: 0;
-  padding: 0.85rem 1.15rem 0.95rem;
+  padding: 1rem 1.15rem 1rem;
   border-bottom: 1px solid var(--modal-border, rgba(255, 255, 255, 0.08));
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(8, 16, 22, 0.12));
+}
+
+.mikrotik-onboard-head .role-modal-close {
+  display: grid;
+  place-items: center;
+  width: 2.15rem;
+  height: 2.15rem;
+  border-radius: 12px;
+  border: 1px solid var(--modal-border, rgba(255, 255, 255, 0.14));
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .mikrotik-onboard-title-block {
@@ -6444,6 +6454,9 @@ body.staff-nav-lock {
   --clients-tone: #0e7c86;
   --clients-tone-soft: color-mix(in srgb, #0e7c86 16%, transparent);
   --clients-tone-strong: #0b6b74;
+}
+
+.clients-dash:not(.ops-page) {
   display: grid;
   gap: 0;
   width: min(100%, var(--max));
@@ -10685,6 +10698,10 @@ button.clients-list-table-action {
 .billing-dash {
   --billing-tone: #0e7c86;
   --billing-tone-soft: color-mix(in srgb, #0e7c86 16%, transparent);
+  overflow-x: clip;
+}
+
+.billing-dash:not(.ops-page) {
   display: grid;
   gap: 0;
   width: min(100%, var(--max));
@@ -10692,7 +10709,6 @@ button.clients-list-table-action {
   min-width: 0;
   margin-inline: auto;
   padding-bottom: 1.25rem;
-  overflow-x: clip;
 }
 
 .billing-workspace {
@@ -11791,27 +11807,7 @@ button.clients-list-table-action {
 
 /* ?? Packages page ?? */
 .packages-page {
-  display: grid;
-  gap: 1.1rem;
-  width: 100%;
-  max-width: min(76rem, 100%);
-  margin-inline: auto;
-  padding-bottom: 1.5rem;
-}
-
-.packages-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem 1.5rem;
-  padding: 1.25rem 1.35rem;
-  border-radius: calc(var(--radius, 14px) + 6px);
-  border: 1px solid var(--border);
-  background:
-    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--sea) 18%, transparent), transparent 42%),
-    radial-gradient(90% 120% at 100% 0%, color-mix(in srgb, #059669 12%, transparent), transparent 38%),
-    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, #fff), var(--surface));
-  box-shadow: var(--shadow, 0 10px 28px rgba(0, 0, 0, 0.12));
+  /* layout: see .ops-page shared block */
 }
 
 .packages-hero-main {
@@ -11908,6 +11904,241 @@ button.clients-list-table-action {
 .packages-stat.tone-total { --stat-tone: #0e7c86; }
 .packages-stat.tone-pppoe { --stat-tone: #0e7c86; }
 .packages-stat.tone-hotspot { --stat-tone: #059669; }
+.packages-stat.tone-active { --stat-tone: #059669; }
+.packages-stat.tone-good { --stat-tone: #059669; }
+.packages-stat.tone-warn { --stat-tone: #c27803; }
+.packages-stat.tone-suspended { --stat-tone: #d68910; }
+.packages-stat.tone-static { --stat-tone: #c27803; }
+.packages-stat.tone-invoice { --stat-tone: #0369a1; }
+
+/* Shared ops workspace pages (shell, hero, stats, panels) */
+.ops-page,
+.packages-page,
+.mikrotik-page,
+.billing-dash.ops-page,
+.clients-dash.ops-page,
+.leads-page,
+.audits-page,
+.referral-page,
+.shop-page,
+.client-detail-page.ops-page,
+.clients-usage-page.ops-page,
+.clients-general-usage-page.ops-page,
+.clients-attempted-page.ops-page,
+.client-usage-analysis-page.ops-page,
+.module-page.ops-page,
+.team-page.ops-page {
+  display: grid;
+  gap: 1.1rem;
+  width: min(100%, var(--max, 76rem));
+  max-width: var(--max, 76rem);
+  min-width: 0;
+  margin-inline: auto;
+  padding-bottom: 1.5rem;
+}
+
+.account-page-shell.ops-page,
+.access-settings-shell.ops-page {
+  width: min(100%, var(--max, 76rem));
+  max-width: var(--max, 76rem);
+  margin-inline: auto;
+}
+
+.clients-usage-workspace.ops-panel,
+.leads-board.ops-panel,
+.leads-workspace.ops-panel,
+.referral-share-card.ops-panel,
+.referral-list-card.ops-panel,
+.panel.staff-panel.ops-panel {
+  border-radius: 18px;
+}
+
+.referral-share-card.ops-panel,
+.referral-list-card.ops-panel {
+  border: 0;
+  box-shadow: none;
+  animation: none;
+}
+
+.packages-stat.is-active-audit,
+a.packages-stat.is-active-audit {
+  border-color: color-mix(in srgb, var(--stat-tone) 55%, var(--border));
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--stat-tone) 16%, transparent);
+}
+
+.clients-attempted-extra-meta {
+  margin: 0;
+  padding: 0.65rem 1.1rem 0;
+  font-size: 0.84rem;
+  color: var(--ink-soft);
+}
+
+.clients-usage-overview-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.clients-attempted-overview-stats,
+.referral-overview-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.packages-stat-value--sm {
+  font-size: clamp(0.95rem, 2.5vw, 1.15rem);
+  letter-spacing: 0.04em;
+  word-break: break-all;
+}
+
+@media (max-width: 900px) {
+  .clients-attempted-overview-stats,
+  .referral-overview-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.access-settings-hero .packages-hero-actions {
+  align-items: center;
+}
+
+.shop-hero-aside {
+  display: grid;
+  gap: 0.15rem;
+  justify-items: end;
+  text-align: right;
+  min-width: 5.5rem;
+}
+
+.ops-panel,
+.packages-group,
+.mikrotik-fleet,
+.clients-workspace,
+.billing-workspace,
+.audits-shell {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--sea, #0e7c86) 18%, var(--border-strong, var(--border)));
+  border-radius: 18px;
+  background: var(--surface-solid, var(--surface));
+  box-shadow: var(--card-shadow, 0 14px 34px color-mix(in srgb, var(--ink) 8%, transparent));
+  overflow: hidden;
+}
+
+.clients-workspace {
+  border-color: color-mix(in srgb, var(--clients-tone, #0e7c86) 18%, var(--border-strong, var(--border)));
+}
+
+.billing-workspace {
+  border-color: color-mix(in srgb, var(--billing-tone, #0e7c86) 18%, var(--border-strong, var(--border)));
+}
+
+.billing-workspace.ops-panel > .billing-section:first-child {
+  padding-top: 1rem;
+}
+
+.mikrotik-fleet {
+  border-color: color-mix(in srgb, var(--mikrotik-tone, #0e7c86) 18%, var(--border-strong, var(--border)));
+}
+
+.ops-hero,
+.packages-hero,
+.mikrotik-hero,
+.leads-hero,
+.referral-hero,
+.audits-hero,
+.access-settings-hero,
+.shop-hero,
+.mk-page-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem 1.5rem;
+  padding: 1.25rem 1.35rem;
+  border-radius: calc(var(--radius, 14px) + 6px);
+  border: 1px solid var(--border);
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--sea, #0e7c86) 18%, transparent), transparent 42%),
+    radial-gradient(90% 120% at 100% 0%, color-mix(in srgb, #059669 12%, transparent), transparent 38%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, #fff), var(--surface));
+  box-shadow: var(--shadow, 0 10px 28px rgba(0, 0, 0, 0.12));
+}
+
+.ops-stats,
+.packages-stats,
+.mikrotik-stats,
+.clients-overview-stats,
+.billing-overview-stats {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.ops-stats,
+.packages-stats,
+.mikrotik-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.clients-overview-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .clients-overview-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.billing-overview-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.mikrotik-stat,
+.packages-stat {
+  --stat-tone: var(--sea, #0e7c86);
+}
+
+@media (max-width: 900px) {
+  .billing-overview-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .ops-hero,
+  .packages-hero,
+  .mikrotik-hero,
+  .leads-hero,
+  .referral-hero,
+  .mk-page-hero {
+    flex-direction: column;
+    padding: 1rem 1.05rem;
+  }
+
+  .packages-hero-actions,
+  .mikrotik-hero-actions,
+  .billing-workspace-actions,
+  .clients-workspace-actions,
+  .leads-hero-actions,
+  .referral-hero-main + .referral-hero-stats {
+    width: 100%;
+  }
+
+  .ops-stats,
+  .packages-stats,
+  .mikrotik-stats,
+  .clients-overview-stats,
+  .billing-overview-stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .packages-hero-actions .btn,
+  .mikrotik-hero-actions .btn,
+  .clients-workspace-actions .btn,
+  .billing-workspace-actions .btn {
+    flex: 1 1 auto;
+    width: 100%;
+    justify-content: center;
+  }
+}
 
 a.packages-stat:hover,
 a.packages-stat:focus-visible {
@@ -15072,13 +15303,120 @@ a.packages-stat:focus-visible {
 /* MikroTik list page shell (aligned with packages page) */
 .mikrotik-page {
   --mikrotik-tone: #0e7c86;
-  display: grid;
-  gap: 0;
-  width: min(100%, var(--max, 76rem));
-  max-width: var(--max, 76rem);
+  /* layout: see .ops-page shared block */
+}
+
+.mikrotik-hero-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.95rem;
   min-width: 0;
-  margin-inline: auto;
-  padding-bottom: 1.5rem;
+  flex: 1 1 auto;
+}
+
+.mikrotik-hero-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 16px;
+  color: var(--mikrotik-tone);
+  background: color-mix(in srgb, var(--mikrotik-tone) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mikrotik-tone) 24%, transparent);
+}
+
+.mikrotik-hero-copy {
+  min-width: 0;
+}
+
+.mikrotik-kicker {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mikrotik-tone);
+}
+
+.mikrotik-title {
+  margin: 0 0 0.35rem;
+  font-family: var(--font-display);
+  font-size: clamp(1.25rem, 1.1rem + 0.7vw, 1.55rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.mikrotik-lead {
+  margin: 0;
+  max-width: 48ch;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.mikrotik-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+  align-items: flex-start;
+}
+
+.mikrotik-stat {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  min-height: 4.25rem;
+  padding: 0.95rem 1.05rem;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--stat-tone, var(--mikrotik-tone)) 18%, var(--border));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--stat-tone, var(--mikrotik-tone)) 10%, transparent), transparent 55%),
+    color-mix(in srgb, var(--surface) 94%, var(--stat-tone, var(--mikrotik-tone)) 6%);
+  box-shadow: var(--card-shadow, 0 8px 20px rgba(11, 31, 42, 0.04));
+  animation: clientsRise 0.4s ease both;
+  animation-delay: calc(0.04s + (var(--i, 0) * 0.05s));
+}
+
+.mikrotik-stat.tone-total { --stat-tone: #0e7c86; }
+.mikrotik-stat.tone-active { --stat-tone: #059669; }
+.mikrotik-stat.tone-suspended { --stat-tone: #d68910; }
+
+.mikrotik-stat-ico {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 2.45rem;
+  height: 2.45rem;
+  border-radius: 13px;
+  color: var(--stat-tone);
+  background: color-mix(in srgb, var(--stat-tone) 16%, transparent);
+}
+
+.mikrotik-stat-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mikrotik-stat-label {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.mikrotik-stat-value {
+  margin: 0.2rem 0 0;
+  font-size: clamp(1.35rem, 1.2rem + 0.6vw, 1.65rem);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  line-height: 1;
 }
 
 .mikrotik-fleet {
@@ -15091,72 +15429,21 @@ a.packages-stat:focus-visible {
   overflow: hidden;
 }
 
-.mikrotik-fleet-head {
+.mikrotik-fleet-toolbar {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.85rem 1.25rem;
-  padding: 1rem 1.15rem 0.95rem;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 0.85rem 1.15rem;
   border-bottom: 1px solid var(--border);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--mikrotik-tone) 9%, transparent), transparent 72%);
+  background: color-mix(in srgb, var(--mikrotik-tone) 3.5%, transparent);
 }
 
-.mikrotik-fleet-title {
-  min-width: 0;
-}
-
-.mikrotik-fleet-title h1 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: clamp(1.15rem, 1.02rem + 0.45vw, 1.45rem);
-  font-weight: 750;
-  letter-spacing: -0.03em;
-  line-height: 1.2;
-  color: var(--ink);
-}
-
-.mikrotik-fleet-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.4rem 0.5rem;
-  margin: 0.45rem 0 0;
-  font-size: 0.84rem;
-  color: var(--ink-soft);
-}
-
-.mikrotik-fleet-summary strong {
-  color: var(--ink);
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-}
-
-.mikrotik-fleet-pill {
-  --pill-tone: var(--mikrotik-tone);
-  display: inline-flex;
-  align-items: center;
-  min-height: 1.45rem;
-  padding: 0.15rem 0.55rem;
-  border-radius: 999px;
-  font-size: 0.74rem;
-  font-weight: 750;
-  letter-spacing: 0.01em;
-  color: var(--pill-tone);
-  background: color-mix(in srgb, var(--pill-tone) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--pill-tone) 22%, transparent);
-  font-variant-numeric: tabular-nums;
-}
-
-.mikrotik-fleet-pill.tone-active { --pill-tone: #059669; }
-.mikrotik-fleet-pill.tone-suspended { --pill-tone: #d68910; }
-
-.mikrotik-fleet-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-  flex: 0 0 auto;
-  align-items: center;
+.mikrotik-fleet-toolbar .mikrotik-search {
+  flex: 1 1 16rem;
+  max-width: 22rem;
+  min-width: min(100%, 12rem);
 }
 
 .mikrotik-hero-btn {
@@ -15181,40 +15468,25 @@ a.packages-stat:focus-visible {
   display: none;
 }
 
-.mikrotik-fleet-tools {
+.mikrotik-router-name-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 0.75rem 1rem;
-  padding: 0.85rem 1.15rem;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--mikrotik-tone) 3.5%, transparent);
+  align-items: center;
+  gap: 0.45rem 0.55rem;
+  min-width: 0;
 }
 
-.mikrotik-fleet-lead {
-  margin: 0;
-  flex: 1 1 16rem;
-  max-width: 48rem;
-  color: var(--ink-soft);
-  font-size: 0.88rem;
-  line-height: 1.45;
+.mikrotik-router-account-pill {
+  display: none;
+  font-size: 0.68rem;
+  padding: 0.12rem 0.45rem;
 }
 
-.mikrotik-search-field {
-  display: grid;
-  gap: 0.3rem;
-  flex: 0 1 18rem;
-  min-width: min(100%, 14rem);
-}
-
-.mikrotik-search-label {
-  margin: 0;
-  font-size: 0.7rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-soft);
+.mikrotik-router-location {
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mikrotik-search {
@@ -15449,15 +15721,24 @@ a.packages-stat:focus-visible {
 
 .mikrotik-router-connection {
   display: grid;
-  gap: 0.35rem;
+  gap: 0.28rem;
   justify-items: start;
+  align-content: start;
   min-width: 0;
 }
 
 .mikrotik-router-host {
-  font-weight: 650;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-soft);
   font-variant-numeric: tabular-nums;
   word-break: break-all;
+}
+
+@media (min-width: 1101px) {
+  .mikrotik-router-account-pill {
+    display: none !important;
+  }
 }
 
 .mikrotik-view-btn {
@@ -15685,7 +15966,7 @@ a.packages-stat:focus-visible {
 
 .mikrotik-router-primary,
 .mikrotik-router-connection,
-.org-table-mikrotik td:not([data-label="Manage"]) {
+.org-table-mikrotik td:not([data-label="Actions"]) {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -15715,15 +15996,15 @@ a.packages-stat:focus-visible {
 
 @media (min-width: 1101px) {
   .org-table-mikrotik {
-    min-width: 62rem;
+    min-width: 44rem;
   }
 
   .org-table-mikrotik th:nth-child(1),
-  .org-table-mikrotik td:nth-child(1) { min-width: 15rem; }
+  .org-table-mikrotik td:nth-child(1) { min-width: 14rem; }
   .org-table-mikrotik th:nth-child(2),
-  .org-table-mikrotik td:nth-child(2) { min-width: 10rem; }
-  .org-table-mikrotik th:nth-child(7),
-  .org-table-mikrotik td:nth-child(7) { min-width: 14rem; }
+  .org-table-mikrotik td:nth-child(2) { min-width: 11rem; }
+  .org-table-mikrotik th:nth-child(4),
+  .org-table-mikrotik td:nth-child(4) { min-width: 13rem; }
 }
 
 .mikrotik-router-row.is-suspended {
@@ -16398,6 +16679,178 @@ a.packages-stat:focus-visible {
   cursor: not-allowed;
 }
 
+/* Password + suspend list modals (match delete / restart polish) */
+.mikrotik-password-head,
+.mikrotik-suspend-head {
+  align-items: flex-start;
+  gap: 0.85rem;
+  margin: 0;
+  padding: 1.2rem 1.25rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mikrotik-password-head-main,
+.mikrotik-suspend-head-main {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mikrotik-password-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 15px;
+  color: #5eead4;
+  background: rgba(14, 124, 134, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(45, 212, 191, 0.28);
+}
+
+.mikrotik-suspend-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 15px;
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.28);
+}
+
+.mikrotik-suspend-mark.is-activate {
+  color: #6ee7b7;
+  background: rgba(16, 185, 129, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.28);
+}
+
+.mikrotik-password-modal .role-modal-kicker {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0 0.35rem;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid rgba(45, 212, 191, 0.32);
+  border-radius: 999px;
+  background: rgba(14, 124, 134, 0.14);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: #5eead4;
+}
+
+.mikrotik-suspend-modal .role-modal-kicker {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0 0.35rem;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.12);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: #fbbf24;
+}
+
+.mikrotik-password-modal .role-modal-head h2,
+.mikrotik-suspend-modal .role-modal-head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.15rem, 3.6vw, 1.38rem);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.mikrotik-password-desc,
+.mikrotik-suspend-desc,
+.mikrotik-password-modal .role-modal-sub,
+.mikrotik-suspend-modal .role-modal-sub {
+  max-width: none;
+  margin: 0;
+  color: rgba(232, 242, 244, 0.74);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.mikrotik-password-body,
+.mikrotik-suspend-body {
+  display: grid;
+  gap: 0.95rem;
+  padding: 1.1rem 1.25rem 0.45rem;
+}
+
+.mikrotik-action-modal .mikrotik-password-panel .mikrotik-suspend-confirm,
+.mikrotik-suspend-confirm {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(232, 242, 244, 0.94);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.mikrotik-suspend-confirm:has(input:checked) {
+  border-color: rgba(245, 158, 11, 0.5);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.mikrotik-password-actions,
+.mikrotik-suspend-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.95rem 1.25rem 1.2rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.14);
+}
+
+[data-theme="light"] .mikrotik-password-desc,
+[data-theme="light"] .mikrotik-suspend-desc {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-password-head,
+[data-theme="light"] .mikrotik-suspend-head {
+  border-bottom-color: rgba(11, 31, 42, 0.08);
+  background: rgba(255, 255, 255, 0.85);
+}
+
+[data-theme="light"] .mikrotik-password-mark {
+  color: #0f766e;
+  background: rgba(14, 124, 134, 0.1);
+}
+
+[data-theme="light"] .mikrotik-suspend-mark {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.12);
+}
+
+[data-theme="light"] .mikrotik-suspend-mark.is-activate {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.12);
+}
+
+[data-theme="light"] .mikrotik-action-modal .mikrotik-password-panel .mikrotik-delete-target,
+[data-theme="light"] .mikrotik-action-modal .mikrotik-suspend-panel .mikrotik-delete-target {
+  border-color: var(--border);
+  background: rgba(11, 31, 42, 0.03);
+}
+
+[data-theme="light"] .mikrotik-action-modal .mikrotik-suspend-panel .mikrotik-suspend-confirm {
+  border-color: var(--border);
+  background: rgba(11, 31, 42, 0.03);
+  color: var(--ink);
+}
+
 [data-theme="light"] .mikrotik-delete-modal .mikrotik-delete-panel {
   --modal-ink: var(--ink);
   --modal-ink-soft: var(--ink-soft);
@@ -16768,63 +17221,67 @@ a.packages-stat:focus-visible {
     height: 2.65rem;
   }
 
-  .org-table-mikrotik td[data-label="Connection"] .mikrotik-router-connection {
+  .org-table-mikrotik td[data-label="Status"] .mikrotik-router-connection {
     display: grid;
     justify-items: end;
     gap: 0.28rem;
   }
 
-  .org-table-mikrotik td[data-label="Connection"] .mikrotik-link-status {
+  .org-table-mikrotik td[data-label="Status"] .mikrotik-link-status {
     justify-content: flex-end;
   }
 
-  .org-table-mikrotik td[data-label="Wi?Fi"] .mikrotik-wifi-chip,
-  .org-table-mikrotik td[data-label="Wi-Fi"] .mikrotik-wifi-chip {
-    max-width: min(14rem, 58vw);
+  .org-table-mikrotik td[data-label="Account"],
+  .org-table-mikrotik th.mikrotik-col-account {
+    display: none !important;
   }
 
-  .org-table-mikrotik td[data-label="Manage"]::before {
+  .mikrotik-router-account-pill {
+    display: inline-flex;
+  }
+
+  .org-table-mikrotik td[data-label="Actions"]::before {
     display: none;
   }
 
-  .org-table-mikrotik td[data-label="Manage"] .org-actions-icons,
-  .org-table-mikrotik td[data-label="Manage"] .mikrotik-row-actions {
+  .org-table-mikrotik td[data-label="Actions"] .org-actions-icons,
+  .org-table-mikrotik td[data-label="Actions"] .mikrotik-row-actions {
     width: 100%;
     justify-content: flex-start;
     flex-wrap: wrap;
   }
 
-  .org-table-mikrotik td[data-label="Manage"] .mikrotik-view-btn {
+  .org-table-mikrotik td[data-label="Actions"] .mikrotik-view-btn {
     margin-left: auto;
   }
 }
 
 @media (max-width: 720px) {
-  .mikrotik-fleet-head {
+  .mikrotik-hero {
     flex-direction: column;
-    align-items: stretch;
-    padding: 0.95rem 1rem 0.9rem;
+    padding: 1rem 1.05rem;
   }
 
-  .mikrotik-fleet-actions {
+  .mikrotik-hero-actions {
     width: 100%;
   }
 
-  .mikrotik-fleet-actions .btn {
+  .mikrotik-hero-actions .btn {
     flex: 1 1 calc(50% - 0.3rem);
     justify-content: center;
   }
 
-  .mikrotik-fleet-tools {
-    flex-direction: column;
-    align-items: stretch;
+  .mikrotik-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .mikrotik-fleet-toolbar {
     padding: 0.8rem 1rem;
   }
 
-  .mikrotik-search-field {
-    flex: 1 1 auto;
+  .mikrotik-fleet-toolbar .mikrotik-search {
+    max-width: none;
     width: 100%;
-    min-width: 0;
   }
 
   .mikrotik-fleet-body {
@@ -16841,19 +17298,19 @@ a.packages-stat:focus-visible {
     border-radius: 16px;
   }
 
-  .mikrotik-fleet-title h1 {
+  .mikrotik-title {
     font-size: 1.2rem;
   }
 
-  .mikrotik-fleet-lead {
+  .mikrotik-lead {
     font-size: 0.84rem;
   }
 
-  .mikrotik-fleet-actions {
+  .mikrotik-hero-actions {
     flex-direction: column;
   }
 
-  .mikrotik-fleet-actions .btn {
+  .mikrotik-hero-actions .btn {
     flex: 1 1 auto;
     width: 100%;
   }
@@ -16868,36 +17325,36 @@ a.packages-stat:focus-visible {
     padding: 0.9rem 0.9rem;
   }
 
-  .org-table-mikrotik td[data-label="Connection"] {
+  .org-table-mikrotik td[data-label="Status"] {
     flex-direction: column;
     align-items: stretch;
     gap: 0.4rem;
   }
 
-  .org-table-mikrotik td[data-label="Connection"]::before {
+  .org-table-mikrotik td[data-label="Status"]::before {
     max-width: none;
   }
 
-  .org-table-mikrotik td[data-label="Connection"] .mikrotik-router-connection {
+  .org-table-mikrotik td[data-label="Status"] .mikrotik-router-connection {
     justify-items: start;
     text-align: left;
   }
 
-  .org-table-mikrotik td[data-label="Connection"] .mikrotik-link-status {
+  .org-table-mikrotik td[data-label="Status"] .mikrotik-link-status {
     justify-content: flex-start;
   }
 
-  .org-table-mikrotik td[data-label="Manage"] .org-actions-icons,
-  .org-table-mikrotik td[data-label="Manage"] .mikrotik-row-actions {
+  .org-table-mikrotik td[data-label="Actions"] .org-actions-icons,
+  .org-table-mikrotik td[data-label="Actions"] .mikrotik-row-actions {
     width: 100%;
   }
 
-  .org-table-mikrotik td[data-label="Manage"] .org-action-icon {
+  .org-table-mikrotik td[data-label="Actions"] .org-action-icon {
     flex: 1 1 calc(20% - 0.35rem);
     min-width: 2.4rem;
   }
 
-  .org-table-mikrotik td[data-label="Manage"] .mikrotik-view-btn {
+  .org-table-mikrotik td[data-label="Actions"] .mikrotik-view-btn {
     flex: 1 1 100%;
     justify-content: center;
     margin-left: 0;
@@ -16906,8 +17363,8 @@ a.packages-stat:focus-visible {
 }
 
 @media (min-width: 721px) and (max-width: 960px) {
-  .mikrotik-fleet-tools {
-    align-items: center;
+  .mikrotik-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -19342,11 +19799,19 @@ a.packages-stat:focus-visible {
 
 /* ?? MikroTik Clean uplink + Ports (shared modern shell) ?? */
 .mk-page {
+  animation: mk-page-in 0.45s ease both;
+}
+
+.mk-page:not(.ops-page) {
   display: grid;
   gap: 1rem;
   width: min(100%, 68rem);
   margin: 0 auto;
-  animation: mk-page-in 0.45s ease both;
+}
+
+.mk-page.ops-page {
+  width: min(100%, var(--max, 76rem));
+  max-width: var(--max, 76rem);
 }
 
 @keyframes mk-page-in {
@@ -19355,17 +19820,9 @@ a.packages-stat:focus-visible {
 }
 
 .mk-page-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem 1.5rem;
+  /* base hero chrome: see .ops-hero shared block */
   padding: 1.15rem 1.25rem;
-  border-radius: calc(var(--radius) + 4px);
-  border: 1px solid var(--border);
-  background:
-    linear-gradient(135deg, var(--sea-soft), transparent 42%),
-    var(--surface);
-  box-shadow: var(--shadow);
+  border-radius: calc(var(--radius, 14px) + 6px);
 }
 
 .mk-page-hero.is-on {
@@ -43602,6 +44059,12 @@ a.client-cmd-more-item:hover {
   --wd-ink: color-mix(in srgb, var(--text, #0b1f2a) 92%, transparent);
   --wd-muted: color-mix(in srgb, var(--text, #0b1f2a) 58%, transparent);
   --wd-radius: calc(var(--radius, 14px) + 2px);
+  overflow-x: clip;
+  box-sizing: border-box;
+  animation: workspace-dash-in 0.45s ease both;
+}
+
+.workspace-dash:not(.ops-page) {
   display: grid;
   gap: 1rem;
   width: 100%;
@@ -43609,9 +44072,6 @@ a.client-cmd-more-item:hover {
   min-width: 0;
   margin-inline: auto;
   padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
-  overflow-x: clip;
-  box-sizing: border-box;
-  animation: workspace-dash-in 0.45s ease both;
 }
 
 @keyframes workspace-dash-in {
@@ -43638,6 +44098,35 @@ a.client-cmd-more-item:hover {
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.75rem;
   min-width: 0;
+}
+
+.workspace-dash-kpis.workspace-network-kpis {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.workspace-client-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+button.packages-stat.workspace-access-stat {
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+button.packages-stat.workspace-access-stat.is-active {
+  border-color: color-mix(in srgb, var(--stat-tone, var(--sea)) 55%, var(--border));
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--stat-tone, var(--sea)) 16%, transparent);
+}
+
+@media (max-width: 900px) {
+  .workspace-client-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .workspace-dash-kpis.workspace-network-kpis {
+    grid-template-columns: 1fr;
+  }
 }
 
 .workspace-dash-kpi,
@@ -47035,9 +47524,8 @@ a.module-card:focus-visible {
   box-shadow: var(--card-shadow);
 }
 
-[data-theme="dark"] .mikrotik-fleet-head {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--sea) 14%, transparent), transparent 72%);
+[data-theme="dark"] .mikrotik-hero {
+  border-color: color-mix(in srgb, var(--sea) 22%, var(--border));
 }
 
 .mikrotik-table-shell {

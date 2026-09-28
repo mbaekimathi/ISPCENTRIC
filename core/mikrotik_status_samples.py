@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any
 
@@ -84,6 +85,8 @@ _POST_ONBOARD_GRACE_TTL = 30 * 60  # after onboard: extra probe retries + hold C
 _POST_UPLINK_GRACE_TTL = 8 * 60  # after bond/failover/balance: WAN/API settle window
 _STABILIZE_FAILURES_DEFAULT = 2  # consecutive non-connected polls before UI drops
 _STABILIZE_FAILURES_TUNNEL = 3  # WireGuard peers need more tolerance
+_STABILIZE_FAILURES_TUNNEL_HOSTED = 4  # VPS polls: one extra beat before UI drops
+_STABILIZE_FAILURES_HOSTED_DEFAULT = 3  # hosted LAN-only rows (no tunnel flag)
 _STABILIZE_FAILURES_GRACE = 4  # freshly onboarded routers
 _STABILIZE_FAILURES_UPLINK = 5  # after combine/failover/balance apply
 _AUTO_RESTORE_CONFIRM_TTL = 120  # require repeated outage before auto-restore runs
@@ -429,13 +432,37 @@ def _post_onboard_grace_meta(router_id: int) -> dict[str, Any]:
 
 
 def _stabilize_failures_required(router_id: int, *, tunnel: bool = False) -> int:
+    from django.conf import settings
+
+    hosted = bool(getattr(settings, "HOSTED", False))
     if is_mikrotik_post_uplink_grace(router_id):
         return _STABILIZE_FAILURES_UPLINK
     if is_mikrotik_post_onboard_grace(router_id):
         return _STABILIZE_FAILURES_GRACE
     meta = _post_onboard_grace_meta(router_id)
     if meta.get("tunnel") or tunnel:
+        if hosted:
+            try:
+                return max(
+                    _STABILIZE_FAILURES_TUNNEL,
+                    int(os.getenv("MIKROTIK_STABILIZE_TUNNEL_FAILURES", "4")),
+                )
+            except (TypeError, ValueError):
+                return _STABILIZE_FAILURES_TUNNEL_HOSTED
         return _STABILIZE_FAILURES_TUNNEL
+    if hosted:
+        try:
+            return max(
+                2,
+                int(
+                    os.getenv(
+                        "MIKROTIK_STABILIZE_FAILURES_HOSTED",
+                        str(_STABILIZE_FAILURES_HOSTED_DEFAULT),
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            return _STABILIZE_FAILURES_HOSTED_DEFAULT
     return _STABILIZE_FAILURES_DEFAULT
 
 

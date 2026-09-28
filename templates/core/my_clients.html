@@ -3,48 +3,87 @@
 {% block title %}My clients — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="clients-dash ops-surface is-tab-{{ active_tab }}" data-clients-dash data-active-tab="{{ active_tab }}" data-clients-sort="{{ clients_sort|default:'used' }}">
-  <section class="clients-workspace">
-    <header class="clients-workspace-head">
-      <div class="clients-workspace-title">
-        <p class="ops-kicker">Subscriber operations</p>
-        <h1>My clients</h1>
-        <p class="clients-workspace-summary">
-          <span><strong>{{ pppoe_count|add:static_count|add:hotspot_count }}</strong> subscribers</span>
-          <span class="clients-workspace-pill tone-pppoe">{{ pppoe_count }} PPPoE</span>
-          <span class="clients-workspace-pill tone-static">{{ static_count }} Static</span>
-          <span class="clients-workspace-pill tone-hotspot">{{ hotspot_count }} Hotspot</span>
-        </p>
+<div class="clients-dash ops-page ops-surface is-tab-{{ active_tab }}" data-clients-dash data-active-tab="{{ active_tab }}" data-clients-sort="{{ clients_sort|default:'used' }}">
+  <header class="packages-hero ops-hero clients-page-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.9 2 2 2 3.4V19h7v-2.5c0-2.3-4.7-3.5-8-3.5z"/></svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Subscribers</p>
+        <h1 class="packages-title">My clients</h1>
+        <p class="packages-lead">PPPoE, static, and Hotspot subscribers for this organization.</p>
       </div>
-      <div class="clients-workspace-actions">
-        <a class="btn btn-ghost btn-sm clients-hero-btn" href="{% url 'core:noc' %}{% if active_tab == 'pppoe' %}?focus=impact{% endif %}">
-          NOC
-        </a>
-        {% if active_tab == 'pppoe' %}
-          {% if pending_view %}
-            <a class="btn btn-ghost btn-sm clients-hero-btn" href="{% url 'core:my_clients' %}?tab=pppoe">
-              All PPPoE clients
-            </a>
-          {% else %}
-            <a
-              class="btn btn-ghost btn-sm clients-hero-btn{% if pending_activation_count %} is-pending-link{% endif %}"
-              href="{% url 'core:my_clients' %}?tab=pppoe&amp;view=pending"
-            >
-              Installed{% if pending_activation_count %} ({{ pending_activation_count }}){% endif %}
-            </a>
-            <button type="button" class="btn btn-primary btn-sm clients-hero-btn" data-open-modal="pppoe-register-modal">
-              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
-              Register PPPoE client
-            </button>
-          {% endif %}
+    </div>
+    <div class="packages-hero-actions clients-workspace-actions">
+      <a class="btn btn-ghost btn-sm clients-hero-btn" href="{% url 'core:noc' %}{% if active_tab == 'pppoe' %}?focus=impact{% endif %}">
+        NOC
+      </a>
+      {% if active_tab == 'pppoe' %}
+        {% if pending_view %}
+          <a class="btn btn-ghost btn-sm clients-hero-btn" href="{% url 'core:my_clients' %}?tab=pppoe">
+            All PPPoE clients
+          </a>
+        {% else %}
+          <a
+            class="btn btn-ghost btn-sm clients-hero-btn{% if pending_activation_count %} is-pending-link{% endif %}"
+            href="{% url 'core:my_clients' %}?tab=pppoe&amp;view=pending"
+          >
+            Installed{% if pending_activation_count %} ({{ pending_activation_count }}){% endif %}
+          </a>
+          <button type="button" class="btn btn-primary btn-sm clients-hero-btn" data-open-modal="pppoe-register-modal">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+            Register PPPoE
+          </button>
         {% endif %}
-        <a class="btn btn-ghost btn-sm clients-hero-btn" href="{% url 'billing:dashboard' %}">
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h10M4 17h13"/></svg>
-          Billing
-        </a>
-      </div>
-    </header>
+      {% endif %}
+      <a class="btn btn-ghost btn-sm clients-hero-btn" href="{% url 'billing:dashboard' %}">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h10M4 17h13"/></svg>
+        Billing
+      </a>
+    </div>
+  </header>
 
+  <div class="packages-stats clients-overview-stats" aria-label="Subscriber counts">
+    <div class="packages-stat tone-total" style="--i:0">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Total</p>
+        <p class="packages-stat-value">{{ pppoe_count|add:static_count|add:hotspot_count }}</p>
+      </div>
+    </div>
+    <a class="packages-stat tone-pppoe" href="{% url 'core:my_clients' %}?tab=pppoe" style="--i:1">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">PPPoE</p>
+        <p class="packages-stat-value">{{ pppoe_count }}</p>
+      </div>
+    </a>
+    <a class="packages-stat tone-static" href="{% url 'core:my_clients' %}?tab=static" style="--i:2">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 7h16v2H4Zm2 4h12v2H6Zm3 4h6v2H9Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Static</p>
+        <p class="packages-stat-value">{{ static_count }}</p>
+      </div>
+    </a>
+    <a class="packages-stat tone-hotspot" href="{% url 'core:my_clients' %}?tab=hotspot" style="--i:3">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Hotspot</p>
+        <p class="packages-stat-value">{{ hotspot_count }}</p>
+      </div>
+    </a>
+  </div>
+
+  <section class="clients-workspace ops-panel">
     <nav class="clients-seg" aria-label="Client type">
       <a
         class="clients-seg-item tone-pppoe{% if active_tab == 'pppoe' and not pending_view %} is-active{% endif %}"

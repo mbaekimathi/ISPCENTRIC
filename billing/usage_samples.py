@@ -1304,6 +1304,10 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
             },
             _ORG_LIVE_USAGE_TTL,
         )
+        try:
+            cache.delete(f"clients_surfing_shared_probe:v1:{int(organization.pk)}")
+        except Exception:
+            pass
     elif previous_live.get("ok"):
         # Keep the last good snapshot instead of marking everyone offline.
         cache.set(
@@ -3853,6 +3857,266 @@ def record_pppoe_connected_not_surfing_count(
 
     pruned.append({"t": now.isoformat(), "c": count})
     cache.set(key, pruned[-_NS_CONNECTED_TREND_MAX_POINTS:], _NS_CONNECTED_TREND_TTL)
+
+
+_WORKSPACE_ACCESS_PARTS_TTL = 120
+_WORKSPACE_ACCESS_TREND_TTL = _NS_CONNECTED_TREND_TTL
+_WORKSPACE_ACCESS_TREND_MIN_INTERVAL = _NS_CONNECTED_TREND_MIN_INTERVAL
+_WORKSPACE_ACCESS_TREND_MAX_POINTS = _NS_CONNECTED_TREND_MAX_POINTS
+_CLIENT_ACCESS_STATES = ("surfing", "not_surfing", "disconnected", "expired")
+
+
+def _workspace_access_parts_cache_key(organization_id: int) -> str:
+    return f"workspace_access_parts:v1:{organization_id}"
+
+
+def _workspace_access_trend_cache_key(organization_id: int) -> str:
+    return f"workspace_client_access_trend:v1:{organization_id}"
+
+
+def breakdown_client_access_states(clients: list[dict]) -> dict[str, int]:
+    """Count clients by live access state from clients_surfing_status rows."""
+    counts = {key: 0 for key in _CLIENT_ACCESS_STATES}
+    for row in clients or []:
+        if not isinstance(row, dict):
+            continue
+        state = (row.get("state") or "").strip().lower()
+        if state in counts:
+            counts[state] += 1
+        elif row.get("surfing"):
+            counts["surfing"] += 1
+        elif row.get("internet_allowed") and row.get("connected") and not row.get("surfing"):
+            counts["not_surfing"] += 1
+        elif row.get("internet_allowed") and not row.get("connected"):
+            counts["disconnected"] += 1
+        else:
+            counts["expired"] += 1
+    return counts
+
+
+def merge_workspace_access_service_parts(
+    organization_id: int | None, service: str, breakdown: dict[str, int]
+) -> dict[str, int]:
+    """Keep per-service counts and return org-wide totals for dashboard charts."""
+    if not organization_id:
+        return {key: 0 for key in _CLIENT_ACCESS_STATES}
+    svc = (service or "").strip().lower()
+    if svc not in {"pppoe", "hotspot"}:
+        svc = "pppoe"
+    clean = {key: max(0, int(breakdown.get(key) or 0)) for key in _CLIENT_ACCESS_STATES}
+    parts_key = _workspace_access_parts_cache_key(int(organization_id))
+    parts = dict(cache.get(parts_key) or {})
+    parts[svc] = clean
+    cache.set(parts_key, parts, _WORKSPACE_ACCESS_PARTS_TTL)
+    merged = {key: 0 for key in _CLIENT_ACCESS_STATES}
+    for part in parts.values():
+        if not isinstance(part, dict):
+            continue
+        for key in _CLIENT_ACCESS_STATES:
+            merged[key] += max(0, int(part.get(key) or 0))
+    return merged
+
+
+def record_workspace_client_access_snapshot(
+    organization_id: int | None, counts: dict[str, int]
+) -> None:
+    """Append live org-wide client access counts for the workspace trend chart."""
+    if not organization_id:
+        return
+    payload = {key: max(0, int(counts.get(key) or 0)) for key in _CLIENT_ACCESS_STATES}
+    key = _workspace_access_trend_cache_key(int(organization_id))
+    now = timezone.now()
+    points = list(cache.get(key) or [])
+    cutoff = now - timedelta(hours=26)
+    pruned: list[dict[str, Any]] = []
+    for row in points:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get("t")
+        if not raw:
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(raw))
+        except (TypeError, ValueError):
+            continue
+        if timezone.is_naive(stamp):
+            stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+        if stamp < cutoff:
+            continue
+        pruned.append(
+            {
+                "t": stamp.isoformat(),
+                **{k: max(0, int(row.get(k) or 0)) for k in _CLIENT_ACCESS_STATES},
+            }
+        )
+
+    if pruned:
+        try:
+            last_stamp = datetime.fromisoformat(str(pruned[-1]["t"]))
+            if timezone.is_naive(last_stamp):
+                last_stamp = timezone.make_aware(
+                    last_stamp, timezone.get_current_timezone()
+                )
+            if (now - last_stamp).total_seconds() < _WORKSPACE_ACCESS_TREND_MIN_INTERVAL:
+                pruned[-1] = {"t": now.isoformat(), **payload}
+                cache.set(
+                    key,
+                    pruned[-_WORKSPACE_ACCESS_TREND_MAX_POINTS:],
+                    _WORKSPACE_ACCESS_TREND_TTL,
+                )
+                return
+        except (TypeError, ValueError):
+            pass
+
+    pruned.append({"t": now.isoformat(), **payload})
+    cache.set(
+        key,
+        pruned[-_WORKSPACE_ACCESS_TREND_MAX_POINTS:],
+        _WORKSPACE_ACCESS_TREND_TTL,
+    )
+
+
+def workspace_client_access_trend(
+    organization, *, hours: int = 24, live: dict[str, int] | None = None
+) -> dict[str, Any]:
+    """24h trend of surfing / not surfing / disconnected / expired client counts."""
+    empty = {
+        "ok": False,
+        "hours": hours,
+        "labels": [],
+        "datasets": [],
+        "summary": {key: 0 for key in _CLIENT_ACCESS_STATES},
+    }
+    if not organization:
+        return empty
+
+    hours = clamp_usage_hours(hours, default=24)
+    now = timezone.now()
+    since = now - timedelta(hours=hours)
+    bucket_secs = _bucket_seconds(hours)
+    window_start = int(since.timestamp() // bucket_secs) * bucket_secs
+    window_end = int(now.timestamp() // bucket_secs) * bucket_secs
+    bucket_keys = list(range(window_start, window_end + bucket_secs, bucket_secs))
+    if not bucket_keys:
+        bucket_keys = [window_start]
+
+    bucket_values: dict[int, dict[str, list[int]]] = {
+        k: {state: [] for state in _CLIENT_ACCESS_STATES} for k in bucket_keys
+    }
+    live_points = list(
+        cache.get(_workspace_access_trend_cache_key(organization.pk)) or []
+    )
+    for row in live_points:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get("t")
+        if not raw:
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(raw))
+        except (TypeError, ValueError):
+            continue
+        if timezone.is_naive(stamp):
+            stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+        if stamp < since:
+            continue
+        bucket = int(stamp.timestamp() // bucket_secs) * bucket_secs
+        if bucket < window_start:
+            bucket = window_start
+        if bucket > window_end:
+            bucket = window_end
+        for state in _CLIENT_ACCESS_STATES:
+            bucket_values.setdefault(bucket, {s: [] for s in _CLIENT_ACCESS_STATES})[
+                state
+            ].append(max(0, int(row.get(state) or 0)))
+
+    if live:
+        for state in _CLIENT_ACCESS_STATES:
+            try:
+                val = max(0, int(live.get(state) or 0))
+            except (TypeError, ValueError):
+                val = 0
+            bucket_values.setdefault(window_end, {s: [] for s in _CLIENT_ACCESS_STATES})[
+                state
+            ].append(val)
+
+    labels: list[str] = []
+    series: dict[str, list[int | None]] = {s: [] for s in _CLIENT_ACCESS_STATES}
+    peak: dict[str, int] = {s: 0 for s in _CLIENT_ACCESS_STATES}
+    live_filled = any(
+        vals for per in bucket_values.values() for vals in per.values() if vals
+    )
+
+    for key in bucket_keys:
+        stamp = timezone.localtime(datetime.fromtimestamp(key, tz=dt_timezone.utc))
+        labels.append(stamp.strftime(_chart_label_format(hours)))
+        for state in _CLIENT_ACCESS_STATES:
+            vals = (bucket_values.get(key) or {}).get(state) or []
+            if not vals:
+                series[state].append(0 if not live_filled else None)
+                continue
+            value = int(round(sum(vals) / len(vals)))
+            series[state].append(value)
+            peak[state] = max(peak[state], value)
+
+    summary = {state: 0 for state in _CLIENT_ACCESS_STATES}
+    if live:
+        for state in _CLIENT_ACCESS_STATES:
+            try:
+                summary[state] = max(0, int(live.get(state) or 0))
+            except (TypeError, ValueError):
+                summary[state] = 0
+    else:
+        for state in _CLIENT_ACCESS_STATES:
+            for value in reversed(series[state]):
+                if value is not None:
+                    summary[state] = int(value)
+                    break
+
+    if live and series:
+        for state in _CLIENT_ACCESS_STATES:
+            if series[state]:
+                series[state][-1] = summary[state]
+                peak[state] = max(peak[state], summary[state])
+
+    palette = {
+        "surfing": ("#16a34a", "rgba(22,163,74,0.12)"),
+        "not_surfing": ("#c45c26", "rgba(196,92,38,0.12)"),
+        "disconnected": ("#64748b", "rgba(100,116,139,0.12)"),
+        "expired": ("#e11d48", "rgba(225,29,72,0.10)"),
+    }
+    labels_human = {
+        "surfing": "Surfing",
+        "not_surfing": "Not surfing",
+        "disconnected": "Disconnected",
+        "expired": "Expired",
+    }
+    datasets = []
+    for state in _CLIENT_ACCESS_STATES:
+        border, fill = palette[state]
+        datasets.append(
+            {
+                "label": labels_human[state],
+                "state": state,
+                "data": series[state],
+                "borderColor": border,
+                "backgroundColor": fill,
+                "tension": 0.3,
+                "spanGaps": True,
+                "pointRadius": 0 if len(bucket_keys) > 40 else 2,
+                "borderWidth": 2.5 if state == "surfing" else 2,
+            }
+        )
+
+    return {
+        "ok": True,
+        "hours": hours,
+        "labels": labels,
+        "datasets": datasets,
+        "summary": summary,
+        "peak": peak,
+        "sample_points": len(live_points),
+    }
 
 
 def _pppoe_ns_episodes_cache_key(organization_id: int) -> str:

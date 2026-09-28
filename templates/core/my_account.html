@@ -3,7 +3,7 @@
 {% block title %}{% if account_editing %}Edit profile{% else %}Company profile{% endif %} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="account-page-shell{% if account_editing %} account-page-shell--edit{% endif %}">
+<div class="account-page-shell ops-page{% if account_editing %} account-page-shell--edit{% endif %}">
   {% if not organization %}
     <section class="panel staff-panel account-card">
       <p class="empty">No organization is linked to this account yet.</p>

@@ -3,21 +3,25 @@
 {% block title %}Hotspot settings — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="access-settings-shell account-page-shell" data-access-mode="hotspot">
-  <header class="access-settings-hero">
-    <div class="access-settings-hero-mark" aria-hidden="true">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M5 12.5a7 7 0 0 1 14 0"/><path d="M8.5 15.5a3.5 3.5 0 0 1 7 0"/><circle cx="12" cy="18.5" r="1.2" fill="currentColor" stroke="none"/>
-      </svg>
+<div class="access-settings-shell account-page-shell ops-page" data-access-mode="hotspot">
+  <header class="packages-hero ops-hero access-settings-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12.5a7 7 0 0 1 14 0"/><path d="M8.5 15.5a3.5 3.5 0 0 1 7 0"/><circle cx="12" cy="18.5" r="1.2" fill="currentColor" stroke="none"/>
+        </svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Access · {{ router.name }}</p>
+        <h1 class="packages-title">Hotspot settings</h1>
+        <p class="packages-lead">{{ page_subtitle }}</p>
+      </div>
     </div>
-    <div class="access-settings-hero-copy">
-      <p class="account-page-kicker">Access · {{ router.name }}</p>
-      <h2 class="access-settings-title">Hotspot settings</h2>
-      <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+    <div class="packages-hero-actions">
+      <span class="mikrotik-wifi-pill{% if hotspot_enabled %} is-on{% else %} is-off{% endif %}" id="hotspot-status-pill">
+        {% if hotspot_enabled %}Hotspot on{% else %}Hotspot off{% endif %}
+      </span>
     </div>
-    <span class="mikrotik-wifi-pill{% if hotspot_enabled %} is-on{% else %} is-off{% endif %}" id="hotspot-status-pill">
-      {% if hotspot_enabled %}Hotspot on{% else %}Hotspot off{% endif %}
-    </span>
   </header>
 
   {% include "core/includes/access_settings_tabs.html" %}

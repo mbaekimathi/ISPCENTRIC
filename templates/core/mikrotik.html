@@ -3,54 +3,80 @@
 {% block title %}MikroTik — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="mikrotik-page ops-surface" data-mikrotik-fleet>
-  <section class="mikrotik-fleet">
-    <header class="mikrotik-fleet-head">
-      <div class="mikrotik-fleet-title">
-        <p class="ops-kicker">Fleet operations</p>
-        <h1>MikroTik</h1>
-        <p class="mikrotik-fleet-summary">
-          <span><strong>{{ routers_total|default:0 }}</strong> router{{ routers_total|default:0|pluralize }}</span>
-          <span class="mikrotik-fleet-pill tone-active">{{ routers_active|default:0 }} active</span>
-          <span class="mikrotik-fleet-pill tone-suspended">{{ routers_suspended|default:0 }} suspended</span>
-        </p>
+<div class="mikrotik-page ops-page" data-mikrotik-fleet>
+  <header class="packages-hero ops-hero mikrotik-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M4 7h16v2H4Zm2 4h12v2H6Zm3 4h6v2H9ZM2 4h20v2H2Zm0 14h20v2H2Z"/></svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Fleet</p>
+        <h1 class="packages-title">MikroTik</h1>
+        <p class="packages-lead">{{ page_subtitle|default:"Connect routers, check live status, and open device settings." }}</p>
       </div>
-      <div class="mikrotik-fleet-actions">
-        <button type="button" class="btn btn-ghost btn-sm mikrotik-hero-btn" id="mikrotik-refresh-status" {% if not routers %}disabled{% endif %}>
-          <span class="mikrotik-btn-spinner" aria-hidden="true" hidden></span>
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 12a8 8 0 0 1 14.1-5.1M20 12a8 8 0 0 1-14.1 5.1M16 4v4h4M8 20v-4H4"/></svg>
-          <span class="mikrotik-btn-label">Refresh</span>
-        </button>
-        <button type="button" class="btn btn-primary btn-sm mikrotik-hero-btn" data-open-mikrotik-onboard>
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
-          <span>Connect MikroTik</span>
-        </button>
-      </div>
-    </header>
-
-    <div class="mikrotik-fleet-tools">
-      <p class="mikrotik-fleet-lead">
-        {{ page_subtitle|default:"Onboard devices, monitor live health, and manage Hotspot and PPPoE from one place." }}
-      </p>
-      {% if routers %}
-        <div class="mikrotik-search-field">
-          <label class="mikrotik-search-label" for="mikrotik-fleet-search">Search</label>
-          <label class="mikrotik-search" for="mikrotik-fleet-search">
-            <span class="mikrotik-search-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm10 2-5-5"/></svg>
-            </span>
-            <input
-              id="mikrotik-fleet-search"
-              class="mikrotik-search-input"
-              type="search"
-              placeholder="Name, host, location, Wi‑Fi…"
-              autocomplete="off"
-              data-mikrotik-fleet-search
-            >
-          </label>
-        </div>
-      {% endif %}
     </div>
+    <div class="packages-hero-actions">
+      <button type="button" class="btn btn-ghost btn-sm mikrotik-hero-btn" id="mikrotik-refresh-status" {% if not routers %}disabled{% endif %}>
+        <span class="mikrotik-btn-spinner" aria-hidden="true" hidden></span>
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 12a8 8 0 0 1 14.1-5.1M20 12a8 8 0 0 1-14.1 5.1M16 4v4h4M8 20v-4H4"/></svg>
+        <span class="mikrotik-btn-label">Refresh</span>
+      </button>
+      <button type="button" class="btn btn-primary btn-sm mikrotik-hero-btn" data-open-mikrotik-onboard>
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+        <span>Connect router</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="packages-stats mikrotik-stats" aria-label="Router counts">
+    <div class="packages-stat tone-total" style="--i:0">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 7h16v2H4Zm2 4h12v2H6Zm3 4h6v2H9Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Total</p>
+        <p class="packages-stat-value">{{ routers_total|default:0 }}</p>
+      </div>
+    </div>
+    <div class="packages-stat tone-active" style="--i:1">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-1.2 14.4-3.7-3.7 1.4-1.4 2.3 2.3 4.9-4.9 1.4 1.4z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Active</p>
+        <p class="packages-stat-value">{{ routers_active|default:0 }}</p>
+      </div>
+    </div>
+    <div class="packages-stat tone-suspended" style="--i:2">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-1 6h2v7h-2zm0 9h2v2h-2z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Suspended</p>
+        <p class="packages-stat-value">{{ routers_suspended|default:0 }}</p>
+      </div>
+    </div>
+  </div>
+
+  <section class="mikrotik-fleet ops-panel">
+    {% if routers %}
+      <div class="mikrotik-fleet-toolbar">
+        <label class="mikrotik-search" for="mikrotik-fleet-search">
+          <span class="mikrotik-search-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm10 2-5-5"/></svg>
+          </span>
+          <input
+            id="mikrotik-fleet-search"
+            class="mikrotik-search-input"
+            type="search"
+            placeholder="Search routers…"
+            autocomplete="off"
+            aria-label="Search routers"
+            data-mikrotik-fleet-search
+          >
+        </label>
+      </div>
+    {% endif %}
 
     <div class="mikrotik-fleet-meta" data-mikrotik-fleet-meta {% if not routers %}hidden{% endif %}>
       <p class="mikrotik-search-meta" data-mikrotik-search-meta hidden></p>
@@ -63,12 +89,9 @@
             <thead>
               <tr>
                 <th>Router</th>
-                <th>Connection</th>
-                <th>Location</th>
-                <th>Wi‑Fi</th>
-                <th>Username</th>
-                <th>Account</th>
-                <th>Manage</th>
+                <th>Status</th>
+                <th class="mikrotik-col-account">Account</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -87,27 +110,33 @@
                         {% endif %}
                       </span>
                       <div class="mikrotik-router-primary">
-                        <a class="mikrotik-router-name" href="{% url 'core:mikrotik_detail' router.id %}">{{ router.name }}</a>
+                        <div class="mikrotik-router-name-row">
+                          <a class="mikrotik-router-name" href="{% url 'core:mikrotik_detail' router.id %}">{{ router.name }}</a>
+                          <span class="org-status org-status-{{ router.account_status }} mikrotik-router-account-pill">{{ router.get_account_status_display }}</span>
+                        </div>
                         <small class="lead-location-line mikrotik-router-meta">
                           <span class="mikrotik-router-model">{{ router.get_model_display }}</span>
-                          <span class="mikrotik-meta-sep" aria-hidden="true">·</span>
-                          <span class="mikrotik-router-serial" data-router-serial-cell="{{ router.id }}">{% if router.serial_number %}SN {{ router.serial_number }}{% else %}SN —{% endif %}</span>
                           {% if router.customer_count %}
                             <span class="mikrotik-meta-sep" aria-hidden="true">·</span>
                             <span class="mikrotik-router-clients">{{ router.customer_count }} client{{ router.customer_count|pluralize }}</span>
                           {% endif %}
+                          {% if router.location %}
+                            <span class="mikrotik-meta-sep" aria-hidden="true">·</span>
+                            <span class="mikrotik-router-location">{{ router.location }}</span>
+                          {% endif %}
                         </small>
+                        <span class="visually-hidden mikrotik-router-serial" data-router-serial-cell="{{ router.id }}">{% if router.serial_number %}SN {{ router.serial_number }}{% else %}SN —{% endif %}</span>
                       </div>
                     </div>
                   </td>
-                  <td data-label="Connection">
+                  <td data-label="Status">
                     <div class="mikrotik-router-connection">
-                      <span class="org-code mikrotik-router-host" data-router-host-cell="{{ router.id }}">{{ router.host }}</span>
                       <span class="mikrotik-link-status is-checking" data-router-status="{{ router.id }}" data-router-host="{{ router.host }}">
                         <span class="mikrotik-link-spinner" aria-hidden="true"></span>
                         <span class="mikrotik-link-dot" aria-hidden="true"></span>
                         <span class="mikrotik-link-label">Checking…</span>
                       </span>
+                      <span class="org-code mikrotik-router-host" data-router-host-cell="{{ router.id }}">{{ router.host }}</span>
                       <span
                         class="mikrotik-auto-restore-badge is-hidden"
                         data-auto-restore-badge="{{ router.id }}"
@@ -119,23 +148,12 @@
                       </span>
                     </div>
                   </td>
-                  <td data-label="Location">
-                    <span class="mikrotik-cell-text">{% if router.location %}{{ router.location }}{% else %}<span class="mikrotik-muted">—</span>{% endif %}</span>
-                  </td>
-                  <td data-label="Wi‑Fi">
-                    {% if router.wifi_ssid %}
-                      <span class="mikrotik-wifi-chip">{{ router.wifi_ssid }}</span>
-                    {% else %}
-                      <span class="mikrotik-muted">—</span>
-                    {% endif %}
-                  </td>
-                  <td data-label="Username"><span class="org-code">{{ router.username }}</span></td>
-                  <td data-label="Account">
+                  <td data-label="Account" class="mikrotik-col-account">
                     <span class="org-status org-status-{{ router.account_status }}">
                       {{ router.get_account_status_display }}
                     </span>
                   </td>
-                  <td data-label="Manage">
+                  <td data-label="Actions">
                     <div class="org-actions org-actions-icons mikrotik-row-actions">
                       <button
                         type="button"
@@ -201,7 +219,7 @@
         </div>
         <div class="mikrotik-fleet-empty-search" data-mikrotik-search-empty hidden>
           <p class="mikrotik-empty-title">No matching routers</p>
-          <p class="mikrotik-empty-copy">Try another name, host, location, or Wi‑Fi SSID.</p>
+          <p class="mikrotik-empty-copy">Try a different name, host, or location.</p>
         </div>
         <p class="mikrotik-reconnect-hint" id="mikrotik-reconnect-hint" hidden></p>
         <div class="mikrotik-unlock-box" id="mikrotik-unlock-box" hidden>
@@ -220,10 +238,10 @@
             <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 7h16v2H4Zm2 4h12v2H6Zm3 4h6v2H9ZM2 4h20v2H2Zm0 14h20v2H2Z"/></svg>
           </span>
           <p class="mikrotik-empty-title">No routers yet</p>
-          <p class="mikrotik-empty-copy">Connect your first MikroTik to manage Hotspot, PPPoE, and device health from here.</p>
+          <p class="mikrotik-empty-copy">Connect your first router to manage Hotspot, PPPoE, and live health from one place.</p>
           <button type="button" class="btn btn-primary mikrotik-empty-btn" data-open-mikrotik-onboard>
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
-            Connect MikroTik
+            Connect router
           </button>
         </div>
       {% endif %}
@@ -232,29 +250,38 @@
 </div>
 
 {# Password popup when Reconnect hits wrong credentials #}
-<div class="role-modal mikrotik-action-modal" id="mikrotik-password-modal" hidden aria-hidden="true">
+<div class="role-modal mikrotik-action-modal mikrotik-password-modal" id="mikrotik-password-modal" hidden aria-hidden="true">
   <div class="role-modal-backdrop" data-close-password-modal></div>
-  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-password-title">
-    <header class="role-modal-head">
-      <div>
-        <p class="role-modal-kicker">Login required</p>
-        <h2 id="mikrotik-password-title">Enter MikroTik password</h2>
-        <p class="role-modal-sub" id="mikrotik-password-sub">
-          The saved password does not match this router. Enter the Winbox username and password to reconnect.
-        </p>
+  <div class="role-modal-panel mikrotik-action-panel mikrotik-password-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-password-title">
+    <header class="role-modal-head mikrotik-password-head">
+      <div class="mikrotik-password-head-main">
+        <span class="mikrotik-password-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <rect x="5" y="11" width="14" height="10" rx="2"></rect>
+            <path d="M8 11V8a4 4 0 0 1 8 0v3"></path>
+          </svg>
+        </span>
+        <div class="mikrotik-password-head-copy">
+          <p class="role-modal-kicker">Reconnect</p>
+          <h2 id="mikrotik-password-title">Router login</h2>
+        </div>
       </div>
-      <button type="button" class="role-modal-close" data-close-password-modal aria-label="Close">×</button>
+      <button type="button" class="role-modal-close" data-close-password-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </header>
     <form id="mikrotik-password-form" class="mikrotik-action-form" data-no-page-loader="1" novalidate>
       <input type="hidden" id="mikrotik-password-router-id" value="">
       <input type="hidden" id="mikrotik-password-reconnect-url" value="">
-      <div class="mikrotik-action-scroll">
+      <div class="mikrotik-action-scroll mikrotik-password-body">
+        <p class="role-modal-sub mikrotik-password-desc" id="mikrotik-password-sub">Enter the Winbox username and password for this router.</p>
         <div class="field-error mikrotik-form-banner" id="mikrotik-password-error" hidden></div>
+        <div class="mikrotik-delete-target mikrotik-password-target" role="group" aria-label="Router">
+          <span class="mikrotik-delete-target-label">Router</span>
+          <strong id="mikrotik-password-name">—</strong>
+          <span class="mikrotik-delete-host" id="mikrotik-password-host-display">—</span>
+        </div>
         <div class="form-grid mikrotik-simple-grid">
-          <div class="field field-span-2">
-            <label for="mikrotik-password-host">Router</label>
-            <input class="input form-control" id="mikrotik-password-host" type="text" readonly>
-          </div>
           <div class="field">
             <label for="mikrotik-password-username">Username</label>
             <input class="input form-control" id="mikrotik-password-username" name="username" type="text" autocomplete="username" required>
@@ -271,7 +298,7 @@
           </div>
         </div>
       </div>
-      <div class="role-modal-actions">
+      <div class="role-modal-actions mikrotik-password-actions">
         <button type="button" class="btn btn-ghost" data-close-password-modal>Cancel</button>
         <button type="submit" class="btn btn-primary" id="mikrotik-password-submit">Save &amp; reconnect</button>
       </div>
@@ -305,8 +332,7 @@
       {% csrf_token %}
       <div class="mikrotik-action-scroll mikrotik-delete-body">
         <p class="role-modal-sub mikrotik-delete-desc" id="mikrotik-delete-desc">
-          This permanently removes the router from ISPCENTRIC. The physical MikroTik is
-          <strong class="mikrotik-delete-emph">not</strong> factory-reset or wiped.
+          Removes this router from ISPCENTRIC only. The device itself is not reset.
         </p>
         <div class="mikrotik-delete-target" role="group" aria-label="Router to delete">
           <span class="mikrotik-delete-target-label">Router</span>
@@ -320,15 +346,13 @@
             </svg>
           </span>
           <div class="mikrotik-delete-warning-copy">
-            <p class="mikrotik-delete-warning-title">Linked clients stay</p>
-            <p>
-              <span id="mikrotik-delete-client-count">0</span> linked client(s) will be kept and unassigned from this router.
-            </p>
+            <p class="mikrotik-delete-warning-title">Clients stay</p>
+            <p><span id="mikrotik-delete-client-count">0</span> linked client(s) will be unassigned from this router.</p>
           </div>
         </div>
         <label class="mikrotik-confirm-check mikrotik-delete-confirm" for="mikrotik-delete-confirm">
           <input type="checkbox" id="mikrotik-delete-confirm">
-          <span>I understand this removes the router from this workspace.</span>
+          <span>I understand this removes the router from ISPCENTRIC.</span>
         </label>
       </div>
       <div class="role-modal-actions mikrotik-delete-actions">
@@ -340,28 +364,39 @@
 </div>
 
 {# Suspend / activate confirmation from the routers list #}
-<div class="role-modal mikrotik-action-modal" id="mikrotik-suspend-modal" hidden aria-hidden="true">
+<div class="role-modal mikrotik-action-modal mikrotik-suspend-modal" id="mikrotik-suspend-modal" hidden aria-hidden="true">
   <div class="role-modal-backdrop" data-close-suspend-modal></div>
-  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-suspend-title">
-    <header class="role-modal-head">
-      <div>
-        <p class="role-modal-kicker">Account</p>
-        <h2 id="mikrotik-suspend-title">Suspend account</h2>
-        <p class="role-modal-sub" id="mikrotik-suspend-sub">
-          Suspend this MikroTik to mark it inactive in this workspace. You can activate it again later.
-        </p>
+  <div class="role-modal-panel mikrotik-action-panel mikrotik-suspend-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-suspend-title">
+    <header class="role-modal-head mikrotik-suspend-head">
+      <div class="mikrotik-suspend-head-main">
+        <span class="mikrotik-suspend-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+            <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-1 6h2v7h-2zm0 9h2v2h-2z"></path>
+          </svg>
+        </span>
+        <div class="mikrotik-suspend-head-copy">
+          <p class="role-modal-kicker">Account</p>
+          <h2 id="mikrotik-suspend-title">Suspend account</h2>
+        </div>
       </div>
-      <button type="button" class="role-modal-close" data-close-suspend-modal aria-label="Close">×</button>
+      <button type="button" class="role-modal-close" data-close-suspend-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </header>
     <form method="post" class="mikrotik-action-form" id="mikrotik-suspend-form" action="">
       {% csrf_token %}
-      <div class="mikrotik-action-scroll">
-        <label class="mikrotik-confirm-check">
+      <div class="mikrotik-action-scroll mikrotik-suspend-body">
+        <p class="role-modal-sub mikrotik-suspend-desc" id="mikrotik-suspend-sub">Suspend this router in ISPCENTRIC. You can activate it again later.</p>
+        <div class="mikrotik-delete-target mikrotik-suspend-target" role="group" aria-label="Router">
+          <span class="mikrotik-delete-target-label">Router</span>
+          <strong id="mikrotik-suspend-name">—</strong>
+        </div>
+        <label class="mikrotik-confirm-check mikrotik-suspend-confirm">
           <input type="checkbox" name="confirm" id="id_suspend_mikrotik_confirm" required>
-          <span id="mikrotik-suspend-confirm-label">I confirm I want to suspend this MikroTik account.</span>
+          <span id="mikrotik-suspend-confirm-label">I confirm I want to suspend this router.</span>
         </label>
       </div>
-      <div class="role-modal-actions">
+      <div class="role-modal-actions mikrotik-suspend-actions">
         <button type="button" class="btn btn-ghost" data-close-suspend-modal>Cancel</button>
         <button type="submit" class="btn btn-danger" id="mikrotik-suspend-submit">Suspend account</button>
       </div>
@@ -494,10 +529,12 @@
           <span class="mikrotik-onboard-progress-seg" data-progress-seg="2"></span>
         </div>
         <p class="role-modal-kicker" id="mikrotik-step-kicker">Step 1 of 2</p>
-        <h2 id="mikrotik-onboard-title">Connect to a New MikroTik</h2>
-        <p class="mikrotik-onboard-sub" id="mikrotik-onboard-sub">Select or enter the router IP, then sign in with its username and password.</p>
+        <h2 id="mikrotik-onboard-title">Connect router</h2>
+        <p class="mikrotik-onboard-sub" id="mikrotik-onboard-sub">Pick the router IP, then sign in with Winbox credentials.</p>
       </div>
-      <button type="button" class="role-modal-close" data-close-mikrotik-onboard aria-label="Close">×</button>
+      <button type="button" class="role-modal-close" data-close-mikrotik-onboard aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </header>
 
     <form method="post" action="{% url 'core:mikrotik' %}" class="mikrotik-onboard-form" id="mikrotik-onboard-form" data-no-page-loader="1" novalidate>
@@ -3548,7 +3585,10 @@
     opts = opts || {};
     document.getElementById("mikrotik-password-router-id").value = opts.id || "";
     document.getElementById("mikrotik-password-reconnect-url").value = opts.url || "";
-    document.getElementById("mikrotik-password-host").value = (opts.name ? opts.name + " · " : "") + (opts.host || "");
+    var nameEl = document.getElementById("mikrotik-password-name");
+    var hostEl = document.getElementById("mikrotik-password-host-display");
+    if (nameEl) nameEl.textContent = opts.name || "Router";
+    if (hostEl) hostEl.textContent = opts.host || "—";
     document.getElementById("mikrotik-password-username").value = opts.username || "admin";
     document.getElementById("mikrotik-password-input").value = "";
     if (passwordError) {
@@ -3558,8 +3598,8 @@
     var sub = document.getElementById("mikrotik-password-sub");
     if (sub) {
       sub.textContent = opts.error
-        ? "Login failed. Enter the Winbox username and password, then save to reconnect."
-        : "Enter the Winbox username and password for this MikroTik.";
+        ? "Login failed. Check the username and password, then try again."
+        : "Enter the Winbox username and password for this router.";
     }
     passwordModal.hidden = false;
     passwordModal.setAttribute("aria-hidden", "false");
@@ -3962,27 +4002,31 @@
 
   var titleEl = document.getElementById("mikrotik-suspend-title");
   var subEl = document.getElementById("mikrotik-suspend-sub");
+  var nameEl = document.getElementById("mikrotik-suspend-name");
   var confirmLabel = document.getElementById("mikrotik-suspend-confirm-label");
   var confirmInput = document.getElementById("id_suspend_mikrotik_confirm");
   var submitBtn = document.getElementById("mikrotik-suspend-submit");
+  var suspendMark = suspendModal ? suspendModal.querySelector(".mikrotik-suspend-mark") : null;
 
   function openSuspendModal(btn) {
     var url = btn.getAttribute("data-suspend-url") || "";
-    var name = btn.getAttribute("data-router-name") || "this MikroTik";
+    var name = btn.getAttribute("data-router-name") || "this router";
     var activating = btn.getAttribute("data-account-status") === "suspended";
     suspendForm.action = url;
     if (confirmInput) confirmInput.checked = false;
+    if (nameEl) nameEl.textContent = name;
     if (titleEl) titleEl.textContent = activating ? "Activate account" : "Suspend account";
     if (subEl) {
       subEl.textContent = activating
-        ? 'Restore “' + name + '” so it is active again in this workspace.'
-        : 'Suspend “' + name + '” to mark it inactive in this workspace. You can activate it again later.';
+        ? "Mark this router active again in ISPCENTRIC."
+        : "Mark this router inactive in ISPCENTRIC. You can activate it again later.";
     }
     if (confirmLabel) {
       confirmLabel.textContent = activating
-        ? "I confirm I want to activate this MikroTik account."
-        : "I confirm I want to suspend this MikroTik account.";
+        ? "I confirm I want to activate this router."
+        : "I confirm I want to suspend this router.";
     }
+    if (suspendMark) suspendMark.classList.toggle("is-activate", activating);
     if (submitBtn) {
       submitBtn.textContent = activating ? "Activate account" : "Suspend account";
       submitBtn.classList.toggle("btn-primary", activating);

@@ -120,8 +120,8 @@
 
 {% block client_content %}
 {% include "core/includes/mikrotik_job_poll.html" %}
-<div class="mk-page mk-detail-page">
-  <header class="mk-page-hero mk-detail-hero{% if is_suspended %} is-suspended{% endif %}" id="mk-detail-hero">
+<div class="mk-page ops-page mk-detail-page">
+  <header class="mk-page-hero ops-hero mk-detail-hero{% if is_suspended %} is-suspended{% endif %}" id="mk-detail-hero">
     <div class="mk-detail-hero-main">
       <div class="mk-detail-hero-thumb" aria-hidden="true">
         <img src="{{ router_model_image }}" alt="" width="96" height="72" loading="eager" decoding="async">

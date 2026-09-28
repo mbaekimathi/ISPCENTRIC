@@ -4,49 +4,66 @@
 
 {% block client_content %}
 <div
-  class="referral-page"
+  class="referral-page ops-page"
   data-referral-page
   data-referral-url="{{ referral_url }}"
   data-referral-code="{{ referral_code }}"
   data-share-title="Onboard your ISP on ISPCENTRIC"
   data-share-text="{{ share_text }}"
 >
-  <header class="referral-hero">
-    <div class="referral-hero-main">
-      <span class="referral-hero-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.9 2 2 2 3.4V19h7v-2.5c0-2.3-4.7-3.5-8-3.5z"/></svg>
+  <header class="packages-hero ops-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.9 2 2 2 3.4V19h7v-2.5c0-2.3-4.7-3.5-8-3.5z"/></svg>
       </span>
-      <div class="referral-hero-copy">
-        <p class="referral-kicker">ISP client onboarding</p>
-        <h2 class="referral-title">Invite ISP clients</h2>
-        <p class="referral-lead">{{ page_subtitle }}</p>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">ISP client onboarding</p>
+        <h1 class="packages-title">Invite ISP clients</h1>
+        <p class="packages-lead">{{ page_subtitle }}</p>
       </div>
-    </div>
-    <div class="referral-hero-stats" aria-label="Referral summary">
-      <article class="referral-stat">
-        <p class="referral-stat-label">Total</p>
-        <p class="referral-stat-value">{{ referral_count }}</p>
-        <p class="referral-stat-meta">ISP clients referred</p>
-      </article>
-      <article class="referral-stat">
-        <p class="referral-stat-label">Pending</p>
-        <p class="referral-stat-value">{{ referral_pending_count }}</p>
-        <p class="referral-stat-meta">Registered · awaiting MikroTik</p>
-      </article>
-      <article class="referral-stat">
-        <p class="referral-stat-label">Active</p>
-        <p class="referral-stat-value">{{ referral_active_count }}</p>
-        <p class="referral-stat-meta">Onboarded into the system</p>
-      </article>
-      <article class="referral-stat">
-        <p class="referral-stat-label">Referred as</p>
-        <p class="referral-stat-value referral-stat-value--code">{{ referral_company_name }}</p>
-        <p class="referral-stat-meta">Code {{ referral_code }}</p>
-      </article>
     </div>
   </header>
 
-  <section class="referral-share-card" aria-labelledby="referral-share-heading">
+  <div class="packages-stats referral-overview-stats" aria-label="Referral summary">
+    <article class="packages-stat tone-total" style="--i:0">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Total referred</p>
+        <p class="packages-stat-value">{{ referral_count }}</p>
+      </div>
+    </article>
+    <article class="packages-stat tone-warn" style="--i:1">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 8v4l3 3"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Pending onboard</p>
+        <p class="packages-stat-value">{{ referral_pending_count }}</p>
+      </div>
+    </article>
+    <article class="packages-stat tone-active" style="--i:2">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 13l4 4L19 7"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Onboarded</p>
+        <p class="packages-stat-value">{{ referral_active_count }}</p>
+      </div>
+    </article>
+    <article class="packages-stat tone-hotspot" style="--i:3">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7 7h10v10H7z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Your code</p>
+        <p class="packages-stat-value packages-stat-value--sm">{{ referral_code }}</p>
+      </div>
+    </article>
+  </div>
+
+  <section class="referral-share-card ops-panel" aria-labelledby="referral-share-heading">
     <div class="referral-share-head">
       <div>
         <p class="referral-kicker">Share</p>
@@ -140,7 +157,7 @@
     </div>
   </section>
 
-  <section class="referral-list-card" aria-labelledby="referral-list-heading">
+  <section class="referral-list-card ops-panel" aria-labelledby="referral-list-heading">
     <div class="referral-list-head">
       <div>
         <p class="referral-kicker">Track</p>

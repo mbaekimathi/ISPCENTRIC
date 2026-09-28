@@ -71,6 +71,14 @@ def _tunnel_sync_enabled() -> bool:
     }
 
 
+def _wireguard_sync_interval_sec() -> float:
+    """Re-apply DB peers to wg0 so restarts and manual edits self-heal."""
+    try:
+        return max(120.0, float(os.getenv("WIREGUARD_SYNC_INTERVAL_SEC", "600")))
+    except (TypeError, ValueError):
+        return 600.0
+
+
 def _subscription_sweep_interval_sec() -> float:
     # Match deploy/systemd/ispcentric-sweep.timer (3 min) so local runserver
     # does not leave expired clients surfing for ~5 minutes.
@@ -920,6 +928,38 @@ def _sync_wireguard() -> None:
         logger.exception("WireGuard startup sync failed")
 
 
+def _start_wireguard_sync_loop() -> None:
+    if not _tunnel_sync_enabled():
+        return
+    try:
+        from core.wireguard import configured
+
+        if not configured():
+            return
+    except Exception:
+        return
+
+    interval = _wireguard_sync_interval_sec()
+
+    def _loop() -> None:
+        delay = 45.0 + float(os.getpid() % 25)
+        time.sleep(delay)
+        while True:
+            try:
+                from core.wireguard import ensure_tunnel_runtime
+
+                ensure_tunnel_runtime()
+            except Exception:
+                logger.exception("WireGuard periodic sync failed")
+            time.sleep(interval)
+
+    threading.Thread(target=_loop, name="wireguard-sync", daemon=True).start()
+    logger.info(
+        "WireGuard peer re-sync armed (every %.0fs). Disable with WIREGUARD_AUTO_SYNC=false.",
+        interval,
+    )
+
+
 def _nas_config_pending_path() -> str:
     from pathlib import Path
 
@@ -1017,6 +1057,7 @@ def start_runtime_tasks() -> None:
 
     def _boot() -> None:
         _sync_wireguard()
+        _start_wireguard_sync_loop()
         # After the tunnel is up, push any pending *opt-in* post-deploy NAS config.
         try:
             _run_nas_config_sync_once()

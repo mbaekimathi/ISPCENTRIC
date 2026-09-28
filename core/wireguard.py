@@ -33,6 +33,24 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
+def router_keepalive_interval() -> str:
+    """RouterOS persistent-keepalive toward the VPS (NAT traversal)."""
+    try:
+        sec = int(os.getenv("WIREGUARD_KEEPALIVE_SEC", "15"))
+    except (TypeError, ValueError):
+        sec = 15
+    sec = max(5, min(sec, 120))
+    return f"{sec}s"
+
+
+def handshake_max_age_sec() -> int:
+    """Treat WireGuard as stale when last handshake is older than this."""
+    try:
+        return max(60, int(os.getenv("WIREGUARD_HANDSHAKE_MAX_AGE_SEC", "180")))
+    except (TypeError, ValueError):
+        return 180
+
+
 def generate_keypair() -> tuple[str, str]:
     """Return (private_key, public_key) base64-encoded as WireGuard expects."""
     private = X25519PrivateKey.generate()
@@ -694,29 +712,95 @@ def _wan_wait_lines(
     return lines
 
 
-def _handshake_wait_lines(server: str, address: str) -> list[str]:
+def _wan_quick_probe_lines(probe_host: str = "8.8.8.8") -> list[str]:
+    """One-shot WAN ping before tunnel tests (no :global — safe for Connect paste)."""
+    probe_host = (probe_host or "8.8.8.8").strip() or "8.8.8.8"
+    ping = f"[/ping {probe_host} count=2]"
+    return [
+        _ros_info(f"WAN check — ping {probe_host} before tunnel test"),
+        _ros_check(
+            f"{ping} > 0",
+            f"WAN reachable ({probe_host})",
+            f"No ping to {probe_host} — fix internet/DHCP first, then Check now",
+        ),
+    ]
+
+
+def _ros_wg_udp_output_lines(endpoint_host: str, port: str) -> list[str]:
+    """Allow WireGuard UDP toward the billing VPS (strict output chains)."""
+    endpoint_host = (endpoint_host or "").strip()
+    port = (port or "51820").strip() or "51820"
+    if not endpoint_host:
+        return []
+    comment = "ispcentric-vpn-wg-udp-out"
+    rule = f"action=accept protocol=udp dst-address={endpoint_host} dst-port={port}"
+    return [
+        _ros_info(f"WireGuard egress — allow UDP to {endpoint_host}:{port}"),
+        "/ip firewall filter",
+        _ros_filter_add(rule, comment, chain="output"),
+        _ros_check(
+            f'[:len [/ip firewall filter find where comment="{comment}"]] > 0',
+            "Output firewall allows WireGuard UDP to billing VPS",
+            "Output UDP rule missing — run: /ip firewall filter print where chain=output",
+        ),
+    ]
+
+
+def _ros_tunnel_watchdog_lines(server: str) -> list[str]:
+    """
+    RouterOS scheduler that re-enables WireGuard and pings the billing server.
+
+    Keeps the tunnel warm after WAN/uplink flaps without waiting for the next
+    billing poll. One-line script source — safe for Winbox paste.
+    """
+    server = (server or "").strip()
+    if not server:
+        return []
+    ping = f"/ping {server} count=1"
+    source = (
+        ':do { /interface enable [find where name=ispcentric-vpn] } on-error={} ; '
+        ':do { /interface wireguard enable [find where name=ispcentric-vpn] } on-error={} ; '
+        f"{ping}"
+    )
+    return [
+        _ros_info("Tunnel watchdog — ping billing server every 3 minutes"),
+        ':do { /system script remove [find where name="ispcentric-tunnel-watch"] } on-error={}',
+        ':do { /system scheduler remove [find where name="ispcentric-tunnel-watch"] } on-error={}',
+        (
+            f':do {{ /system script add name=ispcentric-tunnel-watch comment=ispcentric '
+            f'policy=read,write,test source="{source}" ; '
+            f'{_ros_ok("Tunnel watchdog script installed")} }} on-error='
+            f'{{{_ros_warn("Tunnel watchdog script skipped")}}}'
+        ),
+        (
+            ':do { /system scheduler add name=ispcentric-tunnel-watch interval=3m '
+            'on-event=ispcentric-tunnel-watch comment=ispcentric ; '
+            f'{_ros_ok("Tunnel watchdog scheduler every 3m")} }} on-error='
+            f'{{{_ros_warn("Tunnel watchdog scheduler skipped")}}}'
+        ),
+    ]
+
+
+def _handshake_wait_lines(server: str, address: str, *, attempts: int = 8) -> list[str]:
     """Retry ping/handshake so Connect Verify can catch up after dial."""
     ok = (
         f'Tunnel {address} reaches billing server {server} - click Connect in ISPCENTRIC'
     )
     fail = (
-        f"No ping from {server}. Confirm WAN works (/ping 8.8.8.8), then on VPS: "
-        f"manage.py wireguard_peer --sync-server, then Check now"
+        f"No ping from {server}. On VPS: manage.py wireguard_peer --sync-server, "
+        f"wait 30s, then Check now (handshake may finish after this script)"
     )
     ping = f"[/ping {server} count=2]"
-    return [
-        _ros_info("Probing tunnel to billing server (retries ~40s)..."),
+    attempts = max(2, int(attempts))
+    lines: list[str] = [
+        *_wan_quick_probe_lines(),
+        _ros_info("Probing tunnel to billing server (retries ~55s)..."),
         ":delay 5s",
-        f':if ({ping} > 0) do={{{_ros_ok(ok)}}}',
-        ":delay 5s",
-        f':if ({ping} > 0) do={{{_ros_ok(ok)}}}',
-        ":delay 5s",
-        f':if ({ping} > 0) do={{{_ros_ok(ok)}}}',
-        ":delay 5s",
-        f':if ({ping} > 0) do={{{_ros_ok(ok)}}}',
-        ":delay 5s",
-        f':if ({ping} > 0) do={{{_ros_ok(ok)}}}',
-        ":delay 5s",
+    ]
+    for _ in range(attempts - 1):
+        lines.append(f':if ({ping} > 0) do={{{_ros_ok(ok)}}}')
+        lines.append(":delay 5s")
+    lines += [
         _ros_check(f"{ping} > 0", ok, fail),
         (
             ':do { :put ("[ISPCENTRIC] WireGuard last-handshake: " . '
@@ -725,7 +809,12 @@ def _handshake_wait_lines(server: str, address: str) -> list[str]:
             f'{_ros_warn("No handshake yet - need internet + VPS peer")}'
             "}"
         ),
+        _ros_info(
+            "If ping FAIL: run wireguard_peer --sync-server on VPS, wait 30s, "
+            "then Check now in ISPCENTRIC"
+        ),
     ]
+    return lines
 
 
 def _wireguard_interface() -> str:
@@ -1066,7 +1155,7 @@ def ensure_reservation_peer(reservation) -> dict:
                 "peer_sync": sync,
                 "peer": peer,
             }
-        if age > 180:
+        if age > handshake_max_age_sec():
             return {
                 "code": "no_handshake",
                 "message": (
@@ -1938,7 +2027,7 @@ def _routeros_install_lines(
         (
             f':do {{ /interface wireguard peers add interface=ispcentric-vpn '
             f'public-key="{_server_public_key()}" endpoint-address={endpoint_host} endpoint-port={port} '
-            f"allowed-address={network} persistent-keepalive=25s "
+            f"allowed-address={network} persistent-keepalive={router_keepalive_interval()} "
             f'comment="ispcentric billing server" ; '
             f'{_ros_ok(f"VPS peer configured toward {endpoint_label}")} }} '
             f'on-error={{{_ros_fail("VPS peer add failed - check WireGuard interface")}}}'
@@ -1986,6 +2075,7 @@ def _routeros_install_lines(
             "Input firewall rules for API and ICMP installed",
             "API firewall rule missing - run: /ip firewall filter print",
         ),
+        *_ros_wg_udp_output_lines(endpoint_host, port),
     ]
 
     # --- Step 5: Hotspot bypass for tunnel subnet only --------------------
@@ -2022,6 +2112,7 @@ def _routeros_install_lines(
     # --- Step 8: backup + summary -----------------------------------------
     lines += [
         _ros_info("Step 8/8 backup — save config and print summary"),
+        *_ros_tunnel_watchdog_lines(server),
         _ros_info("Final verify — RouterOS API must stay enabled on 8728"),
         *_ros_api_enable_lines(verify=True),
         ':do { /file remove [find where name="ispcentric-tunnel.backup"] } on-error={}',
@@ -2060,7 +2151,7 @@ def _routeros_install_lines(
             f"Summary: Ping to billing server {server} (VPS peer / handshake missing)",
         ),
         _ros_info(
-            "If ping FAIL: run wireguard_peer --sync-server on VPS, then Check now in ISPCENTRIC"
+            "If ping FAIL: sync-server on VPS, wait 30s (keepalive), then Check now"
         ),
         _ros_info("---------- end ISPCENTRIC install ----------"),
     ]
@@ -2343,7 +2434,7 @@ def _routeros_post_reset_rsc_body(
             f'/interface wireguard peers add interface=ispcentric-vpn '
             f'public-key="{_server_public_key()}" '
             f'endpoint-address={endpoint_host} endpoint-port={port} '
-            f'allowed-address={network} persistent-keepalive=25s '
+            f'allowed-address={network} persistent-keepalive={router_keepalive_interval()} '
             f'comment="ispcentric billing server"'
         ),
         *_ros_api_enable_lines(verify=False),
@@ -2378,6 +2469,11 @@ def _routeros_post_reset_rsc_body(
         (
             f':do {{ /ip hotspot ip-binding add type=bypassed address={network} '
             f'comment="ispcentric-vpn-hotspot-bypass" }} on-error={{}}'
+        ),
+        (
+            f'/ip firewall filter add chain=output action=accept protocol=udp '
+            f'dst-address={endpoint_host} dst-port={port} '
+            f'comment="ispcentric-vpn-wg-udp-out"'
         ),
         *_handshake_wait_lines(server, address),
         ':put "[ISPCENTRIC OK] Post-reset tunnel install finished - Check now in ISPCENTRIC"',

@@ -3,25 +3,31 @@
 {% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="account-page-shell{% if show_events %} account-page-shell--comms{% endif %}">
+<div class="account-page-shell ops-page{% if show_events %} account-page-shell--comms{% endif %}">
   {% if not organization %}
     <section class="panel staff-panel account-card">
       <p class="empty">No organization is linked to this account yet.</p>
     </section>
   {% else %}
-    <div class="account-page" id="comms-page">
-      <header class="account-hero account-hero--comms">
-        <div class="account-hero-main">
-          <div class="account-hero-copy">
-            <p class="account-page-kicker">{{ page_kicker }}</p>
-            <h1 class="account-page-title">{{ page_title }}</h1>
-            <p class="account-hero-lead">{{ page_subtitle }}</p>
-          </div>
+    <header class="packages-hero ops-hero">
+      <div class="packages-hero-main">
+        <span class="packages-hero-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8Z"/></svg>
+        </span>
+        <div class="packages-hero-copy">
+          <p class="packages-kicker">{{ page_kicker }}</p>
+          <h1 class="packages-title">{{ page_title }}</h1>
+          <p class="packages-lead">{{ page_subtitle }}</p>
         </div>
-        {% if show_events %}
+      </div>
+      {% if show_events %}
+        <div class="packages-hero-actions">
           <a class="btn btn-ghost btn-sm" href="{% url 'core:settings_communications' %}">Gateway settings</a>
-        {% endif %}
-      </header>
+        </div>
+      {% endif %}
+    </header>
+
+    <div class="account-page" id="comms-page">
 
       {% if show_events and sms_status or show_events and email_status or show_events and whatsapp_status %}
         <section class="comms-channel-strip" aria-label="Channel status">

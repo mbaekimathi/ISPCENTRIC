@@ -5,7 +5,7 @@
 
 {% block client_content %}
 {% include "core/includes/mikrotik_job_poll.html" %}
-<div class="mk-page mk-assigned-ports-page">
+<div class="mk-page ops-page mk-assigned-ports-page">
   <section
     class="mk-surface mk-assigned-ports-surface"
     id="mikrotik-assigned-ports-root"
@@ -19,7 +19,7 @@
     data-poll-ms="{{ mikrotik_poll_ms|default:15000 }}"
     data-router-id="{{ router.id }}"
   >
-    <header class="mk-page-hero mk-ports-hero mk-assigned-hero">
+    <header class="mk-page-hero ops-hero mk-ports-hero mk-assigned-hero">
       <div class="mk-page-hero-copy">
         <p class="mk-page-kicker">{{ router.name }} · Live clients</p>
         <h1 class="mk-page-title">Who is online</h1>

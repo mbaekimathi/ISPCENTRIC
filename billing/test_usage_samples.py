@@ -2032,3 +2032,20 @@ class UsageLevelAndDeviceCountTests(SimpleTestCase):
         self.assertEqual(payload["summary"]["gadgets_online"], 5)
         self.assertEqual(payload["summary"]["clients_surfing"], 2)
         self.assertEqual(payload["top_users"][0]["gadgets_connected"], 2)
+
+
+class FetchRouterBulkLiveUsageTests(SimpleTestCase):
+    @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
+    @patch("core.mikrotik_connect._print", return_value=[])
+    @patch("core.mikrotik_connect._api_session")
+    def test_bulk_usage_opens_pooled_api_session(self, session_cm, _print, _cool):
+        from core.mikrotik_connect import fetch_router_bulk_live_usage
+
+        session_cm.return_value.__enter__ = lambda self: object()
+        session_cm.return_value.__exit__ = lambda *args: None
+        result = fetch_router_bulk_live_usage(
+            "10.9.0.30", "admin", "secret", want_pppoe=False, want_hotspot=False
+        )
+        self.assertTrue(result["ok"])
+        session_cm.assert_called_once()
+        self.assertTrue(session_cm.call_args.kwargs.get("reuse"))

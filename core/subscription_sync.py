@@ -257,7 +257,7 @@ def enqueue_customer_subscription_sync(
             cust = Customer.objects.select_related(
                 "plan", "router", "organization"
             ).get(pk=customer_pk)
-            delays = (0.8, 1.5, 3.0, 6.0, 12.0)
+            delays = (0.5, 1.2, 2.5, 5.0, 10.0)
             for attempt, delay in enumerate(delays, start=1):
                 sync_result = sync_customer_subscription_access(
                     cust,
