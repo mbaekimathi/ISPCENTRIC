@@ -14233,6 +14233,10 @@ def mikrotik_tunnel_script(request):
             reservation_label=reservation.label,
             planned_lan=payload.get("lan_address") or "",
         )
+    rsc_token = wireguard.rsc_access_token(reservation.address)
+    install_rsc_url = request.build_absolute_uri(
+        f"{reverse('mikrotik_tunnel_rsc')}?token={rsc_token}&kind=install"
+    )
     return JsonResponse(
         {
             "ok": True,
@@ -14244,6 +14248,7 @@ def mikrotik_tunnel_script(request):
             "script": payload["script"],
             "server_peer": payload["server_peer"],
             "endpoint": payload["endpoint"],
+            "install_rsc_url": install_rsc_url,
             "peer_synced": sync_info["peer_synced"],
             "peer_sync_skipped": sync_info["peer_sync_skipped"],
             "peer_sync_required": sync_info["peer_sync_required"],

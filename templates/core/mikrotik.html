@@ -580,6 +580,27 @@
                 <span class="mikrotik-tunnel-rail-item" data-tunnel-rail="3">3 · Verify</span>
                 <span class="mikrotik-tunnel-rail-item" data-tunnel-rail="4">4 · Connect</span>
               </nav>
+              <details class="mikrotik-tunnel-sop">
+                <summary>Connect checklist (every new MikroTik)</summary>
+                <ol class="mikrotik-tunnel-sop-list">
+                  <li><strong>Name</strong> the site → <strong>Generate script</strong>.</li>
+                  <li><strong>Copy script</strong> (or Download .rsc) → Winbox → <strong>New Terminal</strong> → paste <strong>once</strong>. Do not type WireGuard keys by hand.</li>
+                  <li>Wait for <code>[ISPCENTRIC OK]</code>. Fix any <code>[ISPCENTRIC FAIL]</code> (especially key verify) before continuing.</li>
+                  <li><strong>Check now</strong> until Verify is green.</li>
+                  <li>
+                    {% if hosted_server %}
+                      <strong>Connect</strong> using the <strong>tunnel IP</strong> from step 4 (not 192.168.88.1 — “None online” is normal on hosted).
+                    {% else %}
+                      <strong>Connect</strong> using the tunnel IP or LAN IP shown when Verify passes.
+                    {% endif %}
+                  </li>
+                </ol>
+                {% if hosted_server %}
+                  <p class="mikrotik-tunnel-sop-note">
+                    VPS: after Generate, <code>wireguard_peer --sync-server</code> runs on deploy; re-run it if Verify says the peer is missing.
+                  </p>
+                {% endif %}
+              </details>
               <ol class="mikrotik-tunnel-steps" aria-label="Tunnel setup steps">
                 <li class="mikrotik-tunnel-step is-active" data-tunnel-step="1">
                   <span class="mikrotik-tunnel-step-num" aria-hidden="true">1</span>
@@ -646,13 +667,20 @@
                     <div class="mikrotik-tunnel-step-head">
                       <h3 class="mikrotik-tunnel-step-title">Paste in Winbox</h3>
                       <p class="mikrotik-tunnel-step-desc">
-                        Winbox → New Terminal → paste the full tunnel script once.
-                        Eight steps: cleanup → open API/Hotspot management → WireGuard →
-                        firewall → handshake → backup. Watch for [ISPCENTRIC OK] lines.
+                        Winbox → New Terminal → <strong>Copy script</strong> below and paste once
+                        (do not type WireGuard keys — the script checks them).
+                        Watch for <code>[ISPCENTRIC OK]</code>; fix any <code>[ISPCENTRIC FAIL]</code> before Check now.
                       </p>
                     </div>
                     <div class="mikrotik-tunnel-script-bar">
                       <span>RouterOS script ready</span>
+                      <a
+                        class="btn btn-ghost mikrotik-tunnel-rsc-download"
+                        id="mikrotik-tunnel-rsc-download"
+                        href="#"
+                        download="ispcentric-install.rsc"
+                        hidden
+                      >Download .rsc</a>
                       <button type="button" class="btn btn-ghost mikrotik-tunnel-copy" id="mikrotik-tunnel-copy">Copy script</button>
                     </div>
                     <pre class="mikrotik-tunnel-script" id="mikrotik-tunnel-script" aria-label="RouterOS tunnel script"></pre>
@@ -712,7 +740,7 @@
                   <div class="mikrotik-tunnel-step-body">
                     <div class="mikrotik-tunnel-step-head">
                       <h3 class="mikrotik-tunnel-step-title" id="mikrotik-tunnel-step-ip-title">Use the tunnel IP</h3>
-                      <p class="mikrotik-tunnel-step-desc" id="mikrotik-tunnel-step-ip-desc">All checks passed — use this IP below and Connect.</p>
+                      <p class="mikrotik-tunnel-step-desc" id="mikrotik-tunnel-step-ip-desc">After Verify is green, use the tunnel IP below and Connect.</p>
                     </div>
                     <div class="mikrotik-tunnel-ip-row">
                       <div class="mikrotik-tunnel-address-block">
@@ -1002,9 +1030,11 @@
   var hostHint = document.getElementById("mikrotik-host-hint");
   var refreshBtn = document.getElementById("mikrotik-discover-refresh");
   var tunnelCard = document.getElementById("mikrotik-tunnel-card");
+  var hostedServer = tunnelCard && tunnelCard.getAttribute("data-hosted") === "1";
   var tunnelLabel = document.getElementById("mikrotik-tunnel-label");
   var tunnelGenerate = document.getElementById("mikrotik-tunnel-generate");
   var tunnelCopy = document.getElementById("mikrotik-tunnel-copy");
+  var tunnelRscDownload = document.getElementById("mikrotik-tunnel-rsc-download");
   var tunnelUseIp = document.getElementById("mikrotik-tunnel-use-ip");
   var tunnelStepIpTitle = document.getElementById("mikrotik-tunnel-step-ip-title");
   var tunnelStepIpDesc = document.getElementById("mikrotik-tunnel-step-ip-desc");
@@ -1251,7 +1281,7 @@
     firewall: "Finish the Winbox script so API 8728 accepts this PC",
     wireguard: "Paste the Winbox script, then Check now (login comes after)",
     tunnel: "Paste the script and wait for OK lines",
-    vps_peer: "On the VPS run manage.py wireguard_peer --sync-server, then Check now",
+    vps_peer: "Paste full Copy script (do not type keys), sync-server on VPS, then Check now",
     billing_ping: "Fix VPS peer / handshake, then Check now"
   };
 
@@ -1400,7 +1430,9 @@
     setCheckNowSecondary(false);
     if (tunnelStepIpTitle) tunnelStepIpTitle.textContent = "Use the tunnel IP";
     if (tunnelStepIpDesc) {
-      tunnelStepIpDesc.textContent = "All checks passed — use this IP below and Connect.";
+      tunnelStepIpDesc.textContent = hostedServer
+        ? "Hosted billing: after Verify passes, Connect uses the tunnel IP (not 192.168.88.1)."
+        : "After Verify is green, use this IP below and Connect.";
     }
     if (tunnelAddressNote) {
       tunnelAddressNote.hidden = true;
@@ -1818,6 +1850,16 @@
     syncTunnelAddressField();
     if (!options.resume) tunnelApiReady = false;
     if (tunnelScript) tunnelScript.textContent = tunnelScriptText;
+    if (tunnelRscDownload) {
+      var rscUrl = (data && data.install_rsc_url) || "";
+      if (rscUrl) {
+        tunnelRscDownload.href = rscUrl;
+        tunnelRscDownload.hidden = false;
+      } else {
+        tunnelRscDownload.hidden = true;
+        tunnelRscDownload.removeAttribute("href");
+      }
+    }
     if (tunnelStepScript) tunnelStepScript.hidden = !tunnelScriptText;
     if (tunnelStepCheck) tunnelStepCheck.hidden = !tunnelScriptText;
     if (tunnelStepIp) tunnelStepIp.hidden = !tunnelReadyAddress;
@@ -2145,8 +2187,13 @@
           setHostHint("Type the router’s LAN IP (for example 192.168.88.1) — the tunnel IP only works from the VPS.");
           return;
         }
-        if (data.peer_state === "missing" || data.peer_state === "no_handshake") {
-          tunnelPeerSyncRequired = data.peer_state === "missing";
+        if (
+          data.peer_state === "missing" ||
+          data.peer_state === "no_handshake" ||
+          data.peer_state === "key_mismatch"
+        ) {
+          tunnelPeerSyncRequired =
+            data.peer_state === "missing" || data.peer_state === "key_mismatch";
           if (tunnelPeerPanel && tunnelServerPeerText) {
             tunnelPeerPanel.hidden = data.peer_state !== "missing";
           }
@@ -2154,11 +2201,19 @@
             "error",
             data.peer_state === "missing"
               ? "VPS peer missing on wg0"
-              : "WireGuard handshake missing",
+              : data.peer_state === "key_mismatch"
+                ? "Router keys do not match reservation"
+                : "WireGuard handshake missing",
             false,
             false
           );
           setTunnelStatus(data.message, true);
+          if (data.peer_state === "key_mismatch" || data.peer_state === "no_handshake") {
+            setHostHint(
+              "Use Copy script only — do not type WireGuard keys in Winbox. " +
+                "Look for [ISPCENTRIC FAIL] key mismatch in the terminal."
+            );
+          }
           return;
         }
         if (data.peer_present || data.peer_synced) {

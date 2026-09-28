@@ -89,11 +89,13 @@ class Command(BaseCommand):
                     "WIREGUARD_SYNC_COMMAND is unset)."
                 )
             purged = int(outcome.get("reservations_purged") or 0)
+            orphans = int(outcome.get("orphans_pruned") or 0)
             self.stdout.write(
                 self.style.SUCCESS(
                     f"Synced {outcome.get('synced', 0)} peer(s) to "
                     f"{wireguard._wireguard_interface()}."
                     + (f" Purged {purged} stale reservation(s)." if purged else "")
+                    + (f" Removed {orphans} orphan runtime peer(s)." if orphans else "")
                 )
             )
             for err in outcome.get("errors") or []:

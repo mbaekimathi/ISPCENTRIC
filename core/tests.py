@@ -586,9 +586,13 @@ class WireGuardKeyTests(SimpleTestCase):
             script_flag = wireguard.routeros_script(
                 "10.9.0.12", private_key, factory_reset=True
             )
+        router_pub = wireguard.public_key_for(private_key)
         for script in (script_default, script_flag):
             self.assertIn("ispcentric-vpn", script)
             self.assertIn(f'private-key="{private_key}"', script)
+            self.assertIn("Key verify — WireGuard public keys", script)
+            self.assertIn(f'expR "{router_pub}"', script)
+            self.assertIn(f'expS "{SERVER_PUBLIC_KEY}"', script)
             self.assertIn("endpoint-address=203.0.113.50", script)
             self.assertIn("RouterOS API enabled on port 8728", script)
             self.assertIn("/ping 10.9.0.1 count=2", script)
@@ -5418,6 +5422,70 @@ class TunnelStatusTests(TestCase):
             result = wireguard.ensure_reservation_peer(_Res())
         self.assertEqual(result["code"], "peer_missing")
         self.assertIn("sync-server", result["message"])
+
+    def test_ensure_reservation_peer_reports_key_mismatch(self):
+        class _Res:
+            label = "SHELTERLINK-001"
+            address = "10.9.0.2"
+            public_key = "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJkkkk="
+
+        other_key = "ZZZZYYYYXXXXWWWWVVVVUUUUTTTTSSSSRRRRQQQQPPPPoooo="
+        with (
+            patch(
+                "core.wireguard.apply_server_peer",
+                return_value={"ok": True, "runtime": True},
+            ),
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={
+                    "checked": True,
+                    "present": True,
+                    "handshake_age_sec": None,
+                    "error": "",
+                },
+            ),
+            patch(
+                "core.wireguard.find_handshake_peer_for_address",
+                return_value={
+                    "checked": True,
+                    "public_key": other_key,
+                    "handshake_age_sec": 30,
+                    "error": "",
+                },
+            ),
+            patch("core.wireguard.handshake_max_age_sec", return_value=180),
+        ):
+            result = wireguard.ensure_reservation_peer(_Res())
+        self.assertEqual(result["code"], "key_mismatch")
+        self.assertIn("Generate script", result["message"])
+
+    def test_prune_orphan_runtime_peers_removes_unknown_keys(self):
+        keep = SERVER_PUBLIC_KEY
+        orphan = "ORPHANORPHANORPHANORPHANORPHANORPHANORPHANORPHANORP="
+        with (
+            patch(
+                "core.wireguard.desired_server_peer_public_keys",
+                return_value={keep},
+            ),
+            patch(
+                "core.wireguard._run_wg_interface_dump",
+                return_value=(
+                    [
+                        {"public_key": keep, "allowed_ips": "10.9.0.1/32"},
+                        {"public_key": orphan, "allowed_ips": "10.9.0.99/32"},
+                    ],
+                    "",
+                ),
+            ),
+            patch(
+                "core.wireguard.remove_server_peer",
+                side_effect=lambda pk: {"ok": pk == orphan},
+            ) as remove,
+            patch("core.wireguard.can_apply_server_peers", return_value=True),
+        ):
+            result = wireguard.prune_orphan_runtime_peers()
+        self.assertEqual(result["pruned"], 1)
+        remove.assert_called_once_with(orphan)
 
     def test_apply_server_peer_reports_sync_command_unset(self):
         with (

@@ -441,6 +441,67 @@ def _active_router_public_keys() -> set[str]:
     return keys
 
 
+def _orphan_peer_prune_enabled() -> bool:
+    raw = (os.getenv("WIREGUARD_PRUNE_ORPHAN_PEERS", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def desired_server_peer_public_keys() -> set[str]:
+    """Public keys that should exist on wg0 (onboarded routers + pending reservations)."""
+    from core.models import WireGuardReservation
+
+    keys = _active_router_public_keys()
+    for row in WireGuardReservation.objects.exclude(public_key="").values_list(
+        "public_key", flat=True
+    ):
+        value = (row or "").strip()
+        if value:
+            keys.add(value)
+    return keys
+
+
+def prune_orphan_runtime_peers() -> dict:
+    """
+    Drop wg0 peers that are not in the database (stale onboarding keys, manual adds).
+
+    Runtime only — wg0.conf may still list removed peers until the next rebuild.
+    """
+    if not _orphan_peer_prune_enabled():
+        return {"ok": True, "skipped": True, "pruned": 0, "public_keys": []}
+    if not can_apply_server_peers():
+        return {"ok": False, "skipped": True, "reason": "not_on_tunnel", "pruned": 0}
+
+    desired = desired_server_peer_public_keys()
+    rows, err = _run_wg_interface_dump()
+    if err:
+        return {"ok": False, "error": err, "pruned": 0, "public_keys": []}
+
+    removed: list[str] = []
+    errors: list[str] = []
+    for row in rows:
+        public_key = (row.get("public_key") or "").strip()
+        if not public_key or public_key in desired:
+            continue
+        outcome = remove_server_peer(public_key)
+        if outcome.get("ok"):
+            removed.append(public_key)
+        elif outcome.get("error"):
+            errors.append(f"{public_key[:10]}…: {outcome['error']}")
+
+    if removed:
+        logger.info(
+            "Pruned %s orphan WireGuard peer(s) from runtime wg0",
+            len(removed),
+        )
+    return {
+        "ok": not errors,
+        "skipped": False,
+        "pruned": len(removed),
+        "public_keys": removed,
+        "errors": errors,
+    }
+
+
 def reservation_connect_is_stale(reservation, *, keep: bool = False) -> bool:
     """
     True when a pending onboarding reservation will not pass Connect checks.
@@ -1245,6 +1306,71 @@ def _tunnel_host_reachable(address: str, timeout: float = 1.5) -> bool:
         return False
 
 
+def _wg_interface_dump_command() -> list[str] | None:
+    """Command argv for ``wg show <iface> dump`` (may use WIREGUARD_SYNC_COMMAND --dump)."""
+    iface = _wireguard_interface()
+    wg_bin = shutil.which("wg") or "/usr/bin/wg"
+    sync_cmd = (getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip()
+    sync_cmd = sync_cmd.strip('"').strip("'")
+    if sync_cmd:
+        try:
+            parts = shlex.split(sync_cmd)
+        except ValueError:
+            parts = []
+        if parts:
+            return [*parts, "--dump"]
+    if not Path(wg_bin).is_file() and not shutil.which("wg"):
+        return None
+    return [wg_bin, "show", iface, "dump"]
+
+
+def _run_wg_interface_dump() -> tuple[list[dict], str]:
+    """
+    Parse ``wg show <iface> dump`` into peer rows.
+
+    Each row: public_key, allowed_ips, handshake_age_sec (None if never).
+    """
+    dump_cmd = _wg_interface_dump_command()
+    if dump_cmd is None:
+        return [], "wg_not_found"
+    try:
+        proc = subprocess.run(
+            dump_cmd,
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+            env={
+                **os.environ,
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            },
+        )
+    except Exception as exc:
+        return [], str(exc)
+    if proc.returncode != 0:
+        return [], (proc.stderr or proc.stdout or "wg show failed").strip()
+
+    now = int(time.time())
+    rows: list[dict] = []
+    for line in (proc.stdout or "").splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        try:
+            latest = int(parts[4] or "0")
+        except ValueError:
+            latest = 0
+        age = max(0, now - latest) if latest > 0 else None
+        rows.append(
+            {
+                "public_key": parts[0],
+                "allowed_ips": parts[3] if len(parts) > 3 else "",
+                "handshake_age_sec": age,
+            }
+        )
+    return rows, ""
+
+
 def inspect_server_peer(public_key: str) -> dict:
     """
     Read live WireGuard state for one peer on this host.
@@ -1263,62 +1389,59 @@ def inspect_server_peer(public_key: str) -> dict:
         out["error"] = "missing_public_key"
         return out
 
-    iface = _wireguard_interface()
-    wg_bin = shutil.which("wg") or "/usr/bin/wg"
-    dump_cmd: list[str] | None = None
-    sync_cmd = (getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip()
-    sync_cmd = sync_cmd.strip('"').strip("'")
-    # Prefer the sudo helper (same sudoers path as peer apply) so www-data can read wg.
-    if sync_cmd:
-        try:
-            parts = shlex.split(sync_cmd)
-        except ValueError:
-            parts = []
-        if parts:
-            dump_cmd = [*parts, "--dump"]
-    if dump_cmd is None:
-        if not Path(wg_bin).is_file() and not shutil.which("wg"):
-            out["error"] = "wg_not_found"
-            return out
-        dump_cmd = [wg_bin, "show", iface, "dump"]
-
-    try:
-        proc = subprocess.run(
-            dump_cmd,
-            capture_output=True,
-            text=True,
-            timeout=8,
-            check=False,
-            env={
-                **os.environ,
-                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            },
-        )
-    except Exception as exc:
-        out["error"] = str(exc)
-        return out
-
-    if proc.returncode != 0:
-        out["error"] = (proc.stderr or proc.stdout or "wg show failed").strip()
+    rows, err = _run_wg_interface_dump()
+    if err:
+        out["error"] = err
         return out
 
     out["checked"] = True
-    now = int(time.time())
-    for line in (proc.stdout or "").splitlines()[1:]:
-        parts = line.split("\t")
-        if len(parts) < 5 or parts[0] != public_key:
+    for row in rows:
+        if row.get("public_key") != public_key:
             continue
         out["present"] = True
-        out["allowed_ips"] = parts[3] if len(parts) > 3 else ""
-        try:
-            latest = int(parts[4] or "0")
-        except ValueError:
-            latest = 0
-        if latest > 0:
-            out["handshake_age_sec"] = max(0, now - latest)
-        else:
-            out["handshake_age_sec"] = None
+        out["allowed_ips"] = row.get("allowed_ips") or ""
+        out["handshake_age_sec"] = row.get("handshake_age_sec")
         return out
+    return out
+
+
+def find_handshake_peer_for_address(address: str) -> dict:
+    """
+    Among wg0 peers, return the row for ``address/32`` with the freshest handshake.
+    """
+    address = (address or "").strip()
+    needle = f"{address}/32"
+    out: dict = {
+        "checked": False,
+        "public_key": "",
+        "handshake_age_sec": None,
+        "error": "",
+    }
+    if not address:
+        out["error"] = "missing_address"
+        return out
+
+    rows, err = _run_wg_interface_dump()
+    if err:
+        out["error"] = err
+        return out
+    out["checked"] = True
+
+    best_age: int | None = None
+    best_key = ""
+    for row in rows:
+        allowed = (row.get("allowed_ips") or "").replace(" ", ",")
+        if needle not in allowed.split(","):
+            continue
+        age = row.get("handshake_age_sec")
+        if age is None:
+            continue
+        if best_age is None or age < best_age:
+            best_age = age
+            best_key = row.get("public_key") or ""
+    if best_key:
+        out["public_key"] = best_key
+        out["handshake_age_sec"] = best_age
     return out
 
 
@@ -1326,7 +1449,7 @@ def ensure_reservation_peer(reservation) -> dict:
     """
     Re-apply a pending reservation to wg0 and classify why the tunnel may be down.
 
-    Codes: ok | peer_missing | no_handshake | waiting_router | unknown
+    Codes: ok | peer_missing | no_handshake | key_mismatch | waiting_router | unknown
     """
     label = getattr(reservation, "label", None) or "MikroTik"
     address = (getattr(reservation, "address", None) or "").strip()
@@ -1334,6 +1457,29 @@ def ensure_reservation_peer(reservation) -> dict:
 
     sync = apply_server_peer(label, address, public_key)
     peer = inspect_server_peer(public_key)
+
+    live = find_handshake_peer_for_address(address)
+    live_key = (live.get("public_key") or "").strip()
+    live_age = live.get("handshake_age_sec")
+    if (
+        live.get("checked")
+        and live_key
+        and live_key != public_key
+        and live_age is not None
+        and live_age <= handshake_max_age_sec()
+    ):
+        return {
+            "code": "key_mismatch",
+            "message": (
+                f"VPS sees a live WireGuard handshake for {address}, but not for this "
+                "site’s keys (an old peer may still be on wg0). Click Generate script, "
+                "paste the full script once in Winbox → New Terminal, then run "
+                "manage.py wireguard_peer --sync-server and Check now."
+            ),
+            "peer_sync": sync,
+            "peer": peer,
+            "live_peer_public_key": live_key,
+        }
 
     if peer.get("checked") and not peer.get("present") and not sync.get("ok"):
         return {
@@ -1690,10 +1836,16 @@ def sync_all_server_peers() -> dict:
             synced += 1
         elif not outcome.get("skipped") and outcome.get("error"):
             errors.append(f"{reservation.address}: {outcome['error']}")
+    prune_meta = prune_orphan_runtime_peers()
     result = {"ok": not errors, "synced": synced, "errors": errors}
     if purge_meta.get("purged"):
         result["reservations_purged"] = int(purge_meta["purged"])
         result["purged_labels"] = list(purge_meta.get("labels") or [])
+    if prune_meta.get("pruned"):
+        result["orphans_pruned"] = int(prune_meta["pruned"])
+    if prune_meta.get("errors"):
+        result.setdefault("errors", []).extend(prune_meta["errors"])
+        result["ok"] = False
     return result
 
 
@@ -1862,6 +2014,19 @@ def tunnel_verification_checks(
             "fail",
             f"No ping to {server} until handshake succeeds",
         )
+    elif state == "key_mismatch":
+        tunnel_status, tunnel_msg = (
+            "fail",
+            f"Tunnel IP {address} — router keys do not match this Connect reservation",
+        )
+        peer_status, peer_msg = (
+            "fail",
+            "Stale wg0 peer or old Winbox paste — regenerate script, full paste, sync-server",
+        )
+        ping_status, ping_msg = (
+            "fail",
+            f"Billing checks use reservation keys — fix keys, then Check now",
+        )
     elif state == "waiting_router":
         tunnel_status, tunnel_msg = (
             "waiting",
@@ -2023,6 +2188,8 @@ def validate_inline_install_steps(script: str) -> list[str]:
         problems.append("missing Hotspot hs-input management allow")
     if 'identity set name="ispcentric.' not in text:
         problems.append("missing ispcentric identity marker for LAN Check")
+    if "Key verify — WireGuard public keys" not in text:
+        problems.append("missing WireGuard key self-verify after peer add")
     if "Assign unique LAN IP" in text and 'comment="ispcentric-lan"' not in text:
         problems.append("missing ispcentric-lan LAN assignment in script")
     return problems
@@ -2099,6 +2266,35 @@ def _ros_lan_assign_lines(lan_ip: str) -> list[str]:
         ),
     ]
     return lines
+
+
+def _ros_wireguard_key_verify_lines(router_public_key: str, server_public_key: str) -> list[str]:
+    """
+    One paste line: compare live WG keys to the reservation (catches O/0 typos).
+    """
+    router_public_key = (router_public_key or "").strip().replace("\\", "\\\\").replace('"', '\\"')
+    server_public_key = (server_public_key or "").strip().replace("\\", "\\\\").replace('"', '\\"')
+    if not router_public_key or not server_public_key:
+        return []
+    fail_router = _ros_fail(
+        "Router WG public-key mismatch — paste the full Copy script; never type keys in Winbox"
+    )
+    fail_server = _ros_fail(
+        "VPS peer public-key mismatch — paste the full Copy script (do not edit the peer line)"
+    )
+    ok_keys = _ros_ok("WireGuard keys match ISPCENTRIC reservation")
+    return [
+        _ros_info("Key verify — WireGuard public keys (must match Copy script)"),
+        (
+            f':do {{ :local expR "{router_public_key}" ; :local expS "{server_public_key}" ; '
+            f':local gotR [/interface wireguard get [find name=ispcentric-vpn] public-key] ; '
+            f':local gotS [/interface wireguard peers get [find interface=ispcentric-vpn] public-key] ; '
+            f':if ($gotR != $expR) do={{{fail_router}}} ; '
+            f':if ($gotS != $expS) do={{{fail_server}}} ; '
+            f':if (($gotR = $expR) && ($gotS = $expS)) do={{{ok_keys}}} }} '
+            f"on-error={{{_ros_warn('Key verify skipped — WireGuard not ready yet')}}}"
+        ),
+    ]
 
 
 def _routeros_install_lines(
@@ -2263,6 +2459,10 @@ def _routeros_install_lines(
             f':do {{ /system identity set name="{script_ready_identity(address)}" ; '
             f'{_ros_ok(f"Identity set to {script_ready_identity(address)} (for Check now)")} }} '
             f"on-error={{{_ros_warn('Could not set identity marker')}}}"
+        ),
+        *_ros_wireguard_key_verify_lines(
+            public_key_for(private_key),
+            _server_public_key(),
         ),
     ]
 

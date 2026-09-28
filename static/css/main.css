@@ -1600,6 +1600,35 @@ a {
   color: #b8f5cd;
 }
 
+.mikrotik-tunnel-sop {
+  margin: 0.65rem 0 0.85rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.12);
+  font-size: 0.88rem;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.mikrotik-tunnel-sop summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.mikrotik-tunnel-sop-list {
+  margin: 0.55rem 0 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.mikrotik-tunnel-sop-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.82rem;
+  opacity: 0.85;
+}
+
 .mikrotik-tunnel-steps {
   list-style: none;
   margin: 0;
