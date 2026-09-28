@@ -14727,6 +14727,8 @@ def mikrotik_tunnel_status(request):
         peer_state = diagnosis.get("code") or "unknown"
         if peer_state == "ok":
             peer_state = "unknown"
+        elif peer_state == "waiting_router" and api_enabled:
+            peer_state = "ok"
 
     checks = wireguard.tunnel_verification_checks(
         local_mode=False,

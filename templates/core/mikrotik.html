@@ -1748,14 +1748,14 @@
         status_token: data.tunnelStatusToken || "",
         hint: data.tunnelStatusMessage || ""
       }, { skipSave: true, resume: true });
-      tunnelApiReady = !!data.tunnelApiReady;
-      if (tunnelUseIp) tunnelUseIp.disabled = !tunnelApiReady;
-      if (tunnelApiReady) {
-        if (tunnelUseIp) tunnelUseIp.disabled = false;
-        markTunnelStep(2, "done");
-        markTunnelStep(3, "done");
-        markTunnelStep(4, "active");
-        setTunnelCheckState("ready", "Tunnel connected · API enabled", true, true);
+      tunnelApiReady = false;
+      setConnectCredentialsVisible(false);
+      resetStep4IpCopy();
+      markTunnelStep(2, data.tunnelScript ? "done" : "");
+      markTunnelStep(3, "active");
+      markTunnelStep(4, "");
+      if (data.tunnelStatusToken) {
+        startTunnelStatusPolling();
       } else if (data.tunnelCheckState) {
         setTunnelCheckState(
           data.tunnelCheckState,

@@ -5487,6 +5487,53 @@ class TunnelStatusTests(TestCase):
         self.assertEqual(result["pruned"], 1)
         remove.assert_called_once_with(orphan)
 
+    def test_apply_server_peer_removes_stale_runtime_peer_for_same_address(self):
+        keep = "KEEPKEEPKEEPKEEPKEEPKEEPKEEPKEEPKEEPKEEPKEEPKEEPKE="
+        stale = "STALESTALESTALESTALESTALESTALESTALESTALESTALESTAL="
+        with (
+            patch("core.wireguard.configured", return_value=True),
+            patch("core.wireguard.can_apply_server_peers", return_value=True),
+            patch(
+                "core.wireguard._remove_runtime_peers_for_address",
+                return_value=1,
+            ) as remove_stale,
+            patch(
+                "core.wireguard._append_peer_to_conf",
+                return_value=True,
+            ),
+            patch("core.wireguard.subprocess.run") as run,
+        ):
+            run.return_value.returncode = 0
+            run.return_value.stdout = ""
+            run.return_value.stderr = ""
+            wireguard.apply_server_peer("Site", "10.9.0.2", keep)
+        remove_stale.assert_called_once_with("10.9.0.2", keep)
+
+    def test_ensure_reservation_peer_when_wg_inspect_fails_but_tunnel_up(self):
+        class _Res:
+            label = "Site"
+            address = "10.9.0.8"
+            public_key = SERVER_PUBLIC_KEY
+
+        with (
+            patch(
+                "core.wireguard.apply_server_peer",
+                return_value={"ok": True, "runtime": True},
+            ),
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={"checked": False, "present": False, "error": "permission denied"},
+            ),
+            patch(
+                "core.wireguard.find_handshake_peer_for_address",
+                return_value={"checked": False, "public_key": "", "handshake_age_sec": None},
+            ),
+            patch("core.wireguard._tunnel_host_reachable", return_value=True),
+        ):
+            result = wireguard.ensure_reservation_peer(_Res())
+        self.assertEqual(result["code"], "waiting_router")
+        self.assertIn("reachable", result["message"].lower())
+
     def test_apply_server_peer_reports_sync_command_unset(self):
         with (
             override_settings(
@@ -13300,8 +13347,16 @@ class MikroTikOnboardPeerGateTests(TestCase):
         )
         with (
             patch(
+                "core.wireguard.find_handshake_peer_for_address",
+                return_value={"checked": True, "public_key": "", "handshake_age_sec": None},
+            ),
+            patch(
                 "core.wireguard.inspect_server_peer",
-                return_value={"checked": True, "present": True},
+                return_value={
+                    "checked": True,
+                    "present": True,
+                    "handshake_age_sec": 45,
+                },
             ),
             patch(
                 "core.views.test_mikrotik_api_login",
@@ -13354,10 +13409,54 @@ class MikroTikOnboardPeerGateTests(TestCase):
                 "core.wireguard.apply_server_peer",
                 return_value={"ok": True, "skipped": False},
             ),
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={
+                    "checked": True,
+                    "present": True,
+                    "handshake_age_sec": 30,
+                },
+            ),
         ):
             result = onboard_tunnel_peer_ready("10.9.0.91")
         self.assertTrue(result["ok"])
         self.assertTrue(result["peer_synced"])
+
+    def test_onboard_tunnel_peer_ready_blocks_present_without_handshake(self):
+        from core.models import WireGuardReservation
+        from core.wireguard import onboard_tunnel_peer_ready
+
+        WireGuardReservation.objects.create(
+            organization=self.org,
+            label="No HS",
+            address="10.9.0.93",
+            lan_address="192.168.88.1",
+            private_key="a" * 44,
+            public_key=SERVER_PUBLIC_KEY,
+        )
+        with (
+            override_settings(HOSTED=True),
+            patch(
+                "core.wireguard.apply_server_peer",
+                return_value={"ok": True, "skipped": False},
+            ),
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={
+                    "checked": True,
+                    "present": True,
+                    "handshake_age_sec": None,
+                },
+            ),
+            patch(
+                "core.wireguard.find_handshake_peer_for_address",
+                return_value={"checked": True, "public_key": "", "handshake_age_sec": None},
+            ),
+            patch("core.wireguard._tunnel_host_reachable", return_value=False),
+        ):
+            result = onboard_tunnel_peer_ready("10.9.0.93")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["required"])
 
     def test_onboard_tunnel_peer_ready_ok_when_reachable(self):
         from core.models import WireGuardReservation

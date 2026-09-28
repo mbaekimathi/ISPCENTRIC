@@ -51,6 +51,15 @@ def handshake_max_age_sec() -> int:
         return 180
 
 
+def _handshake_fresh(handshake_age_sec) -> bool:
+    if handshake_age_sec is None:
+        return False
+    try:
+        return int(handshake_age_sec) <= handshake_max_age_sec()
+    except (TypeError, ValueError):
+        return False
+
+
 def generate_keypair() -> tuple[str, str]:
     """Return (private_key, public_key) base64-encoded as WireGuard expects."""
     private = X25519PrivateKey.generate()
@@ -401,6 +410,37 @@ def _reservation_stale_handshake_sec() -> int:
     except (TypeError, ValueError):
         days = 3.0
     return max(int(handshake_max_age_sec()), int(days * 86400))
+
+
+def _remove_runtime_peers_for_address(address: str, keep_public_key: str) -> int:
+    """
+    Drop wg0 peers bound to ``address/32`` except ``keep_public_key``.
+
+    Prevents stale onboarding keys from blocking handshakes for the same tunnel IP.
+    """
+    address = (address or "").strip()
+    keep_public_key = (keep_public_key or "").strip()
+    needle = f"{address}/32"
+    if not address or not keep_public_key:
+        return 0
+    if not can_apply_server_peers():
+        return 0
+
+    rows, err = _run_wg_interface_dump()
+    if err:
+        return 0
+
+    removed = 0
+    for row in rows:
+        public_key = (row.get("public_key") or "").strip()
+        if not public_key or public_key == keep_public_key:
+            continue
+        allowed = (row.get("allowed_ips") or "").replace(" ", ",")
+        if needle not in allowed.split(","):
+            continue
+        if remove_server_peer(public_key).get("ok"):
+            removed += 1
+    return removed
 
 
 def remove_server_peer(public_key: str) -> dict:
@@ -1231,21 +1271,37 @@ def onboard_tunnel_peer_ready(tunnel_address: str, *, organization=None) -> dict
                 }
         return {"ok": True, "required": False}
 
+    live = find_handshake_peer_for_address(address)
+    live_key = (live.get("public_key") or "").strip()
+    live_age = live.get("handshake_age_sec")
+    if (
+        live.get("checked")
+        and live_key
+        and live_key != public_key
+        and _handshake_fresh(live_age)
+    ):
+        return {
+            "ok": False,
+            "required": True,
+            "peer_synced": False,
+            "error": (
+                f"Tunnel {address} is active on the VPS under a different WireGuard key. "
+                "Paste the full Copy script on the MikroTik (do not type keys), then Check now."
+            ),
+            "peer_sync": {},
+            "key_mismatch": True,
+        }
+
     sync = apply_server_peer(
         getattr(reservation, "label", None) or "MikroTik",
         address,
         public_key,
     )
-    if sync.get("ok"):
-        return {
-            "ok": True,
-            "required": True,
-            "peer_synced": True,
-            "peer_sync": sync,
-        }
 
     peer = inspect_server_peer(public_key)
-    if peer.get("checked") and peer.get("present"):
+    if peer.get("checked") and peer.get("present") and _handshake_fresh(
+        peer.get("handshake_age_sec")
+    ):
         return {
             "ok": True,
             "required": True,
@@ -1254,13 +1310,24 @@ def onboard_tunnel_peer_ready(tunnel_address: str, *, organization=None) -> dict
             "peer_sync": sync,
         }
 
-    if _tunnel_host_reachable(address):
+    if live_key == public_key and _handshake_fresh(live_age):
         return {
             "ok": True,
             "required": True,
             "peer_synced": True,
+            "peer": peer,
+            "peer_sync": sync,
+            "handshake_via": "address",
+        }
+
+    if _tunnel_host_reachable(address):
+        return {
+            "ok": True,
+            "required": True,
+            "peer_synced": bool(sync.get("ok") or peer.get("present")),
             "reachable": True,
             "peer_sync": sync,
+            "peer": peer,
         }
 
     report = peer_sync_report(
@@ -1465,8 +1532,7 @@ def ensure_reservation_peer(reservation) -> dict:
         live.get("checked")
         and live_key
         and live_key != public_key
-        and live_age is not None
-        and live_age <= handshake_max_age_sec()
+        and _handshake_fresh(live_age)
     ):
         return {
             "code": "key_mismatch",
@@ -1506,7 +1572,7 @@ def ensure_reservation_peer(reservation) -> dict:
                 "peer_sync": sync,
                 "peer": peer,
             }
-        if age > handshake_max_age_sec():
+        if not _handshake_fresh(age):
             return {
                 "code": "no_handshake",
                 "message": (
@@ -1521,6 +1587,53 @@ def ensure_reservation_peer(reservation) -> dict:
             "message": (
                 f"Handshake ok for {address}, but API is not open yet. "
                 "Wait for the Winbox script to finish, then Check now."
+            ),
+            "peer_sync": sync,
+            "peer": peer,
+        }
+
+    if not peer.get("checked"):
+        if live_key == public_key and _handshake_fresh(live_age):
+            return {
+                "code": "waiting_router",
+                "message": (
+                    f"Handshake ok for {address}, but API is not open yet. "
+                    "Wait for the Winbox script to finish, then Check now."
+                ),
+                "peer_sync": sync,
+                "peer": peer,
+            }
+        if _tunnel_host_reachable(address):
+            return {
+                "code": "waiting_router",
+                "message": (
+                    f"Tunnel IP {address} is reachable from the VPS, but RouterOS API "
+                    "is not open yet. Wait for the Winbox script to finish, then Check now."
+                ),
+                "peer_sync": sync,
+                "peer": peer,
+            }
+        if sync.get("ok"):
+            return {
+                "code": "waiting_router",
+                "message": (
+                    f"Peer {address} is registered on the VPS. "
+                    "Paste the script in Winbox → New Terminal and wait for [ISPCENTRIC OK]."
+                ),
+                "peer_sync": sync,
+                "peer": peer,
+            }
+        hint = (peer.get("error") or "").strip()
+        return {
+            "code": "unknown",
+            "message": (
+                "Waiting for MikroTik… paste the script in Winbox → New Terminal. "
+                + (
+                    f"({hint}) "
+                    if hint
+                    else "If Check now stays red, run wireguard_peer --sync-server on the VPS. "
+                )
+                + "Ensure WIREGUARD_SYNC_COMMAND supports --dump for Verify."
             ),
             "peer_sync": sync,
             "peer": peer,
@@ -1673,6 +1786,14 @@ def apply_server_peer(label: str, address: str, public_key: str) -> dict:
     address = (address or "").strip()
     if not public_key or not address:
         return {"ok": False, "skipped": True, "reason": "missing_peer_fields"}
+
+    stale = _remove_runtime_peers_for_address(address, public_key)
+    if stale:
+        logger.info(
+            "Removed %s stale runtime peer(s) for tunnel IP %s before apply",
+            stale,
+            address,
+        )
 
     iface = _wireguard_interface()
     conf_path = _wireguard_conf_path()
