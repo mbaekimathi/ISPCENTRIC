@@ -1415,15 +1415,43 @@
   }
 
   function autoFillDiscoveredHost(force) {
+    // On the hosted VPS, Connect must dial the tunnel IP — never overwrite with LAN.
+    if (hostedServer && tunnelReadyAddress) {
+      if (hostInput && hostInput.value.trim() !== tunnelReadyAddress) {
+        applySingleOnboardHost(tunnelReadyAddress);
+        setHostHint(
+          "Hosted Connect uses tunnel IP " + tunnelReadyAddress + " (LAN IPs are not reachable from the VPS)."
+        );
+      }
+      return;
+    }
     var pick = pickDeviceForTunnel();
     if (!pick || !pick.host) return;
     var current = hostInput ? hostInput.value.trim() : "";
     var planned = scriptAssignedLanIp || FACTORY_DEFAULT_IP;
     var shouldReplace = force || !current || current === planned || current === FACTORY_DEFAULT_IP;
-    if (tunnelReadyAddress && current === tunnelReadyAddress) shouldReplace = true;
+    // Keep an already-selected tunnel IP unless the operator is on LAN local mode.
+    if (tunnelReadyAddress && current === tunnelReadyAddress) return;
     if (!shouldReplace) return;
     applySingleOnboardHost(pick.host);
     setHostHint("Auto-filled LAN " + pick.host + " from network scan.");
+  }
+
+  function ensureHostedConnectHost() {
+    if (!hostedServer || !tunnelReadyAddress) {
+      return hostInput ? hostInput.value.trim() : "";
+    }
+    var current = hostInput ? hostInput.value.trim() : "";
+    if (current !== tunnelReadyAddress) {
+      applySingleOnboardHost(tunnelReadyAddress);
+      setHostHint(
+        "Hosted Connect uses tunnel IP " +
+          tunnelReadyAddress +
+          (current ? " (was " + current + " — not reachable from the VPS)" : "") +
+          "."
+      );
+    }
+    return tunnelReadyAddress;
   }
 
   function applySingleOnboardHost(ip, options) {
@@ -2826,6 +2854,7 @@
     markTunnelStep(3, "done");
     if ((data && data.address) || tunnelReadyAddress) {
       applyTunnelIp((data && data.address) || tunnelReadyAddress);
+      if (hostedServer) ensureHostedConnectHost();
       markTunnelStep(4, "done");
       if (tunnelUseIp) {
         tunnelUseIp.disabled = true;
@@ -3572,7 +3601,7 @@
     options = options || {};
     if (connectInFlight) return;
     if (!hostInput || !usernameInput || !passwordInput) return;
-    var host = hostInput.value.trim();
+    var host = ensureHostedConnectHost() || hostInput.value.trim();
     var username = usernameInput.value.trim();
     var password = passwordInput.value;
     if (!host) {
@@ -3580,14 +3609,30 @@
       hostInput.focus();
       return;
     }
+    if (hostedServer && tunnelReadyAddress && host !== tunnelReadyAddress) {
+      host = tunnelReadyAddress;
+      applySingleOnboardHost(host);
+    }
     if (!username) {
       showConnectStatus("Enter the router username.", true);
       usernameInput.focus();
       return;
     }
+    // Hosted: if tunnel peer is live, allow Connect even when the UI still shows pending.
+    if (
+      wireguardReady &&
+      hostedServer &&
+      tunnelReadyAddress &&
+      host === tunnelReadyAddress &&
+      !tunnelApiReady
+    ) {
+      tunnelApiReady = true;
+      setConnectCredentialsVisible(true);
+    }
     if (wireguardReady && tunnelStatusToken && !tunnelApiReady) {
       pendingAutoConnect = true;
       autoConnectAttempts = 0;
+      if (hostedServer && tunnelReadyAddress) ensureHostedConnectHost();
       showConnectStatus(
         "Waiting for live verify… paste finishes in Winbox, then Connect runs automatically.",
         false
@@ -3663,6 +3708,20 @@
           }
           if (isConnectReachabilityError(connErr)) {
             pendingAutoConnect = true;
+            // Hosted + LAN host was the usual trap — switch to tunnel IP and retry once.
+            if (hostedServer && tunnelReadyAddress && host !== tunnelReadyAddress) {
+              ensureHostedConnectHost();
+              tunnelApiReady = true;
+              showConnectStatus(
+                "Switched to tunnel IP " + tunnelReadyAddress + " — retrying Connect…",
+                false
+              );
+              setTimeout(function () {
+                if (!pendingAutoConnect || connectInFlight) return;
+                connectRouter({ auto: true });
+              }, 400);
+              return;
+            }
             tunnelApiReady = false;
             showConnectStatus(
               "Tunnel/API not reachable yet — live verify continues. " +
