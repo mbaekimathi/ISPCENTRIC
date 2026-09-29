@@ -36,6 +36,8 @@ if ! wg show "$IFACE" >/dev/null 2>&1; then
   fi
 fi
 
+# Replace in place: drop stale allowed-ips / duplicate runtime rows for this key.
+wg set "$IFACE" peer "$PUBKEY" remove 2>/dev/null || true
 wg set "$IFACE" peer "$PUBKEY" allowed-ips "${ADDR}/32"
 
 if [[ -f "$CONF" ]] && ! grep -qF "$PUBKEY" "$CONF"; then
