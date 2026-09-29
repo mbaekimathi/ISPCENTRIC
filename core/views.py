@@ -8870,6 +8870,94 @@ def mikrotik(request):
 
 @client_workspace_required
 @require_http_methods(["GET", "POST"])
+def mikrotik_transfer_clients(request):
+    """Bulk move clients between MikroTik routers (or from unassigned)."""
+    from core.mikrotik_client_transfer import (
+        build_transfer_groups,
+        transfer_customer_to_router,
+    )
+
+    org = resolve_organization(request.user, request)
+    if not org:
+        messages.error(request, "No organization is linked to this workspace.")
+        return redirect("core:mikrotik")
+
+    from_param = (request.GET.get("from") or request.POST.get("from") or "").strip()
+    focus_router_id = int(from_param) if from_param.isdigit() else None
+    routers, customers, groups = build_transfer_groups(
+        org, focus_router_id=focus_router_id
+    )
+    router_by_id = {r.pk: r for r in routers}
+
+    if request.method == "POST":
+        raw_ids = request.POST.getlist("customer_ids")
+        target_raw = (request.POST.get("target_router_id") or "").strip()
+        try:
+            customer_ids = [int(x) for x in raw_ids if str(x).isdigit()]
+        except (TypeError, ValueError):
+            customer_ids = []
+
+        redirect_q = f"?from={focus_router_id}" if focus_router_id else ""
+        if not customer_ids:
+            messages.error(request, "Select at least one client to transfer.")
+            return redirect(reverse("core:mikrotik_transfer_clients") + redirect_q)
+        if not target_raw.isdigit() or int(target_raw) not in router_by_id:
+            messages.error(request, "Choose a destination MikroTik.")
+            return redirect(reverse("core:mikrotik_transfer_clients") + redirect_q)
+
+        target = router_by_id[int(target_raw)]
+        id_set = set(customer_ids)
+        # Only PPPoE rows from build_transfer_groups — ignore Hotspot IDs if posted.
+        selected = [
+            c
+            for c in customers
+            if c.pk in id_set and c.service_type == Customer.ServiceType.PPPOE
+        ]
+        moved = 0
+        skipped = 0
+        for customer in selected:
+            result = transfer_customer_to_router(customer, target)
+            if result.get("moved"):
+                moved += 1
+            else:
+                skipped += 1
+
+        if moved:
+            plural = "s" if moved != 1 else ""
+            extra = (
+                f" {skipped} already on that MikroTik."
+                if skipped
+                else " Provisioning continues in the background."
+            )
+            messages.success(
+                request,
+                f'Moved {moved} client{plural} to "{target.name}".' + extra,
+            )
+        else:
+            messages.info(
+                request,
+                "No clients moved — they are already on the selected MikroTik.",
+            )
+        return redirect(
+            reverse("core:mikrotik_transfer_clients") + f"?from={target.pk}"
+        )
+
+    return render(
+        request,
+        "core/mikrotik_transfer_clients.html",
+        {
+            "org": org,
+            "routers": routers,
+            "groups": groups,
+            "customers_total": len(customers),
+            "focus_router_id": focus_router_id,
+            "page_subtitle": "PPPoE clients only — select and move them to another MikroTik. Hotspot is not listed.",
+        },
+    )
+
+
+@client_workspace_required
+@require_http_methods(["GET", "POST"])
 def mikrotik_edit(request, router_id: int):
     """Edit name, model, location, and credentials from the routers list."""
     org = resolve_organization(request.user, request)

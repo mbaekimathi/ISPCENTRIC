@@ -16,6 +16,10 @@
       </div>
     </div>
     <div class="packages-hero-actions">
+      <a class="btn btn-ghost btn-sm mikrotik-hero-btn" href="{% url 'core:mikrotik_transfer_clients' %}">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 8h10M7 12h7M7 16h10M17 8l3 4-3 4"/></svg>
+        <span>Transfer clients</span>
+      </a>
       <button type="button" class="btn btn-ghost btn-sm mikrotik-hero-btn" id="mikrotik-refresh-status" {% if not routers %}disabled{% endif %}>
         <span class="mikrotik-btn-spinner" aria-hidden="true" hidden></span>
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 12a8 8 0 0 1 14.1-5.1M20 12a8 8 0 0 1-14.1 5.1M16 4v4h4M8 20v-4H4"/></svg>
@@ -63,37 +67,77 @@
     class="mikrotik-hosted-readiness ops-panel{% if hosted_readiness.ready %} is-ready{% endif %}"
     id="mikrotik-hosted-readiness"
     aria-labelledby="mikrotik-hosted-readiness-title"
+    data-expanded="false"
   >
     <header class="mikrotik-hosted-readiness-head">
-      <div>
-        <h2 class="mikrotik-hosted-readiness-title" id="mikrotik-hosted-readiness-title">Hosted onboarding readiness</h2>
-        <p class="mikrotik-hosted-readiness-lead">
-          On the VPS, billing reaches MikroTik routers only over WireGuard (<code>10.9.x</code>). Fix red items before remote Connect.
+      <div class="mikrotik-hosted-readiness-summary">
+        <h2 class="mikrotik-hosted-readiness-title" id="mikrotik-hosted-readiness-title">VPS readiness</h2>
+        <div class="mikrotik-hosted-readiness-icons" id="mikrotik-hosted-readiness-icons" aria-label="Check results">
+          {% for item in hosted_readiness.items %}
+            <span
+              class="mikrotik-status-icon is-{{ item.status }}"
+              data-readiness-icon="{{ item.key }}"
+              title="{{ item.label }}{% if item.message %}: {{ item.message }}{% endif %}"
+            >
+              {% if item.status == "ok" %}
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5 10 17.5 19 7"/></svg>
+                <span class="visually-hidden">{{ item.label }} passed</span>
+              {% else %}
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" d="M7 7l10 10M17 7 7 17"/></svg>
+                <span class="visually-hidden">{{ item.label }} failed</span>
+              {% endif %}
+            </span>
+          {% endfor %}
+        </div>
+        <p class="mikrotik-hosted-readiness-state" id="mikrotik-hosted-readiness-state">
+          {% if hosted_readiness.ready %}Ready for remote Connect{% else %}Fix failed checks before Connect{% endif %}
         </p>
       </div>
-      <button type="button" class="btn btn-ghost btn-sm" id="mikrotik-hosted-readiness-refresh">Recheck VPS</button>
+      <div class="mikrotik-hosted-readiness-actions">
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          id="mikrotik-hosted-readiness-toggle"
+          aria-expanded="false"
+          aria-controls="mikrotik-hosted-readiness-details"
+        >
+          <span data-readiness-toggle-label>Show details</span>
+        </button>
+        <button type="button" class="btn btn-ghost btn-sm" id="mikrotik-hosted-readiness-refresh">Recheck</button>
+      </div>
     </header>
-    <ul class="mikrotik-hosted-readiness-list" id="mikrotik-hosted-readiness-list">
-      {% for item in hosted_readiness.items %}
-        <li class="mikrotik-hosted-readiness-item is-{{ item.status }}" data-readiness-key="{{ item.key }}">
-          <span class="mikrotik-hosted-readiness-dot" aria-hidden="true"></span>
-          <span class="mikrotik-hosted-readiness-body">
-            <strong>{{ item.label }}</strong>
-            <span>{{ item.message }}</span>
-          </span>
-        </li>
-      {% endfor %}
-    </ul>
-    {% if not hosted_readiness.ready %}
-      <p class="mikrotik-hosted-readiness-foot">
-        On the VPS:
-        <code>sudo wg-quick up wg0</code>,
-        <code>python manage.py wireguard_peer --sync-server</code>,
-        then Generate script → Winbox paste → Check now → Connect using the <strong>tunnel IP</strong>.
+    <div class="mikrotik-hosted-readiness-details" id="mikrotik-hosted-readiness-details" hidden>
+      <p class="mikrotik-hosted-readiness-lead">
+        Billing reaches MikroTik only over WireGuard (<code>10.9.x</code>). Red X = fix before remote Connect.
       </p>
-    {% else %}
-      <p class="mikrotik-hosted-readiness-foot is-ok">VPS is ready to reach MikroTik tunnel IPs — proceed with Connect router.</p>
-    {% endif %}
+      <ul class="mikrotik-hosted-readiness-list" id="mikrotik-hosted-readiness-list">
+        {% for item in hosted_readiness.items %}
+          <li class="mikrotik-hosted-readiness-item is-{{ item.status }}" data-readiness-key="{{ item.key }}">
+            <span class="mikrotik-status-icon is-{{ item.status }}" aria-hidden="true">
+              {% if item.status == "ok" %}
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5 10 17.5 19 7"/></svg>
+              {% else %}
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" d="M7 7l10 10M17 7 7 17"/></svg>
+              {% endif %}
+            </span>
+            <span class="mikrotik-hosted-readiness-body">
+              <strong>{{ item.label }}</strong>
+              <span>{{ item.message }}</span>
+            </span>
+          </li>
+        {% endfor %}
+      </ul>
+      {% if not hosted_readiness.ready %}
+        <p class="mikrotik-hosted-readiness-foot" id="mikrotik-hosted-readiness-foot">
+          On the VPS:
+          <code>sudo wg-quick up wg0</code>,
+          <code>python manage.py wireguard_peer --sync-server</code>,
+          then Generate script → Winbox paste → Check now → Connect using the <strong>tunnel IP</strong>.
+        </p>
+      {% else %}
+        <p class="mikrotik-hosted-readiness-foot is-ok" id="mikrotik-hosted-readiness-foot">VPS can reach MikroTik tunnel IPs — proceed with Connect router.</p>
+      {% endif %}
+    </div>
   </section>
   {% endif %}
 
@@ -157,7 +201,7 @@
                           <span class="mikrotik-router-model">{{ router.get_model_display }}</span>
                           {% if router.customer_count %}
                             <span class="mikrotik-meta-sep" aria-hidden="true">·</span>
-                            <span class="mikrotik-router-clients">{{ router.customer_count }} client{{ router.customer_count|pluralize }}</span>
+                            <a class="mikrotik-router-clients" href="{% url 'core:mikrotik_transfer_clients' %}?from={{ router.id }}">{{ router.customer_count }} client{{ router.customer_count|pluralize }}</a>
                           {% endif %}
                           {% if router.location %}
                             <span class="mikrotik-meta-sep" aria-hidden="true">·</span>
@@ -757,14 +801,35 @@
                         </div>
                       </div>
                       <ul class="mikrotik-tunnel-checklist is-compact" id="mikrotik-tunnel-checklist" aria-live="polite" hidden></ul>
-                      <div class="mikrotik-verify-outcome" id="mikrotik-verify-outcome" hidden>
-                        <div class="mikrotik-verify-outcome-col is-ok">
-                          <p class="mikrotik-verify-outcome-heading">Worked</p>
-                          <ul class="mikrotik-verify-outcome-list" id="mikrotik-verify-passed-list"></ul>
+                      <div class="mikrotik-verify-outcome" id="mikrotik-verify-outcome" hidden data-expanded="false">
+                        <div class="mikrotik-verify-outcome-summary">
+                          <div class="mikrotik-verify-outcome-icons" id="mikrotik-verify-outcome-icons" aria-label="Verify results"></div>
+                          <button
+                            type="button"
+                            class="btn btn-ghost btn-sm mikrotik-verify-outcome-toggle"
+                            id="mikrotik-verify-outcome-toggle"
+                            aria-expanded="false"
+                            aria-controls="mikrotik-verify-outcome-details"
+                            hidden
+                          >
+                            <span data-verify-toggle-label>Show details</span>
+                          </button>
                         </div>
-                        <div class="mikrotik-verify-outcome-col is-fail">
-                          <p class="mikrotik-verify-outcome-heading">Still needs fix</p>
-                          <ul class="mikrotik-verify-outcome-list" id="mikrotik-verify-failed-list"></ul>
+                        <div class="mikrotik-verify-outcome-details" id="mikrotik-verify-outcome-details" hidden>
+                          <div class="mikrotik-verify-outcome-col is-ok">
+                            <p class="mikrotik-verify-outcome-heading">
+                              <span class="mikrotik-status-icon is-ok" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5 10 17.5 19 7"/></svg></span>
+                              Worked
+                            </p>
+                            <ul class="mikrotik-verify-outcome-list" id="mikrotik-verify-passed-list"></ul>
+                          </div>
+                          <div class="mikrotik-verify-outcome-col is-fail">
+                            <p class="mikrotik-verify-outcome-heading">
+                              <span class="mikrotik-status-icon is-fail" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" d="M7 7l10 10M17 7 7 17"/></svg></span>
+                              Still needs fix
+                            </p>
+                            <ul class="mikrotik-verify-outcome-list" id="mikrotik-verify-failed-list"></ul>
+                          </div>
                         </div>
                       </div>
                       <p class="mikrotik-tunnel-verify-hint" id="mikrotik-tunnel-verify-hint" hidden></p>
@@ -1125,8 +1190,23 @@
   var tunnelCheckDetail = document.getElementById("mikrotik-tunnel-check-detail");
   var tunnelChecklist = document.getElementById("mikrotik-tunnel-checklist");
   var verifyOutcomePanel = document.getElementById("mikrotik-verify-outcome");
+  var verifyOutcomeIcons = document.getElementById("mikrotik-verify-outcome-icons");
+  var verifyOutcomeDetails = document.getElementById("mikrotik-verify-outcome-details");
+  var verifyOutcomeToggle = document.getElementById("mikrotik-verify-outcome-toggle");
   var verifyPassedList = document.getElementById("mikrotik-verify-passed-list");
   var verifyFailedList = document.getElementById("mikrotik-verify-failed-list");
+  var STATUS_ICON_SVG = {
+    ok: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5 10 17.5 19 7"/></svg>',
+    fail: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" d="M7 7l10 10M17 7 7 17"/></svg>',
+    warn: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" d="M12 7v6M12 17h.01"/></svg>',
+    waiting: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 8v4l2.5 1.5"/></svg>'
+  };
+
+  function statusIconHtml(status, title) {
+    var key = status === "ok" ? "ok" : (status === "warn" ? "warn" : (status === "waiting" ? "waiting" : "fail"));
+    var tip = title ? ' title="' + escapeHtml(title) + '"' : "";
+    return '<span class="mikrotik-status-icon is-' + key + '"' + tip + '>' + (STATUS_ICON_SVG[key] || STATUS_ICON_SVG.fail) + "</span>";
+  }
   var tunnelVerifyBanner = document.getElementById("mikrotik-tunnel-verify-banner");
   var tunnelVerifyTitle = document.getElementById("mikrotik-tunnel-verify-title");
   var tunnelVerifySub = document.getElementById("mikrotik-tunnel-verify-sub");
@@ -1693,36 +1773,68 @@
       tunnelCheckDetail.hidden = hasGrid;
       tunnelCheckDetail.setAttribute("aria-hidden", hasGrid ? "true" : "false");
     }
+    // Icon strip + optional details replaces the full checklist grid.
+    if (tunnelChecklist) tunnelChecklist.hidden = true;
   }
 
   function renderVerifyOutcomeLists(checks) {
     if (!verifyOutcomePanel || !verifyPassedList || !verifyFailedList) return;
     if (!checks || !checks.length) {
       verifyOutcomePanel.hidden = true;
+      verifyOutcomePanel.setAttribute("data-expanded", "false");
+      if (verifyOutcomeDetails) verifyOutcomeDetails.hidden = true;
+      if (verifyOutcomeToggle) {
+        verifyOutcomeToggle.hidden = true;
+        verifyOutcomeToggle.setAttribute("aria-expanded", "false");
+        var toggleLabel = verifyOutcomeToggle.querySelector("[data-verify-toggle-label]");
+        if (toggleLabel) toggleLabel.textContent = "Show details";
+      }
+      if (verifyOutcomeIcons) verifyOutcomeIcons.innerHTML = "";
       verifyPassedList.innerHTML = "";
       verifyFailedList.innerHTML = "";
       return;
     }
     var passed = [];
     var failed = [];
+    var iconBits = [];
     checks.forEach(function (item) {
       var status = item.status || "waiting";
       var label = CHECK_SHORT_LABELS[item.key] || item.label || "Check";
       var detail = (item.message || "").trim();
+      var tip = label + (detail ? ": " + detail : "");
+      iconBits.push(statusIconHtml(status, tip));
       var line =
-        "<li><strong>" + escapeHtml(label) + "</strong>" +
-        (detail ? "<span>" + escapeHtml(detail) + "</span>" : "") +
-        "</li>";
+        "<li>" +
+          statusIconHtml(status, tip) +
+          '<span class="mikrotik-verify-outcome-line"><strong>' + escapeHtml(label) + "</strong>" +
+          (detail ? "<span>" + escapeHtml(detail) + "</span>" : "") +
+          "</span></li>";
       if (status === "ok") passed.push(line);
       else if (status === "fail" || status === "warn" || status === "waiting") failed.push(line);
     });
+    if (verifyOutcomeIcons) verifyOutcomeIcons.innerHTML = iconBits.join("");
     verifyPassedList.innerHTML = passed.join("");
     verifyFailedList.innerHTML = failed.join("");
     verifyOutcomePanel.hidden = !(passed.length || failed.length);
+    if (verifyOutcomeToggle) {
+      verifyOutcomeToggle.hidden = !(passed.length || failed.length);
+    }
     var failCol = verifyOutcomePanel.querySelector(".mikrotik-verify-outcome-col.is-fail");
     if (failCol) failCol.hidden = failed.length === 0;
     var okCol = verifyOutcomePanel.querySelector(".mikrotik-verify-outcome-col.is-ok");
     if (okCol) okCol.hidden = passed.length === 0;
+  }
+
+  if (verifyOutcomeToggle && verifyOutcomePanel && verifyOutcomeDetails) {
+    verifyOutcomeToggle.addEventListener("click", function () {
+      var open = verifyOutcomePanel.getAttribute("data-expanded") === "true";
+      var next = !open;
+      verifyOutcomePanel.setAttribute("data-expanded", next ? "true" : "false");
+      verifyOutcomeDetails.hidden = !next;
+      verifyOutcomeToggle.setAttribute("aria-expanded", next ? "true" : "false");
+      var toggleLabel = verifyOutcomeToggle.querySelector("[data-verify-toggle-label]");
+      if (toggleLabel) toggleLabel.textContent = next ? "Hide details" : "Show details";
+    });
   }
 
   function syncTunnelStep4Visibility() {
@@ -1857,45 +1969,17 @@
 
   function renderTunnelChecks(checks, statusData) {
     statusData = statusData || window._lastTunnelStatusData || {};
-    if (!tunnelChecklist) return;
     var summary = summarizeChecks(checks);
     var verifySub = summary.sub || "";
     if (tunnelStatusTimer) verifySub += liveVerifySubSuffix();
     setVerifyBanner(summary.state, summary.title, verifySub);
     setVerifyHint(mergeVerifyHint(summary.hint, statusData));
-    if (!checks || !checks.length) {
+    if (tunnelChecklist) {
       tunnelChecklist.hidden = true;
       tunnelChecklist.innerHTML = "";
-      syncVerifyCompactChrome(null);
-      renderVerifyOutcomeLists(null);
-      return;
     }
-    tunnelChecklist.hidden = false;
-    var STATUS_WORD = { ok: "Passed", fail: "Failed", warn: "Warning", waiting: "Pending" };
-    tunnelChecklist.innerHTML = checks.map(function (item) {
-      var status = item.status || "waiting";
-      var label = escapeHtml(CHECK_SHORT_LABELS[item.key] || item.label || "Check");
-      var detail = "";
-      if (status === "fail" || status === "warn") {
-        detail = escapeHtml(CHECK_FAIL_HINTS[item.key] || item.message || "");
-      } else if (status === "ok" && item.message) {
-        detail = escapeHtml(item.message);
-      } else if (status === "waiting" && item.message) {
-        detail = escapeHtml(item.message);
-      }
-      var badge = STATUS_WORD[status] || status;
-      return (
-        '<li class="mikrotik-tunnel-checklist-item is-' + status + '" data-check-key="' + escapeHtml(item.key || "") + '">' +
-          '<span class="mikrotik-tunnel-checklist-dot" aria-hidden="true"></span>' +
-          '<span class="mikrotik-tunnel-checklist-body">' +
-            '<span class="mikrotik-tunnel-checklist-label">' + label +
-              ' <span class="mikrotik-tunnel-checklist-badge is-' + status + '">' + badge + "</span></span>" +
-            (detail ? '<span class="mikrotik-tunnel-checklist-message">' + detail + "</span>" : "") +
-          "</span></li>"
-      );
-    }).join("");
-    syncVerifyCompactChrome(checks);
-    renderVerifyOutcomeLists(checks);
+    syncVerifyCompactChrome(checks && checks.length ? checks : null);
+    renderVerifyOutcomeLists(checks && checks.length ? checks : null);
     applyVerifyProcessFromChecks(checks, window._lastTunnelStatusData || {});
   }
 
@@ -1903,7 +1987,7 @@
     tunnelStatusMessage = text || "";
     tunnelStatusIsError = !!isError;
     var inCheckPhase = !!tunnelScriptText;
-    if (inCheckPhase && tunnelChecklist && !tunnelChecklist.hidden) {
+    if (inCheckPhase && verifyOutcomePanel && !verifyOutcomePanel.hidden) {
       if (tunnelStatus) tunnelStatus.hidden = true;
       if (tunnelStatusEarly) tunnelStatusEarly.hidden = true;
       return;
@@ -2251,7 +2335,7 @@
     el.classList.toggle("is-active", state === "active");
     el.classList.toggle("is-done", state === "done");
     syncTunnelRail();
-    if (state === "active" && Number(step) >= 3 && (!tunnelChecklist || tunnelChecklist.hidden)) {
+    if (state === "active" && Number(step) >= 3 && (!verifyOutcomePanel || verifyOutcomePanel.hidden)) {
       setVerifyBanner("waiting", "Waiting for script", "Paste in Winbox first");
     }
   }
@@ -4819,6 +4903,11 @@
 
   var hostedReadinessSection = document.getElementById("mikrotik-hosted-readiness");
   var hostedReadinessList = document.getElementById("mikrotik-hosted-readiness-list");
+  var hostedReadinessIcons = document.getElementById("mikrotik-hosted-readiness-icons");
+  var hostedReadinessState = document.getElementById("mikrotik-hosted-readiness-state");
+  var hostedReadinessDetails = document.getElementById("mikrotik-hosted-readiness-details");
+  var hostedReadinessFoot = document.getElementById("mikrotik-hosted-readiness-foot");
+  var hostedReadinessToggle = document.getElementById("mikrotik-hosted-readiness-toggle");
   var hostedReadinessRefresh = document.getElementById("mikrotik-hosted-readiness-refresh");
   var hostedReadinessUrl = "{% url 'core:mikrotik_hosted_readiness' %}";
 
@@ -4830,21 +4919,71 @@
       .replace(/"/g, "&quot;");
   }
 
+  var READINESS_ICON_SVG = {
+    ok: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5 10 17.5 19 7"/></svg>',
+    fail: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" d="M7 7l10 10M17 7 7 17"/></svg>',
+    warn: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" d="M12 7v6M12 17h.01"/></svg>',
+    waiting: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 8v4l2.5 1.5"/></svg>'
+  };
+
+  function readinessIconHtml(status, title) {
+    var key = status === "ok" ? "ok" : (status === "warn" ? "warn" : (status === "waiting" ? "waiting" : "fail"));
+    var tip = title ? ' title="' + escReadinessText(title) + '"' : "";
+    return '<span class="mikrotik-status-icon is-' + key + '"' + tip + ">" + (READINESS_ICON_SVG[key] || READINESS_ICON_SVG.fail) + "</span>";
+  }
+
   function renderHostedReadiness(data) {
-    if (!hostedReadinessList || !data || !data.items) return;
-    hostedReadinessList.innerHTML = data.items.map(function (item) {
+    if (!data || !data.items) return;
+    var iconsHtml = data.items.map(function (item) {
       var status = item.status || "waiting";
-      var label = escReadinessText(item.label || "");
-      var msg = escReadinessText(item.message || "");
-      return (
-        '<li class="mikrotik-hosted-readiness-item is-' + escReadinessText(status) + '">' +
-          '<span class="mikrotik-hosted-readiness-dot" aria-hidden="true"></span>' +
-          '<span class="mikrotik-hosted-readiness-body"><strong>' + label + "</strong><span>" + msg + "</span></span></li>"
-      );
+      var tip = (item.label || "") + (item.message ? ": " + item.message : "");
+      return readinessIconHtml(status, tip);
     }).join("");
+    if (hostedReadinessIcons) hostedReadinessIcons.innerHTML = iconsHtml;
+    if (hostedReadinessList) {
+      hostedReadinessList.innerHTML = data.items.map(function (item) {
+        var status = item.status || "waiting";
+        var label = escReadinessText(item.label || "");
+        var msg = escReadinessText(item.message || "");
+        var tip = (item.label || "") + (item.message ? ": " + item.message : "");
+        return (
+          '<li class="mikrotik-hosted-readiness-item is-' + escReadinessText(status) + '" data-readiness-key="' + escReadinessText(item.key || "") + '">' +
+            readinessIconHtml(status, tip) +
+            '<span class="mikrotik-hosted-readiness-body"><strong>' + label + "</strong><span>" + msg + "</span></span></li>"
+        );
+      }).join("");
+    }
+    if (hostedReadinessState) {
+      hostedReadinessState.textContent = data.ready
+        ? "Ready for remote Connect"
+        : "Fix failed checks before Connect";
+    }
+    if (hostedReadinessFoot) {
+      hostedReadinessFoot.classList.toggle("is-ok", !!data.ready);
+      if (data.ready) {
+        hostedReadinessFoot.textContent = "VPS can reach MikroTik tunnel IPs — proceed with Connect router.";
+      } else {
+        hostedReadinessFoot.innerHTML =
+          "On the VPS: <code>sudo wg-quick up wg0</code>, " +
+          "<code>python manage.py wireguard_peer --sync-server</code>, " +
+          "then Generate script → Winbox paste → Check now → Connect using the <strong>tunnel IP</strong>.";
+      }
+    }
     if (hostedReadinessSection) {
       hostedReadinessSection.classList.toggle("is-ready", !!data.ready);
     }
+  }
+
+  if (hostedReadinessToggle && hostedReadinessSection && hostedReadinessDetails) {
+    hostedReadinessToggle.addEventListener("click", function () {
+      var open = hostedReadinessSection.getAttribute("data-expanded") === "true";
+      var next = !open;
+      hostedReadinessSection.setAttribute("data-expanded", next ? "true" : "false");
+      hostedReadinessDetails.hidden = !next;
+      hostedReadinessToggle.setAttribute("aria-expanded", next ? "true" : "false");
+      var toggleLabel = hostedReadinessToggle.querySelector("[data-readiness-toggle-label]");
+      if (toggleLabel) toggleLabel.textContent = next ? "Hide details" : "Show details";
+    });
   }
 
   function refreshHostedReadiness() {

@@ -24,6 +24,11 @@ urlpatterns = [
     path("app/audits/", views.audits, name="audits"),
     path("app/mikrotik/", views.mikrotik, name="mikrotik"),
     path(
+        "app/mikrotik/transfer-clients/",
+        views.mikrotik_transfer_clients,
+        name="mikrotik_transfer_clients",
+    ),
+    path(
         "app/mikrotik/<int:router_id>/edit/",
         views.mikrotik_edit,
         name="mikrotik_edit",

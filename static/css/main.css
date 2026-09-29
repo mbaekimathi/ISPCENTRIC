@@ -2400,12 +2400,36 @@ a {
 
 .mikrotik-verify-outcome {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.55rem;
+  gap: 0.45rem;
   margin: 0.55rem 0 0;
 }
 
 .mikrotik-verify-outcome[hidden] {
+  display: none !important;
+}
+
+.mikrotik-verify-outcome-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.mikrotik-verify-outcome-icons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.mikrotik-verify-outcome-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.mikrotik-verify-outcome-details[hidden] {
   display: none !important;
 }
 
@@ -2426,6 +2450,9 @@ a {
 }
 
 .mikrotik-verify-outcome-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   margin: 0 0 0.4rem;
   font-size: 0.68rem;
   font-weight: 800;
@@ -2443,6 +2470,10 @@ a {
 }
 
 .mikrotik-verify-outcome-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.4rem;
+  align-items: start;
   font-size: 0.72rem;
   line-height: 1.35;
 }
@@ -2452,11 +2483,48 @@ a {
   font-weight: 700;
 }
 
-.mikrotik-verify-outcome-list li span {
+.mikrotik-verify-outcome-list li span,
+.mikrotik-verify-outcome-line span {
   display: block;
   margin-top: 0.08rem;
   opacity: 0.88;
   word-break: break-word;
+}
+
+.mikrotik-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  color: rgba(148, 163, 184, 0.95);
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.mikrotik-status-icon.is-ok {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.14);
+}
+
+.mikrotik-status-icon.is-fail {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.16);
+}
+
+.mikrotik-status-icon.is-warn {
+  color: #d97706;
+  background: rgba(217, 119, 6, 0.16);
+}
+
+.mikrotik-status-icon.is-waiting {
+  color: rgba(148, 163, 184, 0.95);
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.mikrotik-tunnel-checklist-item .mikrotik-status-icon {
+  margin-top: 0.1rem;
 }
 
 .mikrotik-tunnel-checklist[hidden] {
@@ -2669,6 +2737,10 @@ a {
   }
 
   .mikrotik-tunnel-checklist.is-compact {
+    grid-template-columns: 1fr;
+  }
+
+  .mikrotik-verify-outcome-details {
     grid-template-columns: 1fr;
   }
 
@@ -12299,7 +12371,7 @@ a.packages-stat.is-active-audit {
 
 .mikrotik-hosted-readiness {
   margin-bottom: 1rem;
-  padding: 1rem 1.1rem;
+  padding: 0.75rem 1rem;
   border-radius: 16px;
   border: 1px solid rgba(231, 76, 60, 0.28);
   background: rgba(231, 76, 60, 0.06);
@@ -12313,20 +12385,57 @@ a.packages-stat.is-active-audit {
 .mikrotik-hosted-readiness-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
+  gap: 0.65rem;
+  margin-bottom: 0;
+}
+
+.mikrotik-hosted-readiness-summary {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
 }
 
 .mikrotik-hosted-readiness-title {
-  margin: 0 0 0.35rem;
-  font-size: 1.05rem;
+  margin: 0;
+  font-size: 0.95rem;
   font-weight: 800;
 }
 
-.mikrotik-hosted-readiness-lead {
+.mikrotik-hosted-readiness-icons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.mikrotik-hosted-readiness-state {
   margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  opacity: 0.88;
+}
+
+.mikrotik-hosted-readiness-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.mikrotik-hosted-readiness-details {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.mikrotik-hosted-readiness-details[hidden] {
+  display: none !important;
+}
+
+.mikrotik-hosted-readiness-lead {
+  margin: 0 0 0.65rem;
   font-size: 0.82rem;
   line-height: 1.45;
   opacity: 0.88;
@@ -12350,26 +12459,6 @@ a.packages-stat.is-active-audit {
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(0, 0, 0, 0.12);
-}
-
-.mikrotik-hosted-readiness-dot {
-  width: 0.65rem;
-  height: 0.65rem;
-  margin-top: 0.35rem;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.85);
-}
-
-.mikrotik-hosted-readiness-item.is-ok .mikrotik-hosted-readiness-dot {
-  background: rgba(46, 204, 113, 0.95);
-}
-
-.mikrotik-hosted-readiness-item.is-fail .mikrotik-hosted-readiness-dot {
-  background: rgba(231, 76, 60, 0.95);
-}
-
-.mikrotik-hosted-readiness-item.is-warn .mikrotik-hosted-readiness-dot {
-  background: rgba(241, 196, 15, 0.95);
 }
 
 .mikrotik-hosted-readiness-body strong {
@@ -15966,6 +16055,12 @@ a.packages-stat:focus-visible {
 
 .mikrotik-router-clients {
   font-variant-numeric: tabular-nums;
+  color: inherit;
+  text-decoration: none;
+}
+a.mikrotik-router-clients:hover {
+  color: #0e7c86;
+  text-decoration: underline;
 }
 
 .mikrotik-row-actions {
