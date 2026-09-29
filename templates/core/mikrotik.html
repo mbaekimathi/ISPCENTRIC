@@ -3705,6 +3705,16 @@
       usernameInput.focus();
       return;
     }
+    // Autofill sometimes leaves "a" or other junk — block before spamming API.
+    if (username.length < 2 || username.toLowerCase() === "a") {
+      pendingAutoConnect = false;
+      showConnectStatus(
+        "Username looks wrong (\"" + username + "\"). Type admin (same as Winbox), then Connect.",
+        true
+      );
+      usernameInput.focus();
+      return;
+    }
     // Hosted: if tunnel peer is live, allow Connect even when the UI still shows pending.
     if (
       wireguardReady &&

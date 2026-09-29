@@ -531,6 +531,35 @@ def authenticate_connect(
     from core.mikrotik_connect import _is_wireguard_tunnel_host
 
     result = test_mikrotik_api_login(dial_host, username, password)
+    # CGNAT tunnels often lose the learned endpoint briefly ("No route to host").
+    # Retry a few times before failing Connect — CLI login already proved creds work.
+    if (
+        not result.get("ok")
+        and _is_wireguard_tunnel_host(dial_host)
+        and not bool(result.get("auth_error"))
+    ):
+        err_l = (result.get("error") or "").lower()
+        detail_l = (result.get("detail") or "").lower()
+        transient = any(
+            token in err_l or token in detail_l
+            for token in (
+                "no route to host",
+                "destination address required",
+                "network is unreachable",
+                "could not reach",
+                "timed out",
+                "timeout",
+            )
+        )
+        if transient:
+            import time
+
+            for _attempt in range(3):
+                time.sleep(1.5)
+                if wireguard._tunnel_host_reachable(dial_host):
+                    result = test_mikrotik_api_login(dial_host, username, password)
+                    if result.get("ok") or result.get("auth_error"):
+                        break
     # On the MikroTik LAN: if tunnel IP is unreachable from this PC, retry LAN.
     if (
         not result.get("ok")
