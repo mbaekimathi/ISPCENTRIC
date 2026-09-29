@@ -486,6 +486,93 @@ def _orphan_peer_prune_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _tunnel_peer_directory() -> tuple[dict[str, str], dict[str, str]]:
+    """Return (tunnel_address -> public_key, public_key -> tunnel_address) from the DB."""
+    from core.models import MikroTikRouter, WireGuardReservation
+
+    by_addr: dict[str, str] = {}
+    by_key: dict[str, str] = {}
+    for row in MikroTikRouter.objects.exclude(vpn_address="").exclude(vpn_public_key=""):
+        addr = (row.vpn_address or "").strip()
+        pk = (row.vpn_public_key or "").strip()
+        if addr and pk:
+            by_addr[addr] = pk
+            by_key[pk] = addr
+    for res in WireGuardReservation.objects.all():
+        addr = (res.address or "").strip()
+        pk = (res.public_key or "").strip()
+        if addr and pk:
+            by_addr[addr] = pk
+            by_key[pk] = addr
+    return by_addr, by_key
+
+
+def reconcile_runtime_allowed_ips() -> dict:
+    """
+    Fix wg0 peers that hold another site's ``/32`` or the wrong AllowedIPs list.
+
+    Overlapping AllowedIPs send tunnel traffic to the wrong peer (handshake/API
+    checks fail even when sync-server reports success).
+    """
+    if not can_apply_server_peers():
+        return {"ok": False, "skipped": True, "reason": "not_on_tunnel", "fixed": 0}
+
+    by_addr, by_key = _tunnel_peer_directory()
+    rows, err = _run_wg_interface_dump()
+    if err:
+        return {"ok": False, "error": err, "fixed": 0}
+
+    iface = _wireguard_interface()
+    wg_bin = shutil.which("wg") or "/usr/bin/wg"
+    fixed = 0
+    errors: list[str] = []
+
+    for addr, owner_pk in by_addr.items():
+        removed = _remove_runtime_peers_for_address(addr, owner_pk)
+        if removed:
+            fixed += removed
+
+    for row in rows:
+        public_key = (row.get("public_key") or "").strip()
+        canonical = by_key.get(public_key)
+        if not public_key or not canonical:
+            continue
+        allowed_raw = (row.get("allowed_ips") or "").replace(" ", ",")
+        allowed = [part for part in allowed_raw.split(",") if part]
+        want = f"{canonical}/32"
+        holds_foreign = False
+        for cidr in allowed:
+            if not cidr.endswith("/32"):
+                continue
+            addr = cidr[: -len("/32")]
+            owner = by_addr.get(addr)
+            if owner and owner != public_key:
+                holds_foreign = True
+                break
+        if not holds_foreign and allowed == [want]:
+            continue
+        try:
+            proc = subprocess.run(
+                [wg_bin, "set", iface, "peer", public_key, "allowed-ips", want],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if proc.returncode == 0:
+                fixed += 1
+            else:
+                errors.append(
+                    (proc.stderr or proc.stdout or "wg set failed").strip()
+                )
+        except Exception as exc:
+            errors.append(str(exc))
+
+    if fixed:
+        logger.info("Reconciled %s WireGuard runtime peer route(s) on wg0", fixed)
+    return {"ok": not errors, "skipped": False, "fixed": fixed, "errors": errors}
+
+
 def desired_server_peer_public_keys() -> set[str]:
     """Public keys that should exist on wg0 (onboarded routers + pending reservations)."""
     from core.models import WireGuardReservation
@@ -1933,8 +2020,11 @@ def sync_all_server_peers() -> dict:
             "errors": [script_problem],
         }
 
+    route_meta = reconcile_runtime_allowed_ips()
     synced = 0
     errors: list[str] = []
+    if route_meta.get("errors"):
+        errors.extend(route_meta["errors"])
     for router in MikroTikRouter.objects.exclude(vpn_address__isnull=True).exclude(
         vpn_public_key=""
     ):
@@ -1959,6 +2049,8 @@ def sync_all_server_peers() -> dict:
             errors.append(f"{reservation.address}: {outcome['error']}")
     prune_meta = prune_orphan_runtime_peers()
     result = {"ok": not errors, "synced": synced, "errors": errors}
+    if route_meta.get("fixed"):
+        result["routes_reconciled"] = int(route_meta["fixed"])
     if purge_meta.get("purged"):
         result["reservations_purged"] = int(purge_meta["purged"])
         result["purged_labels"] = list(purge_meta.get("labels") or [])

@@ -5487,6 +5487,52 @@ class TunnelStatusTests(TestCase):
         self.assertEqual(result["pruned"], 1)
         remove.assert_called_once_with(orphan)
 
+    def test_reconcile_runtime_allowed_ips_resets_foreign_slash32(self):
+        owner_a = "OWNERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        owner_b = "OWNERBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+        with (
+            patch(
+                "core.wireguard._tunnel_peer_directory",
+                return_value=(
+                    {"10.9.0.2": owner_a, "10.9.0.33": owner_b},
+                    {owner_a: "10.9.0.2", owner_b: "10.9.0.33"},
+                ),
+            ),
+            patch(
+                "core.wireguard._run_wg_interface_dump",
+                return_value=(
+                    [
+                        {
+                            "public_key": owner_b,
+                            "allowed_ips": "10.9.0.2/32",
+                            "handshake_age_sec": 30,
+                        },
+                        {
+                            "public_key": owner_a,
+                            "allowed_ips": "10.9.0.2/32",
+                            "handshake_age_sec": None,
+                        },
+                    ],
+                    "",
+                ),
+            ),
+            patch("core.wireguard._remove_runtime_peers_for_address", return_value=0),
+            patch("core.wireguard.can_apply_server_peers", return_value=True),
+            patch("core.wireguard.subprocess.run") as run,
+        ):
+            run.return_value.returncode = 0
+            run.return_value.stderr = ""
+            run.return_value.stdout = ""
+            result = wireguard.reconcile_runtime_allowed_ips()
+        self.assertTrue(result["ok"])
+        self.assertGreaterEqual(result["fixed"], 1)
+        wg_sets = [
+            call
+            for call in run.call_args_list
+            if call.args and "set" in (call.args[0] or [])
+        ]
+        self.assertTrue(wg_sets)
+
     def test_apply_server_peer_removes_stale_runtime_peer_for_same_address(self):
         keep = "KEEPKEEPKEEPKEEPKEEPKEEPKEEPKEEPKEEPKEEPKEEPKEEPKE="
         stale = "STALESTALESTALESTALESTALESTALESTALESTALESTALESTAL="
