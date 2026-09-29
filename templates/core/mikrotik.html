@@ -3736,6 +3736,7 @@
       .then(function (res) { return res.json(); })
       .then(function (data) {
         if (!data || !data.ok || !data.routers) return;
+        if (data.onboarding_hold || isOnboardModalOpen()) return;
         data.routers.forEach(function (item) {
           document.querySelectorAll('[data-router-status="' + item.id + '"]').forEach(function (el) {
             setStatus(el, !!item.online, item.status || "");
@@ -3769,10 +3770,15 @@
             !autoReconnectTried[item.id]
           ) {
             autoReconnectTried[item.id] = true;
+            var tunnelHost = (item.host || "").trim();
+            var isTunnelIp = /^10\.9\.\d{1,3}\.\d{1,3}$/.test(tunnelHost);
+            if (isTunnelIp) {
+              // Tunnel down until Winbox script + handshake — Reconnect cannot fix that.
+              return;
+            }
             var autoBtn = document.querySelector('[data-reconnect-router="' + item.id + '"]');
             if (autoBtn && !autoBtn.disabled && !autoBtn.classList.contains("is-busy")) {
-              showHint("Auto-reconnecting " + (item.name || "MikroTik") + "…", false);
-              reconnectRouter(autoBtn);
+              reconnectRouter(autoBtn, null, { silent: true, auto: true });
             }
           }
         });
@@ -3792,10 +3798,12 @@
       });
   }
 
-  function reconnectRouter(btn, credentials) {
+  function reconnectRouter(btn, credentials, options) {
+    options = options || {};
     var url = btn.getAttribute("data-reconnect-url");
     var id = btn.getAttribute("data-reconnect-router");
     if (!url || btn.disabled) return;
+    if (isOnboardModalOpen() && options.auto) return;
 
     if (!credentials && btn.dataset.authFailed === "1") {
       activeReconnectBtn = btn;
@@ -3815,7 +3823,9 @@
     btn.classList.remove("is-compact");
     var labelEl = btn.querySelector(".mikrotik-reconnect-label");
     if (labelEl) labelEl.textContent = "Reconnecting…";
-    showHint("Scanning LAN and repairing MikroTik access…", false);
+    if (!options.silent) {
+      showHint("Scanning LAN and repairing MikroTik access…", false);
+    }
 
     var body = new URLSearchParams();
     if (credentials) {
@@ -3854,9 +3864,13 @@
             });
             showHint("Enter the correct Winbox password in the popup.", true);
           } else {
-            showHint(data.error || "Could not reconnect to this MikroTik.", true);
+            if (!options.silent) {
+              showHint(data.error || "Could not reconnect to this MikroTik.", true);
+            }
             if (data.hotspot_lockout) {
-              showUnlockCommands(data.unlock_commands || "", data.unlock_ip || "");
+              if (!options.silent) {
+                showUnlockCommands(data.unlock_commands || "", data.unlock_ip || "");
+              }
             } else {
               hideUnlockCommands();
             }
@@ -3867,7 +3881,9 @@
         hideUnlockCommands();
         authPrompted[id] = false;
         btn.dataset.authFailed = "0";
-        showHint(data.message || "MikroTik is back online.", false);
+        if (!options.silent) {
+          showHint(data.message || "MikroTik is back online.", false);
+        }
         document.querySelectorAll('[data-router-status="' + id + '"]').forEach(function (el) {
           setStatus(el, true, "connected");
         });
@@ -3882,7 +3898,9 @@
         refreshStatus(true);
       })
       .catch(function () {
-        showHint("Network error while reconnecting. Check the cable and try again.", true);
+        if (!options.silent) {
+          showHint("Network error while reconnecting. Check the cable and try again.", true);
+        }
       })
       .finally(function () {
         var stillNeeded = btn.classList.contains("is-needed") || btn.dataset.authFailed === "1";

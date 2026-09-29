@@ -1778,6 +1778,46 @@ class HotspotCaptiveLockoutTests(SimpleTestCase):
         self.assertIn("set Host to that LAN IP", result["error"])
         self.assertNotIn("Plug this PC into MikroTik ether2", result["error"])
 
+    @override_settings(HOSTED=True, WIREGUARD_SUBNET="10.9.0.0/24")
+    def test_tunnel_only_host_on_hosted_vps_points_to_onboarding(self):
+        from core.mikrotik_connect import recover_mikrotik_connection
+        from core.models import MikroTikRouter
+
+        router = MikroTikRouter(
+            id=14,
+            name="Remote",
+            host="10.9.0.33",
+            vpn_address="10.9.0.33",
+            username="admin",
+        )
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": False, "via": ""},
+            ),
+            patch(
+                "core.mikrotik_connect._api_session",
+                side_effect=OSError(113, "No route to host"),
+            ),
+            patch(
+                "core.mikrotik_connect.on_router_lan",
+                return_value=False,
+            ),
+        ):
+            result = recover_mikrotik_connection(
+                "10.9.0.33",
+                "admin",
+                "secret",
+                router=router,
+                timeout=0.1,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result.get("tunnel_unreachable"))
+        self.assertIn("WireGuard", result["error"])
+        self.assertIn("Check now", result["error"])
+        self.assertNotIn("Plug this PC into MikroTik ether2", result["error"])
+
 
 class PppoeSecretProfileSyncTests(SimpleTestCase):
     def test_bulk_sync_uses_blocked_profile_for_unpaid_clients(self):
