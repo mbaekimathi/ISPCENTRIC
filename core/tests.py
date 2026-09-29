@@ -5459,6 +5459,51 @@ class TunnelStatusTests(TestCase):
         self.assertEqual(result["code"], "key_mismatch")
         self.assertIn("Generate script", result["message"])
 
+    def test_fresh_tunnel_reservations_for_org_excludes_checked_address(self):
+        from core.models import WireGuardReservation
+
+        live_key = "LIVEKEYLIVEKEYLIVEKEYLIVEKEYLIVEKEYLIVEKEYLIVEKEYLIVE="
+        WireGuardReservation.objects.create(
+            organization=self.org,
+            label="Site B",
+            address="10.9.0.3",
+            public_key=live_key,
+            private_key="priv",
+        )
+        WireGuardReservation.objects.create(
+            organization=self.org,
+            label="Site A",
+            address="10.9.0.2",
+            public_key="OLDKEYOLDKEYOLDKEYOLDKEYOLDKEYOLDKEYOLDKEYOLDKEY=",
+            private_key="priv2",
+        )
+        with (
+            patch(
+                "core.wireguard._run_wg_interface_dump",
+                return_value=(
+                    [
+                        {
+                            "public_key": live_key,
+                            "allowed_ips": "10.9.0.3/32",
+                            "handshake_age_sec": 12,
+                        }
+                    ],
+                    "",
+                ),
+            ),
+            patch("core.wireguard.handshake_max_age_sec", return_value=180),
+        ):
+            live = wireguard.fresh_tunnel_reservations_for_org(
+                self.org, exclude_address="10.9.0.2"
+            )
+            hint = wireguard.alternate_live_tunnel_message(
+                self.org, "10.9.0.2", sessions=live
+            )
+        self.assertEqual(len(live), 1)
+        self.assertEqual(live[0]["address"], "10.9.0.3")
+        self.assertIn("10.9.0.3", hint)
+        self.assertIn("10.9.0.2", hint)
+
     def test_prune_orphan_runtime_peers_removes_unknown_keys(self):
         keep = SERVER_PUBLIC_KEY
         orphan = "ORPHANORPHANORPHANORPHANORPHANORPHANORPHANORPHANORP="

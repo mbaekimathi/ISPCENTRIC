@@ -1599,6 +1599,85 @@ def find_handshake_peer_for_address(address: str) -> dict:
     return out
 
 
+def fresh_tunnel_reservations_for_org(
+    organization,
+    *,
+    exclude_address: str = "",
+) -> list[dict]:
+    """
+    Reservations for this ISP that currently have a fresh WireGuard handshake on wg0.
+
+    Used when Verify is polling one tunnel IP but the router is online under another.
+    """
+    org_id = getattr(organization, "pk", organization)
+    if not org_id:
+        return []
+
+    from core.models import WireGuardReservation
+
+    by_key: dict[str, WireGuardReservation] = {}
+    for res in WireGuardReservation.objects.filter(organization_id=org_id):
+        pk = (res.public_key or "").strip()
+        if pk:
+            by_key[pk] = res
+
+    rows, err = _run_wg_interface_dump()
+    if err:
+        return []
+
+    exclude = (exclude_address or "").strip()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        pk = (row.get("public_key") or "").strip()
+        if not pk or pk in seen:
+            continue
+        age = row.get("handshake_age_sec")
+        if not _handshake_fresh(age):
+            continue
+        res = by_key.get(pk)
+        if not res:
+            continue
+        addr = (res.address or "").strip()
+        if not addr or (exclude and addr == exclude):
+            continue
+        seen.add(pk)
+        out.append(
+            {
+                "address": addr,
+                "label": (res.label or "").strip() or "MikroTik",
+                "handshake_age_sec": age,
+            }
+        )
+    out.sort(key=lambda row: row.get("address") or "")
+    return out
+
+
+def alternate_live_tunnel_message(
+    organization,
+    checked_address: str,
+    *,
+    sessions: list[dict] | None = None,
+) -> str:
+    """Human hint when Verify targets ``checked_address`` but another site is already up."""
+    checked = (checked_address or "").strip()
+    live = sessions if sessions is not None else fresh_tunnel_reservations_for_org(
+        organization, exclude_address=checked
+    )
+    if not live:
+        return ""
+    parts = [
+        f"{row.get('label') or 'Site'} ({row.get('address')})"
+        for row in live[:3]
+    ]
+    summary = ", ".join(parts)
+    return (
+        f"WireGuard is already live for {summary}, but this check is for {checked or 'this site'}. "
+        "Open that site name in Step 1, click Generate script (or resume its draft), then Check now — "
+        "or finish Connect using that tunnel IP in Step 4."
+    )
+
+
 def ensure_reservation_peer(reservation) -> dict:
     """
     Re-apply a pending reservation to wg0 and classify why the tunnel may be down.
@@ -1609,6 +1688,7 @@ def ensure_reservation_peer(reservation) -> dict:
     address = (getattr(reservation, "address", None) or "").strip()
     public_key = (getattr(reservation, "public_key", None) or "").strip()
 
+    reconcile_runtime_allowed_ips()
     sync = apply_server_peer(label, address, public_key)
     peer = inspect_server_peer(public_key)
 

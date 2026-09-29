@@ -14683,6 +14683,7 @@ def mikrotik_tunnel_status(request):
             }
         )
 
+    wireguard.reconcile_runtime_allowed_ips()
     probe = probe_mikrotik_for_onboarding(address, base_timeout=1.5)
     via = probe.get("via") or ""
     api_enabled = bool(probe.get("online") and via == "api")
@@ -14720,6 +14721,15 @@ def mikrotik_tunnel_status(request):
         message = diagnosis.get("message") or (
             "Waiting for MikroTik… paste the script in Winbox → New Terminal."
         )
+
+    alternate_live = wireguard.fresh_tunnel_reservations_for_org(
+        org, exclude_address=address
+    )
+    alt_hint = wireguard.alternate_live_tunnel_message(
+        org, address, sessions=alternate_live
+    )
+    if alt_hint and not tunnel_reachable and not api_enabled:
+        message = f"{message} {alt_hint}".strip()
 
     if tunnel_reachable:
         peer_state = "ok"
@@ -14764,6 +14774,8 @@ def mikrotik_tunnel_status(request):
             "peer_present": bool(peer_info.get("present") or tunnel_reachable),
             "handshake_age_sec": peer_info.get("handshake_age_sec"),
             "peer_sync_error": (peer_sync.get("error") or "").strip(),
+            "alternate_live_tunnels": alternate_live,
+            "alternate_live_hint": alt_hint,
         }
     )
 

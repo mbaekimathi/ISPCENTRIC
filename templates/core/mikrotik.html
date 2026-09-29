@@ -1619,7 +1619,7 @@
       step: currentOnboardStep(),
       tunnelLabel: tunnelLabel ? tunnelLabel.value : "",
       tunnelScript: tunnelScriptText || "",
-      tunnelAddress: tunnelReadyAddress || "",
+      reservedTunnelAddress: tunnelReadyAddress || "",
       tunnelStatusToken: tunnelStatusToken || "",
       tunnelApiReady: !!tunnelApiReady,
       tunnelStatusMessage: tunnelStatusMessage || "",
@@ -1645,7 +1645,7 @@
       hostOnboard: hostOnboardDisplay ? hostOnboardDisplay.textContent : "",
       hostOriginal: hostOriginalInput ? hostOriginalInput.value : "",
       lanIpApplied: lanIpAppliedInput ? lanIpAppliedInput.value : "",
-      tunnelAddress: tunnelAddressInput ? tunnelAddressInput.value : (tunnelReadyAddress || ""),
+      connectTunnelHost: tunnelAddressInput ? tunnelAddressInput.value : "",
       connectSerialNumber: connectSerialInput ? connectSerialInput.value : "",
       connectSoftwareId: connectSoftwareIdInput ? connectSoftwareIdInput.value : "",
       scriptAssignedLanIp: scriptAssignedLanIp || "",
@@ -1730,8 +1730,16 @@
     }
     if (hostOriginalInput && data.hostOriginal != null) hostOriginalInput.value = data.hostOriginal;
     if (lanIpAppliedInput && data.lanIpApplied != null) lanIpAppliedInput.value = data.lanIpApplied;
-    if (tunnelAddressInput && data.tunnelAddress != null) tunnelAddressInput.value = data.tunnelAddress;
-    else syncTunnelAddressField();
+    var reservedAddr =
+      data.reservedTunnelAddress ||
+      (data.tunnelAddress && /^10\.9\./.test(String(data.tunnelAddress).trim())
+        ? data.tunnelAddress
+        : "");
+    if (tunnelAddressInput && data.connectTunnelHost != null) {
+      tunnelAddressInput.value = data.connectTunnelHost;
+    } else if (tunnelAddressInput && data.tunnelAddress != null && !reservedAddr) {
+      tunnelAddressInput.value = data.tunnelAddress;
+    } else syncTunnelAddressField();
     if (connectSerialInput && data.connectSerialNumber != null) {
       connectSerialInput.value = data.connectSerialNumber;
     }
@@ -1744,7 +1752,7 @@
     if (data.tunnelScript) {
       showTunnelScript({
         script: data.tunnelScript,
-        address: data.tunnelAddress || "",
+        address: reservedAddr || data.tunnelAddress || "",
         status_token: data.tunnelStatusToken || "",
         hint: data.tunnelStatusMessage || ""
       }, { skipSave: true, resume: true });
@@ -2197,21 +2205,33 @@
           if (tunnelPeerPanel && tunnelServerPeerText) {
             tunnelPeerPanel.hidden = data.peer_state !== "missing";
           }
+          var altLive = data.alternate_live_tunnels || [];
+          var altHint = data.alternate_live_hint || "";
           setTunnelCheckState(
             "error",
             data.peer_state === "missing"
               ? "VPS peer missing on wg0"
               : data.peer_state === "key_mismatch"
                 ? "Router keys do not match reservation"
-                : "WireGuard handshake missing",
+                : altLive.length
+                  ? "Checking " + (data.address || tunnelReadyAddress) + " — router live on another tunnel IP"
+                  : "WireGuard handshake missing",
             false,
             false
           );
           setTunnelStatus(data.message, true);
-          if (data.peer_state === "key_mismatch" || data.peer_state === "no_handshake") {
+          if (altHint) {
+            setVerifyHint(altHint);
+          } else if (data.peer_state === "key_mismatch" || data.peer_state === "no_handshake") {
             setHostHint(
               "Use Copy script only — do not type WireGuard keys in Winbox. " +
                 "Look for [ISPCENTRIC FAIL] key mismatch in the terminal."
+            );
+          }
+          if (altLive.length === 1 && tunnelLabel && altLive[0].label) {
+            setHostHint(
+              "Router is online as " + altLive[0].label + " (" + altLive[0].address + "). " +
+                "Enter that site name in Step 1 and Check now, or use " + altLive[0].address + " in Step 4."
             );
           }
           return;
