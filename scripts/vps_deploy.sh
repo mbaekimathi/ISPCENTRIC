@@ -88,6 +88,17 @@ if ! _fix_scripts 2>/dev/null; then
   sudo chmod +x "$ROOT"/scripts/*.sh
 fi
 
+echo "==> Verifying WireGuard server public key (.env vs live wg0)"
+set +e
+"$PYTHON_BIN" manage.py wireguard_peer --verify-server-key 2>&1 | tee logs/wireguard_key_verify.log
+WG_KEY_RC=${PIPESTATUS[0]}
+set -e
+if [[ "$WG_KEY_RC" -ne 0 ]]; then
+  echo "!! WIREGUARD_SERVER_PUBLIC_KEY does not match live wg0 (see logs/wireguard_key_verify.log)."
+  echo "   Fix .env to match: sudo wg show wg0 | head -3"
+  echo "   Scripts still embed live wg0 when readable; fix .env before onboarding."
+fi
+
 echo "==> Syncing WireGuard peers to wg0"
 set +e
 "$PYTHON_BIN" manage.py wireguard_peer --sync-server 2>&1 | tee logs/wireguard_sync.log

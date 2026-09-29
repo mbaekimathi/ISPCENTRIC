@@ -472,3 +472,109 @@ class WireGuardReservation(models.Model):
 
     def __str__(self):
         return f"{self.label} ({self.address})"
+
+
+class MikroTikOnboardingSession(models.Model):
+    """
+    Server-owned onboarding state: tunnel prepare → verify → connect → commit.
+
+    Replaces duplicated host/credential guessing from hidden form fields.
+    """
+
+    class Phase(models.TextChoices):
+        PREPARED = "prepared", "Script generated"
+        TUNNEL_READY = "tunnel_ready", "Tunnel verified"
+        AUTHENTICATED = "authenticated", "API login verified"
+        COMMITTED = "committed", "Router saved"
+        CANCELLED = "cancelled", "Cancelled"
+
+    organization = models.ForeignKey(
+        "accounts.Organization",
+        on_delete=models.CASCADE,
+        related_name="mikrotik_onboarding_sessions",
+    )
+    initiated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="mikrotik_onboarding_sessions",
+    )
+    reservation = models.ForeignKey(
+        WireGuardReservation,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="onboarding_sessions",
+    )
+    label = models.CharField(max_length=150, blank=True)
+    tunnel_address = models.GenericIPAddressField(
+        protocol="IPv4",
+        null=True,
+        blank=True,
+    )
+    planned_lan = models.GenericIPAddressField(
+        protocol="IPv4",
+        null=True,
+        blank=True,
+    )
+    discovered_lan = models.GenericIPAddressField(
+        protocol="IPv4",
+        null=True,
+        blank=True,
+    )
+    verified_dial_host = models.GenericIPAddressField(
+        protocol="IPv4",
+        null=True,
+        blank=True,
+        help_text="IP where RouterOS API login succeeded during Connect.",
+    )
+    management_host = models.GenericIPAddressField(
+        protocol="IPv4",
+        null=True,
+        blank=True,
+        help_text="LAN gateway saved on MikroTikRouter.host after commit.",
+    )
+    username = models.CharField(max_length=120, blank=True)
+    password = EncryptedCharField(max_length=512, blank=True)
+    serial_number = models.CharField(max_length=64, blank=True)
+    software_id = models.CharField(max_length=64, blank=True)
+    board_name = models.CharField(max_length=120, blank=True)
+    routeros_version = models.CharField(max_length=64, blank=True)
+    lan_ip_applied_at_connect = models.BooleanField(default=False)
+    phase = models.CharField(
+        max_length=20,
+        choices=Phase.choices,
+        default=Phase.PREPARED,
+    )
+    tunnel_verified_at = models.DateTimeField(null=True, blank=True)
+    authenticated_at = models.DateTimeField(null=True, blank=True)
+    committed_at = models.DateTimeField(null=True, blank=True)
+    router = models.ForeignKey(
+        MikroTikRouter,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="onboarding_sessions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "core_mikrotik_onboarding_session"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["organization", "phase", "-created_at"],
+                name="core_mik_onb_org_phase_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Onboard {self.label or self.tunnel_address or self.pk} ({self.phase})"
+
+    @property
+    def is_open(self) -> bool:
+        return self.phase not in {
+            self.Phase.COMMITTED,
+            self.Phase.CANCELLED,
+        }

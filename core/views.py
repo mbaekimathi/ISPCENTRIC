@@ -210,6 +210,19 @@ from core.mikrotik_connect import (
     _ensure_hotspot_management_access,
     _router_api_host_candidates,
 )
+from core.mikrotik_onboarding import (
+    OnboardingError,
+    attach_session_token,
+    authenticate_connect,
+    commit_session,
+    create_connect_only_session,
+    cleanup_onboarding_workspace,
+    prepare_onboarding_session,
+    issue_session_token,
+    load_open_session,
+    resolve_session_from_request,
+    sync_session_from_tunnel_payload,
+)
 from core.mikrotik_jobs import (
     NAS_REFRESH_JOB,
     active_uplink_apply_job,
@@ -224,7 +237,12 @@ from core.mikrotik_jobs import (
 )
 from core.mikrotik_discovery import annotate_onboarded, discover_mikrotik_devices, guess_model
 from core.client_isp_movements import record_client_isp_movement, record_client_isp_movements
-from core.models import ClientIspMovement, MikroTikRouter, WireGuardReservation
+from core.models import (
+    ClientIspMovement,
+    MikroTikOnboardingSession,
+    MikroTikRouter,
+    WireGuardReservation,
+)
 from core.places import resolve_location, search_locations
 
 def _router_client_auto_balance_enabled(router: MikroTikRouter) -> bool:
@@ -8679,6 +8697,11 @@ def _render_mikrotik_list(
             editing_router_id=editing_router_id,
             wireguard_ready=wireguard.configured(),
             hosted_server=bool(getattr(settings, "HOSTED", False)),
+            hosted_readiness=(
+                wireguard.hosted_wireguard_readiness()
+                if getattr(settings, "HOSTED", False) or wireguard.configured()
+                else None
+            ),
             onboarding_fee_enabled=client_settings.onboarding_fee_ready,
             onboarding_fee_amount=str(client_settings.onboarding_fee_amount or "0"),
             hotspot_unlock=hotspot_unlock,
@@ -8694,7 +8717,6 @@ def mikrotik(request):
     open_onboard = False
 
     if request.method == "POST":
-        form = MikroTikOnboardForm(request.POST)
         if not org:
             messages.error(request, "No organization is linked to this workspace.")
             return redirect("core:mikrotik")
@@ -8703,298 +8725,36 @@ def mikrotik(request):
         mark_mikrotik_onboarding_active(
             org.pk, user_id=request.user.pk, org_wide=True
         )
+        session_token = (request.POST.get("onboarding_session_token") or "").strip()
+        post_data = request.POST
+        if session_token:
+            try:
+                pre_session = load_open_session(
+                    session_token, organization=org, user=request.user
+                )
+                post_data = request.POST.copy()
+                mgmt = pre_session.management_host or pre_session.verified_dial_host or ""
+                if mgmt:
+                    post_data["host"] = str(mgmt)
+                if pre_session.username:
+                    post_data["username"] = pre_session.username
+                if pre_session.password:
+                    post_data["password"] = pre_session.password
+            except OnboardingError:
+                pass
+        form = MikroTikOnboardForm(post_data)
         if form.is_valid():
-            router = form.save(commit=False)
-            router.organization = org
-            wifi_ssid = (router.wifi_ssid or "").strip()
-            wifi_password = router.wifi_password or ""
-            original_ssid = (request.POST.get("wifi_ssid_original") or "").strip()
-            original_password = request.POST.get("wifi_password_original") or ""
-            wifi_mode = (request.POST.get("wifi_mode") or "").strip()
-            apply_ssid = wifi_ssid != original_ssid
-            apply_password = wifi_password != original_password
-            wants_wifi = bool(wifi_ssid or wifi_password)
-            wifi_changed = apply_ssid or apply_password
-            wifi_result = None
-
-            connect_host = normalize_mikrotik_host(
-                request.POST.get("host_original") or ""
-            )
-            tunnel_host = normalize_mikrotik_host(
-                request.POST.get("tunnel_address") or ""
-            )
-            target_host = normalize_mikrotik_host(router.host)
-            lan_ip_applied_at_connect = (
-                request.POST.get("lan_ip_applied") or ""
-            ).strip() == "1"
-            session_host = connect_host or target_host
-            api_hosts = [
-                host
-                for host in (tunnel_host, connect_host, target_host)
-                if host
-            ]
-
-            script_lan = ""
-            if tunnel_host:
-                reservation = wireguard.reservation_for_address(
-                    tunnel_host, organization=org
-                )
-                if reservation:
-                    script_lan = (reservation.lan_address or "").strip()
-
-            # One management IP for the whole onboard flow — assigned at Connect
-            # (or by the Winbox script) and saved unchanged here.
-            lan_changed = False
-            lan_result: dict = {}
-            if script_lan:
-                discovered_save = discover_local_mikrotik_host(
-                    tunnel_address=tunnel_host,
-                    reservation_label=(reservation.label if reservation else ""),
-                    prefer_host=connect_host or script_lan,
-                )
-                router.host = normalize_mikrotik_host(
-                    discovered_save or connect_host or script_lan
-                )
-                if tunnel_host:
-                    router.vpn_address = tunnel_host
-                target_host = router.host
-                session_host = connect_host or router.host
-                api_hosts = [
-                    host
-                    for host in (tunnel_host, connect_host, script_lan, target_host)
-                    if host
-                ]
-                messages.info(
-                    request,
-                    (
-                        f"MikroTik LAN IP {router.host} saved"
-                        + (
-                            f" (remote tunnel {tunnel_host})"
-                            if tunnel_host and tunnel_host != router.host
-                            else ""
-                        )
-                        + "."
-                    ),
-                )
-            elif lan_ip_applied_at_connect or (
-                connect_host and target_host and connect_host == target_host
-            ):
-                router.host = target_host or connect_host
-                target_host = router.host
-                session_host = connect_host or target_host
-                if lan_ip_applied_at_connect:
-                    messages.info(
-                        request,
-                        f"MikroTik management IP {router.host} was set during Connect.",
-                    )
-            elif is_transient_onboard_host(connect_host) or is_transient_onboard_host(
-                target_host
-            ):
-                if not connect_host:
-                    form.add_error(
-                        "host",
-                        "Reconnect to the MikroTik, then Connect again.",
-                    )
-                    open_onboard = True
-                    messages.error(request, str(next(iter(form.errors.values()))[0]))
-                    return _render_mikrotik_list(
-                        request,
-                        org=org,
-                        routers=routers,
-                        onboard_form=form,
-                        open_onboard=True,
-                    )
-                lan_result = change_mikrotik_lan_ip(
-                    connect_host,
-                    router.username,
-                    router.password,
-                    target_host,
-                    api_hosts=api_hosts,
-                )
-                if not lan_result.get("ok"):
-                    form.add_error(
-                        "host",
-                        lan_result.get("error")
-                        or "Could not change the MikroTik LAN IP.",
-                    )
-                    open_onboard = True
-                    messages.error(request, str(next(iter(form.errors.values()))[0]))
-                    return _render_mikrotik_list(
-                        request,
-                        org=org,
-                        routers=routers,
-                        onboard_form=form,
-                        open_onboard=True,
-                    )
-                lan_changed = True
-                router.host = resolve_onboard_management_host(
-                    connect_host=connect_host,
-                    tunnel_host=tunnel_host,
-                    lan_result=lan_result,
-                    fallback=target_host,
-                )
-                target_host = router.host
-                session_host = (
-                    lan_result.get("verified_host")
-                    or tunnel_host
-                    or lan_result.get("management_host")
-                    or connect_host
-                    or target_host
-                )
-                if tunnel_host and not (router.vpn_address or "").strip():
-                    router.vpn_address = tunnel_host
-                messages.info(
-                    request,
-                    f"MikroTik management IP set to {router.host}.",
-                )
-            elif connect_host and target_host and connect_host != target_host:
-                lan_result = change_mikrotik_lan_ip(
-                    connect_host,
-                    router.username,
-                    router.password,
-                    target_host,
-                    api_hosts=api_hosts,
-                )
-                if not lan_result.get("ok"):
-                    form.add_error(
-                        "host",
-                        lan_result.get("error")
-                        or "Could not change the MikroTik LAN IP.",
-                    )
-                    open_onboard = True
-                    messages.error(request, str(next(iter(form.errors.values()))[0]))
-                    return _render_mikrotik_list(
-                        request,
-                        org=org,
-                        routers=routers,
-                        onboard_form=form,
-                        open_onboard=True,
-                    )
-                lan_changed = True
-                router.host = resolve_onboard_management_host(
-                    connect_host=connect_host,
-                    tunnel_host=tunnel_host,
-                    lan_result=lan_result,
-                    fallback=target_host,
-                )
-                target_host = router.host
-                session_host = (
-                    lan_result.get("verified_host")
-                    or tunnel_host
-                    or lan_result.get("management_host")
-                    or connect_host
-                    or target_host
-                )
-                if tunnel_host and not (router.vpn_address or "").strip():
-                    router.vpn_address = tunnel_host
-
-            # Read hardware IDs so we can detect the same physical MikroTik.
-            # Prefer the path Connect already proved (and tunnel) — never dial the
-            # brand-new LAN subnet first (this PC often cannot route there yet).
-            connect_serial = (request.POST.get("connect_serial_number") or "").strip()
-            connect_software_id = (request.POST.get("connect_software_id") or "").strip()
-            reservation = (
-                wireguard.reservation_for_address(tunnel_host, organization=org)
-                if tunnel_host
-                else None
-            )
-            discovered_lan = discover_local_mikrotik_host(
-                tunnel_address=tunnel_host,
-                reservation_label=(reservation.label if reservation else ""),
-                prefer_host=connect_host or target_host,
-            )
-            if discovered_lan:
-                discovered_lan = normalize_mikrotik_host(discovered_lan)
-                if discovered_lan != connect_host:
-                    connect_host = discovered_lan
-                    session_host = discovered_lan
-                planned = normalize_mikrotik_host(script_lan or target_host or "")
-                if not planned or planned == "192.168.88.1" or planned != discovered_lan:
-                    router.host = discovered_lan
-                    target_host = discovered_lan
-            lan_result_data = lan_result if lan_changed else {}
-            hardware_hosts = _mikrotik_hardware_probe_hosts(
-                connect_host=connect_host,
-                tunnel_host=tunnel_host,
-                session_host=session_host,
-                target_host=target_host,
-                router_host=router.host,
-                discovered_host=discovered_lan,
-                lan_changed=lan_changed,
-                lan_result=lan_result_data,
-            )
-            hardware, probe_host, last_hardware_error = _probe_mikrotik_hardware(
-                hardware_hosts,
-                router.username,
-                router.password,
-                timeout=8.0 if lan_changed else 5.0,
-                attempts=3 if lan_changed else 1,
-            )
-            if hardware.get("ok"):
-                session_host = probe_host or session_host
-            serial_number = ""
-            software_id = ""
-            if not hardware.get("ok"):
-                if lan_changed and lan_result_data.get("ok"):
-                    serial_number = (
-                        (lan_result_data.get("serial_number") or "").strip()
-                        or connect_serial
-                    )
-                    software_id = (
-                        (lan_result_data.get("software_id") or "").strip()
-                        or connect_software_id
-                    )
-                    if serial_number or software_id:
-                        hardware = {"ok": True}
-                        session_host = (
-                            tunnel_host
-                            or lan_result_data.get("verified_host")
-                            or lan_result_data.get("management_host")
-                            or connect_host
-                            or session_host
-                        )
-                        messages.info(
-                            request,
-                            (
-                                f"MikroTik LAN IP set to {router.host}. "
-                                "This PC cannot reach the router on API port 8728 right now — "
-                                "hardware IDs were taken from the Connect step. "
-                                "Use the WireGuard tunnel IP for management until your PC is on the new LAN."
-                            ),
-                        )
-            if hardware.get("ok"):
-                serial_number = (
-                    serial_number
-                    or (hardware.get("serial_number") or "").strip()
-                )
-                software_id = (
-                    software_id or (hardware.get("software_id") or "").strip()
-                )
-            if not hardware.get("ok"):
-                tried = ", ".join(hardware_hosts) if hardware_hosts else "(none)"
-                lan_hint = (discovered_lan or connect_host or router.host or "192.168.88.1").strip()
-                extra = ""
-                if tunnel_host and on_router_lan():
-                    if discovered_lan and discovered_lan != (script_lan or "192.168.88.1"):
-                        extra = (
-                            f" This router was found at {discovered_lan} on your network — "
-                            f"Connect there (not {script_lan or '192.168.88.1'}). "
-                            f"Tunnel {tunnel_host} is only reachable from the VPS."
-                        )
-                    else:
-                        extra = (
-                            f" From this PC, Connect at the LAN IP ({lan_hint}) first — "
-                            f"tunnel {tunnel_host} is only reachable from the VPS."
-                        )
+            if not session_token:
                 form.add_error(
-                    "host",
-                    (
-                        f"{last_hardware_error or 'Could not reach this MikroTik on API port 8728.'} "
-                        f"Tried: {tried}.{extra}"
-                    ),
+                    None,
+                    "Onboarding session expired — use Connect again, then Onboard router.",
                 )
                 open_onboard = True
-                messages.error(request, str(next(iter(form.errors.values()))[0]))
+                first_error = next(iter(form.errors.values()), None)
+                messages.error(
+                    request,
+                    str(first_error[0]) if first_error else "Connect again before onboarding.",
+                )
                 return _render_mikrotik_list(
                     request,
                     org=org,
@@ -9002,188 +8762,40 @@ def mikrotik(request):
                     onboard_form=form,
                     open_onboard=True,
                 )
-
-            serial_number = (hardware.get("serial_number") or "").strip()
-            software_id = (hardware.get("software_id") or "").strip()
-            if not serial_number and not software_id:
-                form.add_error(
-                    "host",
-                    "Could not read this MikroTik’s serial number. Enable RouterOS API and try again.",
+            try:
+                session = load_open_session(
+                    session_token, organization=org, user=request.user
                 )
-                open_onboard = True
-                messages.error(request, str(next(iter(form.errors.values()))[0]))
-                return _render_mikrotik_list(
-                    request,
-                    org=org,
-                    routers=routers,
-                    onboard_form=form,
-                    open_onboard=True,
+                commit_result = commit_session(
+                    session, form, organization=org, request=request
                 )
-
-            existing = _find_router_by_hardware(
-                org,
-                serial_number=serial_number,
-                software_id=software_id,
-                host=router.host,
-            )
-            if existing:
-                form.add_error(
-                    "host",
-                    (
-                        f'This MikroTik is already onboarded as “{existing.name}”. '
-                        f"Open it from the list or use Reconnect — you cannot register the same device twice."
-                    ),
-                )
-                open_onboard = True
-                messages.error(request, str(next(iter(form.errors.values()))[0]))
-                return _render_mikrotik_list(
-                    request,
-                    org=org,
-                    routers=routers,
-                    onboard_form=form,
-                    open_onboard=True,
-                )
-
-            _apply_hardware_ids(
-                router, serial_number=serial_number, software_id=software_id
-            )
-
-            # Wi‑Fi must succeed before the router record is saved.
-            if wants_wifi and wifi_changed:
-                if wifi_password and not wifi_ssid:
-                    form.add_error("wifi_ssid", "Enter a Wi‑Fi name when setting a Wi‑Fi password.")
-                elif apply_password and wifi_password and len(wifi_password) < 8:
-                    form.add_error("wifi_password", "Wi‑Fi password must be at least 8 characters.")
+                router = commit_result.router
+                tunnel_host = (router.vpn_address or "").strip()
+            except OnboardingError as exc:
+                field = exc.field or None
+                if field and field in form.fields:
+                    form.add_error(field, exc.message)
                 else:
-                    wifi_host = tunnel_host or session_host
-                    wifi_result = configure_mikrotik_wifi(
-                        wifi_host,
-                        router.username,
-                        router.password,
-                        wifi_ssid=wifi_ssid,
-                        wifi_password=wifi_password,
-                        wifi_mode=wifi_mode,
-                        apply_ssid=apply_ssid and bool(wifi_ssid),
-                        apply_password=apply_password and bool(wifi_password),
-                    )
-                    if not wifi_result.get("ok"):
-                        form.add_error(
-                            "wifi_ssid",
-                            wifi_result.get("error") or "Could not apply Wi‑Fi settings on the router.",
-                        )
+                    form.add_error(None, exc.message)
+                open_onboard = True
+                messages.error(request, exc.message)
+                return _render_mikrotik_list(
+                    request,
+                    org=org,
+                    routers=routers,
+                    onboard_form=form,
+                    open_onboard=True,
+                )
 
-                if form.errors:
-                    open_onboard = True
-                    first_error = next(iter(form.errors.values()))
-                    messages.error(request, str(first_error[0]))
-                    return _render_mikrotik_list(
-                        request,
-                        org=org,
-                        routers=routers,
-                        onboard_form=form,
-                        open_onboard=True,
-                    )
-                if wifi_result and wifi_result.get("updated"):
-                    messages.success(
-                        request,
-                        f"MikroTik “{router.name}” onboarded and Wi‑Fi updated.",
-                    )
-                else:
-                    messages.success(request, f"MikroTik “{router.name}” onboarded.")
+            if form.cleaned_data.get("wifi_ssid") or form.cleaned_data.get("wifi_password"):
+                messages.success(
+                    request,
+                    f"MikroTik “{router.name}” onboarded and Wi‑Fi updated.",
+                )
             else:
                 messages.success(request, f"MikroTik “{router.name}” onboarded.")
 
-            finalize_onboard_addresses(
-                router,
-                lan_host=router.host,
-                tunnel_host=tunnel_host,
-            )
-            router.save()
-            # If Connect used a reserved tunnel address, attach that WireGuard peer.
-            wireguard.adopt_reservation_for_router(router)
-            try:
-                dispatch_platform_event(
-                    "platform_isp_mikrotik_onboarded",
-                    organization=org,
-                    request=request,
-                    context={
-                        "company_name": getattr(org, "name", "") or "your company",
-                        "router_name": router.name or "MikroTik",
-                        "join_code": getattr(org, "join_code", "") or "",
-                    },
-                    subject=f"MikroTik onboarded — {router.name or 'router'}",
-                )
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "Failed to dispatch MikroTik onboarded platform notification"
-                )
-            try:
-                dispatch_org_event(
-                    "isp_mikrotik_onboarded",
-                    organization=org,
-                    request=request,
-                    context={
-                        "company_name": getattr(org, "name", "") or "your company",
-                        "router_name": router.name or "MikroTik",
-                        "join_code": getattr(org, "join_code", "") or "",
-                    },
-                    subject=f"MikroTik onboarded — {router.name or 'router'}",
-                )
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "Failed to dispatch MikroTik onboarded organization notification"
-                )
-            # First MikroTik for a referred ISP → active referral.
-            if org and org.referred_by_id:
-                was_first = (
-                    MikroTikRouter.objects.filter(organization=org)
-                    .exclude(pk=router.pk)
-                    .count()
-                    == 0
-                )
-                if was_first and org.mark_referral_active():
-                    messages.info(
-                        request,
-                        "Referral marked active — your first MikroTik is onboarded.",
-                    )
-                    referrer = getattr(org, "referred_by", None)
-                    if referrer is not None:
-                        from accounts.communications import (
-                            notify_org_event,
-                            notify_platform_event,
-                        )
-
-                        ctx = {
-                            "company_name": getattr(org, "name", "") or "",
-                            "referrer_name": getattr(referrer, "name", "") or "",
-                        }
-                        notify_org_event(
-                            "isp_referral_active",
-                            organization=referrer,
-                            context=ctx,
-                            subject="Referral became active",
-                        )
-                        notify_platform_event(
-                            "platform_referral_active",
-                            organization=org,
-                            context=ctx,
-                            subject="Referral became active",
-                        )
             router_pk = router.pk
-
-            try:
-                from core.hotspot_portal import public_base_url, remember_org_portal_base
-
-                remember_org_portal_base(org.pk, public_base_url(request))
-            except Exception:
-                pass
-
-            schedule_post_onboard_nas_refresh(
-                router,
-                organization_id=org.pk,
-                user_id=request.user.pk,
-                tunnel=bool((router.vpn_address or tunnel_host or "").strip()),
-            )
             if org and getattr(org, "pppoe_compulsory", False):
                 messages.info(
                     request,
@@ -9197,8 +8809,20 @@ def mikrotik(request):
                     "Latest Hotspot settings are being applied on this MikroTik in the "
                     "background.",
                 )
+            if org and org.referred_by_id:
+                was_first = (
+                    MikroTikRouter.objects.filter(organization=org)
+                    .exclude(pk=router.pk)
+                    .count()
+                    == 0
+                )
+                if was_first:
+                    messages.info(
+                        request,
+                        "Referral marked active — your first MikroTik is onboarded.",
+                    )
             return _redirect_with_mikrotik_job(
-                request, "core:mikrotik_detail", router.pk, "nas_refresh"
+                request, "core:mikrotik_detail", router_pk, "nas_refresh"
             )
         open_onboard = True
         first_error = next(iter(form.errors.values()), None)
@@ -14245,6 +13869,23 @@ def mikrotik_tunnel_script(request):
     install_rsc_url = request.build_absolute_uri(
         f"{reverse('core:mikrotik_tunnel_rsc')}?token={rsc_token}&kind=install"
     )
+    cleanup_onboarding_workspace(organization=org)
+    onboard_session = prepare_onboarding_session(
+        reservation,
+        organization=org,
+        user=request.user,
+        label=label,
+    )
+    session_token = issue_session_token(onboard_session)
+    key_align = wireguard.server_public_key_alignment()
+    hint = sync_info["peer_sync_hint"]
+    if key_align.get("mismatch"):
+        hint = (
+            (key_align.get("fix_hint") or "Fix WIREGUARD_SERVER_PUBLIC_KEY in .env.")
+            + " This script uses the live wg0 key so the router can handshake."
+        )
+    elif key_align.get("script_source") == "live_wg0":
+        hint = (hint + " VPS public key verified from live wg0.").strip()
     return JsonResponse(
         {
             "ok": True,
@@ -14262,16 +13903,12 @@ def mikrotik_tunnel_script(request):
             "peer_sync_required": sync_info["peer_sync_required"],
             "peer_sync_error": sync_info["peer_sync_error"],
             "peer_sync_reason": sync_info["peer_sync_reason"],
-            "status_token": signing.dumps(
-                {
-                    "address": payload["address"],
-                    "user_id": request.user.pk,
-                    "org_id": org.pk,
-                },
-                salt="mikrotik-tunnel-status",
-                compress=True,
-            ),
-            "hint": sync_info["peer_sync_hint"],
+            "session_token": session_token,
+            "status_token": session_token,
+            "hint": hint,
+            "server_public_key_source": key_align.get("script_source") or "env",
+            "server_public_key_env_mismatch": bool(key_align.get("mismatch")),
+            "server_public_key_live": (key_align.get("live") or "")[:44],
         }
     )
 
@@ -14409,28 +14046,76 @@ def mikrotik_onboarding_stk_status(request, stk_id: int):
     return JsonResponse(refresh_stk_status(stk))
 
 
+def _tunnel_status_json_response(
+    payload: dict,
+    onboard_session: MikroTikOnboardingSession | None,
+):
+    if onboard_session:
+        sync_session_from_tunnel_payload(onboard_session, payload)
+        attach_session_token(payload, onboard_session)
+    return JsonResponse(payload)
+
+
 @client_workspace_required
 @require_http_methods(["GET", "POST"])
 def mikrotik_tunnel_status(request):
     """Check whether a newly reserved tunnel reaches RouterOS API port 8728."""
-    token = (request.POST.get("token") or request.GET.get("token") or "").strip()
-    try:
-        signed = signing.loads(token, salt="mikrotik-tunnel-status", max_age=3600)
-    except signing.BadSignature:
-        return JsonResponse({"ok": False, "error": "This tunnel check has expired."}, status=400)
-
-    if signed.get("user_id") != request.user.pk:
-        return JsonResponse({"ok": False, "error": "This tunnel check is not yours."}, status=403)
-
     org = resolve_organization(request.user, request)
-    token_org_id = signed.get("org_id")
-    if token_org_id and org and int(token_org_id) != org.pk:
-        return JsonResponse(
-            {"ok": False, "error": "This tunnel check belongs to another ISP account."},
-            status=403,
-        )
+    if org:
+        cleanup_onboarding_workspace(organization=org)
+    onboard_session = resolve_session_from_request(
+        request, organization=org, user=request.user
+    )
+    token = (request.POST.get("token") or request.GET.get("token") or "").strip()
+    signed = {}
+    if not onboard_session and token:
+        try:
+            signed = signing.loads(token, salt="mikrotik-tunnel-status", max_age=3600)
+        except signing.BadSignature:
+            try:
+                signed = signing.loads(
+                    token, salt="mikrotik-onboarding-session-v1", max_age=3600
+                )
+            except signing.BadSignature:
+                return JsonResponse(
+                    {"ok": False, "error": "This tunnel check has expired."},
+                    status=400,
+                )
+        if signed.get("user_id") and signed.get("user_id") != request.user.pk:
+            return JsonResponse(
+                {"ok": False, "error": "This tunnel check is not yours."},
+                status=403,
+            )
+        token_org_id = signed.get("org_id")
+        if token_org_id and org and int(token_org_id) != org.pk:
+            return JsonResponse(
+                {"ok": False, "error": "This tunnel check belongs to another ISP account."},
+                status=403,
+            )
+        if signed.get("sid") and org:
+            try:
+                onboard_session = load_open_session(
+                    token, organization=org, user=request.user
+                )
+            except OnboardingError:
+                onboard_session = None
 
-    address = (signed.get("address") or "").strip()
+    if onboard_session and not token:
+        token = issue_session_token(onboard_session)
+
+    if not signed and token and not onboard_session:
+        try:
+            signed = signing.loads(token, salt="mikrotik-tunnel-status", max_age=3600)
+        except signing.BadSignature:
+            return JsonResponse(
+                {"ok": False, "error": "This tunnel check has expired."},
+                status=400,
+            )
+
+    address = (
+        (onboard_session.tunnel_address if onboard_session else "")
+        or (signed.get("address") or "").strip()
+    )
     reservation = wireguard.reservation_for_address(address, organization=org)
     if not address or reservation is None:
         return JsonResponse({"ok": False, "error": "Tunnel reservation was not found."}, status=404)
@@ -14438,6 +14123,8 @@ def mikrotik_tunnel_status(request):
     # A local development machine is not a WireGuard peer. Use MNDP/LAN
     # discovery instead. On a hosted VPS, missing 10.9.0.1 means wg0 is down —
     # never fall back to LAN discovery (that only works on a tech laptop).
+    if not wireguard.server_on_tunnel():
+        wireguard.prepare_billing_tunnel_host(sync_reservation=reservation)
     if not wireguard.server_on_tunnel():
         if getattr(settings, "HOSTED", False):
             server = str(wireguard.server_address())
@@ -14481,7 +14168,7 @@ def mikrotik_tunnel_status(request):
                     "message": "Waiting for Winbox script on the router",
                 },
             ]
-            return JsonResponse(
+            return _tunnel_status_json_response(
                 {
                     "ok": True,
                     "address": address,
@@ -14498,7 +14185,8 @@ def mikrotik_tunnel_status(request):
                     "peer_state": "missing",
                     "peer_synced": False,
                     "peer_present": False,
-                }
+                },
+                onboard_session,
             )
 
         org = resolve_organization(request.user, request)
@@ -14604,7 +14292,7 @@ def mikrotik_tunnel_status(request):
             else {"installed": False, "via": "", "error": "", "marker": ""}
         )
         script_installed = bool(script_info.get("installed"))
-        # LAN ready when script marker is present; API open is expected after paste.
+        # LAN Connect when script + API on LAN; billing tunnel is separate rows in checks.
         ready = bool(script_installed and api_enabled and lan_address)
 
         marker = wireguard.script_ready_identity(address)
@@ -14660,8 +14348,36 @@ def mikrotik_tunnel_status(request):
             multiple_devices=len(candidates) > 1,
             script_installed=script_installed,
         )
+        vps_diagnosis = {}
+        verify_extras = ""
+        if script_installed and reservation:
+            checks, vps_diagnosis = wireguard.extend_local_checks_with_vps_tunnel(
+                checks, reservation=reservation, address=address
+            )
+            if vps_diagnosis.get("message") and any(
+                row.get("status") == "fail"
+                for row in checks
+                if row.get("key") in ("vps_peer", "billing_ping")
+            ):
+                message = (
+                    f"{message} {vps_diagnosis['message']}".strip()
+                    if message
+                    else vps_diagnosis["message"]
+                )
+            verify_extras = wireguard.tunnel_status_verify_extras(vps_diagnosis)
+            if ready:
+                billing_rows = [
+                    row
+                    for row in checks
+                    if row.get("key") == "billing_ping" and row.get("status") == "fail"
+                ]
+                if billing_rows:
+                    message = (
+                        f"{message} LAN is ready to Connect; billing tunnel is not up yet "
+                        f"({billing_rows[0].get('message', 'no handshake')})."
+                    ).strip()
 
-        return JsonResponse(
+        return _tunnel_status_json_response(
             {
                 "ok": True,
                 "address": address,
@@ -14688,7 +14404,14 @@ def mikrotik_tunnel_status(request):
                 "via": via,
                 "message": message,
                 "checks": checks,
-            }
+                "peer_state": (vps_diagnosis.get("code") or "").strip(),
+                "handshake_age_sec": (vps_diagnosis.get("peer") or {}).get(
+                    "handshake_age_sec"
+                ),
+                "peer_synced": bool((vps_diagnosis.get("peer_sync") or {}).get("ok")),
+                "verify_extras": verify_extras,
+            },
+            onboard_session,
         )
 
     wireguard.reconcile_runtime_allowed_ips()
@@ -14783,6 +14506,7 @@ def mikrotik_tunnel_status(request):
         "peer_present": bool(peer_info.get("present") or tunnel_reachable),
         "handshake_age_sec": peer_info.get("handshake_age_sec"),
         "peer_sync_error": (peer_sync.get("error") or "").strip(),
+        "verify_extras": wireguard.tunnel_status_verify_extras(diagnosis),
         "alternate_live_tunnels": alternate_live,
         "alternate_live_hint": alt_hint,
     }
@@ -14801,18 +14525,20 @@ def mikrotik_tunnel_status(request):
                 "script": refresh["script"],
                 "server_peer": refresh["server_peer"],
                 "endpoint": refresh["endpoint"],
-                "status_token": signing.dumps(
-                    {
-                        "address": reservation.address,
-                        "user_id": request.user.pk,
-                        "org_id": org.pk if org else None,
-                    },
-                    salt="mikrotik-tunnel-status",
-                    compress=True,
-                ),
             }
         )
-    return JsonResponse(response_payload)
+    return _tunnel_status_json_response(response_payload, onboard_session)
+
+
+@client_workspace_required
+@require_http_methods(["GET"])
+def mikrotik_hosted_readiness(request):
+    """Hosted VPS checklist — wg0, peer sync, before remote MikroTik onboard."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization is linked."}, status=400)
+    payload = wireguard.hosted_wireguard_readiness()
+    return JsonResponse({"ok": True, **payload})
 
 
 @client_workspace_required
@@ -14823,156 +14549,43 @@ def mikrotik_connect(request):
     username = (request.POST.get("username") or "").strip()
     password = request.POST.get("password") or ""
     org = resolve_organization(request.user, request)
-    connect_host = normalize_mikrotik_host(host)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization is linked."}, status=400)
+
     script_lan = normalize_mikrotik_host(request.POST.get("script_lan") or "")
     tunnel_host = normalize_mikrotik_host(request.POST.get("tunnel_host") or "")
+    session_token = (request.POST.get("session_token") or "").strip()
 
-    if tunnel_host:
-        peer_gate = wireguard.onboard_tunnel_peer_ready(
-            tunnel_host, organization=org
-        )
-        if peer_gate.get("required") and not peer_gate.get("ok"):
-            # Last resort: if the tunnel IP already answers, let Connect try API login.
-            if not wireguard._tunnel_host_reachable(tunnel_host):
-                return JsonResponse(
-                    {
-                        "ok": False,
-                        "peer_sync_required": True,
-                        "error": (
-                            peer_gate.get("error")
-                            or peer_gate.get("peer_sync_hint")
-                            or "WireGuard peer is not registered on the VPS yet."
-                        ),
-                    },
-                    status=400,
-                )
-
-    if on_router_lan():
-        connect_host = pick_local_onboard_connect_host(
-            tunnel_address=tunnel_host,
-            planned_lan=script_lan,
-            current=connect_host,
-        )
-    dial_host = connect_host
-
-    result = test_mikrotik_api_login(dial_host, username, password)
-    if not result.get("ok"):
-        return JsonResponse(
-            {"ok": False, "error": result.get("error") or "Connection failed."},
-            status=400,
-        )
-
-    # While API is open, permanently free this PC from Hotspot lockout so
-    # Fleet Reconnect keeps working after ISP Hotspot is pushed.
-    try:
-        with _api_session(dial_host, username, password, timeout=8.0) as sock:
-            _ensure_hotspot_management_access(
-                sock, username=username, password=password
+    onboard_session = None
+    if session_token:
+        try:
+            onboard_session = load_open_session(
+                session_token, organization=org, user=request.user
             )
-    except Exception:
-        pass
+        except OnboardingError as exc:
+            return JsonResponse({"ok": False, "error": exc.message}, status=400)
+    else:
+        onboard_session = create_connect_only_session(
+            organization=org,
+            user=request.user,
+            label=(request.POST.get("label") or "").strip(),
+        )
 
-    board = result.get("board") or ""
-    serial_number = (result.get("serial_number") or "").strip()
-    software_id = (result.get("software_id") or "").strip()
-    existing = _find_router_by_hardware(
-        org,
-        serial_number=serial_number,
-        software_id=software_id,
-        host=result.get("host") or host,
+    from core.mikrotik_status_samples import mark_mikrotik_onboarding_active
+
+    mark_mikrotik_onboarding_active(org.pk, user_id=request.user.pk)
+
+    payload = authenticate_connect(
+        onboard_session,
+        host=host,
+        username=username,
+        password=password,
+        script_lan=script_lan or (onboard_session.planned_lan or ""),
+        tunnel_host=tunnel_host or (onboard_session.tunnel_address or ""),
+        organization=org,
     )
-    if existing:
-        detail_url = reverse("core:mikrotik_detail", args=[existing.pk])
-        return JsonResponse(
-            {
-                "ok": False,
-                "already_onboarded": True,
-                "error": (
-                    f'This MikroTik is already onboarded as “{existing.name}”. '
-                    f"Open it from the list or use Reconnect — you cannot register the same device twice."
-                ),
-                "existing_router_id": existing.pk,
-                "existing_router_name": existing.name,
-                "existing_router_url": detail_url,
-                "serial_number": serial_number,
-                "software_id": software_id,
-                "host": result.get("host") or host,
-            },
-            status=400,
-        )
-
-    if org:
-        from core.mikrotik_status_samples import mark_mikrotik_onboarding_active
-
-        mark_mikrotik_onboarding_active(org.pk, user_id=request.user.pk)
-
-    final_host = connect_host or normalize_mikrotik_host(result.get("host") or host)
-    lan_ip_applied = False
-    lan_message = ""
-
-    if is_transient_onboard_host(connect_host):
-        suggested_lan_ip = suggest_unique_mikrotik_lan_ip(
-            list(
-                MikroTikRouter.objects.filter(organization=org).values_list(
-                    "host", flat=True
-                )
-            )
-            if org
-            else []
-        )
-        if connect_host != suggested_lan_ip:
-            lan_result = change_mikrotik_lan_ip(
-                connect_host,
-                username,
-                password,
-                suggested_lan_ip,
-                api_hosts=[host for host in (tunnel_host, connect_host) if host],
-            )
-            if not lan_result.get("ok"):
-                return JsonResponse(
-                    {
-                        "ok": False,
-                        "error": lan_result.get("error")
-                        or "Could not assign a unique LAN IP on this MikroTik.",
-                    },
-                    status=400,
-                )
-            lan_ip_applied = True
-            final_host = resolve_onboard_management_host(
-                connect_host=connect_host,
-                tunnel_host=tunnel_host,
-                lan_result=lan_result,
-                fallback=suggested_lan_ip,
-            )
-            lan_message = (lan_result.get("message") or "").strip()
-    elif tunnel_host and not on_router_lan():
-        final_host = tunnel_host
-
-    return JsonResponse(
-        {
-            "ok": True,
-            "host": final_host,
-            "connect_host": connect_host,
-            "tunnel_host": tunnel_host,
-            "name": result.get("name") or "",
-            "identity": result.get("identity") or "",
-            "version": result.get("version") or "",
-            "board": board,
-            "serial_number": serial_number,
-            "software_id": software_id,
-            "model": guess_model(board),
-            "username": username,
-            "wifi_ssid": result.get("wifi_ssid") or "",
-            "wifi_password": result.get("wifi_password") or "",
-            "wifi_mode": result.get("wifi_mode") or "",
-            "already_onboarded": False,
-            "requires_ip_change": False,
-            "lan_ip_applied": lan_ip_applied,
-            "lan_message": lan_message,
-            "factory_default_ip": "192.168.88.1",
-            "suggested_lan_ip": final_host,
-        }
-    )
+    status = 200 if payload.get("ok") else 400
+    return JsonResponse(payload, status=status)
 
 
 @client_workspace_required

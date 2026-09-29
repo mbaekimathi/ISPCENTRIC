@@ -1099,6 +1099,107 @@ a {
   max-width: 44ch;
 }
 
+.mikrotik-onboard-process {
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.mikrotik-onboard-process[hidden] {
+  display: none !important;
+}
+
+.mikrotik-onboard-process-heading {
+  margin: 0 0 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(232, 242, 244, 0.65);
+}
+
+.mikrotik-onboard-process-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.mikrotik-onboard-process-item {
+  display: grid;
+  grid-template-columns: 1.35rem minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: start;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.mikrotik-onboard-process-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 0.05rem;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+  opacity: 0.9;
+}
+
+.mikrotik-onboard-process-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.mikrotik-onboard-process-label {
+  font-weight: 700;
+}
+
+.mikrotik-onboard-process-msg {
+  font-size: 0.72rem;
+  opacity: 0.88;
+  word-break: break-word;
+}
+
+.mikrotik-onboard-process-item.is-waiting,
+.mikrotik-onboard-process-item.is-checking {
+  color: #cbd5e1;
+}
+
+.mikrotik-onboard-process-item.is-checking .mikrotik-onboard-process-icon {
+  animation: mikrotik-discover-pulse 1.25s ease-out infinite;
+}
+
+.mikrotik-onboard-process-item.is-ok {
+  color: #bbf7d0;
+}
+
+.mikrotik-onboard-process-item.is-ok .mikrotik-onboard-process-icon {
+  background: rgba(46, 204, 113, 0.25);
+  border-color: rgba(46, 204, 113, 0.85);
+  box-shadow: inset 0 0 0 4px rgba(46, 204, 113, 0.35);
+}
+
+.mikrotik-onboard-process-item.is-fail {
+  color: #fecaca;
+}
+
+.mikrotik-onboard-process-item.is-fail .mikrotik-onboard-process-icon {
+  border-color: rgba(231, 76, 60, 0.9);
+  background: rgba(231, 76, 60, 0.15);
+}
+
+.mikrotik-onboard-process-item.is-warn {
+  color: #fde68a;
+}
+
+.mikrotik-onboard-process-item.is-warn .mikrotik-onboard-process-icon {
+  border-color: rgba(241, 196, 15, 0.85);
+  background: rgba(241, 196, 15, 0.12);
+}
+
 .mikrotik-onboard-scroll {
   flex: 1 1 auto;
   min-height: 0;
@@ -2297,6 +2398,67 @@ a {
   gap: 0.4rem;
 }
 
+.mikrotik-verify-outcome {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0.55rem 0 0;
+}
+
+.mikrotik-verify-outcome[hidden] {
+  display: none !important;
+}
+
+.mikrotik-verify-outcome-col {
+  padding: 0.55rem 0.6rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.12);
+  min-width: 0;
+}
+
+.mikrotik-verify-outcome-col.is-ok {
+  border-color: rgba(46, 204, 113, 0.28);
+}
+
+.mikrotik-verify-outcome-col.is-fail {
+  border-color: rgba(231, 76, 60, 0.28);
+}
+
+.mikrotik-verify-outcome-heading {
+  margin: 0 0 0.4rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+.mikrotik-verify-outcome-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.mikrotik-verify-outcome-list li {
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.mikrotik-verify-outcome-list li strong {
+  display: block;
+  font-weight: 700;
+}
+
+.mikrotik-verify-outcome-list li span {
+  display: block;
+  margin-top: 0.08rem;
+  opacity: 0.88;
+  word-break: break-word;
+}
+
 .mikrotik-tunnel-checklist[hidden] {
   display: none !important;
 }
@@ -2406,12 +2568,24 @@ a {
   text-transform: uppercase;
 }
 
+.mikrotik-tunnel-checklist-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
 .mikrotik-tunnel-checklist-label {
   display: block;
   font-size: 0.76rem;
   font-weight: 750;
   line-height: 1.35;
   color: rgba(232, 242, 244, 0.92);
+}
+
+.mikrotik-tunnel-checklist-label .mikrotik-tunnel-checklist-badge {
+  margin-left: 0.35rem;
+  vertical-align: middle;
 }
 
 .mikrotik-tunnel-checklist-message {
@@ -12121,6 +12295,106 @@ a.packages-stat.is-active-audit {
 .mikrotik-stat,
 .packages-stat {
   --stat-tone: var(--sea, #0e7c86);
+}
+
+.mikrotik-hosted-readiness {
+  margin-bottom: 1rem;
+  padding: 1rem 1.1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(231, 76, 60, 0.28);
+  background: rgba(231, 76, 60, 0.06);
+}
+
+.mikrotik-hosted-readiness.is-ready {
+  border-color: rgba(46, 204, 113, 0.35);
+  background: rgba(46, 204, 113, 0.07);
+}
+
+.mikrotik-hosted-readiness-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.mikrotik-hosted-readiness-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.mikrotik-hosted-readiness-lead {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  opacity: 0.88;
+  max-width: 52ch;
+}
+
+.mikrotik-hosted-readiness-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.mikrotik-hosted-readiness-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: start;
+  padding: 0.5rem 0.6rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.mikrotik-hosted-readiness-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  margin-top: 0.35rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.85);
+}
+
+.mikrotik-hosted-readiness-item.is-ok .mikrotik-hosted-readiness-dot {
+  background: rgba(46, 204, 113, 0.95);
+}
+
+.mikrotik-hosted-readiness-item.is-fail .mikrotik-hosted-readiness-dot {
+  background: rgba(231, 76, 60, 0.95);
+}
+
+.mikrotik-hosted-readiness-item.is-warn .mikrotik-hosted-readiness-dot {
+  background: rgba(241, 196, 15, 0.95);
+}
+
+.mikrotik-hosted-readiness-body strong {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.mikrotik-hosted-readiness-body span {
+  display: block;
+  margin-top: 0.12rem;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  opacity: 0.9;
+}
+
+.mikrotik-hosted-readiness-foot {
+  margin: 0.75rem 0 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  opacity: 0.88;
+}
+
+.mikrotik-hosted-readiness-foot.is-ok {
+  color: rgba(46, 204, 113, 0.95);
 }
 
 @media (max-width: 900px) {

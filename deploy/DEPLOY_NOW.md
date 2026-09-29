@@ -85,14 +85,16 @@ If `/etc/wireguard/wg0.conf` does not exist yet:
 ```bash
 cd /opt/ispcentric
 sudo -u www-data .venv/bin/python manage.py wireguard_peer --server-keys
-# Save the PRIVATE key securely — never put it in .env
+# Save the PRIVATE key on the VPS only (never in .env or git):
+sudo tee /etc/wireguard/ispcentric-server.key   # paste private key, Ctrl-D
+sudo chmod 600 /etc/wireguard/ispcentric-server.key
 
-sudo -u www-data .venv/bin/python manage.py wireguard_peer --server-config '<PRIVATE_KEY>' \
-  | sudo tee /etc/wireguard/wg0.conf
-sudo chmod 600 /etc/wireguard/wg0.conf
+sudo .venv/bin/python manage.py wireguard_peer --bootstrap-server
 sudo systemctl enable --now wg-quick@wg0
 sudo wg show
 ```
+
+After every deploy, `scripts/vps_deploy.sh` runs `wireguard_peer --sync-server` so new onboarding peers reach wg0 automatically.
 
 The **public** key is already in `.env`:
 `UkOOxC6oM/Qyg53HUL/u3XKwK6ITa1VzBg9xlYqcyns=`

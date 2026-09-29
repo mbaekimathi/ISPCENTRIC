@@ -106,6 +106,13 @@ mkdir -p /var/www/certbot
 nginx -t
 systemctl reload nginx
 
+echo "==> Enabling IPv4 forwarding (WireGuard return traffic)"
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+tee /etc/sysctl.d/99-ispcentric-wireguard.conf >/dev/null <<'SYSCTL'
+net.ipv4.ip_forward=1
+SYSCTL
+sysctl --system >/dev/null 2>&1 || true
+
 echo "==> Configuring firewall"
 ufw --force default deny incoming
 ufw --force default allow outgoing
@@ -123,12 +130,24 @@ if [[ -z "$WG_KEY" ]]; then
   echo "     sudo -u $APP_USER .venv/bin/python manage.py wireguard_peer --server-keys"
   echo "   Then paste the public key into .env and re-run wg setup below."
 else
+  WG_KEY_FILE="/etc/wireguard/ispcentric-server.key"
   if [[ ! -f /etc/wireguard/wg0.conf ]]; then
-    echo "==> WireGuard wg0.conf not found — generate with:"
-    echo "     cd $APP_ROOT"
-    echo "     sudo -u $APP_USER .venv/bin/python manage.py wireguard_peer --server-config '<private-key>' | tee /etc/wireguard/wg0.conf"
-    echo "     chmod 600 /etc/wireguard/wg0.conf"
-    echo "     systemctl enable --now wg-quick@wg0"
+    if [[ -f "$WG_KEY_FILE" ]]; then
+      echo "==> Bootstrapping WireGuard wg0 from $WG_KEY_FILE"
+      cd "$APP_ROOT"
+      "$APP_ROOT/.venv/bin/python" manage.py wireguard_peer --bootstrap-server \
+        --private-key-file "$WG_KEY_FILE" || true
+      systemctl enable --now wg-quick@wg0 2>/dev/null || true
+    else
+      echo "==> WireGuard wg0.conf not found — one-time setup:"
+      echo "     cd $APP_ROOT"
+      echo "     sudo -u $APP_USER .venv/bin/python manage.py wireguard_peer --server-keys"
+      echo "     # Save private key only on the VPS:"
+      echo "     sudo tee $WG_KEY_FILE  # paste private key, Ctrl-D"
+      echo "     sudo chmod 600 $WG_KEY_FILE"
+      echo "     sudo .venv/bin/python manage.py wireguard_peer --bootstrap-server"
+      echo "     sudo systemctl enable --now wg-quick@wg0"
+    fi
   else
     echo "==> Starting WireGuard"
     systemctl enable --now wg-quick@wg0 || true

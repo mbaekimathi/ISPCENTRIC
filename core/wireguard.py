@@ -385,8 +385,46 @@ def _server_public_key() -> str:
     return key
 
 
+def _read_live_wg_interface_public_key_from_dump() -> str:
+    """
+    Parse ``wg show <iface> dump`` (often via WIREGUARD_SYNC_COMMAND --dump).
+
+    Gunicorn/www-data usually cannot run ``wg`` directly but can sudo the sync
+    helper — same path used for Verify and peer registration.
+    """
+    dump_cmd = _wg_interface_dump_command()
+    if dump_cmd is None:
+        return ""
+    try:
+        proc = subprocess.run(
+            dump_cmd,
+            capture_output=True,
+            text=True,
+            timeout=12,
+            check=False,
+            env={
+                **os.environ,
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            },
+        )
+    except Exception as exc:
+        logger.debug("Could not dump WireGuard interface: %s", exc)
+        return ""
+    if proc.returncode != 0:
+        return ""
+    lines = (proc.stdout or "").splitlines()
+    if not lines:
+        return ""
+    parts = lines[0].split("\t")
+    if len(parts) >= 2:
+        key = (parts[1] or "").strip()
+        if looks_like_wg_key(key):
+            return key
+    return ""
+
+
 def _read_live_wg_interface_public_key() -> str:
-    """Best-effort ``wg show <iface> public-key`` on the billing host."""
+    """Best-effort live server public-key from wg0 (direct wg or sync --dump)."""
     iface = _wireguard_interface()
     wg_bin = shutil.which("wg") or "/usr/bin/wg"
     try:
@@ -403,7 +441,58 @@ def _read_live_wg_interface_public_key() -> str:
                 return key
     except Exception as exc:
         logger.debug("Could not read %s public-key: %s", iface, exc)
-    return ""
+    return _read_live_wg_interface_public_key_from_dump()
+
+
+def server_public_key_alignment() -> dict:
+    """
+    Compare .env WIREGUARD_SERVER_PUBLIC_KEY with live wg0 (when readable).
+
+    Scripts on hosted servers always embed ``script_key`` from ``resolve_server_public_key()``.
+    """
+    out: dict = {
+        "configured": "",
+        "live": "",
+        "mismatch": False,
+        "live_readable": False,
+        "script_key": "",
+        "script_source": "env",
+        "ok": True,
+        "fix_hint": "",
+    }
+    try:
+        out["configured"] = _server_public_key()
+    except ValueError as exc:
+        out["ok"] = False
+        out["error"] = str(exc)
+        return out
+
+    live = _read_live_wg_interface_public_key()
+    out["live"] = live
+    out["live_readable"] = bool(live)
+    hosted = bool(getattr(settings, "HOSTED", False))
+
+    if live and live != out["configured"]:
+        out["mismatch"] = True
+        out["ok"] = False
+        out["fix_hint"] = (
+            f"Update WIREGUARD_SERVER_PUBLIC_KEY in .env to match live wg0 exactly, "
+            f"then restart ispcentric. Live key starts with {live[:16]}…"
+        )
+
+    script_key = resolve_server_public_key(prefer_live=hosted)
+    out["script_key"] = script_key
+    if hosted and live and script_key == live:
+        out["script_source"] = "live_wg0"
+    elif hosted and not live:
+        out["script_source"] = "env"
+        if hosted and configured():
+            out["fix_hint"] = (
+                out.get("fix_hint")
+                or "Could not read live wg0 public-key — fix WIREGUARD_SYNC_COMMAND "
+                "sudoers so scripts match wg show."
+            )
+    return out
 
 
 def resolve_server_public_key(*, prefer_live: bool = True) -> str:
@@ -411,20 +500,23 @@ def resolve_server_public_key(*, prefer_live: bool = True) -> str:
     Public key embedded in MikroTik onboarding scripts.
 
     On a hosted VPS, prefer the live ``wg0`` key so Copy script matches ``wg show``
-    even when ``.env`` drifted (common after manual wg0 rebuilds). Settings must
-    still define a valid key — see ``_server_public_key()``.
+    even when ``.env`` drifted (typo or manual wg0 rebuild). Settings must still
+    define a valid key — see ``_server_public_key()``.
     """
-    configured = _server_public_key()
-    if not prefer_live:
-        return configured
+    env_key = _server_public_key()
+    hosted = bool(getattr(settings, "HOSTED", False))
+    if not prefer_live or not hosted:
+        return env_key
     live = _read_live_wg_interface_public_key()
     if not live:
-        return configured
-    if live != configured:
+        return env_key
+    if live != env_key:
         logger.warning(
-            "WIREGUARD_SERVER_PUBLIC_KEY differs from live %s; "
-            "onboarding scripts will embed the live interface public-key.",
+            "WIREGUARD_SERVER_PUBLIC_KEY differs from live %s (%s vs %s); "
+            "onboarding scripts embed the live wg0 public-key.",
             _wireguard_interface(),
+            env_key[:16],
+            live[:16],
         )
     return live
 
@@ -845,6 +937,22 @@ def purge_stale_wireguard_reservations(
                 errors.append(
                     f"{address or label}: {outcome.get('error') or 'peer remove failed'}"
                 )
+        if address and remove_runtime_peers and can_apply_server_peers():
+            cleared = _clear_runtime_peers_for_address(address)
+            if cleared:
+                logger.info(
+                    "Cleared %s runtime peer(s) for purged tunnel %s",
+                    cleared,
+                    address,
+                )
+        try:
+            from core.mikrotik_onboarding import cancel_open_onboarding_sessions
+
+            cancel_open_onboarding_sessions(reservation_id=reservation.pk)
+            if address:
+                cancel_open_onboarding_sessions(tunnel_address=address)
+        except ImportError:
+            pass
         reservation.delete()
         purged_labels.append(label or address or public_key[:8])
 
@@ -905,6 +1013,7 @@ def reserve_peer(label: str, *, organization=None, rotate_keys: bool = False):
         reservation.lan_address = allocate_lan_address()
         reservation.save(update_fields=["lan_address"])
 
+    prepare_billing_tunnel_host(sync_reservation=reservation)
     if rotate_keys or live_tunnel_key_conflicts_with_reservation(reservation):
         reservation, peer_sync = rotate_reservation_keys(reservation)
     else:
@@ -932,6 +1041,14 @@ def reserve_peer(label: str, *, organization=None, rotate_keys: bool = False):
                 reservation.address,
                 peer_sync.get("reason") or "",
                 peer_sync.get("error") or "",
+            )
+    if can_apply_server_peers():
+        orphan = prune_orphan_runtime_peers()
+        if orphan.get("pruned"):
+            logger.info(
+                "Pruned %s orphan WireGuard peer(s) after reserving %s",
+                orphan["pruned"],
+                reservation.address,
             )
     return reservation, peer_sync
 
@@ -965,9 +1082,26 @@ def adopt_reservation_for_router(router) -> bool:
     changed: list[str] = []
     tunnel = (reservation.address or "").strip()
     planned_lan = (getattr(reservation, "lan_address", None) or "192.168.88.1").strip()
-    if planned_lan and (router.host or "").strip() != planned_lan:
-        router.host = planned_lan
-        changed.append("host")
+    from core.mikrotik_connect import normalize_mikrotik_host
+
+    current_host = normalize_mikrotik_host(getattr(router, "host", None) or "")
+    # Keep a verified LAN from Connect/onboard — do not revert to script-planned LAN.
+    if planned_lan and (
+        not current_host
+        or normalize_mikrotik_host(planned_lan) == current_host
+    ):
+        if current_host != normalize_mikrotik_host(planned_lan):
+            router.host = planned_lan
+            changed.append("host")
+    elif planned_lan and current_host:
+        try:
+            from core.mikrotik_connect import _is_wireguard_tunnel_host
+
+            if _is_wireguard_tunnel_host(current_host):
+                router.host = planned_lan
+                changed.append("host")
+        except ImportError:
+            pass
     if tunnel and router.vpn_address != tunnel:
         router.vpn_address = tunnel
         changed.append("vpn_address")
@@ -1835,6 +1969,7 @@ def ensure_reservation_peer(reservation) -> dict:
     address = (getattr(reservation, "address", None) or "").strip()
     public_key = (getattr(reservation, "public_key", None) or "").strip()
 
+    prepare_billing_tunnel_host(sync_reservation=reservation)
     reconcile_runtime_allowed_ips()
     sync = apply_server_peer(label, address, public_key)
     peer = inspect_server_peer(public_key)
@@ -2027,6 +2162,229 @@ def _try_bring_up_interface() -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _ensure_wg0_via_sync_helper() -> dict:
+    """
+    Bring wg0 up using WIREGUARD_SYNC_COMMAND (sudo wireguard_apply_peer.sh --dump).
+
+    Gunicorn runs as www-data and cannot wg-quick directly; the sync helper can.
+    """
+    if not can_apply_server_peers() or server_on_tunnel():
+        return {"ok": server_on_tunnel(), "skipped": True}
+    proc = _run_sync_helper("--dump")
+    if proc is None:
+        return {"ok": False, "skipped": True, "reason": "no_sync_command"}
+    err = (proc.stderr or proc.stdout or "").strip()
+    if proc.returncode == 0:
+        return {"ok": True, "via": "sync_helper"}
+    return {"ok": False, "error": err or "sync helper --dump failed"}
+
+
+def prepare_billing_tunnel_host(*, sync_reservation=None) -> dict:
+    """
+    Bring wg0 up on the VPS (when possible) and optionally re-apply one reservation
+    so Check now / Connect can reach the MikroTik tunnel IP from this host.
+    """
+    out: dict = {
+        "configured": configured(),
+        "on_tunnel": False,
+        "brought_up": False,
+        "bring_error": "",
+        "peer_reapplied": False,
+    }
+    if not configured():
+        return out
+    if not server_on_tunnel():
+        bring = _try_bring_up_interface()
+        out["brought_up"] = bool(bring.get("ok"))
+        out["bring_error"] = (
+            (bring.get("error") or bring.get("reason") or "").strip()
+        )
+        if not server_on_tunnel():
+            via_sync = _ensure_wg0_via_sync_helper()
+            if via_sync.get("ok"):
+                out["brought_up"] = True
+                out["bring_error"] = ""
+            elif via_sync.get("error") and not out["bring_error"]:
+                out["bring_error"] = via_sync["error"]
+    out["on_tunnel"] = server_on_tunnel()
+    if sync_reservation is not None and can_apply_server_peers():
+        label = getattr(sync_reservation, "label", None) or "MikroTik"
+        addr = (getattr(sync_reservation, "address", None) or "").strip()
+        public_key = (getattr(sync_reservation, "public_key", None) or "").strip()
+        if addr and public_key:
+            sync = apply_server_peer(label, addr, public_key)
+            out["peer_reapplied"] = bool(sync.get("ok"))
+            out["peer_sync"] = sync
+            reconcile_runtime_allowed_ips()
+    return out
+
+
+def hosted_wireguard_readiness() -> dict:
+    """
+    Checklist for hosted MikroTik onboarding — shown on the fleet page.
+    """
+    server = str(server_address())
+    endpoint = tunnel_endpoint()
+    hosted = bool(getattr(settings, "HOSTED", False))
+    items: list[dict[str, str]] = []
+    ready = True
+
+    if configured():
+        items.append(
+            {
+                "key": "config",
+                "status": "ok",
+                "label": "WireGuard settings",
+                "message": f"Endpoint {endpoint}",
+            }
+        )
+    else:
+        ready = False
+        items.append(
+            {
+                "key": "config",
+                "status": "fail",
+                "label": "WireGuard settings",
+                "message": "Set WIREGUARD_ENDPOINT and WIREGUARD_SERVER_PUBLIC_KEY in .env",
+            }
+        )
+
+    prep = prepare_billing_tunnel_host()
+    if prep.get("on_tunnel"):
+        msg = f"{server} is bound — billing server can dial tunnel IPs"
+        if prep.get("brought_up"):
+            msg += " (wg0 was started automatically)"
+        items.append(
+            {
+                "key": "wg0",
+                "status": "ok",
+                "label": "VPS tunnel (wg0)",
+                "message": msg,
+            }
+        )
+    else:
+        ready = False
+        hint = prep.get("bring_error") or (
+            f"Run: sudo wg-quick up {_wireguard_interface()} "
+            f"(or systemctl enable --now wg-quick@{_wireguard_interface()})"
+        )
+        items.append(
+            {
+                "key": "wg0",
+                "status": "fail",
+                "label": "VPS tunnel (wg0)",
+                "message": hint,
+            }
+        )
+
+    script_problem = _wireguard_sync_script_problem()
+    if can_apply_server_peers():
+        items.append(
+            {
+                "key": "peer_apply",
+                "status": "ok",
+                "label": "Register MikroTik peers",
+                "message": "Generate script can push peers onto wg0",
+            }
+        )
+    else:
+        ready = False
+        sync_cmd = (getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip()
+        if hosted and not sync_cmd:
+            msg = (
+                "Set WIREGUARD_SYNC_COMMAND so Django can update wg0, "
+                "or bind wg0 on this host."
+            )
+        else:
+            msg = (
+                prep.get("bring_error")
+                or "Cannot update wg0 from this process — fix wg0 or sync command"
+            )
+        items.append(
+            {
+                "key": "peer_apply",
+                "status": "fail",
+                "label": "Register MikroTik peers",
+                "message": msg,
+            }
+        )
+
+    if script_problem:
+        ready = False
+        items.append(
+            {
+                "key": "sync_script",
+                "status": "fail",
+                "label": "Sync helper script",
+                "message": script_problem,
+            }
+        )
+    elif can_apply_server_peers():
+        items.append(
+            {
+                "key": "sync_script",
+                "status": "ok",
+                "label": "Sync helper script",
+                "message": "WIREGUARD_SYNC_COMMAND looks usable (or wg runs locally)",
+            }
+        )
+
+    key_align = server_public_key_alignment()
+    if hosted and key_align.get("mismatch"):
+        ready = False
+        items.append(
+            {
+                "key": "server_public_key",
+                "status": "fail",
+                "label": "VPS public key in .env",
+                "message": key_align.get("fix_hint")
+                or ".env WIREGUARD_SERVER_PUBLIC_KEY does not match wg show wg0",
+            }
+        )
+    elif hosted and key_align.get("live_readable"):
+        items.append(
+            {
+                "key": "server_public_key",
+                "status": "ok",
+                "label": "VPS public key in .env",
+                "message": "Matches live wg0 — scripts use the same key as WireGuard",
+            }
+        )
+    elif hosted and configured():
+        ready = False
+        items.append(
+            {
+                "key": "server_public_key",
+                "status": "warn",
+                "label": "VPS public key in .env",
+                "message": key_align.get("fix_hint")
+                or "Could not verify .env key against live wg0",
+            }
+        )
+
+    if not hosted:
+        items.append(
+            {
+                "key": "hosted_flag",
+                "status": "warn",
+                "label": "Hosted mode",
+                "message": "DJANGO_HOSTED is false — LAN onboarding works; set true on the VPS",
+            }
+        )
+        ready = False
+    else:
+        items.append(
+            {
+                "key": "hosted_flag",
+                "status": "ok",
+                "label": "Hosted mode",
+                "message": "Remote onboarding uses tunnel IPs (not customer LAN)",
+            }
+        )
+
+    return {"ready": ready, "items": items, "prepared": prep}
+
+
 def ensure_tunnel_runtime() -> dict:
     """
     Refresh WireGuard whenever the app starts (local runserver or hosted WSGI).
@@ -2042,6 +2400,8 @@ def ensure_tunnel_runtime() -> dict:
     brought_up = False
     if not server_on_tunnel():
         brought_up = bool(_try_bring_up_interface().get("ok"))
+        if not server_on_tunnel():
+            brought_up = bool(_ensure_wg0_via_sync_helper().get("ok")) or brought_up
 
     if not can_apply_server_peers():
         logger.info(
@@ -2623,6 +2983,131 @@ def tunnel_verification_checks(
         }
     )
     return checks
+
+
+def extend_local_checks_with_vps_tunnel(
+    checks: list[dict[str, str]],
+    *,
+    reservation,
+    address: str = "",
+) -> tuple[list[dict[str, str]], dict]:
+    """
+    After the Winbox script is confirmed on LAN, add VPS peer + billing ping rows
+    (same story as the script's step 7 ping to 10.9.0.1).
+    """
+    address = (address or getattr(reservation, "address", None) or "").strip()
+    server = str(server_address())
+    diagnosis = ensure_reservation_peer(reservation)
+    code = (diagnosis.get("code") or "").strip()
+    diag_msg = (diagnosis.get("message") or "").strip()
+    peer = diagnosis.get("peer") or {}
+    sync = diagnosis.get("peer_sync") or {}
+    present = bool(peer.get("present") or sync.get("ok"))
+    fresh = _handshake_fresh(peer.get("handshake_age_sec"))
+    tunnel_live = fresh and _tunnel_host_reachable(address)
+
+    if code == "peer_missing" or (
+        peer.get("checked") and not peer.get("present") and not sync.get("ok")
+    ):
+        vps_status, vps_msg = (
+            "fail",
+            diag_msg or f"Missing on VPS wg0 — run wireguard_peer --sync-server ({address}/32)",
+        )
+        ping_status, ping_msg = (
+            "fail",
+            f"No path to billing server {server} — fix VPS peer first (Winbox ping 10.9.0.1 will fail)",
+        )
+    elif code == "keys_rotated":
+        vps_status, vps_msg = (
+            "warn",
+            diag_msg or "VPS keys refreshed — paste the latest Generate script again",
+        )
+        ping_status, ping_msg = (
+            "waiting",
+            f"Ping to {server} after re-pasting the script",
+        )
+    elif tunnel_live:
+        vps_status, vps_msg = (
+            "ok",
+            f"VPS peer {address}/32 — handshake {peer.get('handshake_age_sec')}s ago",
+        )
+        ping_status, ping_msg = (
+            "ok",
+            f"Billing tunnel live — router can reach {server} (matches Winbox ping OK)",
+        )
+    elif fresh and not _tunnel_host_reachable(address):
+        vps_status, vps_msg = (
+            "warn",
+            f"Handshake seen for {address}/32 but tunnel IP not answering from billing server yet",
+        )
+        ping_status, ping_msg = (
+            "fail",
+            f"Billing server cannot reach {address}:8728 yet — wait, then Check now",
+        )
+    elif present and not fresh:
+        vps_status, vps_msg = (
+            "warn",
+            diag_msg
+            or f"Peer {address}/32 on VPS — no WireGuard handshake (Winbox last-handshake empty)",
+        )
+        ping_status, ping_msg = (
+            "fail",
+            f"Router cannot ping {server} yet — run wireguard_peer --sync-server on VPS, wait ~30s",
+        )
+    elif not present:
+        vps_status, vps_msg = (
+            "fail",
+            diag_msg or f"VPS peer {address}/32 not registered — sync-server on VPS",
+        )
+        ping_status, ping_msg = (
+            "fail",
+            f"No tunnel to {server} until the VPS accepts this peer",
+        )
+    else:
+        vps_status, vps_msg = (
+            "waiting",
+            diag_msg or f"Waiting for MikroTik {address} to complete WireGuard handshake",
+        )
+        ping_status, ping_msg = (
+            "waiting",
+            f"Router ping to {server} pending — open UDP to VPS, then Check now",
+        )
+
+    checks = list(checks)
+    checks.extend(
+        [
+            {
+                "key": "vps_peer",
+                "status": vps_status,
+                "label": "VPS WireGuard peer",
+                "message": vps_msg,
+            },
+            {
+                "key": "billing_ping",
+                "status": ping_status,
+                "label": f"Ping billing server {server}",
+                "message": ping_msg,
+            },
+        ]
+    )
+    return checks, diagnosis
+
+
+def tunnel_status_verify_extras(diagnosis: dict | None) -> str:
+    """Short hint line for Verify UI (handshake / peer state)."""
+    if not diagnosis:
+        return ""
+    code = (diagnosis.get("code") or "").strip()
+    peer = diagnosis.get("peer") or {}
+    age = peer.get("handshake_age_sec")
+    parts: list[str] = []
+    if code:
+        parts.append(f"VPS state: {code.replace('_', ' ')}")
+    if age is not None:
+        parts.append(f"WireGuard handshake {age}s ago")
+    elif code == "no_handshake":
+        parts.append("No WireGuard handshake yet (router cannot reach 10.9.0.1)")
+    return " · ".join(parts)
 
 
 def peer_payload(
@@ -3549,6 +4034,116 @@ def server_peer_block(label: str, address: str, public_key: str) -> str:
             f"AllowedIPs = {address}/32",
         ]
     )
+
+
+def _server_private_key_file() -> Path:
+    raw = (
+        os.getenv("WIREGUARD_SERVER_PRIVATE_KEY_FILE")
+        or "/etc/wireguard/ispcentric-server.key"
+    ).strip()
+    return Path(raw)
+
+
+def bootstrap_server_wg0(
+    *,
+    private_key: str = "",
+    private_key_file: str = "",
+    sync_peers: bool = True,
+) -> dict:
+    """
+    Write /etc/wireguard/wg0.conf and bring wg0 up (VPS first boot / repair).
+
+    Must run as root. Private key from argument, private_key_file, or
+    WIREGUARD_SERVER_PRIVATE_KEY_FILE (default /etc/wireguard/ispcentric-server.key).
+    """
+    if os.name != "posix":
+        return {"ok": False, "error": "WireGuard server bootstrap requires Linux"}
+    if os.geteuid() != 0:
+        return {
+            "ok": False,
+            "error": "bootstrap_server_wg0 must run as root (sudo manage.py wireguard_peer --bootstrap-server)",
+        }
+    if not configured():
+        return {"ok": False, "error": "Set WIREGUARD_ENDPOINT and WIREGUARD_SERVER_PUBLIC_KEY in .env first"}
+
+    key = (private_key or "").strip()
+    path_hint = (private_key_file or "").strip()
+    if not key and path_hint:
+        path = Path(path_hint)
+        if path.is_file():
+            key = path.read_text(encoding="utf-8").strip()
+    if not key:
+        default_path = _server_private_key_file()
+        if default_path.is_file():
+            key = default_path.read_text(encoding="utf-8").strip()
+            path_hint = str(default_path)
+    if not key or not looks_like_wg_key(key):
+        return {
+            "ok": False,
+            "error": (
+                "Missing VPS WireGuard private key. Save it to "
+                f"{_server_private_key_file()} (chmod 600) or pass --private-key-file."
+            ),
+        }
+
+    derived_pub = public_key_for(key)
+    try:
+        configured_pub = _server_public_key()
+    except ValueError:
+        configured_pub = ""
+    if configured_pub and configured_pub != derived_pub:
+        return {
+            "ok": False,
+            "error": (
+                "Private key does not match WIREGUARD_SERVER_PUBLIC_KEY in .env. "
+                f".env has {configured_pub[:12]}… but this key is {derived_pub[:12]}…"
+            ),
+        }
+
+    conf_path = Path(_wireguard_conf_path())
+    conf_path.parent.mkdir(parents=True, exist_ok=True)
+    conf_text = server_config(key)
+    conf_path.write_text(conf_text, encoding="utf-8")
+    os.chmod(conf_path, 0o600)
+
+    iface = _wireguard_interface()
+    wg_quick = shutil.which("wg-quick") or "/usr/bin/wg-quick"
+    try:
+        subprocess.run(
+            [wg_quick, "down", iface],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        proc = subprocess.run(
+            [wg_quick, "up", iface],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        err = (proc.stderr or proc.stdout or "").strip()
+        if proc.returncode != 0 and "already" not in err.lower():
+            return {"ok": False, "error": err or f"wg-quick up {iface} failed"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+    out: dict = {
+        "ok": True,
+        "conf_path": str(conf_path),
+        "interface": iface,
+        "public_key": derived_pub,
+        "private_key_file": path_hint or str(_server_private_key_file()),
+    }
+    if sync_peers and can_apply_server_peers():
+        sync = sync_all_server_peers()
+        out["peer_sync"] = sync
+        out["synced"] = int(sync.get("synced") or 0)
+        if sync.get("errors"):
+            out["ok"] = False
+            out["error"] = "; ".join(sync["errors"][:3])
+    return out
 
 
 def server_config(private_key: str) -> str:

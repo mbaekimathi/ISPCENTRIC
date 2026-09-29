@@ -59,6 +59,27 @@ class Command(BaseCommand):
             help="Apply every known peer to the local WireGuard interface (VPS).",
         )
         parser.add_argument(
+            "--bootstrap-server",
+            action="store_true",
+            help=(
+                "Write /etc/wireguard/wg0.conf from the VPS private key file and "
+                "bring wg0 up (run as root on first deploy)."
+            ),
+        )
+        parser.add_argument(
+            "--verify-server-key",
+            action="store_true",
+            help=(
+                "Compare WIREGUARD_SERVER_PUBLIC_KEY in .env with live wg0; exit 1 on mismatch."
+            ),
+        )
+        parser.add_argument(
+            "--private-key-file",
+            metavar="PATH",
+            default="",
+            help="Private key file for --bootstrap-server (default: /etc/wireguard/ispcentric-server.key).",
+        )
+        parser.add_argument(
             "--server-config",
             metavar="PRIVATE_KEY",
             help="Print /etc/wireguard/wg0.conf containing all known peers.",
@@ -67,6 +88,51 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if options["server_keys"]:
             self._server_keys()
+            return
+
+        if options["verify_server_key"]:
+            align = wireguard.server_public_key_alignment()
+            configured = (align.get("configured") or "").strip()
+            live = (align.get("live") or "").strip()
+            script_key = (align.get("script_key") or "").strip()
+            if align.get("error"):
+                raise CommandError(align["error"])
+            self.stdout.write(f"  .env : {configured}")
+            self.stdout.write(f"  wg0  : {live or '(unreadable)'}")
+            self.stdout.write(f"  script embeds : {script_key}")
+            if align.get("mismatch"):
+                raise CommandError(
+                    align.get("fix_hint")
+                    or "WIREGUARD_SERVER_PUBLIC_KEY does not match live wg0."
+                )
+            if not live:
+                self.stdout.write(
+                    self.style.WARNING(
+                        "Could not read live wg0 — fix WIREGUARD_SYNC_COMMAND / sudoers."
+                    )
+                )
+            else:
+                self.stdout.write(self.style.SUCCESS("Server public key matches live wg0."))
+            return
+
+        if options["bootstrap_server"]:
+            outcome = wireguard.bootstrap_server_wg0(
+                private_key_file=(options.get("private_key_file") or "").strip(),
+            )
+            if not outcome.get("ok"):
+                raise CommandError(outcome.get("error") or "WireGuard server bootstrap failed.")
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"WireGuard server ready on {outcome.get('interface')} "
+                    f"({outcome.get('conf_path')})."
+                )
+            )
+            synced = int(outcome.get("synced") or 0)
+            if synced:
+                self.stdout.write(self.style.SUCCESS(f"Synced {synced} peer(s) to wg0."))
+            peer_sync = outcome.get("peer_sync") or {}
+            for err in peer_sync.get("errors") or []:
+                self.stdout.write(self.style.WARNING(err))
             return
 
         if options["sync_server"]:
@@ -170,7 +236,14 @@ class Command(BaseCommand):
         self.stdout.write("Put the public key in .env so router scripts can use it:")
         self.stdout.write(f"  WIREGUARD_SERVER_PUBLIC_KEY={public_key}")
         self.stdout.write("")
-        self.stdout.write("Keep the private key for /etc/wireguard/wg0.conf only:")
+        self.stdout.write("Keep the private key on the VPS only (never commit it):")
+        self.stdout.write(
+            f"  echo '{private_key}' | sudo tee /etc/wireguard/ispcentric-server.key"
+        )
+        self.stdout.write("  sudo chmod 600 /etc/wireguard/ispcentric-server.key")
+        self.stdout.write("  sudo python manage.py wireguard_peer --bootstrap-server")
+        self.stdout.write("")
+        self.stdout.write("Or build wg0.conf manually:")
         self.stdout.write(
             f"  python manage.py wireguard_peer --server-config '{private_key}'"
         )

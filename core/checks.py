@@ -75,6 +75,28 @@ def check_hosted_wireguard(app_configs, **kwargs):
             )
         )
 
+    from core.wireguard import server_public_key_alignment
+
+    align = server_public_key_alignment()
+    if align.get("mismatch"):
+        errors.append(
+            Error(
+                "WIREGUARD_SERVER_PUBLIC_KEY in .env does not match the live wg0 "
+                "public key. MikroTik scripts now use live wg0, but fix .env so "
+                "monitoring and docs stay aligned: "
+                + (align.get("fix_hint") or "compare wg show wg0 with .env"),
+                id="core.E003",
+            )
+        )
+    elif not align.get("live_readable") and (getattr(settings, "WIREGUARD_SYNC_COMMAND", "") or "").strip():
+        warnings.append(
+            Warning(
+                "Could not read live wg0 public-key to validate .env (check "
+                "WIREGUARD_SYNC_COMMAND sudoers). Scripts may fall back to .env only.",
+                id="core.W004",
+            )
+        )
+
     return errors + warnings
 
 

@@ -58,6 +58,45 @@
     </div>
   </div>
 
+  {% if hosted_readiness %}
+  <section
+    class="mikrotik-hosted-readiness ops-panel{% if hosted_readiness.ready %} is-ready{% endif %}"
+    id="mikrotik-hosted-readiness"
+    aria-labelledby="mikrotik-hosted-readiness-title"
+  >
+    <header class="mikrotik-hosted-readiness-head">
+      <div>
+        <h2 class="mikrotik-hosted-readiness-title" id="mikrotik-hosted-readiness-title">Hosted onboarding readiness</h2>
+        <p class="mikrotik-hosted-readiness-lead">
+          On the VPS, billing reaches MikroTik routers only over WireGuard (<code>10.9.x</code>). Fix red items before remote Connect.
+        </p>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="mikrotik-hosted-readiness-refresh">Recheck VPS</button>
+    </header>
+    <ul class="mikrotik-hosted-readiness-list" id="mikrotik-hosted-readiness-list">
+      {% for item in hosted_readiness.items %}
+        <li class="mikrotik-hosted-readiness-item is-{{ item.status }}" data-readiness-key="{{ item.key }}">
+          <span class="mikrotik-hosted-readiness-dot" aria-hidden="true"></span>
+          <span class="mikrotik-hosted-readiness-body">
+            <strong>{{ item.label }}</strong>
+            <span>{{ item.message }}</span>
+          </span>
+        </li>
+      {% endfor %}
+    </ul>
+    {% if not hosted_readiness.ready %}
+      <p class="mikrotik-hosted-readiness-foot">
+        On the VPS:
+        <code>sudo wg-quick up wg0</code>,
+        <code>python manage.py wireguard_peer --sync-server</code>,
+        then Generate script → Winbox paste → Check now → Connect using the <strong>tunnel IP</strong>.
+      </p>
+    {% else %}
+      <p class="mikrotik-hosted-readiness-foot is-ok">VPS is ready to reach MikroTik tunnel IPs — proceed with Connect router.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
   <section class="mikrotik-fleet ops-panel">
     {% if routers %}
       <div class="mikrotik-fleet-toolbar">
@@ -539,6 +578,7 @@
 
     <form method="post" action="{% url 'core:mikrotik' %}" class="mikrotik-onboard-form" id="mikrotik-onboard-form" data-no-page-loader="1" novalidate>
       {% csrf_token %}
+      <input type="hidden" name="onboarding_session_token" id="id_mikrotik_onboarding_session_token" value="">
       {{ onboard_form.location_lat }}
       {{ onboard_form.location_lng }}
       {{ onboard_form.place_id }}
@@ -548,6 +588,10 @@
       <input type="hidden" name="wifi_mode" id="id_mikrotik_wifi_mode" value="{{ request.POST.wifi_mode|default:'' }}">
 
       <div class="mikrotik-onboard-scroll">
+        <div class="mikrotik-onboard-process" id="mikrotik-onboard-process" hidden aria-live="polite">
+          <p class="mikrotik-onboard-process-heading">Onboarding progress</p>
+          <ul class="mikrotik-onboard-process-list" id="mikrotik-onboard-process-list"></ul>
+        </div>
         <section class="mikrotik-step" id="mikrotik-step-connect" data-step="connect">
           <div
             class="mikrotik-tunnel-card{% if not wireguard_ready %} is-optional{% endif %}"
@@ -702,7 +746,7 @@
                   <div class="mikrotik-tunnel-step-body">
                     <div class="mikrotik-tunnel-step-head">
                       <h3 class="mikrotik-tunnel-step-title">Verify connection</h3>
-                      <p class="mikrotik-tunnel-step-desc">Green = good · Red = fix that item · then Check now.</p>
+                      <p class="mikrotik-tunnel-step-desc">Live updates every few seconds · Green = good · Red = fix · Check now forces a refresh.</p>
                     </div>
                     <div class="mikrotik-tunnel-check-panel">
                       <div class="mikrotik-tunnel-verify-banner is-waiting" id="mikrotik-tunnel-verify-banner" role="status" aria-live="polite">
@@ -713,6 +757,16 @@
                         </div>
                       </div>
                       <ul class="mikrotik-tunnel-checklist is-compact" id="mikrotik-tunnel-checklist" aria-live="polite" hidden></ul>
+                      <div class="mikrotik-verify-outcome" id="mikrotik-verify-outcome" hidden>
+                        <div class="mikrotik-verify-outcome-col is-ok">
+                          <p class="mikrotik-verify-outcome-heading">Worked</p>
+                          <ul class="mikrotik-verify-outcome-list" id="mikrotik-verify-passed-list"></ul>
+                        </div>
+                        <div class="mikrotik-verify-outcome-col is-fail">
+                          <p class="mikrotik-verify-outcome-heading">Still needs fix</p>
+                          <ul class="mikrotik-verify-outcome-list" id="mikrotik-verify-failed-list"></ul>
+                        </div>
+                      </div>
                       <p class="mikrotik-tunnel-verify-hint" id="mikrotik-tunnel-verify-hint" hidden></p>
                       <div class="mikrotik-tunnel-check-row is-compact">
                         <span class="mikrotik-tunnel-check is-waiting" id="mikrotik-tunnel-check" hidden>
@@ -1070,6 +1124,9 @@
   var tunnelCheckLabel = document.getElementById("mikrotik-tunnel-check-label");
   var tunnelCheckDetail = document.getElementById("mikrotik-tunnel-check-detail");
   var tunnelChecklist = document.getElementById("mikrotik-tunnel-checklist");
+  var verifyOutcomePanel = document.getElementById("mikrotik-verify-outcome");
+  var verifyPassedList = document.getElementById("mikrotik-verify-passed-list");
+  var verifyFailedList = document.getElementById("mikrotik-verify-failed-list");
   var tunnelVerifyBanner = document.getElementById("mikrotik-tunnel-verify-banner");
   var tunnelVerifyTitle = document.getElementById("mikrotik-tunnel-verify-title");
   var tunnelVerifySub = document.getElementById("mikrotik-tunnel-verify-sub");
@@ -1080,6 +1137,8 @@
   var tunnelPeerSyncRequired = false;
   var tunnelReadyAddress = "";
   var tunnelStatusToken = "";
+  var onboardingSessionToken = "";
+  var onboardingSessionInput = document.getElementById("id_mikrotik_onboarding_session_token");
   var tunnelStatusTimer = null;
   var tunnelStatusInFlight = false;
   var tunnelApiReady = false;
@@ -1094,8 +1153,189 @@
   var discoveredDevices = [];
   var latestSuggestions = [];
   var connected = false;
+  var connectAuthCooldownUntil = 0;
+  var connectAuthCooldownTimer = null;
+  var connectInFlight = false;
   var ONBOARD_DRAFT_KEY = "ispcentric.mikrotik.onboard.draft";
   var draftSaveTimer = null;
+  var onboardProcessPanel = document.getElementById("mikrotik-onboard-process");
+  var onboardProcessList = document.getElementById("mikrotik-onboard-process-list");
+  var onboardProcessState = {};
+
+  var ONBOARD_PROCESS_DEF = [
+    { key: "session", label: "Billing session", tunnel: true },
+    { key: "peer", label: "VPS WireGuard peer", tunnel: true },
+    { key: "script", label: "Winbox script", tunnel: true },
+    { key: "verify", label: "Tunnel & API verify", tunnel: true },
+    { key: "connect", label: "Router login (API)", tunnel: false },
+    { key: "save", label: "Register router", tunnel: false }
+  ];
+
+  function resetOnboardProcess() {
+    onboardProcessState = {};
+    ONBOARD_PROCESS_DEF.forEach(function (def) {
+      if (def.tunnel && !wireguardReady) {
+        onboardProcessState[def.key] = { status: "skip", message: "LAN-only path" };
+      } else {
+        onboardProcessState[def.key] = { status: "waiting", message: "" };
+      }
+    });
+    renderOnboardProcess();
+  }
+
+  function setOnboardProcessStep(key, status, message) {
+    if (!onboardProcessState[key]) return;
+    onboardProcessState[key] = {
+      status: status || "waiting",
+      message: message != null ? String(message) : ""
+    };
+    renderOnboardProcess();
+  }
+
+  function renderOnboardProcess() {
+    if (!onboardProcessList) return;
+    var html = [];
+    ONBOARD_PROCESS_DEF.forEach(function (def) {
+      var st = onboardProcessState[def.key] || { status: "waiting", message: "" };
+      if (st.status === "skip") return;
+      var msg = (st.message || "").trim();
+      html.push(
+        '<li class="mikrotik-onboard-process-item is-' + escapeHtml(st.status) + '" data-process="' + def.key + '">' +
+          '<span class="mikrotik-onboard-process-icon" aria-hidden="true"></span>' +
+          '<span class="mikrotik-onboard-process-body">' +
+            '<span class="mikrotik-onboard-process-label">' + escapeHtml(def.label) + "</span>" +
+            (msg ? '<span class="mikrotik-onboard-process-msg">' + escapeHtml(msg) + "</span>" : "") +
+          "</span></li>"
+      );
+    });
+    onboardProcessList.innerHTML = html.join("");
+    if (onboardProcessPanel) onboardProcessPanel.hidden = html.length === 0;
+  }
+
+  function applyGenerateProcessFromData(data) {
+    if (!data) return;
+    if (data.session_token) {
+      setOnboardProcessStep("session", "ok", "Server session active — use latest Generate if you restart");
+    } else {
+      setOnboardProcessStep("session", "warn", "No session token — Connect may fail");
+    }
+    if (data.peer_sync_required && !data.peer_synced) {
+      setOnboardProcessStep(
+        "peer",
+        "fail",
+        data.peer_sync_error || data.peer_sync_hint || "Peer not on wg0 yet"
+      );
+    } else if (data.peer_synced) {
+      setOnboardProcessStep("peer", "ok", "Registered on billing server");
+    } else if (data.peer_sync_skipped) {
+      setOnboardProcessStep("peer", "warn", data.peer_sync_reason || "Sync skipped — Check now will retry");
+    } else {
+      setOnboardProcessStep("peer", "ok", "Peer ready");
+    }
+    var addr = (data.address || "").trim();
+    setOnboardProcessStep(
+      "script",
+      "ok",
+      addr ? "Tunnel " + addr + " — paste in Winbox" : "Script ready — paste in Winbox"
+    );
+    setOnboardProcessStep("verify", "waiting", "Paste script, then Check now");
+    setOnboardProcessStep("connect", "waiting", "After verify passes");
+    setOnboardProcessStep("save", "waiting", "After Connect");
+  }
+
+  function applyVerifyProcessFromChecks(checks, data) {
+    data = data || {};
+    if (data.keys_rotated) {
+      setOnboardProcessStep("peer", "ok", "Keys rotated on VPS — paste new script");
+      setOnboardProcessStep("script", "warn", "Script refreshed — paste again in Winbox");
+      setOnboardProcessStep("verify", "waiting", "Re-paste, then Check now");
+      return;
+    }
+    var summary = summarizeChecks(checks || []);
+    if (data.ready) {
+      setOnboardProcessStep("verify", "ok", data.message || summary.title || "Ready to Connect");
+      setOnboardProcessStep("connect", "waiting", "Enter credentials below");
+      return;
+    }
+    if (summary.state === "error") {
+      setOnboardProcessStep(
+        "verify",
+        "fail",
+        summary.hint || summary.title || "Fix failed checks"
+      );
+      return;
+    }
+    if (summary.state === "ready") {
+      setOnboardProcessStep("verify", "ok", summary.title || "Checks passed");
+      return;
+    }
+    if (summary.state === "warn") {
+      setOnboardProcessStep(
+        "verify",
+        "warn",
+        summary.hint || summary.title || "Review warnings"
+      );
+      return;
+    }
+    var verifyMsg =
+      summary.state === "waiting" && summary.sub
+        ? summary.title + " · " + summary.sub
+        : summary.hint || summary.sub || summary.title || "Waiting for router";
+    setOnboardProcessStep(
+      "verify",
+      summary.state === "checking" ? "checking" : "waiting",
+      verifyMsg
+    );
+  }
+
+  function syncProcessFromFormErrors() {
+    var errEl =
+      document.querySelector("#mikrotik-onboard-form .field-error") ||
+      document.querySelector("#mikrotik-onboard-form .errorlist li");
+    if (errEl) {
+      var errText = (errEl.textContent || "").trim();
+      if (connected) {
+        setOnboardProcessStep("save", "fail", errText);
+        if (onboardProcessState.connect && onboardProcessState.connect.status === "ok") {
+          /* keep connect ok */
+        } else {
+          setOnboardProcessStep("connect", "ok", "Login succeeded earlier");
+        }
+      } else if (errText) {
+        setOnboardProcessStep("save", "fail", errText);
+      }
+    }
+  }
+
+  function rehydrateOnboardProcessFromUiState() {
+    syncProcessFromFormErrors();
+    if (tunnelScriptText && wireguardReady) {
+      applyGenerateProcessFromData({
+        session_token: onboardingSessionToken,
+        address: tunnelReadyAddress,
+        peer_synced: !tunnelPeerSyncRequired,
+        peer_sync_required: tunnelPeerSyncRequired
+      });
+    } else if (onboardingSessionToken) {
+      setOnboardProcessStep("session", "ok", "Session token present");
+    }
+    if (tunnelApiReady) {
+      applyVerifyProcessFromChecks([], { ready: true, message: "Verified earlier" });
+    } else if (window._lastTunnelStatusData && wireguardReady) {
+      applyVerifyProcessFromChecks(
+        window._lastTunnelStatusData.checks || [],
+        window._lastTunnelStatusData
+      );
+    }
+    if (connected) {
+      setOnboardProcessStep("connect", "ok", "Connected — ready to register");
+      if (!onboardProcessState.save || onboardProcessState.save.status === "waiting") {
+        setOnboardProcessStep("save", "waiting", "Complete the form and tap Onboard router");
+      }
+    } else if (!wireguardReady) {
+      setOnboardProcessStep("connect", "waiting", "Select IP and Connect");
+    }
+  }
 
   function draftStorage() {
     try {
@@ -1293,6 +1533,17 @@
     if (tunnelVerifySub) tunnelVerifySub.textContent = sub || "";
   }
 
+  function liveVerifySubSuffix() {
+    if (!tunnelStatusTimer) return "";
+    try {
+      var d = new Date();
+      var t = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      return " · Live · " + t;
+    } catch (err) {
+      return " · Live";
+    }
+  }
+
   function setVerifyHint(text) {
     if (!tunnelVerifyHint) return;
     if (!text) {
@@ -1335,6 +1586,44 @@
         hint: CHECK_FAIL_HINTS[failed[0].key] || failed[0].message || "Fix red items, then Check now"
       };
     }
+    if (waiting.length && okCount > 0) {
+      var pendingKeys = waiting.map(function (item) { return item.key; });
+      var onlyWinboxPending =
+        waiting.length === 1 && pendingKeys[0] === "wireguard";
+      var onlyScriptPending = waiting.every(function (item) {
+        return item.key === "wireguard" || item.key === "tunnel";
+      });
+      var pendingTitle = onlyWinboxPending
+        ? "Waiting for Winbox script"
+        : waiting.length === 1
+          ? (CHECK_SHORT_LABELS[waiting[0].key] || waiting[0].label || "Check") + " not done yet"
+          : waiting.length + " checks still pending";
+      var pendingHint =
+        (waiting[0].message && String(waiting[0].message).trim()) ||
+        CHECK_FAIL_HINTS[waiting[0].key] ||
+        (onlyScriptPending
+          ? "Finish the Winbox script, then Check now"
+          : "Complete pending items, then Check now");
+      return {
+        state: "waiting",
+        title: pendingTitle,
+        sub: okCount + " of " + checks.length + " passed",
+        hint: pendingHint
+      };
+    }
+    var billingFail = checks.filter(function (item) {
+      return item.key === "billing_ping" && item.status === "fail";
+    });
+    if (billingFail.length && !failed.length && okCount > 0) {
+      return {
+        state: "warn",
+        title: "LAN ready — billing tunnel not up",
+        sub: okCount + " of " + checks.length + " passed",
+        hint:
+          billingFail[0].message ||
+          "Fix VPS WireGuard handshake (Winbox [ISPCENTRIC FAIL] ping line)"
+      };
+    }
     if (!waiting.length && okCount + warned.length === checks.length) {
       if (warned.length) {
         return {
@@ -1344,19 +1633,72 @@
           hint: "Review yellow items, then Check now"
         };
       }
+      var allOk = checks.every(function (item) { return item.status === "ok"; });
       return {
         state: "ready",
-        title: "All checks passed",
-        sub: "Ready to Connect",
-        hint: "Use the tunnel IP below"
+        title: allOk ? "All checks passed" : "Ready to Connect on LAN",
+        sub: allOk ? "Ready to Connect" : "Remote tunnel checks still pending",
+        hint: allOk ? "Use the tunnel IP below" : "Connect with LAN IP — fix billing tunnel for 10.9.x later"
       };
     }
     return {
-      state: waiting.length ? "waiting" : "checking",
+      state: "checking",
       title: "Checking connection…",
-      sub: okCount + " of " + checks.length + " passed",
-      hint: waiting.length ? "Finish the Winbox script, then Check now" : ""
+      sub: okCount ? okCount + " of " + checks.length + " passed so far" : "Running checks…",
+      hint: ""
     };
+  }
+
+  function syncVerifyCompactChrome(checks) {
+    var hasGrid = !!(checks && checks.length);
+    if (tunnelCheck) tunnelCheck.hidden = hasGrid;
+    if (tunnelCheckDetail) {
+      tunnelCheckDetail.hidden = hasGrid;
+      tunnelCheckDetail.setAttribute("aria-hidden", hasGrid ? "true" : "false");
+    }
+  }
+
+  function renderVerifyOutcomeLists(checks) {
+    if (!verifyOutcomePanel || !verifyPassedList || !verifyFailedList) return;
+    if (!checks || !checks.length) {
+      verifyOutcomePanel.hidden = true;
+      verifyPassedList.innerHTML = "";
+      verifyFailedList.innerHTML = "";
+      return;
+    }
+    var passed = [];
+    var failed = [];
+    checks.forEach(function (item) {
+      var status = item.status || "waiting";
+      var label = CHECK_SHORT_LABELS[item.key] || item.label || "Check";
+      var detail = (item.message || "").trim();
+      var line =
+        "<li><strong>" + escapeHtml(label) + "</strong>" +
+        (detail ? "<span>" + escapeHtml(detail) + "</span>" : "") +
+        "</li>";
+      if (status === "ok") passed.push(line);
+      else if (status === "fail" || status === "warn" || status === "waiting") failed.push(line);
+    });
+    verifyPassedList.innerHTML = passed.join("");
+    verifyFailedList.innerHTML = failed.join("");
+    verifyOutcomePanel.hidden = !(passed.length || failed.length);
+    var failCol = verifyOutcomePanel.querySelector(".mikrotik-verify-outcome-col.is-fail");
+    if (failCol) failCol.hidden = failed.length === 0;
+    var okCol = verifyOutcomePanel.querySelector(".mikrotik-verify-outcome-col.is-ok");
+    if (okCol) okCol.hidden = passed.length === 0;
+  }
+
+  function syncTunnelStep4Visibility() {
+    if (!tunnelStepIp) return;
+    var show = !!(tunnelReadyAddress && (tunnelApiReady || localModeReady));
+    tunnelStepIp.hidden = !show;
+    if (!show && tunnelCard) {
+      var step4 = tunnelCard.querySelector('[data-tunnel-step="4"]');
+      if (step4) {
+        step4.classList.remove("is-active", "is-done");
+      }
+      syncTunnelRail();
+    }
   }
 
   function setCheckNowSecondary(ready) {
@@ -1421,6 +1763,7 @@
         tunnelUseIp.disabled = false;
         tunnelUseIp.textContent = "Continue to login";
       }
+      syncTunnelStep4Visibility();
       return;
     }
     if (tunnelStepIpTitle) tunnelStepIpTitle.textContent = "Use the tunnel IP";
@@ -1438,6 +1781,7 @@
       tunnelUseIp.disabled = !tunnelApiReady;
       tunnelUseIp.textContent = "Use this IP to Connect";
     }
+    syncTunnelStep4Visibility();
   }
 
   function resetStep4IpCopy() {
@@ -1457,34 +1801,65 @@
       tunnelUseIp.disabled = true;
       tunnelUseIp.textContent = "Use this IP to Connect";
     }
+    syncTunnelStep4Visibility();
   }
 
-  function renderTunnelChecks(checks) {
+  function mergeVerifyHint(summaryHint, data) {
+    var parts = [(summaryHint || "").trim()];
+    if (data && data.verify_extras) parts.push(String(data.verify_extras).trim());
+    else if (data) {
+      if (data.peer_state) parts.push("VPS state: " + String(data.peer_state).replace(/_/g, " "));
+      if (data.handshake_age_sec != null && data.handshake_age_sec !== "") {
+        parts.push("WireGuard handshake " + data.handshake_age_sec + "s ago");
+      } else if (data.peer_state === "no_handshake") {
+        parts.push("No WireGuard handshake yet");
+      }
+    }
+    return parts.filter(Boolean).join(" · ");
+  }
+
+  function renderTunnelChecks(checks, statusData) {
+    statusData = statusData || window._lastTunnelStatusData || {};
     if (!tunnelChecklist) return;
     var summary = summarizeChecks(checks);
-    setVerifyBanner(summary.state, summary.title, summary.sub);
-    setVerifyHint(summary.hint);
+    var verifySub = summary.sub || "";
+    if (tunnelStatusTimer) verifySub += liveVerifySubSuffix();
+    setVerifyBanner(summary.state, summary.title, verifySub);
+    setVerifyHint(mergeVerifyHint(summary.hint, statusData));
     if (!checks || !checks.length) {
       tunnelChecklist.hidden = true;
       tunnelChecklist.innerHTML = "";
+      syncVerifyCompactChrome(null);
+      renderVerifyOutcomeLists(null);
       return;
     }
     tunnelChecklist.hidden = false;
+    var STATUS_WORD = { ok: "Passed", fail: "Failed", warn: "Warning", waiting: "Pending" };
     tunnelChecklist.innerHTML = checks.map(function (item) {
       var status = item.status || "waiting";
       var label = escapeHtml(CHECK_SHORT_LABELS[item.key] || item.label || "Check");
-      var showDetail = status === "fail" || status === "warn";
-      var detail = showDetail
-        ? escapeHtml(CHECK_FAIL_HINTS[item.key] || item.message || "")
-        : "";
+      var detail = "";
+      if (status === "fail" || status === "warn") {
+        detail = escapeHtml(CHECK_FAIL_HINTS[item.key] || item.message || "");
+      } else if (status === "ok" && item.message) {
+        detail = escapeHtml(item.message);
+      } else if (status === "waiting" && item.message) {
+        detail = escapeHtml(item.message);
+      }
+      var badge = STATUS_WORD[status] || status;
       return (
-        '<li class="mikrotik-tunnel-checklist-item is-' + status + '">' +
+        '<li class="mikrotik-tunnel-checklist-item is-' + status + '" data-check-key="' + escapeHtml(item.key || "") + '">' +
           '<span class="mikrotik-tunnel-checklist-dot" aria-hidden="true"></span>' +
-          '<span class="mikrotik-tunnel-checklist-label">' + label + "</span>" +
-          (detail ? '<span class="mikrotik-tunnel-checklist-message">' + detail + "</span>" : "") +
-        "</li>"
+          '<span class="mikrotik-tunnel-checklist-body">' +
+            '<span class="mikrotik-tunnel-checklist-label">' + label +
+              ' <span class="mikrotik-tunnel-checklist-badge is-' + status + '">' + badge + "</span></span>" +
+            (detail ? '<span class="mikrotik-tunnel-checklist-message">' + detail + "</span>" : "") +
+          "</span></li>"
       );
     }).join("");
+    syncVerifyCompactChrome(checks);
+    renderVerifyOutcomeLists(checks);
+    applyVerifyProcessFromChecks(checks, window._lastTunnelStatusData || {});
   }
 
   function setTunnelStatus(text, isError) {
@@ -1629,6 +2004,17 @@
     return connected ? "onboard" : "connect";
   }
 
+  function syncOnboardingSessionTokenField() {
+    var value = onboardingSessionToken || tunnelStatusToken || "";
+    if (onboardingSessionInput) onboardingSessionInput.value = value;
+  }
+
+  function setOnboardingSessionToken(token) {
+    onboardingSessionToken = (token || "").trim();
+    if (onboardingSessionToken) tunnelStatusToken = onboardingSessionToken;
+    syncOnboardingSessionTokenField();
+  }
+
   function collectOnboardDraft() {
     return {
       step: currentOnboardStep(),
@@ -1636,6 +2022,7 @@
       tunnelScript: tunnelScriptText || "",
       reservedTunnelAddress: tunnelReadyAddress || "",
       tunnelStatusToken: tunnelStatusToken || "",
+      onboardingSessionToken: onboardingSessionToken || "",
       tunnelApiReady: !!tunnelApiReady,
       tunnelStatusMessage: tunnelStatusMessage || "",
       tunnelStatusIsError: !!tunnelStatusIsError,
@@ -1763,6 +2150,11 @@
     }
     if (usernameOnboard && data.usernameOnboard != null) usernameOnboard.value = data.usernameOnboard;
     if (passwordOnboard && data.passwordOnboard != null) passwordOnboard.value = data.passwordOnboard;
+    if (data.onboardingSessionToken) {
+      setOnboardingSessionToken(data.onboardingSessionToken);
+    } else if (data.tunnelStatusToken) {
+      setOnboardingSessionToken(data.tunnelStatusToken);
+    }
 
     if (data.tunnelScript) {
       showTunnelScript({
@@ -1858,6 +2250,7 @@
 
   function showTunnelScript(data, options) {
     options = options || {};
+    if (data && data.ok !== false) applyGenerateProcessFromData(data);
     tunnelScriptText = (data && data.script) || "";
     tunnelReadyAddress = (data && data.address) || "";
     if (data && data.lan_address) {
@@ -1869,7 +2262,9 @@
     } else {
       autoFillDiscoveredHost(true);
     }
-    tunnelStatusToken = (data && data.status_token) || "";
+    setOnboardingSessionToken(
+      (data && (data.session_token || data.status_token)) || ""
+    );
     syncTunnelAddressField();
     if (!options.resume) tunnelApiReady = false;
     if (tunnelScript) tunnelScript.textContent = tunnelScriptText;
@@ -1885,14 +2280,10 @@
     }
     if (tunnelStepScript) tunnelStepScript.hidden = !tunnelScriptText;
     if (tunnelStepCheck) tunnelStepCheck.hidden = !tunnelScriptText;
-    if (tunnelStepIp) tunnelStepIp.hidden = !tunnelReadyAddress;
     if (!options.resume) {
       resetStep4IpCopy();
       setConnectCredentialsVisible(false);
-      if (tunnelAddress && tunnelReadyAddress) {
-        tunnelAddress.textContent = "Tunnel IP: " + tunnelReadyAddress;
-      }
-    } else if (tunnelAddress && tunnelReadyAddress && !localModeReady) {
+    } else if (tunnelAddress && tunnelReadyAddress && !localModeReady && (tunnelApiReady || localModeReady)) {
       tunnelAddress.textContent = "Tunnel IP: " + tunnelReadyAddress;
     }
     if (!options.resume) {
@@ -1920,28 +2311,46 @@
         );
         startTunnelStatusPolling();
       } else {
-        setTunnelCheckState("waiting", "Waiting for the script to be pasted…", false, false);
-        setVerifyBanner("waiting", "Waiting for script", "Paste in Winbox first");
-        setVerifyHint("");
-        if (data && data.hint) setTunnelStatus(data.hint, false);
+        markTunnelStep(3, "active");
+        setTunnelCheckState("waiting", "Live verify — paste script in Winbox when ready", false, false);
+        setVerifyBanner("checking", "Live verify", "Checking every few seconds · paste script in Winbox");
+        setVerifyHint("Copy script → Winbox → New Terminal → paste. Passed and failed items update here automatically.");
+        if (data && data.server_public_key_env_mismatch) {
+          setTunnelStatus(
+            (data.hint || "Fix WIREGUARD_SERVER_PUBLIC_KEY in .env on the VPS.") +
+              " This script uses the live wg0 key so MikroTik can handshake.",
+            true
+          );
+          setVerifyHint(
+            "VPS .env key typo — update .env to match sudo wg show wg0, restart ispcentric. " +
+              "Re-paste this script if an older paste used the wrong VPS key."
+          );
+        } else if (data && data.hint) setTunnelStatus(data.hint, false);
         else if (tunnelReadyAddress) {
-          setTunnelStatus("Script ready. Copy it, paste in Winbox, wait for “ispcentric OK”, then Connect.", false);
+          setTunnelStatus("Script ready. Copy it, paste in Winbox — verify updates live below.", false);
         } else {
           setTunnelStatus(tunnelStatusMessage, tunnelStatusIsError);
         }
+        startTunnelStatusPolling();
       }
     } else {
       setTunnelStatus(tunnelStatusMessage, tunnelStatusIsError);
     }
+    syncTunnelStep4Visibility();
     if (!options.skipSave) saveOnboardDraft();
   }
 
   function clearTunnelScript() {
+    if (wireguardReady) {
+      setOnboardProcessStep("script", "waiting", "");
+      setOnboardProcessStep("verify", "waiting", "");
+      setOnboardProcessStep("peer", "waiting", "");
+    }
     tunnelScriptText = "";
     tunnelServerPeerText = "";
     tunnelPeerSyncRequired = false;
     tunnelReadyAddress = "";
-    tunnelStatusToken = "";
+    setOnboardingSessionToken("");
     tunnelApiReady = false;
     setScriptAssignedLan("");
     stopTunnelStatusPolling();
@@ -2004,18 +2413,23 @@
     tunnelStatusTimer = null;
   }
 
-  function checkTunnelStatus() {
+  function checkTunnelStatus(options) {
+    options = options || {};
+    var silent = !!options.silent;
     if (!tunnelStatusToken || tunnelStatusInFlight) return;
-    awaitingWinboxPaste = false;
+    if (!silent) {
+      awaitingWinboxPaste = false;
+      if (tunnelCheckNow) tunnelCheckNow.disabled = true;
+      setCheckNowSecondary(false);
+      markTunnelStep(2, "done");
+      markTunnelStep(3, "active");
+      setVerifyBanner("checking", "Checking connection…", "Tunnel and API");
+      setTunnelCheckState("checking", "Checking tunnel and RouterOS API…", false, false);
+    }
     tunnelStatusInFlight = true;
-    if (tunnelCheckNow) tunnelCheckNow.disabled = true;
-    setCheckNowSecondary(false);
-    markTunnelStep(2, "done");
-    markTunnelStep(3, "active");
-    setVerifyBanner("checking", "Checking connection…", "Tunnel and API");
-    setTunnelCheckState("checking", "Checking tunnel and RouterOS API…", false, false);
     var body = new FormData();
     body.append("token", tunnelStatusToken);
+    if (onboardingSessionToken) body.append("session_token", onboardingSessionToken);
     body.append("csrfmiddlewaretoken", csrfToken());
     if (hostInput && hostInput.value.trim()) {
       body.append("lan_host", hostInput.value.trim());
@@ -2030,6 +2444,8 @@
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (result) {
         var data = result.data || {};
+        window._lastTunnelStatusData = data;
+        if (data.session_token) setOnboardingSessionToken(data.session_token);
         if (data.script_lan_address) {
           scriptAssignedLanIp = String(data.script_lan_address).trim();
           if (hostOnboardLabel) hostOnboardLabel.textContent = "LAN IP";
@@ -2044,12 +2460,17 @@
           applySingleOnboardHost(data.lan_address);
         }
         if (!result.ok || !data.ok) {
-          setTunnelCheckState("error", data.error || "Could not check the tunnel.", false, false);
-          renderTunnelChecks([]);
-          setCheckNowSecondary(false);
+          if (!silent) {
+            setTunnelCheckState("error", data.error || "Could not check the tunnel.", false, false);
+            renderTunnelChecks([]);
+            setCheckNowSecondary(false);
+          }
+          setOnboardProcessStep("verify", "fail", data.error || "Check failed");
           return;
         }
-        renderTunnelChecks(data.checks || []);
+        if ((data.checks || []).length) awaitingWinboxPaste = false;
+        renderTunnelChecks(data.checks || [], data);
+        applyVerifyProcessFromChecks(data.checks || [], data);
         if (data.local_mode) {
           if (data.lan_address) {
             applySingleOnboardHost(data.lan_address);
@@ -2113,10 +2534,7 @@
             setCheckNowSecondary(false);
             setConnectCredentialsVisible(false);
             resetStep4IpCopy();
-            if (tunnelAddress && (data.address || tunnelReadyAddress)) {
-              tunnelAddress.textContent =
-                "Tunnel IP: " + (data.address || tunnelReadyAddress) + " (paste script first)";
-            }
+            syncTunnelStep4Visibility();
             var marker = data.script_marker || ("ispcentric." + (data.address || tunnelReadyAddress || ""));
             setTunnelCheckState(
               "waiting",
@@ -2213,6 +2631,7 @@
         }
         if (data.keys_rotated && data.script) {
           showTunnelScript(data, { resume: true });
+          startTunnelStatusPolling();
           markTunnelStep(2, "active");
           setTunnelCheckState(
             "waiting",
@@ -2294,21 +2713,31 @@
         setTunnelStatus(data.message, !!data.tunnel_reachable || data.peer_state === "waiting_router");
       })
       .catch(function () {
-        setTunnelCheckState("error", "Live check failed — retrying…", false, false);
-        renderTunnelChecks([]);
-        setVerifyBanner("error", "Check failed", "Retrying automatically…");
-        setCheckNowSecondary(false);
+        if (!silent) {
+          setTunnelCheckState("error", "Live check failed — retrying…", false, false);
+          renderTunnelChecks([]);
+          setVerifyBanner("error", "Check failed", "Retrying automatically…");
+          setCheckNowSecondary(false);
+        } else if (tunnelVerifySub) {
+          var prev = tunnelVerifySub.textContent || "";
+          if (prev.indexOf("Live") === -1) {
+            setVerifyBanner("error", "Live check interrupted", "Retrying…" + liveVerifySubSuffix());
+          }
+        }
       })
       .finally(function () {
         tunnelStatusInFlight = false;
-        if (tunnelCheckNow) tunnelCheckNow.disabled = false;
+        if (!silent && tunnelCheckNow) tunnelCheckNow.disabled = false;
       });
   }
 
   function startTunnelStatusPolling() {
     stopTunnelStatusPolling();
-    checkTunnelStatus();
-    tunnelStatusTimer = setInterval(checkTunnelStatus, 3000);
+    if (!tunnelStatusToken) return;
+    checkTunnelStatus({ silent: true });
+    tunnelStatusTimer = setInterval(function () {
+      checkTunnelStatus({ silent: true });
+    }, 3000);
   }
 
   function postOnboardingGuard(action) {
@@ -2531,6 +2960,7 @@
         "Skip this for now and Connect with the router’s local IP below.",
         false
       );
+      setOnboardProcessStep("connect", "waiting", "Use discovered LAN IP");
       return;
     }
     var label = tunnelLabel ? tunnelLabel.value.trim() : "";
@@ -2545,6 +2975,9 @@
     }
     setGenerateBusy(true, "Generating…");
     setTunnelStatus("Generating Winbox script…", false);
+    setOnboardProcessStep("session", "checking", "Reserving tunnel & session…");
+    setOnboardProcessStep("peer", "checking", "Syncing WireGuard peer…");
+    setOnboardProcessStep("script", "checking", "Building RouterOS script…");
     requestTunnelScript(paidStkId)
       .then(function (result) {
         if (result.data && result.data.payment_required) {
@@ -2555,7 +2988,11 @@
         if (!result.ok || !result.data || !result.data.ok) {
           clearTunnelScript();
           setGenerateBusy(false, defaultGenerateLabel());
-          setTunnelStatus((result.data && result.data.error) || "Could not generate tunnel script.", true);
+          var genErr = (result.data && result.data.error) || "Could not generate tunnel script.";
+          setTunnelStatus(genErr, true);
+          setOnboardProcessStep("session", "fail", genErr);
+          setOnboardProcessStep("peer", "fail", "Not registered");
+          setOnboardProcessStep("script", "fail", "Not generated");
           return;
         }
         setGenerateBusy(false, defaultGenerateLabel());
@@ -2565,6 +3002,8 @@
         clearTunnelScript();
         setGenerateBusy(false, defaultGenerateLabel());
         setTunnelStatus("Could not generate tunnel script. Try again.", true);
+        setOnboardProcessStep("session", "fail", "Network or server error");
+        setOnboardProcessStep("script", "fail", "Try Generate again");
       });
   }
 
@@ -2588,9 +3027,9 @@
         setTunnelStatus("Copied. Paste the script in Winbox → New Terminal, then Check now.", false);
       }
       awaitingWinboxPaste = true;
-      setVerifyBanner("waiting", "Paste script on the MikroTik", "Nothing is wrong yet — the router has not run the script");
-      setVerifyHint("After paste finishes in Winbox, click Check now (or wait — we will not show red errors until then).");
-      renderTunnelChecks([]);
+      setVerifyBanner("waiting", "Paste script on the MikroTik", "Live verify continues — status updates every few seconds");
+      setVerifyHint("Winbox → New Terminal → paste. Green and red rows appear here as checks complete.");
+      if (tunnelStatusToken) startTunnelStatusPolling();
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(tunnelScriptText).then(done).catch(function () {
@@ -2982,6 +3421,7 @@
   }
 
   function openModal() {
+    resetOnboardProcess();
     var draft = readOnboardDraft();
     restoreOnboardDraft();
     modal.hidden = false;
@@ -2997,6 +3437,7 @@
     if (wireguardReady && tunnelLabel && currentOnboardStep() === "connect" && !tunnelScriptText) {
       setTimeout(function () { tunnelLabel.focus(); }, 40);
     }
+    rehydrateOnboardProcessFromUiState();
   }
 
   function closeModal() {
@@ -3015,6 +3456,7 @@
   }
 
   function connectRouter() {
+    if (connectInFlight) return;
     if (!hostInput || !usernameInput || !passwordInput) return;
     var host = hostInput.value.trim();
     var username = usernameInput.value.trim();
@@ -3039,11 +3481,21 @@
       }
       return;
     }
+    if (Date.now() < connectAuthCooldownUntil) {
+      var waitSec = Math.max(1, Math.ceil((connectAuthCooldownUntil - Date.now()) / 1000));
+      showConnectStatus(
+        "Wait " + waitSec + "s before retrying Connect — wrong passwords spam the router API log.",
+        true
+      );
+      return;
+    }
     // Do not hard-block Connect on a stale peer_sync flag when Check now already
     // passed (tunnelApiReady). Backend re-applies / reachability-checks the peer.
 
+    connectInFlight = true;
     connectBtn.disabled = true;
     showConnectStatus("Connecting to " + host + "…");
+    setOnboardProcessStep("connect", "checking", "Signing in to " + host + "…");
     setOnboardLoading(
       true,
       "Connecting to " + host,
@@ -3060,6 +3512,7 @@
     if (tunnelAddressInput && tunnelAddressInput.value.trim()) {
       body.append("tunnel_host", tunnelAddressInput.value.trim());
     }
+    if (onboardingSessionToken) body.append("session_token", onboardingSessionToken);
 
     fetch(connectUrl, {
       method: "POST",
@@ -3071,7 +3524,18 @@
       .then(function (result) {
         if (!result.ok || !result.data || !result.data.ok) {
           setOnboardLoading(false);
-          showConnectStatus((result.data && result.data.error) || "Could not connect.", true);
+          if (connectBtn) connectBtn.disabled = false;
+          var connErr = (result.data && result.data.error) || "Could not connect.";
+          if (result.data && (result.data.auth_error || result.data.cooling_down)) {
+            var retrySec = Number(result.data.retry_after_sec) || 45;
+            connectAuthCooldownUntil = Date.now() + retrySec * 1000;
+            clearTimeout(connectAuthCooldownTimer);
+            connectAuthCooldownTimer = setTimeout(function () {
+              connectAuthCooldownTimer = null;
+            }, retrySec * 1000);
+          }
+          showConnectStatus(connErr, true);
+          setOnboardProcessStep("connect", "fail", connErr);
           return;
         }
         var data = result.data;
@@ -3084,6 +3548,7 @@
                 "”. You cannot register it twice."),
             true
           );
+          setOnboardProcessStep("connect", "fail", data.error || "Already onboarded");
           return;
         }
         if (nameInput) {
@@ -3106,6 +3571,15 @@
           tunnelReadyAddress = data.tunnel_host;
           syncTunnelAddressField();
         }
+        if (data.session_token) setOnboardingSessionToken(data.session_token);
+        var connBits = [data.host || host];
+        if (data.serial_number) connBits.push("SN " + data.serial_number);
+        if (data.lan_ip_applied && data.lan_message) connBits.push(data.lan_message);
+        setOnboardProcessStep("connect", "ok", connBits.join(" · "));
+        if (wireguardReady && onboardProcessState.verify && onboardProcessState.verify.status !== "ok") {
+          setOnboardProcessStep("verify", "ok", "Skipped — login succeeded");
+        }
+        setOnboardProcessStep("save", "waiting", "Complete the form and tap Onboard router");
         syncOnboardCredentialsFromConnect();
         fillWifiFromRouter(data);
         if (connectedTitle) connectedTitle.textContent = "Connected to " + (data.identity || data.name || host);
@@ -3125,9 +3599,13 @@
       .catch(function () {
         setOnboardLoading(false);
         showConnectStatus("Connection request failed. Try again.", true);
+        setOnboardProcessStep("connect", "fail", "Request failed");
       })
       .finally(function () {
-        connectBtn.disabled = false;
+        connectInFlight = false;
+        if (connectBtn && Date.now() >= connectAuthCooldownUntil) {
+          connectBtn.disabled = false;
+        }
       });
   }
 
@@ -3142,7 +3620,11 @@
   if (tunnelGenerate) tunnelGenerate.addEventListener("click", generateTunnelScript);
   if (tunnelCopy) tunnelCopy.addEventListener("click", copyTunnelScript);
   if (tunnelPeerCopy) tunnelPeerCopy.addEventListener("click", copyTunnelPeerBlock);
-  if (tunnelCheckNow) tunnelCheckNow.addEventListener("click", checkTunnelStatus);
+  if (tunnelCheckNow) {
+    tunnelCheckNow.addEventListener("click", function () {
+      checkTunnelStatus({ silent: false });
+    });
+  }
   if (tunnelUseIp) {
     tunnelUseIp.addEventListener("click", function () {
       if (localModeReady) {
@@ -3246,6 +3728,7 @@
 
   var serverOpenedOnboard = {% if open_mikrotik_onboard %}true{% else %}false{% endif %};
   if (!modal.hidden) {
+    resetOnboardProcess();
     document.body.classList.add("role-modal-open");
     startOnboardingGuard();
     if (!serverOpenedOnboard) restoreOnboardDraft();
@@ -3267,6 +3750,7 @@
         setTimeout(function () { tunnelLabel.focus(); }, 40);
       }
     }
+    rehydrateOnboardProcessFromUiState();
   } else if (/(?:^\?|&)onboard=1(?:&|$)/.test(window.location.search || "")) {
     openModal();
     if (window.history && window.history.replaceState) {
@@ -3471,11 +3955,19 @@
       applySingleOnboardHost(managementHost, {
         lanIpApplied: !!(lanIpAppliedInput && lanIpAppliedInput.value === "1")
       });
+      syncOnboardingSessionTokenField();
+      if (!onboardingSessionToken) {
+        e.preventDefault();
+        alert("Connect to the MikroTik again — your onboarding session expired.");
+        setOnboardProcessStep("save", "fail", "Session expired — Connect again");
+        return;
+      }
 
       var locationValue = locationInput ? locationInput.value.trim() : "";
       var hasCoords = latInput && lngInput && latInput.value && lngInput.value;
       if (!locationValue || hasCoords) {
         clearOnboardDraft();
+        setOnboardProcessStep("save", "checking", "Saving router to your fleet…");
         setOnboardLoading(
           true,
           "Onboard router",
@@ -4002,6 +4494,57 @@
       if (eye && eyeOff) { eye.hidden = show; eyeOff.hidden = !show; }
     });
   });
+
+  var hostedReadinessSection = document.getElementById("mikrotik-hosted-readiness");
+  var hostedReadinessList = document.getElementById("mikrotik-hosted-readiness-list");
+  var hostedReadinessRefresh = document.getElementById("mikrotik-hosted-readiness-refresh");
+  var hostedReadinessUrl = "{% url 'core:mikrotik_hosted_readiness' %}";
+
+  function escReadinessText(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function renderHostedReadiness(data) {
+    if (!hostedReadinessList || !data || !data.items) return;
+    hostedReadinessList.innerHTML = data.items.map(function (item) {
+      var status = item.status || "waiting";
+      var label = escReadinessText(item.label || "");
+      var msg = escReadinessText(item.message || "");
+      return (
+        '<li class="mikrotik-hosted-readiness-item is-' + escReadinessText(status) + '">' +
+          '<span class="mikrotik-hosted-readiness-dot" aria-hidden="true"></span>' +
+          '<span class="mikrotik-hosted-readiness-body"><strong>' + label + "</strong><span>" + msg + "</span></span></li>"
+      );
+    }).join("");
+    if (hostedReadinessSection) {
+      hostedReadinessSection.classList.toggle("is-ready", !!data.ready);
+    }
+  }
+
+  function refreshHostedReadiness() {
+    if (!hostedReadinessUrl || !hostedReadinessRefresh) return;
+    hostedReadinessRefresh.disabled = true;
+    fetch(hostedReadinessUrl, {
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (data && data.ok) renderHostedReadiness(data);
+      })
+      .catch(function () {})
+      .finally(function () {
+        hostedReadinessRefresh.disabled = false;
+      });
+  }
+
+  if (hostedReadinessRefresh) {
+    hostedReadinessRefresh.addEventListener("click", refreshHostedReadiness);
+  }
 
   var refreshBtn = document.getElementById("mikrotik-refresh-status");
   if (refreshBtn) {

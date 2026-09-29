@@ -178,7 +178,11 @@ def _attrs(sentence: list[str]) -> dict[str, str]:
 def _login_failed(attrs: dict[str, str]) -> dict[str, Any]:
     return {
         "ok": False,
-        "error": attrs.get("message") or "Login failed. Check username and password.",
+        "auth_error": True,
+        "error": (
+            attrs.get("message")
+            or "API login failed — check the RouterOS username and password (Winbox uses the same login)."
+        ),
     }
 
 
@@ -15782,6 +15786,50 @@ def clear_mikrotik_host_cooldown(host: str) -> None:
         from django.core.cache import cache
 
         cache.delete(_mikrotik_dead_host_key(host))
+    except Exception:
+        pass
+
+
+def _mikrotik_onboard_auth_key(host: str, org_id: int) -> str:
+    dial = dial_host(host) or (host or "").strip()
+    return f"mikrotik_onboard_auth:v1:{int(org_id or 0)}:{dial}"
+
+
+def is_onboard_connect_auth_cooling_down(host: str, org_id: int) -> bool:
+    """Throttle repeated wrong-password Connect attempts during onboarding."""
+    host = (host or "").strip()
+    if not host or not org_id:
+        return False
+    try:
+        from django.core.cache import cache
+
+        return bool(cache.get(_mikrotik_onboard_auth_key(host, org_id)))
+    except Exception:
+        return False
+
+
+def mark_onboard_connect_auth_failure(
+    host: str, org_id: int, *, ttl: int = 45
+) -> None:
+    host = (host or "").strip()
+    if not host or not org_id:
+        return
+    try:
+        from django.core.cache import cache
+
+        cache.set(_mikrotik_onboard_auth_key(host, org_id), 1, max(30, int(ttl or 45)))
+    except Exception:
+        pass
+
+
+def clear_onboard_connect_auth_cooldown(host: str, org_id: int) -> None:
+    host = (host or "").strip()
+    if not host or not org_id:
+        return
+    try:
+        from django.core.cache import cache
+
+        cache.delete(_mikrotik_onboard_auth_key(host, org_id))
     except Exception:
         pass
 

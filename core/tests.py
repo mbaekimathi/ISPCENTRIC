@@ -765,6 +765,7 @@ class WireGuardKeyTests(SimpleTestCase):
             override_settings(
                 WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
                 WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+                HOSTED=True,
             ),
             patch(
                 "core.wireguard._read_live_wg_interface_public_key",
@@ -776,6 +777,61 @@ class WireGuardKeyTests(SimpleTestCase):
                 wireguard.resolve_server_public_key(prefer_live=False),
                 SERVER_PUBLIC_KEY,
             )
+
+    def test_resolve_server_public_key_uses_env_when_not_hosted(self):
+        live_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        with (
+            override_settings(
+                WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+                WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+                HOSTED=False,
+            ),
+            patch(
+                "core.wireguard._read_live_wg_interface_public_key",
+                return_value=live_key,
+            ),
+        ):
+            self.assertEqual(wireguard.resolve_server_public_key(), SERVER_PUBLIC_KEY)
+
+    def test_read_live_public_key_from_wg_dump(self):
+        dump_line = (
+            "privkey="
+            + SERVER_PUBLIC_KEY
+            + "\t"
+            + "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+            + "\t51820\t0"
+        )
+        with patch(
+            "core.wireguard._wg_interface_dump_command",
+            return_value=["/bin/wg", "show", "wg0", "dump"],
+        ), patch("subprocess.run") as run_mock:
+            run_mock.return_value = type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": dump_line, "stderr": ""},
+            )()
+            self.assertEqual(
+                wireguard._read_live_wg_interface_public_key_from_dump(),
+                "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+            )
+
+    def test_server_public_key_alignment_detects_mismatch(self):
+        live_key = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+        with (
+            override_settings(
+                WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+                WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+                HOSTED=True,
+            ),
+            patch(
+                "core.wireguard._read_live_wg_interface_public_key",
+                return_value=live_key,
+            ),
+        ):
+            align = wireguard.server_public_key_alignment()
+            self.assertTrue(align["mismatch"])
+            self.assertEqual(align["script_key"], live_key)
+            self.assertEqual(align["script_source"], "live_wg0")
 
     def test_sync_command_allows_peer_apply_off_tunnel(self):
         with (
@@ -5297,6 +5353,121 @@ class TunnelStatusTests(TestCase):
             next(item["status"] for item in installed if item["key"] == "wireguard"),
             "ok",
         )
+
+    @override_settings(
+        WIREGUARD_ENDPOINT="178.162.241.99:51820",
+        WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+        WIREGUARD_SUBNET="10.9.0.0/24",
+    )
+    def test_extend_local_checks_with_vps_tunnel_no_handshake(self):
+        from types import SimpleNamespace
+
+        reservation = SimpleNamespace(
+            label="site-a",
+            address="10.9.0.7",
+            public_key="G/VSQsaiQabZLlmuArrip0dG6MF6aDWvd3Ic6A127kA=",
+        )
+        base = wireguard.tunnel_verification_checks(
+            local_mode=True,
+            address="10.9.0.7",
+            tunnel_reachable=False,
+            api_enabled=True,
+            lan_address="192.168.88.1",
+            script_installed=True,
+        )
+        diagnosis = {
+            "code": "no_handshake",
+            "message": "VPS has peer 10.9.0.7, but WireGuard has no handshake yet.",
+            "peer_sync": {"ok": True},
+            "peer": {"present": True, "handshake_age_sec": None, "checked": True},
+        }
+        with patch(
+            "core.wireguard.ensure_reservation_peer", return_value=diagnosis
+        ), patch("core.wireguard._tunnel_host_reachable", return_value=False):
+            extended, returned = wireguard.extend_local_checks_with_vps_tunnel(
+                base, reservation=reservation, address="10.9.0.7"
+            )
+        self.assertIs(returned, diagnosis)
+        by_key = {item["key"]: item for item in extended}
+        self.assertEqual(by_key["billing_ping"]["status"], "fail")
+        self.assertIn("sync-server", by_key["billing_ping"]["message"].lower())
+        extras = wireguard.tunnel_status_verify_extras(diagnosis)
+        self.assertIn("no handshake", extras.lower())
+
+    @override_settings(
+        WIREGUARD_ENDPOINT="178.162.241.99:51820",
+        WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+        HOSTED=True,
+    )
+    def test_hosted_wireguard_readiness_requires_wg0(self):
+        with patch("core.wireguard.server_on_tunnel", return_value=False), patch(
+            "core.wireguard._try_bring_up_interface", return_value={"ok": False, "error": "fail"}
+        ):
+            payload = wireguard.hosted_wireguard_readiness()
+        self.assertFalse(payload["ready"])
+        by_key = {item["key"]: item for item in payload["items"]}
+        self.assertEqual(by_key["wg0"]["status"], "fail")
+        self.assertEqual(by_key["hosted_flag"]["status"], "ok")
+
+    @override_settings(
+        WIREGUARD_ENDPOINT="178.162.241.99:51820",
+        WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+        WIREGUARD_SYNC_COMMAND="sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh",
+    )
+    def test_prepare_billing_tunnel_host_applies_peer_without_tunnel_bind(self):
+        from types import SimpleNamespace
+
+        reservation = SimpleNamespace(
+            label="site",
+            address="10.9.0.8",
+            public_key="91BbuWuB3oddJG3YFjCJBmUDxWH6xtA6/HHUifb/KVQ=",
+        )
+        with patch("core.wireguard.server_on_tunnel", return_value=False), patch(
+            "core.wireguard._try_bring_up_interface", return_value={"ok": False}
+        ), patch(
+            "core.wireguard._ensure_wg0_via_sync_helper", return_value={"ok": True}
+        ), patch(
+            "core.wireguard.apply_server_peer", return_value={"ok": True}
+        ) as apply_mock, patch(
+            "core.wireguard.reconcile_runtime_allowed_ips", return_value={}
+        ):
+            out = wireguard.prepare_billing_tunnel_host(sync_reservation=reservation)
+        apply_mock.assert_called_once_with(
+            "site", "10.9.0.8", "91BbuWuB3oddJG3YFjCJBmUDxWH6xtA6/HHUifb/KVQ="
+        )
+        self.assertTrue(out["peer_reapplied"])
+
+    def test_extend_local_checks_does_not_pass_billing_without_handshake(self):
+        from types import SimpleNamespace
+
+        reservation = SimpleNamespace(
+            label="site-b",
+            address="10.9.0.8",
+            public_key="91BbuWuB3oddJG3YFjCJBmUDxWH6xtA6/HHUifb/KVQ=",
+        )
+        base = wireguard.tunnel_verification_checks(
+            local_mode=True,
+            address="10.9.0.8",
+            tunnel_reachable=False,
+            api_enabled=True,
+            lan_address="192.168.88.1",
+            script_installed=True,
+        )
+        diagnosis = {
+            "code": "waiting_router",
+            "message": "Waiting for handshake",
+            "peer_sync": {"ok": True},
+            "peer": {"present": True, "handshake_age_sec": None, "checked": True},
+        }
+        with patch(
+            "core.wireguard.ensure_reservation_peer", return_value=diagnosis
+        ), patch("core.wireguard._tunnel_host_reachable", return_value=True):
+            extended, _ = wireguard.extend_local_checks_with_vps_tunnel(
+                base, reservation=reservation, address="10.9.0.8"
+            )
+        by_key = {item["key"]: item for item in extended}
+        self.assertEqual(by_key["billing_ping"]["status"], "fail")
+        self.assertIn(by_key["vps_peer"]["status"], ("warn", "fail"))
 
     def test_wg_listen_probe_treats_timeout_as_inconclusive(self):
         with patch("core.wireguard.socket.socket") as sock_cls:

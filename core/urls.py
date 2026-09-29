@@ -149,6 +149,11 @@ urlpatterns = [
         views.mikrotik_tunnel_status,
         name="mikrotik_tunnel_status",
     ),
+    path(
+        "app/mikrotik/hosted-readiness/",
+        views.mikrotik_hosted_readiness,
+        name="mikrotik_hosted_readiness",
+    ),
     path("app/mikrotik/status/", views.mikrotik_status, name="mikrotik_status"),
     path("app/mikrotik/places/", views.mikrotik_places, name="mikrotik_places"),
     path("app/mikrotik/places/details/", views.mikrotik_place_details, name="mikrotik_place_details"),
