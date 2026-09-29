@@ -4278,8 +4278,10 @@
       syncOnboardingSessionTokenField();
       if (!onboardingSessionToken) {
         e.preventDefault();
-        alert("Connect to the MikroTik again — your onboarding session expired.");
-        setOnboardProcessStep("save", "fail", "Session expired — Connect again");
+        alert("Click Connect once more (same admin password), then Onboard router. Do not Generate.");
+        setOnboardProcessStep("save", "fail", "Click Connect again, then Onboard");
+        setStep("connect");
+        setConnectCredentialsVisible(true);
         return;
       }
 

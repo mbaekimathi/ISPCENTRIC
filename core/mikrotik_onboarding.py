@@ -310,13 +310,66 @@ def create_connect_only_session(
     organization,
     user,
     label: str = "",
+    tunnel_address: str = "",
 ) -> MikroTikOnboardingSession:
+    tunnel = (tunnel_address or "").strip()
+    reservation = None
+    if tunnel:
+        reservation = wireguard.reservation_for_address(tunnel, organization=organization)
+        if reservation:
+            # Prefer the open session for this reservation if still usable.
+            existing = (
+                MikroTikOnboardingSession.objects.filter(
+                    organization=organization,
+                    initiated_by=user,
+                    reservation=reservation,
+                    phase__in=_OPEN_SESSION_PHASES,
+                )
+                .order_by("-created_at")
+                .first()
+            )
+            if existing and existing.is_open:
+                if not existing.expires_at or existing.expires_at > timezone.now():
+                    existing.expires_at = timezone.now() + _session_ttl()
+                    existing.save(update_fields=["expires_at", "updated_at"])
+                    return existing
     return MikroTikOnboardingSession.objects.create(
         organization=organization,
         initiated_by=user,
-        label=(label or "MikroTik").strip(),
+        reservation=reservation,
+        label=(label or getattr(reservation, "label", None) or "MikroTik").strip(),
+        tunnel_address=tunnel or (getattr(reservation, "address", None) or None),
+        planned_lan=(getattr(reservation, "lan_address", None) or None),
         phase=MikroTikOnboardingSession.Phase.PREPARED,
         expires_at=timezone.now() + _session_ttl(),
+    )
+
+
+def recover_connect_session(
+    *,
+    organization,
+    user,
+    session_token: str = "",
+    tunnel_host: str = "",
+    label: str = "",
+) -> MikroTikOnboardingSession:
+    """
+    Load an open session, or mint a fresh one when the signed token is stale.
+
+    Deploy/restart and long tunnels often invalidate the browser token while the
+    WireGuard reservation is still live — Connect must not force Generate again.
+    """
+    token = (session_token or "").strip()
+    if token:
+        try:
+            return load_open_session(token, organization=organization, user=user)
+        except OnboardingError:
+            pass
+    return create_connect_only_session(
+        organization=organization,
+        user=user,
+        label=label,
+        tunnel_address=tunnel_host,
     )
 
 
@@ -725,6 +778,9 @@ def authenticate_connect(
     if org_id:
         clear_onboard_connect_auth_cooldown(dial_host, org_id)
     record_authentication(session, connect_result=payload, username=username, password=password)
+    # Keep the signed token usable through the Onboard form submit.
+    session.expires_at = timezone.now() + _session_ttl()
+    session.save(update_fields=["expires_at", "updated_at"])
     attach_session_token(payload, session)
     return payload
 

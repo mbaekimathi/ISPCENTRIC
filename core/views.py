@@ -220,6 +220,7 @@ from core.mikrotik_onboarding import (
     prepare_onboarding_session,
     issue_session_token,
     load_open_session,
+    recover_connect_session,
     resolve_session_from_request,
     sync_session_from_tunnel_payload,
 )
@@ -8744,10 +8745,42 @@ def mikrotik(request):
                 pass
         form = MikroTikOnboardForm(post_data)
         if form.is_valid():
-            if not session_token:
+            session = None
+            if session_token:
+                try:
+                    session = load_open_session(
+                        session_token, organization=org, user=request.user
+                    )
+                except OnboardingError:
+                    session = None
+            if session is None:
+                # Token wiped by deploy/refresh — reuse latest authenticated session
+                # for this tunnel if Connect already succeeded.
+                tunnel_hint = normalize_mikrotik_host(
+                    request.POST.get("tunnel_host")
+                    or request.POST.get("host")
+                    or ""
+                )
+                from core.models import MikroTikOnboardingSession
+
+                qs = MikroTikOnboardingSession.objects.filter(
+                    organization=org,
+                    initiated_by=request.user,
+                    phase=MikroTikOnboardingSession.Phase.AUTHENTICATED,
+                ).order_by("-authenticated_at", "-created_at")
+                if tunnel_hint:
+                    session = qs.filter(tunnel_address=tunnel_hint).first()
+                if session is None:
+                    session = qs.first()
+                if session and session.is_open:
+                    from datetime import timedelta
+
+                    session.expires_at = timezone.now() + timedelta(hours=4)
+                    session.save(update_fields=["expires_at", "updated_at"])
+            if session is None:
                 form.add_error(
                     None,
-                    "Onboarding session expired — use Connect again, then Onboard router.",
+                    "Onboarding session expired — click Connect once more, then Onboard router.",
                 )
                 open_onboard = True
                 first_error = next(iter(form.errors.values()), None)
@@ -8763,9 +8796,6 @@ def mikrotik(request):
                     open_onboard=True,
                 )
             try:
-                session = load_open_session(
-                    session_token, organization=org, user=request.user
-                )
                 commit_result = commit_session(
                     session, form, organization=org, request=request
                 )
@@ -14555,21 +14585,17 @@ def mikrotik_connect(request):
     script_lan = normalize_mikrotik_host(request.POST.get("script_lan") or "")
     tunnel_host = normalize_mikrotik_host(request.POST.get("tunnel_host") or "")
     session_token = (request.POST.get("session_token") or "").strip()
+    label = (request.POST.get("label") or "").strip()
 
-    onboard_session = None
-    if session_token:
-        try:
-            onboard_session = load_open_session(
-                session_token, organization=org, user=request.user
-            )
-        except OnboardingError as exc:
-            return JsonResponse({"ok": False, "error": exc.message}, status=400)
-    else:
-        onboard_session = create_connect_only_session(
-            organization=org,
-            user=request.user,
-            label=(request.POST.get("label") or "").strip(),
-        )
+    # Stale signed tokens after deploy/restart must not block Connect — mint a
+    # fresh open session tied to the live tunnel reservation when possible.
+    onboard_session = recover_connect_session(
+        organization=org,
+        user=request.user,
+        session_token=session_token,
+        tunnel_host=tunnel_host,
+        label=label,
+    )
 
     from core.mikrotik_status_samples import mark_mikrotik_onboarding_active
 
