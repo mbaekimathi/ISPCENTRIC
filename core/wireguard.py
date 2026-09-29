@@ -549,6 +549,32 @@ def rotate_reservation_keys(reservation):
     return reservation, peer_sync
 
 
+def _normalized_sync_command() -> str:
+    sync_cmd = (getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip()
+    sync_cmd = sync_cmd.strip('"').strip("'")
+    if sync_cmd == "sudo" or sync_cmd.startswith("sudo "):
+        sync_cmd = "/usr/bin/sudo " + sync_cmd[len("sudo") :].lstrip()
+    return sync_cmd
+
+
+def _run_sync_helper(*args: str) -> subprocess.CompletedProcess | None:
+    """Run WIREGUARD_SYNC_COMMAND with extra args (e.g. --remove, --dump)."""
+    sync_cmd = _normalized_sync_command()
+    if not sync_cmd:
+        return None
+    return subprocess.run(
+        [*shlex.split(sync_cmd), *args],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        },
+    )
+
+
 def remove_server_peer(public_key: str) -> dict:
     """Remove one peer from runtime wg0 (best-effort; conf file may retain a stub)."""
     public_key = (public_key or "").strip()
@@ -556,6 +582,9 @@ def remove_server_peer(public_key: str) -> dict:
         return {"ok": False, "skipped": True, "reason": "missing_key"}
     if not can_apply_server_peers():
         return {"ok": False, "skipped": True, "reason": "not_on_tunnel"}
+    sync_proc = _run_sync_helper("--remove", public_key)
+    if sync_proc is not None and sync_proc.returncode == 0:
+        return {"ok": True}
     iface = _wireguard_interface()
     wg_bin = shutil.which("wg") or "/usr/bin/wg"
     try:
@@ -569,6 +598,8 @@ def remove_server_peer(public_key: str) -> dict:
         if proc.returncode == 0:
             return {"ok": True}
         err = (proc.stderr or proc.stdout or "wg peer remove failed").strip()
+        if sync_proc is not None and (sync_proc.stderr or sync_proc.stdout):
+            err = (sync_proc.stderr or sync_proc.stdout or err).strip()
         return {"ok": False, "error": err}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -628,8 +659,6 @@ def reconcile_runtime_allowed_ips() -> dict:
     if err:
         return {"ok": False, "error": err, "fixed": 0}
 
-    iface = _wireguard_interface()
-    wg_bin = shutil.which("wg") or "/usr/bin/wg"
     fixed = 0
     errors: list[str] = []
 
@@ -657,22 +686,15 @@ def reconcile_runtime_allowed_ips() -> dict:
                 break
         if not holds_foreign and allowed == [want]:
             continue
-        try:
-            proc = subprocess.run(
-                [wg_bin, "set", iface, "peer", public_key, "allowed-ips", want],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            if proc.returncode == 0:
-                fixed += 1
-            else:
-                errors.append(
-                    (proc.stderr or proc.stdout or "wg set failed").strip()
-                )
-        except Exception as exc:
-            errors.append(str(exc))
+        outcome = apply_server_peer(
+            f"reconcile-{canonical}",
+            canonical,
+            public_key,
+        )
+        if outcome.get("ok"):
+            fixed += 1
+        elif not outcome.get("skipped") and outcome.get("error"):
+            errors.append(f"{canonical}: {outcome['error']}")
 
     if fixed:
         logger.info("Reconciled %s WireGuard runtime peer route(s) on wg0", fixed)
@@ -2096,11 +2118,7 @@ def apply_server_peer(label: str, address: str, public_key: str) -> dict:
 
     iface = _wireguard_interface()
     conf_path = _wireguard_conf_path()
-    sync_cmd = (getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip()
-    sync_cmd = sync_cmd.strip('"').strip("'")
-    # systemd may leave PATH thin; keep sudo/wg absolute when possible.
-    if sync_cmd == "sudo" or sync_cmd.startswith("sudo "):
-        sync_cmd = "/usr/bin/sudo " + sync_cmd[len("sudo") :].lstrip()
+    sync_cmd = _normalized_sync_command()
     block = server_peer_block(label or "MikroTik", address, public_key)
     result: dict = {
         "ok": False,

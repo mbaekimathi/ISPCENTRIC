@@ -15,6 +15,16 @@ if [[ "${1:-}" == "--dump" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "--remove" ]]; then
+  PUBKEY="${2:-}"
+  if [[ -z "$PUBKEY" ]]; then
+    echo "usage: $0 --remove PUBLIC_KEY" >&2
+    exit 1
+  fi
+  wg set "$IFACE" peer "$PUBKEY" remove 2>/dev/null || true
+  exit 0
+fi
+
 PUBKEY="${1:-}"
 ADDR="${2:-}"
 LABEL="${3:-MikroTik}"
