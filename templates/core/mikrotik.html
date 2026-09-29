@@ -1159,6 +1159,9 @@
   var pendingAutoConnect = false;
   var autoConnectAttempts = 0;
   var AUTO_CONNECT_MAX = 3;
+  var lastTunnelReadyAt = 0;
+  var tunnelFailStreak = 0;
+  var TUNNEL_READY_HOLD_MS = 90000;
   var ONBOARD_DRAFT_KEY = "ispcentric.mikrotik.onboard.draft";
   var draftSaveTimer = null;
   var onboardProcessPanel = document.getElementById("mikrotik-onboard-process");
@@ -2622,6 +2625,38 @@
           markTunnelVerifyReady(data);
           return;
         }
+        // Soft ready: API or tunnel answered even if peer_state lagged.
+        if (
+          !data.local_mode &&
+          (data.api_enabled || data.tunnel_reachable) &&
+          data.peer_state !== "missing" &&
+          data.peer_state !== "key_mismatch" &&
+          data.peer_state !== "keys_rotated"
+        ) {
+          markTunnelVerifyReady(data);
+          return;
+        }
+        if (!data.ready && !data.api_enabled && !data.tunnel_reachable) {
+          tunnelFailStreak += 1;
+          if (holdTunnelReadyThroughFlap()) {
+            setTunnelCheckState(
+              "ready",
+              "Tunnel briefly flapped — holding ready",
+              true,
+              true
+            );
+            setVerifyBanner(
+              "ready",
+              "Tunnel still OK",
+              "Ignoring brief probe miss" + liveVerifySubSuffix()
+            );
+            if (pendingAutoConnect) tryAutoConnectSoon("Holding ready through flap.");
+            return;
+          }
+          if (tunnelApiReady && tunnelFailStreak >= 3) {
+            tunnelApiReady = false;
+          }
+        }
         setCheckNowSecondary(false);
         if (data.hosted_wg_down) {
           stopTunnelStatusPolling();
@@ -2668,6 +2703,14 @@
           data.peer_state === "key_mismatch" ||
           data.peer_state === "keys_rotated"
         ) {
+          // Don't tear down a recently-good tunnel on a flaky handshake read.
+          if (
+            (data.peer_state === "no_handshake" || data.peer_state === "waiting_router") &&
+            holdTunnelReadyThroughFlap()
+          ) {
+            if (pendingAutoConnect) tryAutoConnectSoon("Handshake read flapped — retrying Connect.");
+            return;
+          }
           tunnelPeerSyncRequired =
             data.peer_state === "missing" || data.peer_state === "key_mismatch";
           if (tunnelPeerPanel && tunnelServerPeerText) {
@@ -2691,16 +2734,19 @@
           );
           setTunnelStatus(data.message, true);
           if (pendingAutoConnect) {
-            if (data.peer_state === "no_handshake" || data.peer_state === "waiting_router") {
+            if (
+              (data.peer_state === "no_handshake" || data.peer_state === "waiting_router") &&
+              !tunnelApiReady
+            ) {
               showConnectStatus(
-                "VPS peer is ready — paste the latest Copy script in Winbox and wait for handshake " +
-                  "(ping 10.9.0.1 OK). Connect will retry automatically after that.",
+                "VPS peer is registered — wait for handshake (Winbox ping 10.9.0.1 OK). " +
+                  "If the script already finished, click Check now; do not Generate again.",
                 false
               );
               setOnboardProcessStep(
                 "connect",
                 "waiting",
-                "Waiting for Winbox handshake on " + (data.address || tunnelReadyAddress || "tunnel")
+                "Waiting for handshake on " + (data.address || tunnelReadyAddress || "tunnel")
               );
             } else if (data.peer_state === "missing") {
               showConnectStatus(
@@ -2836,9 +2882,17 @@
     }, 700);
   }
 
+  function holdTunnelReadyThroughFlap() {
+    if (!tunnelApiReady || !lastTunnelReadyAt) return false;
+    if (Date.now() - lastTunnelReadyAt > TUNNEL_READY_HOLD_MS) return false;
+    return tunnelFailStreak < 3;
+  }
+
   function markTunnelVerifyReady(data) {
     var becameReady = !tunnelApiReady;
     tunnelApiReady = true;
+    tunnelFailStreak = 0;
+    lastTunnelReadyAt = Date.now();
     tunnelPeerSyncRequired = false;
     localModeReady = false;
     if (tunnelPeerPanel) tunnelPeerPanel.hidden = true;
@@ -3722,7 +3776,20 @@
               }, 400);
               return;
             }
+            if (holdTunnelReadyThroughFlap()) {
+              tunnelFailStreak += 1;
+              showConnectStatus(
+                "Brief tunnel flap — retrying Connect on " + (tunnelReadyAddress || host) + "…",
+                false
+              );
+              setTimeout(function () {
+                if (!pendingAutoConnect || connectInFlight) return;
+                connectRouter({ auto: true });
+              }, 1200);
+              return;
+            }
             tunnelApiReady = false;
+            tunnelFailStreak += 1;
             showConnectStatus(
               "Tunnel/API not reachable yet — live verify continues. " +
                 "Paste the latest script in Winbox if you have not; Connect retries after handshake.",

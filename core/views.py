@@ -14415,7 +14415,8 @@ def mikrotik_tunnel_status(request):
         )
 
     wireguard.reconcile_runtime_allowed_ips()
-    probe = probe_mikrotik_for_onboarding(address, base_timeout=1.5)
+    # ~190ms RTT tunnels need more than 1.5s — flaky probes were flipping ready→waiting.
+    probe = probe_mikrotik_for_onboarding(address, base_timeout=4.0)
     via = probe.get("via") or ""
     api_enabled = bool(probe.get("online") and via == "api")
     tunnel_reachable = bool(probe.get("online"))
@@ -14427,19 +14428,18 @@ def mikrotik_tunnel_status(request):
             organization=org,
         )
         diagnosis = wireguard.ensure_reservation_peer(reservation)
-        # Peer may have just been applied — re-probe once.
-        if diagnosis.get("peer_sync", {}).get("ok"):
-            probe = probe_mikrotik_for_onboarding(address, base_timeout=1.5)
-            via = probe.get("via") or ""
-            api_enabled = bool(probe.get("online") and via == "api")
-            tunnel_reachable = bool(probe.get("online"))
-            if tunnel_reachable:
-                diagnosis = {
-                    "code": "ok",
-                    "message": "",
-                    "peer_sync": diagnosis.get("peer_sync") or {},
-                    "peer": diagnosis.get("peer") or {},
-                }
+        # Peer may have just been applied, or the first probe timed out — re-probe.
+        probe = probe_mikrotik_for_onboarding(address, base_timeout=5.0)
+        via = probe.get("via") or ""
+        api_enabled = bool(probe.get("online") and via == "api")
+        tunnel_reachable = bool(probe.get("online"))
+        if tunnel_reachable:
+            diagnosis = {
+                "code": "ok",
+                "message": "",
+                "peer_sync": diagnosis.get("peer_sync") or {},
+                "peer": diagnosis.get("peer") or {},
+            }
 
     if api_enabled:
         message = "Success — tunnel is online and RouterOS API is enabled on port 8728."
