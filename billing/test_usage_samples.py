@@ -956,6 +956,53 @@ class SampleOrganizationUsageTests(TestCase):
 
     @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
     @patch("core.mikrotik_connect.fetch_router_bulk_live_usage")
+    def test_empty_session_poll_holds_previous_live_presence(self, mock_live, _mock_cool):
+        """One empty NAS session list must not flash active clients offline."""
+        from django.core.cache import cache
+
+        from billing.usage_samples import (
+            _org_live_usage_cache_key,
+            get_org_live_usage,
+        )
+
+        mock_live.return_value = {
+            "ok": True,
+            "pppoe": {
+                "online1": {
+                    "session_active": True,
+                    "bytes_in": 5000,
+                    "bytes_out": 1000,
+                    "uptime_raw": "1h",
+                }
+            },
+            "hotspot": {},
+            "error": "",
+        }
+        sample_organization_usage(self.org, force=True)
+        live = get_org_live_usage(self.org)
+        self.assertTrue(live["pppoe"][self.online.pk]["session_active"])
+
+        mock_live.return_value = {
+            "ok": True,
+            "pppoe": {},
+            "hotspot": {},
+            "error": "",
+        }
+        sample_organization_usage(self.org, force=True)
+        live = get_org_live_usage(self.org)
+        self.assertTrue(
+            live["pppoe"][self.online.pk]["session_active"],
+            "first empty poll should hold last-known-active",
+        )
+
+        sample_organization_usage(self.org, force=True)
+        live = get_org_live_usage(self.org)
+        self.assertFalse(live["pppoe"][self.online.pk]["session_active"])
+
+        cache.delete(_org_live_usage_cache_key(self.org.pk))
+
+    @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
+    @patch("core.mikrotik_connect.fetch_router_bulk_live_usage")
     def test_failed_probe_does_not_mark_everyone_offline(self, mock_live, _mock_cool):
         mock_live.return_value = {
             "ok": False,

@@ -5484,12 +5484,17 @@ class TunnelStatusTests(TestCase):
         self.assertEqual(result["code"], "peer_missing")
         self.assertIn("sync-server", result["message"])
 
-    def test_ensure_reservation_peer_reports_key_mismatch(self):
-        class _Res:
-            label = "SHELTERLINK-001"
-            address = "10.9.0.2"
-            public_key = "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJkkkk="
+    def test_ensure_reservation_peer_rotates_on_live_key_mismatch(self):
+        from core.models import WireGuardReservation
 
+        reservation = WireGuardReservation.objects.create(
+            organization=self.org,
+            label="SHELTERLINK-001",
+            address="10.9.0.2",
+            lan_address="192.168.10.1",
+            private_key="x" * 44,
+            public_key="AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJkkkk=",
+        )
         other_key = "ZZZZYYYYXXXXWWWWVVVVUUUUTTTTSSSSRRRRQQQQPPPPoooo="
         with (
             patch(
@@ -5515,10 +5520,18 @@ class TunnelStatusTests(TestCase):
                 },
             ),
             patch("core.wireguard.handshake_max_age_sec", return_value=180),
+            patch("core.wireguard.remove_server_peer", return_value={"ok": True}),
+            patch(
+                "core.wireguard._clear_runtime_peers_for_address",
+                return_value=1,
+            ),
         ):
-            result = wireguard.ensure_reservation_peer(_Res())
-        self.assertEqual(result["code"], "key_mismatch")
-        self.assertIn("Generate script", result["message"])
+            result = wireguard.ensure_reservation_peer(reservation)
+        self.assertEqual(result["code"], "keys_rotated")
+        self.assertTrue(result.get("keys_rotated"))
+        reservation.refresh_from_db()
+        self.assertNotEqual(reservation.public_key, "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJkkkk=")
+        self.assertIn("paste", result["message"].lower())
 
     def test_fresh_tunnel_reservations_for_org_excludes_checked_address(self):
         from core.models import WireGuardReservation

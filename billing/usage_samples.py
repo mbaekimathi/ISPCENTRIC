@@ -26,6 +26,9 @@ _ORG_SAMPLE_TTL = 60  # seconds between org-wide MikroTik sweeps
 _ORG_PAYLOAD_TTL = 20  # seconds for aggregated chart payloads
 _ORG_PAYLOAD_CACHE_VERSION = "v10"  # bump when payload shape / sampling changes
 _ORG_LIVE_USAGE_TTL = 120  # NAS presence snapshot after each org sweep
+# Hold last-known-active across one empty/flaky NAS poll (concurrent sweep / API load).
+_ORG_LIVE_SESSION_DROP_CONFIRMATIONS = 2
+_ORG_LIVE_SESSION_DROP_TTL = 90
 _ORG_DEVICE_TOUCH_TTL = 60  # throttle CustomerDevice last_seen updates
 _CLIENT_TREND_TTL = 20  # short cache for per-client chart payloads
 _CLIENT_TREND_CACHE_VERSION = "v7"  # bump when payload shape changes
@@ -716,6 +719,72 @@ def get_org_live_usage(organization) -> dict[str, Any]:
     return {"ok": False, "at": "", "pppoe": {}, "hotspot": {}}
 
 
+def _org_live_session_drop_key(organization_id: int, customer_id: int) -> str:
+    return f"org_live_session_drop:v1:{int(organization_id)}:{int(customer_id)}"
+
+
+def _live_map_customer_id(key: Any) -> int | None:
+    try:
+        return int(key)
+    except (TypeError, ValueError):
+        return None
+
+
+def merge_live_presence_maps(
+    organization_id: int,
+    previous_map: dict[Any, Any] | None,
+    current_map: dict[Any, Any] | None,
+) -> dict[int, dict[str, Any]]:
+    """
+    Require consecutive inactive polls before dropping session_active.
+
+    Stops usage sampling from flashing every client offline when another
+    fleet job briefly empties /ppp/active or /ip/hotspot/active.
+    """
+    prev = previous_map if isinstance(previous_map, dict) else {}
+    cur = current_map if isinstance(current_map, dict) else {}
+    merged: dict[int, dict[str, Any]] = {}
+    for key, entry in cur.items():
+        cid = _live_map_customer_id(key)
+        if cid is None or not isinstance(entry, dict):
+            continue
+        merged[cid] = dict(entry)
+        if entry.get("session_active"):
+            cache.delete(_org_live_session_drop_key(organization_id, cid))
+
+    for key, prev_entry in prev.items():
+        cid = _live_map_customer_id(key)
+        if cid is None or not isinstance(prev_entry, dict):
+            continue
+        if not prev_entry.get("session_active"):
+            continue
+        cur_entry = merged.get(cid)
+        if isinstance(cur_entry, dict) and cur_entry.get("session_active"):
+            continue
+        pending_key = _org_live_session_drop_key(organization_id, cid)
+        pending = cache.get(pending_key)
+        count = 1
+        if isinstance(pending, dict):
+            count = int(pending.get("count") or 0) + 1
+        if count < _ORG_LIVE_SESSION_DROP_CONFIRMATIONS:
+            cache.set(pending_key, {"count": count}, _ORG_LIVE_SESSION_DROP_TTL)
+            merged[cid] = dict(prev_entry)
+            continue
+        cache.delete(pending_key)
+        if cid not in merged:
+            merged[cid] = (
+                dict(cur_entry)
+                if isinstance(cur_entry, dict)
+                else {
+                    "session_active": False,
+                    "download_bps": 0,
+                    "upload_bps": 0,
+                    "gadgets": 0,
+                }
+            )
+    return merged
+
+
 def org_live_usage_is_fresh(
     organization, *, max_age_sec: int | None = None
 ) -> bool:
@@ -1294,6 +1363,17 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
 
     previous_live = get_org_live_usage(organization)
     if any_router_ok:
+        org_id = int(organization.pk)
+        live_pppoe = merge_live_presence_maps(
+            org_id,
+            previous_live.get("pppoe"),
+            live_pppoe,
+        )
+        live_hotspot = merge_live_presence_maps(
+            org_id,
+            previous_live.get("hotspot"),
+            live_hotspot,
+        )
         cache.set(
             _org_live_usage_cache_key(organization.pk),
             {

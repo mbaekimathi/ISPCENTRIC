@@ -14194,8 +14194,16 @@ def mikrotik_tunnel_script(request):
                 status=402,
             )
 
+    rotate_keys = (request.POST.get("rotate_keys") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     try:
-        reservation, peer_sync = wireguard.reserve_peer(label, organization=org)
+        reservation, peer_sync = wireguard.reserve_peer(
+            label, organization=org, rotate_keys=rotate_keys
+        )
         payload = wireguard.peer_payload(
             reservation.label,
             reservation.address,
@@ -14753,31 +14761,56 @@ def mikrotik_tunnel_status(request):
     # On the VPS, reaching the tunnel IP means the Winbox script created the peer.
     script_installed = bool(tunnel_reachable or api_enabled)
     script_lan = (getattr(reservation, "lan_address", None) or "").strip()
-    return JsonResponse(
-        {
-            "ok": True,
-            "address": address,
-            "tunnel_reachable": tunnel_reachable,
-            "api_enabled": api_enabled,
-            "script_installed": script_installed,
-            "ready": api_enabled,
-            "no_tunnel_route": False,
-            "hosted_wg_down": False,
-            "local_mode": False,
-            "lan_address": script_lan,
-            "script_lan_address": script_lan,
-            "via": via,
-            "message": message,
-            "checks": checks,
-            "peer_state": peer_state,
-            "peer_synced": bool(peer_sync.get("ok") or peer_info.get("present") or tunnel_reachable),
-            "peer_present": bool(peer_info.get("present") or tunnel_reachable),
-            "handshake_age_sec": peer_info.get("handshake_age_sec"),
-            "peer_sync_error": (peer_sync.get("error") or "").strip(),
-            "alternate_live_tunnels": alternate_live,
-            "alternate_live_hint": alt_hint,
-        }
-    )
+    response_payload = {
+        "ok": True,
+        "address": address,
+        "tunnel_reachable": tunnel_reachable,
+        "api_enabled": api_enabled,
+        "script_installed": script_installed,
+        "ready": api_enabled,
+        "no_tunnel_route": False,
+        "hosted_wg_down": False,
+        "local_mode": False,
+        "lan_address": script_lan,
+        "script_lan_address": script_lan,
+        "via": via,
+        "message": message,
+        "checks": checks,
+        "peer_state": peer_state,
+        "peer_synced": bool(peer_sync.get("ok") or peer_info.get("present") or tunnel_reachable),
+        "peer_present": bool(peer_info.get("present") or tunnel_reachable),
+        "handshake_age_sec": peer_info.get("handshake_age_sec"),
+        "peer_sync_error": (peer_sync.get("error") or "").strip(),
+        "alternate_live_tunnels": alternate_live,
+        "alternate_live_hint": alt_hint,
+    }
+    if diagnosis.get("keys_rotated"):
+        reservation = diagnosis.get("reservation") or reservation
+        refresh = wireguard.peer_payload(
+            reservation.label,
+            reservation.address,
+            reservation.private_key,
+            reservation.public_key,
+            lan_address=(reservation.lan_address or ""),
+        )
+        response_payload.update(
+            {
+                "keys_rotated": True,
+                "script": refresh["script"],
+                "server_peer": refresh["server_peer"],
+                "endpoint": refresh["endpoint"],
+                "status_token": signing.dumps(
+                    {
+                        "address": reservation.address,
+                        "user_id": request.user.pk,
+                        "org_id": org.pk if org else None,
+                    },
+                    salt="mikrotik-tunnel-status",
+                    compress=True,
+                ),
+            }
+        )
+    return JsonResponse(response_payload)
 
 
 @client_workspace_required
@@ -15041,6 +15074,22 @@ def mikrotik_status(request):
 
             attach_auto_restore_to_rows(cached)
             return JsonResponse({"ok": True, "routers": cached})
+    elif org:
+        from core.subscription_sync import is_fleet_write_active
+
+        if is_fleet_write_active():
+            held = cache.get(cache_key)
+            if held is not None:
+                from core.mikrotik_auto_restore import attach_auto_restore_to_rows
+
+                attach_auto_restore_to_rows(held)
+                return JsonResponse(
+                    {
+                        "ok": True,
+                        "routers": held,
+                        "fleet_sync_hold": True,
+                    }
+                )
 
     results = {}
 
@@ -15132,7 +15181,6 @@ def mikrotik_status(request):
     payload = stabilize_live_status_rows(
         org.pk if org else 0,
         payload,
-        force=force_refresh,
         tunnel_by_router=tunnel_by_router,
         off_lan_tunnel_by_router=off_lan_tunnel_by_router,
     )
@@ -15160,7 +15208,9 @@ def mikrotik_status(request):
         try:
             from core.mikrotik_status_samples import record_mikrotik_status_samples
 
-            record_mikrotik_status_samples(org, probe_payload)
+            record_mikrotik_status_samples(
+                org, probe_payload, alert_rows=payload
+            )
         except Exception:
             pass
     return JsonResponse(
@@ -19400,6 +19450,10 @@ def _surf_probe_failure_is_soft(row: dict) -> bool:
             "recently unreachable",
             "router disconnected",
             "no active session on any router",
+            "no active hotspot session",
+            "router not dialed",
+            "merged last known sessions",
+            "subscription sync in progress",
         )
     )
 
@@ -19414,7 +19468,7 @@ def stabilize_client_surfing_row(
     Hold the last Surfing badge through brief NAS/API probe failures so the
     clients list does not flash Disconnected on every WireGuard timeout.
     """
-    if force or not organization_id or not isinstance(row, dict):
+    if not organization_id or not isinstance(row, dict):
         return row
     try:
         customer_id = int(row.get("id") or 0)
@@ -19469,7 +19523,7 @@ def stabilize_client_surfing_rows(
     *,
     force: bool = False,
 ) -> list[dict]:
-    if force or not organization_id:
+    if not organization_id:
         return rows
     return [
         stabilize_client_surfing_row(organization_id, row, force=force)
@@ -19512,6 +19566,17 @@ def _probe_mikrotik_router_combined(router) -> dict:
     if router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
         empty["error"] = "Router suspended"
         return empty
+    from core.subscription_sync import is_fleet_write_active
+
+    if is_fleet_write_active():
+        stale = _load_router_surf_probe_snapshot(router_id)
+        if stale:
+            stale = dict(stale)
+            stale["error"] = (
+                "Subscription sync in progress — showing last known sessions"
+            )
+            stale["stale"] = True
+            return stale
     api_host = _resolve_working_nas_host(router, timeout=1.5)
     if is_mikrotik_host_cooling_down(api_host):
         stale = _load_router_surf_probe_snapshot(router_id)
@@ -19774,6 +19839,15 @@ def clients_surfing_status(request):
             if customer_id_raw:
                 cached = _filter_surfing_clients_payload(cached, customer_id_raw)
             return JsonResponse(cached)
+    else:
+        from core.subscription_sync import is_fleet_write_active
+
+        if is_fleet_write_active():
+            held = cache.get(cache_key)
+            if isinstance(held, dict) and held.get("clients"):
+                if customer_id_raw:
+                    held = _filter_surfing_clients_payload(held, customer_id_raw)
+                return JsonResponse(held)
 
     customer_qs = Customer.objects.filter(
         organization=org,
@@ -19792,14 +19866,13 @@ def clients_surfing_status(request):
     live_map: dict = {}
     use_live_snapshot = False
     if force:
+        # Refresh usage samples in the background; session badges use the
+        # dedicated surfing probe (stale session merge), not the live map,
+        # which can briefly mark everyone offline during concurrent NAS work.
         try:
             sample_organization_usage(org, force=True)
         except Exception:
             pass
-        live = get_org_live_usage(org)
-        if live.get("ok"):
-            live_map = live.get(service) if isinstance(live.get(service), dict) else {}
-            use_live_snapshot = True
     elif org_live_usage_is_fresh(org):
         live = get_org_live_usage(org)
         live_map = live.get(service) if isinstance(live.get(service), dict) else {}

@@ -460,18 +460,14 @@ def _reservation_stale_handshake_sec() -> int:
     return max(int(handshake_max_age_sec()), int(days * 86400))
 
 
-def _remove_runtime_peers_for_address(address: str, keep_public_key: str) -> int:
-    """
-    Drop wg0 peers bound to ``address/32`` except ``keep_public_key``.
-
-    Prevents stale onboarding keys from blocking handshakes for the same tunnel IP.
-    """
+def _clear_runtime_peers_for_address(
+    address: str, *, except_public_key: str = ""
+) -> int:
+    """Remove every wg0 peer bound to ``address/32``, optionally keeping one key."""
     address = (address or "").strip()
-    keep_public_key = (keep_public_key or "").strip()
+    except_public_key = (except_public_key or "").strip()
     needle = f"{address}/32"
-    if not address or not keep_public_key:
-        return 0
-    if not can_apply_server_peers():
+    if not address or not can_apply_server_peers():
         return 0
 
     rows, err = _run_wg_interface_dump()
@@ -481,7 +477,7 @@ def _remove_runtime_peers_for_address(address: str, keep_public_key: str) -> int
     removed = 0
     for row in rows:
         public_key = (row.get("public_key") or "").strip()
-        if not public_key or public_key == keep_public_key:
+        if not public_key or public_key == except_public_key:
             continue
         allowed = (row.get("allowed_ips") or "").replace(" ", ",")
         if needle not in allowed.split(","):
@@ -489,6 +485,68 @@ def _remove_runtime_peers_for_address(address: str, keep_public_key: str) -> int
         if remove_server_peer(public_key).get("ok"):
             removed += 1
     return removed
+
+
+def _remove_runtime_peers_for_address(address: str, keep_public_key: str) -> int:
+    """
+    Drop wg0 peers bound to ``address/32`` except ``keep_public_key``.
+
+    Prevents stale onboarding keys from blocking handshakes for the same tunnel IP.
+    """
+    keep_public_key = (keep_public_key or "").strip()
+    if not keep_public_key:
+        return 0
+    return _clear_runtime_peers_for_address(
+        address, except_public_key=keep_public_key
+    )
+
+
+def live_tunnel_key_conflicts_with_reservation(reservation) -> bool:
+    """
+    True when the router is actively handshaking on wg0 with a different public key
+    than the pending WireGuardReservation (stale Winbox paste / manual key edit).
+    """
+    public_key = (getattr(reservation, "public_key", None) or "").strip()
+    address = (getattr(reservation, "address", None) or "").strip()
+    if not public_key or not address:
+        return False
+    live = find_handshake_peer_for_address(address)
+    live_key = (live.get("public_key") or "").strip()
+    return bool(
+        live.get("checked")
+        and live_key
+        and live_key != public_key
+        and _handshake_fresh(live.get("handshake_age_sec"))
+    )
+
+
+def rotate_reservation_keys(reservation):
+    """
+    Issue a fresh keypair for a pending reservation, drop stale wg0 peers, re-sync.
+
+    Returns ``(reservation, peer_sync)``. The MikroTik must receive a new full paste
+    (Generate / Check now refreshes the script automatically).
+    """
+    old_public = (getattr(reservation, "public_key", None) or "").strip()
+    address = (getattr(reservation, "address", None) or "").strip()
+    if old_public:
+        remove_server_peer(old_public)
+    if address:
+        _clear_runtime_peers_for_address(address)
+
+    private_key, public_key = generate_keypair()
+    reservation.private_key = private_key
+    reservation.public_key = public_key
+    reservation.save(update_fields=["private_key", "public_key"])
+
+    label = (getattr(reservation, "label", None) or "").strip() or "MikroTik"
+    peer_sync = apply_server_peer(label, address, public_key)
+    logger.info(
+        "Rotated WireGuard onboarding keys for %s (%s)",
+        label,
+        address or "?",
+    )
+    return reservation, peer_sync
 
 
 def remove_server_peer(public_key: str) -> dict:
@@ -784,13 +842,17 @@ def purge_stale_wireguard_reservations(
     }
 
 
-def reserve_peer(label: str, *, organization=None):
+def reserve_peer(label: str, *, organization=None, rotate_keys: bool = False):
     """
     Create or reuse a WireGuardReservation for a router that is not onboarded yet.
 
     Returns (reservation, peer_sync). Same label (case-insensitive) within one ISP
     workspace keeps one peer so the Connect modal can regenerate the paste script
     without burning addresses. Each organization gets its own keys and tunnel IP.
+
+    When ``rotate_keys`` is true, or the VPS sees a live handshake under another
+    public key for this tunnel IP, keys are rotated automatically so operators
+    never edit keys manually in the database or wg0.
     """
     from core.models import WireGuardReservation
 
@@ -821,11 +883,14 @@ def reserve_peer(label: str, *, organization=None):
         reservation.lan_address = allocate_lan_address()
         reservation.save(update_fields=["lan_address"])
 
-    peer_sync = apply_server_peer(
-        reservation.label,
-        reservation.address,
-        reservation.public_key,
-    )
+    if rotate_keys or live_tunnel_key_conflicts_with_reservation(reservation):
+        reservation, peer_sync = rotate_reservation_keys(reservation)
+    else:
+        peer_sync = apply_server_peer(
+            reservation.label,
+            reservation.address,
+            reservation.public_key,
+        )
     # Generate must not block on a false "sync skipped" when the peer is already
     # on wg0 (e.g. after wireguard_peer --sync-server, or a prior successful apply).
     if not peer_sync.get("ok"):
@@ -1415,16 +1480,28 @@ def onboard_tunnel_peer_ready(tunnel_address: str, *, organization=None) -> dict
         and live_key != public_key
         and _handshake_fresh(live_age)
     ):
+        reservation, rot_sync = rotate_reservation_keys(reservation)
+        public_key = (reservation.public_key or "").strip()
+        sync = apply_server_peer(
+            getattr(reservation, "label", None) or "MikroTik",
+            address,
+            public_key,
+        )
+        if not sync.get("ok"):
+            sync = rot_sync
+        peer = inspect_server_peer(public_key)
         return {
             "ok": False,
             "required": True,
-            "peer_synced": False,
+            "peer_synced": bool(sync.get("ok") or peer.get("present")),
+            "keys_rotated": True,
             "error": (
-                f"Tunnel {address} is active on the VPS under a different WireGuard key. "
-                "Paste the full Copy script on the MikroTik (do not type keys), then Check now."
+                f"Tunnel {address} was using an old WireGuard key — ISPCENTRIC issued "
+                "new keys and registered them on the VPS. Copy script again, paste the "
+                "full script in Winbox → New Terminal, then Check now."
             ),
-            "peer_sync": {},
-            "key_mismatch": True,
+            "peer_sync": sync,
+            "key_mismatch": False,
         }
 
     sync = apply_server_peer(
@@ -1730,7 +1807,7 @@ def ensure_reservation_peer(reservation) -> dict:
     """
     Re-apply a pending reservation to wg0 and classify why the tunnel may be down.
 
-    Codes: ok | peer_missing | no_handshake | key_mismatch | waiting_router | unknown
+    Codes: ok | peer_missing | no_handshake | keys_rotated | waiting_router | unknown
     """
     label = getattr(reservation, "label", None) or "MikroTik"
     address = (getattr(reservation, "address", None) or "").strip()
@@ -1749,16 +1826,23 @@ def ensure_reservation_peer(reservation) -> dict:
         and live_key != public_key
         and _handshake_fresh(live_age)
     ):
+        reservation, rot_sync = rotate_reservation_keys(reservation)
+        public_key = (reservation.public_key or "").strip()
+        sync = apply_server_peer(label, address, public_key)
+        if not sync.get("ok"):
+            sync = rot_sync
+        peer = inspect_server_peer(public_key)
         return {
-            "code": "key_mismatch",
+            "code": "keys_rotated",
+            "keys_rotated": True,
             "message": (
-                f"VPS sees a live WireGuard handshake for {address}, but not for this "
-                "site’s keys (an old peer may still be on wg0). Click Generate script, "
-                "paste the full script once in Winbox → New Terminal, then run "
-                "manage.py wireguard_peer --sync-server and Check now."
+                f"VPS saw an old WireGuard key on {address}. New keys are registered "
+                "on the billing server — copy the refreshed script, paste it once in "
+                "Winbox → New Terminal, then Check now."
             ),
             "peer_sync": sync,
             "peer": peer,
+            "reservation": reservation,
             "live_peer_public_key": live_key,
         }
 
@@ -2367,6 +2451,19 @@ def tunnel_verification_checks(
         ping_status, ping_msg = (
             "fail",
             f"Billing checks use reservation keys — fix keys, then Check now",
+        )
+    elif state == "keys_rotated":
+        tunnel_status, tunnel_msg = (
+            "waiting",
+            f"New keys for {address} — paste the refreshed script in Winbox",
+        )
+        peer_status, peer_msg = (
+            "ok",
+            "VPS wg0 updated — waiting for MikroTik to use the new private key",
+        )
+        ping_status, ping_msg = (
+            "waiting",
+            f"Ping to {server} after the router pastes the new script",
         )
     elif state == "waiting_router":
         tunnel_status, tunnel_msg = (

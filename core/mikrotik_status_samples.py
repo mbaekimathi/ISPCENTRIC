@@ -513,7 +513,7 @@ def stabilize_live_status_row(
     publish immediately. Chart sampling keeps its own debounce via
     record_mikrotik_status_samples.
     """
-    if force or not organization_id:
+    if not organization_id:
         return row
 
     status = (row.get("status") or "disconnected").strip().lower()
@@ -585,7 +585,7 @@ def stabilize_live_status_rows(
     tunnel_by_router: dict[int, bool] | None = None,
     off_lan_tunnel_by_router: dict[int, bool] | None = None,
 ) -> list[dict[str, Any]]:
-    if force or not organization_id or not rows:
+    if not organization_id or not rows:
         return rows
     tunnel_map = tunnel_by_router or {}
     off_lan_map = off_lan_tunnel_by_router or {}
@@ -660,7 +660,12 @@ def _confirmed_status_for_sample(
     return None
 
 
-def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) -> int:
+def record_mikrotik_status_samples(
+    organization,
+    routers: list[dict[str, Any]],
+    *,
+    alert_rows: list[dict[str, Any]] | None = None,
+) -> int:
     """
     Persist one health sample per router from a mikrotik_status payload.
 
@@ -672,9 +677,9 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
     if not organization or not routers:
         return 0
 
-    # Alerts fire from the live probe on the first fail — independent of the
-    # chart debounce / sample gate below (which still require confirmation).
-    _notify_mikrotik_status_alerts(organization, routers)
+    # Alerts use stabilized rows when provided so a single flaky poll during
+    # concurrent NAS work does not SMS/email "MikroTik offline".
+    _notify_mikrotik_status_alerts(organization, alert_rows or routers)
 
     org_id = organization.pk
     has_outage = False
@@ -768,7 +773,11 @@ def _notify_mikrotik_status_alerts(
         return
     try:
         from accounts.communications import maybe_notify_mikrotik_health_low
+        from core.subscription_sync import is_fleet_write_active
     except Exception:
+        return
+
+    if is_fleet_write_active():
         return
 
     router_ids = {
@@ -1211,7 +1220,9 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
     if not routers:
         return []
 
-    router_candidates, unique_hosts, _tunnel_map, _off_lan = build_router_probe_plan(routers)
+    router_candidates, unique_hosts, tunnel_map, off_lan_map = build_router_probe_plan(
+        routers
+    )
     probe_by_host = probe_mikrotik_hosts(unique_hosts)
     results: dict[int, dict[str, Any]] = {}
 
@@ -1268,7 +1279,12 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
                 },
             )
         )
-    return payload
+    return stabilize_live_status_rows(
+        organization.pk,
+        payload,
+        tunnel_by_router=tunnel_map,
+        off_lan_tunnel_by_router=off_lan_map,
+    )
 
 
 def sample_all_organizations() -> dict[str, int]:

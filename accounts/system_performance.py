@@ -55,6 +55,19 @@ def _probe_org_mikrotik(org: Organization, *, force: bool = False) -> list[dict[
             except Exception:
                 pass
             return cached
+    else:
+        from core.subscription_sync import is_fleet_write_active
+
+        if is_fleet_write_active():
+            held = cache.get(cache_key)
+            if isinstance(held, list):
+                try:
+                    from core.mikrotik_auto_restore import attach_auto_restore_to_rows
+
+                    attach_auto_restore_to_rows(held)
+                except Exception:
+                    pass
+                return held
 
     routers = list(
         MikroTikRouter.objects.filter(organization=org).only(
@@ -124,7 +137,6 @@ def _probe_org_mikrotik(org: Organization, *, force: bool = False) -> list[dict[
     payload = stabilize_live_status_rows(
         org.pk,
         payload,
-        force=force,
         tunnel_by_router=tunnel_by_router,
         off_lan_tunnel_by_router=off_lan_tunnel_by_router,
     )
@@ -140,7 +152,7 @@ def _probe_org_mikrotik(org: Organization, *, force: bool = False) -> list[dict[
     )
     cache.set(cache_key, payload, _mikrotik_status_cache_ttl(all_connected))
     try:
-        record_mikrotik_status_samples(org, probe_payload)
+        record_mikrotik_status_samples(org, probe_payload, alert_rows=payload)
     except Exception:
         pass
     return payload

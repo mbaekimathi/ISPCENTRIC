@@ -2195,10 +2195,30 @@
           setHostHint("Type the router’s LAN IP (for example 192.168.88.1) — the tunnel IP only works from the VPS.");
           return;
         }
+        if (data.keys_rotated && data.script) {
+          showTunnelScript(data, { resume: true });
+          markTunnelStep(2, "active");
+          setTunnelCheckState(
+            "waiting",
+            "New tunnel keys — paste script again",
+            false,
+            false
+          );
+          setTunnelStatus(
+            data.message ||
+              "Keys were refreshed automatically. Copy script, paste in Winbox, then Check now.",
+            true
+          );
+          setHostHint(
+            "Paste the refreshed script in Winbox → New Terminal (full paste). Do not type WireGuard keys."
+          );
+          return;
+        }
         if (
           data.peer_state === "missing" ||
           data.peer_state === "no_handshake" ||
-          data.peer_state === "key_mismatch"
+          data.peer_state === "key_mismatch" ||
+          data.peer_state === "keys_rotated"
         ) {
           tunnelPeerSyncRequired =
             data.peer_state === "missing" || data.peer_state === "key_mismatch";
@@ -2213,6 +2233,8 @@
               ? "VPS peer missing on wg0"
               : data.peer_state === "key_mismatch"
                 ? "Router keys do not match reservation"
+                : data.peer_state === "keys_rotated"
+                  ? "New tunnel keys — paste script again"
                 : altLive.length
                   ? "Checking " + (data.address || tunnelReadyAddress) + " — router live on another tunnel IP"
                   : "WireGuard handshake missing",
@@ -2222,7 +2244,11 @@
           setTunnelStatus(data.message, true);
           if (altHint) {
             setVerifyHint(altHint);
-          } else if (data.peer_state === "key_mismatch" || data.peer_state === "no_handshake") {
+          } else if (
+            data.peer_state === "key_mismatch" ||
+            data.peer_state === "keys_rotated" ||
+            data.peer_state === "no_handshake"
+          ) {
             setHostHint(
               "Use Copy script only — do not type WireGuard keys in Winbox. " +
                 "Look for [ISPCENTRIC FAIL] key mismatch in the terminal."
