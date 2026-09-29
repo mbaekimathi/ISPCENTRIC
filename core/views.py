@@ -14235,7 +14235,7 @@ def mikrotik_tunnel_script(request):
         )
     rsc_token = wireguard.rsc_access_token(reservation.address)
     install_rsc_url = request.build_absolute_uri(
-        f"{reverse('mikrotik_tunnel_rsc')}?token={rsc_token}&kind=install"
+        f"{reverse('core:mikrotik_tunnel_rsc')}?token={rsc_token}&kind=install"
     )
     return JsonResponse(
         {

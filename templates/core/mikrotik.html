@@ -2318,7 +2318,26 @@
       credentials: "same-origin",
       headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "application/json" }
     }).then(function (res) {
-      return res.json().then(function (data) {
+      return res.text().then(function (raw) {
+        var data = null;
+        if (raw) {
+          try {
+            data = JSON.parse(raw);
+          } catch (parseErr) {
+            data = {
+              ok: false,
+              error:
+                "Server returned an unexpected response (HTTP " + res.status + "). " +
+                "Refresh the page, sign in again, or check VPS logs if this persists."
+            };
+          }
+        }
+        if (!data) {
+          data = {
+            ok: false,
+            error: "Empty response from server (HTTP " + res.status + ")."
+          };
+        }
         return { ok: res.ok, status: res.status, data: data };
       });
     });
