@@ -2285,6 +2285,8 @@ def tunnel_verification_checks(
     multiple_devices: bool = False,
     peer_state: str = "",
     script_installed: bool = False,
+    peer_present: bool = False,
+    peer_synced: bool = False,
 ) -> list[dict[str, str]]:
     """
     Structured pass/fail rows for the Connect modal (mirrors Winbox script summary).
@@ -2427,18 +2429,32 @@ def tunnel_verification_checks(
             f"No route to {server} until the VPS peer exists",
         )
     elif state == "no_handshake":
-        tunnel_status, tunnel_msg = (
-            "fail",
-            f"Tunnel IP {address} unreachable — WireGuard handshake missing",
-        )
-        peer_status, peer_msg = (
-            "fail",
-            "Peer is on VPS wg0 but handshake is empty — paste script / open UDP to endpoint",
-        )
-        ping_status, ping_msg = (
-            "fail",
-            f"No ping to {server} until handshake succeeds",
-        )
+        if peer_present or peer_synced:
+            tunnel_status, tunnel_msg = (
+                "waiting",
+                f"Paste the Winbox script — tunnel {address} comes up after the router dials in",
+            )
+            peer_status, peer_msg = (
+                "ok",
+                f"VPS peer {address}/32 is registered — waiting for MikroTik handshake",
+            )
+            ping_status, ping_msg = (
+                "waiting",
+                f"Router will reach {server} after the script finishes in Winbox",
+            )
+        else:
+            tunnel_status, tunnel_msg = (
+                "waiting",
+                f"Tunnel IP {address} not up yet — paste the script in Winbox",
+            )
+            peer_status, peer_msg = (
+                "waiting",
+                "Waiting for VPS peer registration and MikroTik handshake",
+            )
+            ping_status, ping_msg = (
+                "waiting",
+                f"No ping to {server} until the router connects WireGuard",
+            )
     elif state == "key_mismatch":
         tunnel_status, tunnel_msg = (
             "fail",
@@ -2478,6 +2494,25 @@ def tunnel_verification_checks(
             "waiting",
             f"Waiting for router path to {server}",
         )
+    elif state == "unknown":
+        tunnel_status, tunnel_msg = (
+            "waiting",
+            "Paste the full script in Winbox → New Terminal, then Check now",
+        )
+        if peer_present or peer_synced:
+            peer_status, peer_msg = (
+                "ok",
+                f"VPS peer {address}/32 registered — waiting for MikroTik",
+            )
+        else:
+            peer_status, peer_msg = (
+                "waiting",
+                f"Register peer {address}/32 on VPS wg0 if Generate did not sync",
+            )
+        ping_status, ping_msg = (
+            "waiting",
+            f"Billing ping runs after the router brings up the tunnel",
+        )
     elif tunnel_reachable:
         tunnel_status, tunnel_msg = (
             "ok",
@@ -2498,13 +2533,19 @@ def tunnel_verification_checks(
             "waiting",
             "Waiting — paste script in Winbox New Terminal",
         )
-        peer_status, peer_msg = (
-            "fail",
-            f"Add [Peer] AllowedIPs={address}/32 on VPS wg0, then wireguard_peer --sync-server",
-        )
+        if peer_present or peer_synced:
+            peer_status, peer_msg = (
+                "ok",
+                f"VPS peer {address}/32 ready — waiting for Winbox paste on the router",
+            )
+        else:
+            peer_status, peer_msg = (
+                "waiting",
+                f"VPS should register {address}/32 when you Generate — paste script next",
+            )
         ping_status, ping_msg = (
             "waiting",
-            f"No route to {server} yet — register peer on VPS if Winbox handshake is empty",
+            f"Router will ping {server} after WireGuard connects",
         )
 
     checks.append(

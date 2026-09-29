@@ -14748,16 +14748,18 @@ def mikrotik_tunnel_status(request):
         elif peer_state == "waiting_router" and api_enabled:
             peer_state = "ok"
 
+    peer_sync = diagnosis.get("peer_sync") or {}
+    peer_info = diagnosis.get("peer") or {}
+    peer_present = bool(peer_info.get("present") or peer_sync.get("ok"))
     checks = wireguard.tunnel_verification_checks(
         local_mode=False,
         address=address,
         tunnel_reachable=tunnel_reachable,
         api_enabled=api_enabled,
         peer_state=peer_state,
+        peer_present=peer_present,
+        peer_synced=bool(peer_sync.get("ok")),
     )
-
-    peer_sync = diagnosis.get("peer_sync") or {}
-    peer_info = diagnosis.get("peer") or {}
     # On the VPS, reaching the tunnel IP means the Winbox script created the peer.
     script_installed = bool(tunnel_reachable or api_enabled)
     script_lan = (getattr(reservation, "lan_address", None) or "").strip()

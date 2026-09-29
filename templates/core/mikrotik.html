@@ -1304,9 +1304,24 @@
     tunnelVerifyHint.textContent = text;
   }
 
+  var awaitingWinboxPaste = false;
+
   function summarizeChecks(checks) {
     if (!checks || !checks.length) {
       return { state: "waiting", title: "Waiting for script", sub: "Paste in Winbox first", hint: "" };
+    }
+    if (awaitingWinboxPaste) {
+      var prePaste = checks.filter(function (item) {
+        return item.status === "waiting" || item.status === "ok";
+      });
+      if (prePaste.length === checks.length) {
+        return {
+          state: "waiting",
+          title: "Paste script on the MikroTik",
+          sub: "Checks stay grey until the router runs the script",
+          hint: "Winbox → New Terminal → paste → wait for [ISPCENTRIC OK], then Check now"
+        };
+      }
     }
     var failed = checks.filter(function (item) { return item.status === "fail"; });
     var waiting = checks.filter(function (item) { return item.status === "waiting"; });
@@ -1991,6 +2006,7 @@
 
   function checkTunnelStatus() {
     if (!tunnelStatusToken || tunnelStatusInFlight) return;
+    awaitingWinboxPaste = false;
     tunnelStatusInFlight = true;
     if (tunnelCheckNow) tunnelCheckNow.disabled = true;
     setCheckNowSecondary(false);
@@ -2571,7 +2587,10 @@
       if (!tunnelPeerSyncRequired) {
         setTunnelStatus("Copied. Paste the script in Winbox → New Terminal, then Check now.", false);
       }
-      startTunnelStatusPolling();
+      awaitingWinboxPaste = true;
+      setVerifyBanner("waiting", "Paste script on the MikroTik", "Nothing is wrong yet — the router has not run the script");
+      setVerifyHint("After paste finishes in Winbox, click Check now (or wait — we will not show red errors until then).");
+      renderTunnelChecks([]);
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(tunnelScriptText).then(done).catch(function () {

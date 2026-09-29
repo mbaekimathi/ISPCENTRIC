@@ -5226,8 +5226,7 @@ class TunnelStatusTests(TestCase):
             keys,
             ["tunnel", "vps_peer", "billing_ping", "api", "firewall"],
         )
-        self.assertEqual(checks[1]["status"], "fail")
-        self.assertIn("[Peer]", checks[1]["message"])
+        self.assertEqual(checks[1]["status"], "waiting")
 
         missing = wireguard.tunnel_verification_checks(
             local_mode=False,
@@ -5245,8 +5244,9 @@ class TunnelStatusTests(TestCase):
             tunnel_reachable=False,
             api_enabled=False,
             peer_state="no_handshake",
+            peer_present=True,
         )
-        self.assertEqual(no_hs[1]["status"], "fail")
+        self.assertEqual(no_hs[1]["status"], "ok")
         self.assertIn("handshake", no_hs[1]["message"].lower())
 
         waiting = wireguard.tunnel_verification_checks(
