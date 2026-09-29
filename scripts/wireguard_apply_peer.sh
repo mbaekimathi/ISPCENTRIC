@@ -46,8 +46,10 @@ if ! wg show "$IFACE" >/dev/null 2>&1; then
   fi
 fi
 
-# Replace in place: drop stale allowed-ips / duplicate runtime rows for this key.
-wg set "$IFACE" peer "$PUBKEY" remove 2>/dev/null || true
+# Upsert in place — never remove+readd. Removing clears the learned endpoint and
+# handshake; behind CGNAT the VPS then cannot dial the router ("Destination
+# address required") until MikroTik keepalive lands again. That looked like the
+# tunnel "disconnecting" every sync-server / deploy.
 wg set "$IFACE" peer "$PUBKEY" allowed-ips "${ADDR}/32"
 
 if [[ -f "$CONF" ]] && ! grep -qF "$PUBKEY" "$CONF"; then
