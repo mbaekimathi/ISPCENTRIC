@@ -385,6 +385,54 @@ def _server_public_key() -> str:
     return key
 
 
+def _read_live_wg_interface_public_key() -> str:
+    """Best-effort ``wg show <iface> public-key`` on the billing host."""
+    iface = _wireguard_interface()
+    wg_bin = shutil.which("wg") or "/usr/bin/wg"
+    try:
+        proc = subprocess.run(
+            [wg_bin, "show", iface, "public-key"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        if proc.returncode == 0:
+            key = (proc.stdout or "").strip()
+            if looks_like_wg_key(key):
+                return key
+    except Exception as exc:
+        logger.debug("Could not read %s public-key: %s", iface, exc)
+    return ""
+
+
+def resolve_server_public_key(*, prefer_live: bool = True) -> str:
+    """
+    Public key embedded in MikroTik onboarding scripts.
+
+    On a hosted VPS, prefer the live ``wg0`` key so Copy script matches ``wg show``
+    even when ``.env`` drifted (common after manual wg0 rebuilds). Settings must
+    still define a valid key — see ``_server_public_key()``.
+    """
+    configured = _server_public_key()
+    if not prefer_live:
+        return configured
+    live = _read_live_wg_interface_public_key()
+    if not live:
+        return configured
+    if live != configured:
+        logger.warning(
+            "WIREGUARD_SERVER_PUBLIC_KEY differs from live %s; "
+            "onboarding scripts will embed the live interface public-key.",
+            _wireguard_interface(),
+        )
+    return live
+
+
+def _ros_quote_key(key: str) -> str:
+    return (key or "").strip().replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _reservation_purge_enabled() -> bool:
     raw = (os.getenv("WIREGUARD_RESERVATION_PURGE_ENABLED") or "").strip().lower()
     if raw in {"0", "false", "no"}:
@@ -2561,30 +2609,73 @@ def _ros_lan_assign_lines(lan_ip: str) -> list[str]:
     return lines
 
 
+def _ros_vps_billing_peer_ensure_lines(
+    *,
+    endpoint_host: str,
+    port: str,
+    allowed_network: str,
+    endpoint_label: str,
+    server_public_key: str,
+) -> list[str]:
+    """
+    Add the billing-server peer or repair a wrong public-key / endpoint in place.
+
+    Fixes handshakes when Winbox paste corrupted 0/O in the VPS public-key, or when
+    an old manual ``peers set`` left a stale key on the router.
+    """
+    server_key = _ros_quote_key(server_public_key)
+    ka = router_keepalive_interval()
+    add_fail = _ros_fail("VPS peer sync failed - check WireGuard interface ispcentric-vpn")
+    sync_ok = _ros_ok(f"VPS billing peer synced toward {endpoint_label}")
+    return [
+        _ros_info("Sync VPS WireGuard peer — add or repair public-key / endpoint"),
+        (
+            f':do {{ :local expS "{server_key}" ; :local ep "{endpoint_host}" ; '
+            f':local pt {port} ; :local net "{allowed_network}" ; :local ka "{ka}" ; '
+            f':if ([:len [/interface wireguard peers find where interface=ispcentric-vpn]] = 0) do={{ '
+            f'/interface wireguard peers add interface=ispcentric-vpn public-key=$expS '
+            f"endpoint-address=$ep endpoint-port=$pt allowed-address=$net "
+            f'persistent-keepalive=$ka comment="ispcentric billing server" }} else={{ '
+            f":local gotS [/interface wireguard peers get [find where interface=ispcentric-vpn] public-key] ; "
+            f':if ($gotS != $expS) do={{ :put "[ISPCENTRIC] Repairing VPS peer public-key from script" ; '
+            f"/interface wireguard peers set [find where interface=ispcentric-vpn] public-key=$expS }} ; "
+            f"/interface wireguard peers set [find where interface=ispcentric-vpn] endpoint-address=$ep "
+            f"endpoint-port=$pt allowed-address=$net persistent-keepalive=$ka "
+            f'comment="ispcentric billing server" }} ; '
+            f"{sync_ok} }} on-error={{{add_fail}}}"
+        ),
+    ]
+
+
 def _ros_wireguard_key_verify_lines(router_public_key: str, server_public_key: str) -> list[str]:
     """
-    One paste line: compare live WG keys to the reservation (catches O/0 typos).
+    Compare live WG keys to the reservation; auto-correct VPS peer key once, then verify.
     """
-    router_public_key = (router_public_key or "").strip().replace("\\", "\\\\").replace('"', '\\"')
-    server_public_key = (server_public_key or "").strip().replace("\\", "\\\\").replace('"', '\\"')
+    router_public_key = _ros_quote_key(router_public_key)
+    server_public_key = _ros_quote_key(server_public_key)
     if not router_public_key or not server_public_key:
         return []
     fail_router = _ros_fail(
         "Router WG public-key mismatch — paste the full Copy script; never type keys in Winbox"
     )
     fail_server = _ros_fail(
-        "VPS peer public-key mismatch — paste the full Copy script (do not edit the peer line)"
+        "VPS peer public-key still wrong after auto-repair — Generate script again and full paste"
     )
     ok_keys = _ros_ok("WireGuard keys match ISPCENTRIC reservation")
+    fix_server = _ros_ok("VPS peer public-key corrected automatically")
     return [
         _ros_info("Key verify — WireGuard public keys (must match Copy script)"),
         (
             f':do {{ :local expR "{router_public_key}" ; :local expS "{server_public_key}" ; '
+            f':if ([:len [/interface wireguard peers find where interface=ispcentric-vpn]] > 0) do={{ '
+            f":local gotS [/interface wireguard peers get [find where interface=ispcentric-vpn] public-key] ; "
+            f':if ($gotS != $expS) do={{ /interface wireguard peers set [find where interface=ispcentric-vpn] public-key=$expS ; '
+            f"{fix_server} }} }} ; "
             f':local gotR [/interface wireguard get [find name=ispcentric-vpn] public-key] ; '
-            f':local gotS [/interface wireguard peers get [find interface=ispcentric-vpn] public-key] ; '
+            f":local gotS2 [/interface wireguard peers get [find interface=ispcentric-vpn] public-key] ; "
             f':if ($gotR != $expR) do={{{fail_router}}} ; '
-            f':if ($gotS != $expS) do={{{fail_server}}} ; '
-            f':if (($gotR = $expR) && ($gotS = $expS)) do={{{ok_keys}}} }} '
+            f':if ($gotS2 != $expS) do={{{fail_server}}} ; '
+            f':if (($gotR = $expR) && ($gotS2 = $expS)) do={{{ok_keys}}} }} '
             f"on-error={{{_ros_warn('Key verify skipped — WireGuard not ready yet')}}}"
         ),
     ]
@@ -2622,6 +2713,7 @@ def _routeros_install_lines(
     )
     # API / Winbox / SSH — allow through Hotspot without full LAN bypass.
     mgmt_ports = "8728,8291,22"
+    server_public_key = resolve_server_public_key()
 
     lines: list[str] = [
         _ros_info("ISPCENTRIC tunnel install running (8 steps)..."),
@@ -2729,13 +2821,12 @@ def _routeros_install_lines(
             f'{_ros_ok(f"Tunnel IP {address}/{network.prefixlen} assigned")} }} '
             f'on-error={{{_ros_fail("Could not assign tunnel IP - WireGuard interface missing")}}}'
         ),
-        (
-            f':do {{ /interface wireguard peers add interface=ispcentric-vpn '
-            f'public-key="{_server_public_key()}" endpoint-address={endpoint_host} endpoint-port={port} '
-            f"allowed-address={network} persistent-keepalive={router_keepalive_interval()} "
-            f'comment="ispcentric billing server" ; '
-            f'{_ros_ok(f"VPS peer configured toward {endpoint_label}")} }} '
-            f'on-error={{{_ros_fail("VPS peer add failed - check WireGuard interface")}}}'
+        *_ros_vps_billing_peer_ensure_lines(
+            endpoint_host=endpoint_host,
+            port=port,
+            allowed_network=str(network),
+            endpoint_label=endpoint_label,
+            server_public_key=server_public_key,
         ),
         _ros_check(
             "[:len [/interface wireguard find where name=ispcentric-vpn]] > 0",
@@ -2755,7 +2846,7 @@ def _routeros_install_lines(
         ),
         *_ros_wireguard_key_verify_lines(
             public_key_for(private_key),
-            _server_public_key(),
+            server_public_key,
         ),
     ]
 
@@ -3127,6 +3218,12 @@ def _routeros_post_reset_rsc_body(
     lan_address = (lan_address or "").strip()
     endpoint_host = _resolved_endpoint_host(host)
     listen_port = _router_listen_port(address)
+    server_public_key = resolve_server_public_key()
+    endpoint_label = (
+        f"{endpoint_host}:{port}"
+        if endpoint_host != host
+        else f"{host}:{port}"
+    )
     body = [
         "# ISPCENTRIC post-reset tunnel install",
         ":delay 20s",
@@ -3139,12 +3236,12 @@ def _routeros_post_reset_rsc_body(
             f'/ip address add address={address}/{network.prefixlen} '
             f'interface=ispcentric-vpn comment="ispcentric billing tunnel"'
         ),
-        (
-            f'/interface wireguard peers add interface=ispcentric-vpn '
-            f'public-key="{_server_public_key()}" '
-            f'endpoint-address={endpoint_host} endpoint-port={port} '
-            f'allowed-address={network} persistent-keepalive={router_keepalive_interval()} '
-            f'comment="ispcentric billing server"'
+        *_ros_vps_billing_peer_ensure_lines(
+            endpoint_host=endpoint_host,
+            port=port,
+            allowed_network=str(network),
+            endpoint_label=endpoint_label,
+            server_public_key=server_public_key,
         ),
         *_ros_api_enable_lines(verify=False),
         (
@@ -3264,6 +3361,7 @@ def routeros_script(
     """
     _endpoint()
     _server_public_key()
+    resolve_server_public_key()
     install = _routeros_install_lines(
         address,
         private_key,

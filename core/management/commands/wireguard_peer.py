@@ -143,8 +143,26 @@ class Command(BaseCommand):
         raise CommandError('Pass router ids, --all, or --new "Site name".')
 
     def _server_keys(self):
+        live = wireguard._read_live_wg_interface_public_key()
+        if live:
+            self.stdout.write(self.style.SUCCESS("Live WireGuard interface public-key"))
+            self.stdout.write(f"  {wireguard._wireguard_interface()} : {live}")
+            self.stdout.write("")
+            try:
+                configured = wireguard._server_public_key()
+            except ValueError:
+                configured = ""
+            if configured and configured != live:
+                self.stdout.write(
+                    self.style.WARNING(
+                        "WIREGUARD_SERVER_PUBLIC_KEY in .env differs from live wg0 — "
+                        "update .env or onboarding scripts may embed the wrong VPS key."
+                    )
+                )
+                self.stdout.write(f"  .env currently : {configured}")
+                self.stdout.write("")
         private_key, public_key = wireguard.generate_keypair()
-        self.stdout.write(self.style.SUCCESS("VPS WireGuard keypair"))
+        self.stdout.write(self.style.SUCCESS("New VPS WireGuard keypair (only when rotating wg0)"))
         self.stdout.write("")
         self.stdout.write(f"  private key : {private_key}")
         self.stdout.write(f"  public key  : {public_key}")

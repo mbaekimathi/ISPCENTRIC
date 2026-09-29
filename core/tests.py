@@ -591,9 +591,12 @@ class WireGuardKeyTests(SimpleTestCase):
             self.assertIn("ispcentric-vpn", script)
             self.assertIn(f'private-key="{private_key}"', script)
             self.assertIn("Key verify — WireGuard public keys", script)
+            self.assertIn("Sync VPS WireGuard peer", script)
+            self.assertIn("Repairing VPS peer public-key from script", script)
+            self.assertIn("VPS peer public-key corrected automatically", script)
             self.assertIn(f'expR "{router_pub}"', script)
             self.assertIn(f'expS "{SERVER_PUBLIC_KEY}"', script)
-            self.assertIn("endpoint-address=203.0.113.50", script)
+            self.assertIn(':local ep "203.0.113.50"', script)
             self.assertIn("RouterOS API enabled on port 8728", script)
             self.assertIn("/ping 10.9.0.1 count=2", script)
             self.assertNotIn("ispcentric-install.rsc", script)
@@ -755,6 +758,24 @@ class WireGuardKeyTests(SimpleTestCase):
             WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
         ):
             self.assertTrue(wireguard.configured())
+
+    def test_resolve_server_public_key_prefers_live_wg_interface(self):
+        live_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        with (
+            override_settings(
+                WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+                WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+            ),
+            patch(
+                "core.wireguard._read_live_wg_interface_public_key",
+                return_value=live_key,
+            ),
+        ):
+            self.assertEqual(wireguard.resolve_server_public_key(), live_key)
+            self.assertEqual(
+                wireguard.resolve_server_public_key(prefer_live=False),
+                SERVER_PUBLIC_KEY,
+            )
 
     def test_sync_command_allows_peer_apply_off_tunnel(self):
         with (
