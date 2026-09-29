@@ -2662,6 +2662,31 @@
             false
           );
           setTunnelStatus(data.message, true);
+          if (pendingAutoConnect) {
+            if (data.peer_state === "no_handshake" || data.peer_state === "waiting_router") {
+              showConnectStatus(
+                "VPS peer is ready — paste the latest Copy script in Winbox and wait for handshake " +
+                  "(ping 10.9.0.1 OK). Connect will retry automatically after that.",
+                false
+              );
+              setOnboardProcessStep(
+                "connect",
+                "waiting",
+                "Waiting for Winbox handshake on " + (data.address || tunnelReadyAddress || "tunnel")
+              );
+            } else if (data.peer_state === "missing") {
+              showConnectStatus(
+                "VPS peer missing — wait for sync, or run wireguard_peer --sync-server on the VPS.",
+                true
+              );
+            } else if (data.peer_state === "keys_rotated" || data.peer_state === "key_mismatch") {
+              pendingAutoConnect = false;
+              showConnectStatus(
+                "Keys changed — Copy script again, full paste in Winbox, then Connect.",
+                true
+              );
+            }
+          }
           if (altHint) {
             setVerifyHint(altHint);
           } else if (
@@ -2679,6 +2704,16 @@
               "Router is online as " + altLive[0].label + " (" + altLive[0].address + "). " +
                 "Enter that site name in Step 1 and Check now, or use " + altLive[0].address + " in Step 4."
             );
+            if (pendingAutoConnect) {
+              showConnectStatus(
+                "This check is for " +
+                  (data.address || tunnelReadyAddress) +
+                  ", but the router is live on " +
+                  altLive[0].address +
+                  ". Generate/resume that site, or paste the script for this IP.",
+                true
+              );
+            }
           }
           return;
         }
@@ -3630,18 +3665,19 @@
             pendingAutoConnect = true;
             tunnelApiReady = false;
             showConnectStatus(
-              "Waiting for tunnel API… live verify continues and Connect retries automatically.",
+              "Tunnel/API not reachable yet — live verify continues. " +
+                "Paste the latest script in Winbox if you have not; Connect retries after handshake.",
               false
             );
             setOnboardProcessStep(
               "connect",
               "waiting",
-              "Tunnel not answering yet — auto-retry when ready"
+              "Waiting for handshake / API — auto-retry when ready"
             );
             setVerifyBanner(
-              "checking",
-              "Waiting for API on " + host,
-              "Updates automatically · handshake may take ~30s"
+              "waiting",
+              "Waiting for MikroTik",
+              "Paste script · wait for ping 10.9.0.1 OK" + liveVerifySubSuffix()
             );
             startTunnelStatusPolling();
             return;
