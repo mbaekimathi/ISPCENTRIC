@@ -103,6 +103,10 @@ else
 fi
 
 # Stay on the branch (not detached) so future pulls stay simple.
+# With --force, hard-reset first so checkout is not blocked by dirty tracked files.
+if [[ "$FORCE" == true ]]; then
+  run_as_app git reset --hard HEAD
+fi
 run_as_app git checkout -B "$BRANCH" "$TARGET"
 run_as_app git reset --hard "$TARGET"
 # Never wipe secrets, venv, runtime dirs, or .env backups.
