@@ -528,7 +528,33 @@ def authenticate_connect(
             ),
         }
 
+    from core.mikrotik_connect import _is_wireguard_tunnel_host
+
     result = test_mikrotik_api_login(dial_host, username, password)
+    # On the MikroTik LAN: if tunnel IP is unreachable from this PC, retry LAN.
+    if (
+        not result.get("ok")
+        and on_router_lan()
+        and _is_wireguard_tunnel_host(dial_host)
+        and not bool(result.get("auth_error"))
+    ):
+        lan_fallback = pick_local_onboard_connect_host(
+            tunnel_address=tunnel,
+            reservation_label=(getattr(session.reservation, "label", None) or ""),
+            planned_lan=script_lan_norm or (session.planned_lan or ""),
+            current="",
+        )
+        if lan_fallback and lan_fallback != dial_host:
+            lan_try = test_mikrotik_api_login(lan_fallback, username, password)
+            if lan_try.get("ok"):
+                result = lan_try
+                dial_host = lan_fallback
+                connect_host = lan_fallback
+            else:
+                result = lan_try
+                dial_host = lan_fallback
+                connect_host = lan_fallback
+
     if not result.get("ok"):
         err = result.get("error") or "Connection failed."
         auth_error = bool(result.get("auth_error"))
@@ -538,6 +564,35 @@ def authenticate_connect(
                 token in low
                 for token in ("login failed", "invalid user", "password", "authentication")
             )
+        # Tunnel IP unreachable: rewrite the generic “paste script” tip — script often already OK.
+        if (
+            not auth_error
+            and _is_wireguard_tunnel_host(dial_host)
+            and "could not reach" in err.lower()
+        ):
+            from core.wireguard import server_on_tunnel
+
+            if not server_on_tunnel():
+                from core.mikrotik_connect import hosted_dashboard_url
+
+                dashboard = hosted_dashboard_url() or "the hosted ISPCENTRIC site"
+                err = (
+                    f"This PC cannot dial tunnel IP {dial_host}:8728 (WireGuard is on the VPS). "
+                    f"Open {dashboard}, use Tunnel IP Connect there — or connect with the "
+                    "router LAN IP (e.g. 192.168.88.1) while on the same network."
+                )
+            elif not wireguard._tunnel_host_reachable(dial_host):
+                err = (
+                    f"Tunnel peer {dial_host} is not answering the billing server yet. "
+                    "On the VPS run: manage.py wireguard_peer --sync-server, wait ~30s for "
+                    "handshake, confirm Winbox ping to 10.9.0.1 is OK, then Connect again."
+                )
+            else:
+                err = (
+                    f"Billing server can ping {dial_host} but TCP 8728 did not open. "
+                    "In Winbox: /ip service print where name=api — must be enabled on 8728. "
+                    "Then retry Connect with the correct RouterOS password (same as Winbox)."
+                )
         if auth_error and org_id:
             mark_onboard_connect_auth_failure(dial_host, org_id)
         payload = {"ok": False, "error": err, "auth_error": auth_error}

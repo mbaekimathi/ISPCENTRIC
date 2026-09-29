@@ -1156,6 +1156,9 @@
   var connectAuthCooldownUntil = 0;
   var connectAuthCooldownTimer = null;
   var connectInFlight = false;
+  var pendingAutoConnect = false;
+  var autoConnectAttempts = 0;
+  var AUTO_CONNECT_MAX = 3;
   var ONBOARD_DRAFT_KEY = "ispcentric.mikrotik.onboard.draft";
   var draftSaveTimer = null;
   var onboardProcessPanel = document.getElementById("mikrotik-onboard-process");
@@ -2352,6 +2355,8 @@
     tunnelReadyAddress = "";
     setOnboardingSessionToken("");
     tunnelApiReady = false;
+    pendingAutoConnect = false;
+    autoConnectAttempts = 0;
     setScriptAssignedLan("");
     stopTunnelStatusPolling();
     if (tunnelScript) tunnelScript.textContent = "";
@@ -2485,6 +2490,8 @@
           if (data.ready) {
             tunnelApiReady = true;
             stopTunnelStatusPolling();
+            // Keep light live checks until Connect succeeds (LAN path).
+            if (!connected) startTunnelStatusPolling(5000);
             setTunnelCheckState("ready", "LAN connected · script confirmed", true, true);
             setStep4IpCopy("lan", data.lan_address, data.address || tunnelReadyAddress);
             if (data.lan_address) {
@@ -2508,6 +2515,7 @@
             markTunnelStep(4, "done");
             setConnectCredentialsVisible(true);
             focusConnectCredentials();
+            if (pendingAutoConnect) tryAutoConnectSoon("LAN checks passed.");
           } else if (data.subnet_mismatch) {
             setCheckNowSecondary(false);
             setConnectCredentialsVisible(false);
@@ -2583,30 +2591,7 @@
           return;
         }
         if (data.ready) {
-          tunnelApiReady = true;
-          tunnelPeerSyncRequired = false;
-          localModeReady = false;
-          if (tunnelPeerPanel) tunnelPeerPanel.hidden = true;
-          stopTunnelStatusPolling();
-          setStep4IpCopy("tunnel", "", data.address || tunnelReadyAddress);
-          setCheckNowSecondary(true);
-          setTunnelCheckState("ready", "Tunnel connected · API enabled", true, true);
-          setTunnelStatus(data.message, false);
-          markTunnelStep(2, "done");
-          markTunnelStep(3, "done");
-          // On the VPS, Connect must use the tunnel IP — fill it automatically.
-          if (data.address || tunnelReadyAddress) {
-            applyTunnelIp(data.address || tunnelReadyAddress);
-            markTunnelStep(4, "done");
-            if (tunnelUseIp) {
-              tunnelUseIp.disabled = true;
-              tunnelUseIp.textContent = "Tunnel IP selected";
-            }
-          } else {
-            markTunnelStep(4, "active");
-          }
-          setConnectCredentialsVisible(true);
-          focusConnectCredentials();
+          markTunnelVerifyReady(data);
           return;
         }
         setCheckNowSecondary(false);
@@ -2731,13 +2716,106 @@
       });
   }
 
-  function startTunnelStatusPolling() {
+  function startTunnelStatusPolling(intervalMs) {
     stopTunnelStatusPolling();
     if (!tunnelStatusToken) return;
     checkTunnelStatus({ silent: true });
     tunnelStatusTimer = setInterval(function () {
       checkTunnelStatus({ silent: true });
-    }, 3000);
+    }, intervalMs || 3000);
+  }
+
+  function isConnectReachabilityError(message) {
+    var low = String(message || "").toLowerCase();
+    if (!low) return false;
+    if (low.indexOf("login failed") !== -1 || low.indexOf("password") !== -1) return false;
+    if (low.indexOf("invalid user") !== -1 || low.indexOf("authentication") !== -1) return false;
+    return (
+      low.indexOf("could not reach") !== -1 ||
+      low.indexOf("timed out") !== -1 ||
+      low.indexOf("not answering") !== -1 ||
+      low.indexOf("cannot dial tunnel") !== -1 ||
+      low.indexOf("tcp 8728") !== -1
+    );
+  }
+
+  function tryAutoConnectSoon(reason) {
+    if (!pendingAutoConnect || connectInFlight || connected) return;
+    if (autoConnectAttempts >= AUTO_CONNECT_MAX) {
+      pendingAutoConnect = false;
+      showConnectStatus(
+        "Tunnel looks ready — click Connect with the correct Winbox password.",
+        false
+      );
+      return;
+    }
+    if (!usernameInput || !usernameInput.value.trim() || !passwordInput || !passwordInput.value) {
+      showConnectStatus(
+        (reason || "Tunnel & API ready.") +
+          " Enter username/password — Connect will run automatically.",
+        false
+      );
+      return;
+    }
+    if (Date.now() < connectAuthCooldownUntil) return;
+    autoConnectAttempts += 1;
+    showConnectStatus(
+      "Tunnel ready — connecting automatically (" +
+        autoConnectAttempts +
+        "/" +
+        AUTO_CONNECT_MAX +
+        ")…",
+      false
+    );
+    setTimeout(function () {
+      if (!pendingAutoConnect || connectInFlight || connected) return;
+      connectRouter({ auto: true });
+    }, 700);
+  }
+
+  function markTunnelVerifyReady(data) {
+    var becameReady = !tunnelApiReady;
+    tunnelApiReady = true;
+    tunnelPeerSyncRequired = false;
+    localModeReady = false;
+    if (tunnelPeerPanel) tunnelPeerPanel.hidden = true;
+    setStep4IpCopy("tunnel", "", (data && data.address) || tunnelReadyAddress);
+    setCheckNowSecondary(true);
+    setTunnelCheckState("ready", "Tunnel connected · API enabled", true, true);
+    setTunnelStatus(
+      (data && data.message) ||
+        "Tunnel and API ready — Connect when credentials are entered.",
+      false
+    );
+    markTunnelStep(2, "done");
+    markTunnelStep(3, "done");
+    if ((data && data.address) || tunnelReadyAddress) {
+      applyTunnelIp((data && data.address) || tunnelReadyAddress);
+      markTunnelStep(4, "done");
+      if (tunnelUseIp) {
+        tunnelUseIp.disabled = true;
+        tunnelUseIp.textContent = "Tunnel IP selected";
+      }
+    } else {
+      markTunnelStep(4, "active");
+    }
+    setConnectCredentialsVisible(true);
+    if (becameReady) {
+      focusConnectCredentials();
+      setOnboardProcessStep("verify", "ok", "Tunnel & API live — updating automatically");
+      if (pendingAutoConnect) tryAutoConnectSoon("Tunnel & API just came online.");
+      else {
+        showConnectStatus(
+          "Live verify: tunnel and API are up. Enter Winbox login and Connect.",
+          false
+        );
+      }
+    } else if (pendingAutoConnect) {
+      tryAutoConnectSoon("Tunnel still ready.");
+    }
+    if (!connected && !tunnelStatusTimer && tunnelStatusToken) {
+      startTunnelStatusPolling(5000);
+    }
   }
 
   function postOnboardingGuard(action) {
@@ -3455,7 +3533,8 @@
     setOnboardLoading(false);
   }
 
-  function connectRouter() {
+  function connectRouter(options) {
+    options = options || {};
     if (connectInFlight) return;
     if (!hostInput || !usernameInput || !passwordInput) return;
     var host = hostInput.value.trim();
@@ -3472,10 +3551,14 @@
       return;
     }
     if (wireguardReady && tunnelStatusToken && !tunnelApiReady) {
+      pendingAutoConnect = true;
+      autoConnectAttempts = 0;
       showConnectStatus(
-        "Paste the ISPCENTRIC script in Winbox first, wait for [ISPCENTRIC OK], then Check now.",
-        true
+        "Waiting for live verify… paste finishes in Winbox, then Connect runs automatically.",
+        false
       );
+      setOnboardProcessStep("connect", "waiting", "Waiting for tunnel & API (live)");
+      startTunnelStatusPolling();
       if (tunnelCheckNow) {
         try { tunnelCheckNow.focus(); } catch (err) {}
       }
@@ -3491,6 +3574,11 @@
     }
     // Do not hard-block Connect on a stale peer_sync flag when Check now already
     // passed (tunnelApiReady). Backend re-applies / reachability-checks the peer.
+
+    if (!options.auto) {
+      pendingAutoConnect = true;
+      autoConnectAttempts = Math.max(autoConnectAttempts, 0);
+    }
 
     connectInFlight = true;
     connectBtn.disabled = true;
@@ -3527,18 +3615,45 @@
           if (connectBtn) connectBtn.disabled = false;
           var connErr = (result.data && result.data.error) || "Could not connect.";
           if (result.data && (result.data.auth_error || result.data.cooling_down)) {
+            pendingAutoConnect = false;
             var retrySec = Number(result.data.retry_after_sec) || 45;
             connectAuthCooldownUntil = Date.now() + retrySec * 1000;
             clearTimeout(connectAuthCooldownTimer);
             connectAuthCooldownTimer = setTimeout(function () {
               connectAuthCooldownTimer = null;
             }, retrySec * 1000);
+            showConnectStatus(connErr, true);
+            setOnboardProcessStep("connect", "fail", connErr);
+            return;
+          }
+          if (isConnectReachabilityError(connErr)) {
+            pendingAutoConnect = true;
+            tunnelApiReady = false;
+            showConnectStatus(
+              "Waiting for tunnel API… live verify continues and Connect retries automatically.",
+              false
+            );
+            setOnboardProcessStep(
+              "connect",
+              "waiting",
+              "Tunnel not answering yet — auto-retry when ready"
+            );
+            setVerifyBanner(
+              "checking",
+              "Waiting for API on " + host,
+              "Updates automatically · handshake may take ~30s"
+            );
+            startTunnelStatusPolling();
+            return;
           }
           showConnectStatus(connErr, true);
           setOnboardProcessStep("connect", "fail", connErr);
           return;
         }
         var data = result.data;
+        pendingAutoConnect = false;
+        autoConnectAttempts = 0;
+        stopTunnelStatusPolling();
         if (data.already_onboarded) {
           setOnboardLoading(false);
           showConnectStatus(
