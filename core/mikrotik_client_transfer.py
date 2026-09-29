@@ -10,11 +10,9 @@ from django.core.cache import cache
 from django.db.models import Count, Q
 
 from billing.models import Customer
+from billing.services import customer_needs_nas_provision
 from core.models import MikroTikRouter
-from core.subscription_sync import (
-    customer_needs_nas_provision,
-    enqueue_customer_subscription_sync,
-)
+from core.subscription_sync import enqueue_customer_subscription_sync
 
 logger = logging.getLogger(__name__)
 
