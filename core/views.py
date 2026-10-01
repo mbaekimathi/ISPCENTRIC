@@ -18986,6 +18986,10 @@ def _client_remote_access_row(
 
     This is NOT ISP MikroTik reachability — Connected/ready means Open client
     router should be able to reach the subscriber CPE web UI.
+
+    List polls are intentionally non-mutating (light=True): they never enable
+    CPE www/api/ssh and install at most one NAS NAT forward so surfing clients
+    on the same NAS are not disrupted.
     """
     from core.connectivity_verification import evaluate_layered_cpe_access
     from core.mikrotik_connect import customer_cpe_access_eligible
@@ -19009,31 +19013,27 @@ def _client_remote_access_row(
         cache.set(cache_key, row, 120)
         return row
 
-    has_cpe_login = bool(
-        (getattr(customer, "cpe_password", None) or "")
-        or (getattr(customer, "pppoe_password", None) or "")
-        or (getattr(customer, "cpe_username", None) or "").strip()
-    )
-    enable_cpe_web = bool(force and has_cpe_login)
-
     try:
+        # Never enable_cpe_web on the list poll — that SSH-mutates the CPE while
+        # the customer may be surfing. Force only busts cache and re-probes.
         evaluation = evaluate_layered_cpe_access(
             customer,
-            timeout=8.0 if force else 6.0,
+            timeout=5.0 if force else 4.0,
             try_api=False,
             auto_enable=False,
             nas_evaluation=nas_evaluation,
-            enable_cpe_web=enable_cpe_web,
+            enable_cpe_web=False,
+            light=True,
         )
     except Exception as exc:
         row = {
             "id": customer_id,
             "status": "offline",
-            "label": "Unavailable",
-            "title": str(exc) or title_offline,
+            "label": "Check failed",
+            "title": str(exc) or "Could not check remote access — will retry",
             "failure_class": "probe_error",
         }
-        cache.set(cache_key, row, 30)
+        cache.set(cache_key, row, 20)
         return row
 
     failure = (evaluation.get("failure_class") or "").strip().lower()
@@ -19131,8 +19131,13 @@ def clients_remote_access_status(request):
 
     Distinct from mikrotik_status (ISP NAS). Pass ?ids=1,2,3 for the visible
     rows; omit ids to probe all eligible PPPoE/static clients (capped).
+
+    Probes are light and serialized per NAS so concurrent NAT installs cannot
+    disrupt surfing clients sharing the same MikroTik.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from django.db import close_old_connections
 
     org = resolve_organization(request.user, request)
     if not org:
@@ -19191,33 +19196,67 @@ def clients_remote_access_status(request):
             timeout=nas_timeout,
         )
 
-    rows: list[dict] = []
-    workers = min(2, max(1, len(customers)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(
-                _client_remote_access_row,
-                customer,
-                force=force,
-                nas_evaluation=nas_by_router.get(customer.router_id),
-            ): customer.pk
-            for customer in customers
-        }
-        by_pk: dict[int, dict] = {}
-        for future in as_completed(futures):
-            pk = futures[future]
-            try:
-                by_pk[pk] = future.result(timeout=20.0)
-            except Exception as exc:
-                by_pk[pk] = {
-                    "id": pk,
-                    "status": "offline",
-                    "label": "Unavailable",
-                    "title": str(exc) or "Could not check remote access",
-                    "failure_class": "probe_error",
-                }
-        rows = [by_pk[c.pk] for c in customers if c.pk in by_pk]
+    # Group by NAS so clients on the same router are probed serially (no
+    # concurrent firewall NAT installs that can stall surfing traffic).
+    by_router: dict[int, list] = {}
+    no_router: list = []
+    for customer in customers:
+        rid = int(getattr(customer, "router_id", 0) or 0)
+        if rid:
+            by_router.setdefault(rid, []).append(customer)
+        else:
+            no_router.append(customer)
 
+    def _probe_group(group: list) -> list[dict]:
+        close_old_connections()
+        rows: list[dict] = []
+        for customer in group:
+            try:
+                rows.append(
+                    _client_remote_access_row(
+                        customer,
+                        force=force,
+                        nas_evaluation=nas_by_router.get(customer.router_id),
+                    )
+                )
+            except Exception as exc:
+                rows.append(
+                    {
+                        "id": int(customer.pk),
+                        "status": "offline",
+                        "label": "Check failed",
+                        "title": str(exc) or "Could not check remote access — will retry",
+                        "failure_class": "probe_error",
+                    }
+                )
+        close_old_connections()
+        return rows
+
+    groups = list(by_router.values())
+    if no_router:
+        groups.append(no_router)
+
+    by_pk: dict[int, dict] = {}
+    # Different NAS boxes can run in parallel; same NAS stays serial inside
+    # _probe_group (+ mikrotik_connect._nas_list_probe_lock).
+    workers = min(3, max(1, len(groups)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_probe_group, group): group for group in groups}
+        for future in as_completed(futures):
+            try:
+                for row in future.result(timeout=45.0):
+                    by_pk[int(row["id"])] = row
+            except Exception as exc:
+                for customer in futures[future]:
+                    by_pk[int(customer.pk)] = {
+                        "id": int(customer.pk),
+                        "status": "offline",
+                        "label": "Check failed",
+                        "title": str(exc) or "Could not check remote access — will retry",
+                        "failure_class": "probe_error",
+                    }
+
+    rows = [by_pk[c.pk] for c in customers if c.pk in by_pk]
     return JsonResponse({"ok": True, "clients": rows})
 
 

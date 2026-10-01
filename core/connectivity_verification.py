@@ -988,11 +988,16 @@ def evaluate_layered_cpe_access(
     auto_enable: bool = True,
     nas_evaluation: dict | None = None,
     enable_cpe_web: bool = False,
+    light: bool = False,
 ) -> dict:
     """
     Layered remote CPE access check used by Open client router:
 
     NAS API → session/IP → NAS→CPE ping → web ports via proxy → optional API login.
+
+    light=True is for the Clients list Remote column: never enable CPE www/api,
+    prefer cached NAS proxies, and install at most one NAT forward so surfing
+    clients on the same NAS are not disrupted by firewall thrash.
 
     failure_class values:
       nas_down | not_eligible | offline | wan_mgmt_blocked | firewall_blocked |
@@ -1004,6 +1009,12 @@ def evaluate_layered_cpe_access(
         probe_customer_cpe_web,
         sweep_log_text,
     )
+
+    if light:
+        # List polls must stay read-mostly — never SSH-enable CPE services.
+        try_api = False
+        auto_enable = False
+        enable_cpe_web = False
 
     router = getattr(customer, "router", None)
     layers = {
@@ -1020,6 +1031,7 @@ def evaluate_layered_cpe_access(
         "web_port": None,
         "cpe_host": "",
         "steps": [],
+        "light": bool(light),
     }
 
     if not customer_cpe_access_eligible(customer):
@@ -1078,6 +1090,7 @@ def evaluate_layered_cpe_access(
         pppoe_password=getattr(customer, "pppoe_password", "") or "",
         timeout=timeout,
         auto_enable_www=bool(enable_cpe_web or (auto_enable and try_api)),
+        light=bool(light),
     )
     details["probe"] = {
         "ok": probe.get("ok"),

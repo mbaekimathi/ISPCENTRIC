@@ -22,7 +22,8 @@
     /* Captive fallback: never leave pay UI invisible (animation fill-mode bug). */
     .shell, .hero, .stage, .pay-dock, .access-banner,
     .plan-categories, .plan-card, .pay-mode-tab, form.login,
-    .other-devices-panel, .voucher-results, .quote-simple, .device-stepper {
+    .other-devices-panel, .voucher-results, .quote-simple, .device-stepper,
+    .plan-section, .other-devices-controls {
       opacity: 1 !important;
       visibility: visible !important;
       animation: none !important;
@@ -53,9 +54,9 @@
       font-weight: 600;
     }
   </style>
-  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=7">
+  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=11">
 </head>
-<body>
+<body data-pay-mode="this_device">
   <div class="atmosphere" aria-hidden="true">
     <span class="rays"></span>
     <span class="orb orb-a"></span>
@@ -92,7 +93,7 @@
       {% endif %}
     </header>
 
-    <main class="stage" id="panel-hotspot" data-pay-panel="hotspot">
+    <main class="stage" id="panel-hotspot" data-pay-panel="hotspot" data-pay-mode="this_device">
       {% if error %}<p class="error">{{ error }}</p>{% endif %}
 
       {% if access_banner_title %}
@@ -134,71 +135,99 @@
           <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">
 
           {% if has_other_devices_option %}
-          <section class="pay-mode-section" aria-label="Payment type">
-            <p class="section-label" data-pay-step-label>Step 1 · Who needs internet?</p>
+          <section class="pay-mode-section" aria-label="Payment type" data-pay-mode-section>
+            <p class="section-label" data-pay-step-label>Who needs internet?</p>
             <div class="pay-mode-tabs" data-pay-mode-tabs role="tablist" aria-label="Payment type">
-              <label class="pay-mode-tab is-active">
+              <label class="pay-mode-tab pay-mode-tab--phone is-active">
                 <input type="radio" name="pay_mode" value="this_device" checked data-pay-mode-input>
                 <span class="pay-mode-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg>
                 </span>
-                <span class="pay-mode-title">This phone</span>
-                <small>Pay &amp; go online now</small>
+                <span class="pay-mode-copy">
+                  <span class="pay-mode-title">This phone</span>
+                  <small>Pick a package &amp; go online</small>
+                </span>
               </label>
-              <label class="pay-mode-tab" data-pay-mode-other-wrap>
+              <label class="pay-mode-tab pay-mode-tab--other" data-pay-mode-other-wrap>
                 <input type="radio" name="pay_mode" value="other_devices" data-pay-mode-input>
                 <span class="pay-mode-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="14" height="10" rx="1.5"/><rect x="8" y="5" width="14" height="10" rx="1.5"/></svg>
                 </span>
-                <span class="pay-mode-title">Other devices</span>
-                <small>Buy codes · share with family</small>
+                <span class="pay-mode-copy">
+                  <span class="pay-mode-title">Other devices</span>
+                  <small>Buy voucher codes to share</small>
+                </span>
               </label>
             </div>
 
             <div class="other-devices-panel" data-other-devices-panel hidden>
-              <p class="pay-mode-hint">Choose how many devices. <strong>Standard price</strong> covers 1 device for the first hour; extras are charged per hour per device. After M-Pesa you get <strong>one voucher code per device</strong>.</p>
-
-              <div class="device-stepper-block">
-                <p class="quick-pick-label">Number of devices</p>
-                <div class="device-stepper" role="group" aria-label="Number of devices">
-                  <button type="button" class="device-stepper-btn" data-device-step="-1" aria-label="Fewer devices">−</button>
-                  <div class="device-stepper-value">
-                    <input
-                      id="hotspot-other-device-count"
-                      name="device_count"
-                      type="number"
-                      min="1"
-                      max="50"
-                      value="2"
-                      inputmode="numeric"
-                      data-other-device-count
-                      aria-label="Device count"
-                    >
-                    <span data-device-stepper-label>devices</span>
-                  </div>
-                  <button type="button" class="device-stepper-btn" data-device-step="1" aria-label="More devices">+</button>
-                </div>
-                <div class="quick-pick-chips" data-device-chips role="group" aria-label="Quick device picks">
-                  <button type="button" class="quick-pick-chip" data-device-pick="1">1</button>
-                  <button type="button" class="quick-pick-chip is-active" data-device-pick="2">2</button>
-                  <button type="button" class="quick-pick-chip" data-device-pick="3">3</button>
-                  <button type="button" class="quick-pick-chip" data-device-pick="4">4</button>
-                  <button type="button" class="quick-pick-chip" data-device-pick="5">5</button>
-                  <button type="button" class="quick-pick-chip" data-device-pick="custom">More</button>
-                </div>
-                <p class="device-stepper-hint" data-device-custom hidden>Type any number from 1–50 above.</p>
+              <div class="other-devices-intro">
+                <strong>Build your vouchers</strong>
+                <p>Choose devices and hours. You get <strong>one code per device</strong> after payment.</p>
               </div>
 
-              <div class="quick-pick-block">
-                <p class="quick-pick-label">How long per device?</p>
-                <div class="quick-pick-chips" data-hour-chips role="group" aria-label="Hours per device">
-                  <button type="button" class="quick-pick-chip is-active" data-hour-pick="1">1 hr</button>
-                  <button type="button" class="quick-pick-chip" data-hour-pick="2">2 hr</button>
-                  <button type="button" class="quick-pick-chip" data-hour-pick="4">4 hr</button>
-                  <button type="button" class="quick-pick-chip" data-hour-pick="8">8 hr</button>
-                  <button type="button" class="quick-pick-chip" data-hour-pick="24">1 day</button>
+              <div class="other-devices-controls">
+                <div class="device-stepper-block" data-control-devices>
+                  <p class="quick-pick-label">Devices</p>
+                  <div class="device-stepper" role="group" aria-label="Number of devices">
+                    <button type="button" class="device-stepper-btn" data-device-step="-1" aria-label="Fewer devices">−</button>
+                    <div class="device-stepper-value">
+                      <input
+                        id="hotspot-other-device-count"
+                        name="device_count"
+                        type="number"
+                        min="1"
+                        max="50"
+                        value="2"
+                        inputmode="numeric"
+                        data-other-device-count
+                        aria-label="Device count"
+                      >
+                      <span data-device-stepper-label>devices</span>
+                    </div>
+                    <button type="button" class="device-stepper-btn" data-device-step="1" aria-label="More devices">+</button>
+                  </div>
+                  <div class="quick-pick-chips" data-device-chips role="group" aria-label="Quick device picks">
+                    <button type="button" class="quick-pick-chip" data-device-pick="1">1</button>
+                    <button type="button" class="quick-pick-chip is-active" data-device-pick="2">2</button>
+                    <button type="button" class="quick-pick-chip" data-device-pick="3">3</button>
+                    <button type="button" class="quick-pick-chip" data-device-pick="4">4</button>
+                    <button type="button" class="quick-pick-chip" data-device-pick="5">5</button>
+                    <button type="button" class="quick-pick-chip" data-device-pick="custom">More</button>
+                  </div>
+                  <p class="device-stepper-hint" data-device-custom hidden>Type any number from 1–50 above.</p>
                 </div>
-                <input id="hotspot-other-hours" name="hours" type="hidden" value="1" data-other-hours>
+
+                <div class="device-stepper-block" data-control-hours>
+                  <p class="quick-pick-label">Hours each</p>
+                  <div class="device-stepper" role="group" aria-label="Hours per device">
+                    <button type="button" class="device-stepper-btn" data-hour-step="-1" aria-label="Fewer hours">−</button>
+                    <div class="device-stepper-value">
+                      <input
+                        id="hotspot-other-hours"
+                        name="hours"
+                        type="number"
+                        min="1"
+                        max="168"
+                        value="1"
+                        inputmode="numeric"
+                        data-other-hours
+                        aria-label="Hours per device"
+                      >
+                      <span data-hour-stepper-label>hour</span>
+                    </div>
+                    <button type="button" class="device-stepper-btn" data-hour-step="1" aria-label="More hours">+</button>
+                  </div>
+                  <div class="quick-pick-chips" data-hour-chips role="group" aria-label="Quick hour picks">
+                    <button type="button" class="quick-pick-chip is-active" data-hour-pick="1">1 hr</button>
+                    <button type="button" class="quick-pick-chip" data-hour-pick="2">2 hr</button>
+                    <button type="button" class="quick-pick-chip" data-hour-pick="4">4 hr</button>
+                    <button type="button" class="quick-pick-chip" data-hour-pick="8">8 hr</button>
+                    <button type="button" class="quick-pick-chip" data-hour-pick="24">1 day</button>
+                    <button type="button" class="quick-pick-chip" data-hour-pick="custom">More</button>
+                  </div>
+                  <p class="device-stepper-hint" data-hour-custom hidden>Type any number from 1–168 hours above.</p>
+                </div>
               </div>
 
               <div class="quote-simple" data-quote-box aria-live="polite">
@@ -209,58 +238,65 @@
               </div>
 
               <p class="pay-mode-alert" data-other-plan-warning hidden role="status">
-                This package is for this phone only. Choose another package above, or tap <strong>This phone</strong>.
+                Other-device payments are not available right now. Tap <strong>This phone</strong> to buy a package for this device.
               </p>
             </div>
           </section>
           {% endif %}
 
-          <p class="section-label" data-plan-section-label>{% if has_other_devices_option %}Step 2 · Choose package{% else %}Choose your access{% endif %}</p>
-          <div class="plan-categories" data-plan-select>
-            {% with hsel=hotspot_selected_plan_id|default:selected_plan_id %}
-            {% regroup hotspot_plans by duration_group as plan_groups %}
-            {% for group in plan_groups %}
-              <section class="plan-category">
-                <h2 class="category-label">{{ group.list.0.duration_group }}</h2>
-                <div class="plan-scroll" data-count="{{ group.list|length }}">
-                  {% for plan in group.list %}
-                    <label
-                      class="plan-card{% if hsel and hsel|stringformat:'s' == plan.pk|stringformat:'s' %} is-selected{% elif not hsel and forloop.parentloop.first and forloop.first %} is-selected{% endif %}"
-                      style="--name-len: {{ plan.name|length }};{% if plan.offer_enabled and plan.offer_label %} --offer-len: {{ plan.offer_label|length }};{% endif %}"
-                    >
-                      <input
-                        type="radio"
-                        name="plan_id"
-                        value="{{ plan.pk }}"
-                        data-price="{{ plan.price }}"
-                        data-other-enabled="{% if plan.hotspot_other_devices_offer %}1{% else %}0{% endif %}"
-                        data-other-base="{{ plan.hotspot_other_base_price }}"
-                        data-hourly-rate="{{ plan.hotspot_hourly_rate }}"
-                        {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}checked{% elif not hsel and forloop.parentloop.first and forloop.first %}checked{% endif %}
-                        required
+          <div class="plan-section" data-plan-section>
+            <div class="plan-section-head">
+              <p class="section-label" data-plan-section-label>{% if has_other_devices_option %}Choose a package{% else %}Choose your access{% endif %}</p>
+              {% if has_other_devices_option %}
+                <p class="plan-section-hint" data-plan-section-hint>For this phone only — tap a package, then pay.</p>
+              {% endif %}
+            </div>
+            <div class="plan-categories" data-plan-select>
+              {% with hsel=hotspot_selected_plan_id|default:selected_plan_id %}
+              {% regroup hotspot_plans by duration_group as plan_groups %}
+              {% for group in plan_groups %}
+                <section class="plan-category">
+                  <h2 class="category-label">{{ group.list.0.duration_group }}</h2>
+                  <div class="plan-scroll" data-count="{{ group.list|length }}">
+                    {% for plan in group.list %}
+                      <label
+                        class="plan-card{% if hsel and hsel|stringformat:'s' == plan.pk|stringformat:'s' %} is-selected{% elif not hsel and forloop.parentloop.first and forloop.first %} is-selected{% endif %}"
+                        style="--name-len: {{ plan.name|length }};{% if plan.offer_enabled and plan.offer_label %} --offer-len: {{ plan.offer_label|length }};{% endif %}"
                       >
-                      <span class="plan-check" aria-hidden="true"></span>
-                      <span class="plan-copy">
-                        <strong>{{ plan.name }}</strong>
-                      </span>
-                      <span class="plan-price"><small>KES</small><b>{{ plan.price|floatformat:"0" }}</b></span>
-                      <span class="plan-meta">
-                        <span class="plan-chips">
-                          {% if plan.speed_label %}<span>{{ plan.speed_label }}</span>{% endif %}
-                          {% if plan.max_devices %}
-                            <span>{% if plan.max_devices == 1 %}1 device{% else %}{{ plan.max_devices }} devices{% endif %}</span>
-                          {% else %}
-                            <span>Unlimited</span>
-                          {% endif %}
+                        <input
+                          type="radio"
+                          name="plan_id"
+                          value="{{ plan.pk }}"
+                          data-price="{{ plan.price }}"
+                          data-other-enabled="{% if plan.hotspot_other_devices_offer %}1{% else %}0{% endif %}"
+                          data-other-base="{{ plan.hotspot_other_base_price }}"
+                          data-hourly-rate="{{ plan.hotspot_hourly_rate }}"
+                          {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}checked{% elif not hsel and forloop.parentloop.first and forloop.first %}checked{% endif %}
+                          required
+                        >
+                        <span class="plan-check" aria-hidden="true"></span>
+                        <span class="plan-copy">
+                          <strong>{{ plan.name }}</strong>
                         </span>
-                        {% include "billing/includes/plan_offer_badge.html" %}
-                      </span>
-                    </label>
-                  {% endfor %}
-                </div>
-              </section>
-            {% endfor %}
-            {% endwith %}
+                        <span class="plan-price"><small>KES</small><b>{{ plan.price|floatformat:"0" }}</b></span>
+                        <span class="plan-meta">
+                          <span class="plan-chips">
+                            {% if plan.speed_label %}<span>{{ plan.speed_label }}</span>{% endif %}
+                            {% if plan.max_devices %}
+                              <span>{% if plan.max_devices == 1 %}1 device{% else %}{{ plan.max_devices }} devices{% endif %}</span>
+                            {% else %}
+                              <span>Unlimited</span>
+                            {% endif %}
+                          </span>
+                          {% include "billing/includes/plan_offer_badge.html" %}
+                        </span>
+                      </label>
+                    {% endfor %}
+                  </div>
+                </section>
+              {% endfor %}
+              {% endwith %}
+            </div>
           </div>
         </form>
 
@@ -967,10 +1003,13 @@
 
       var payModeInputs = root.querySelectorAll("[data-pay-mode-input]");
       var otherDevicesPanel = root.querySelector("[data-other-devices-panel]");
+      var planSection = root.querySelector("[data-plan-section]");
       var deviceCountInput = root.querySelector("[data-other-device-count]");
       var deviceCustomWrap = root.querySelector("[data-device-custom]");
       var deviceStepperLabel = root.querySelector("[data-device-stepper-label]");
       var hoursInput = root.querySelector("[data-other-hours]");
+      var hourCustomWrap = root.querySelector("[data-hour-custom]");
+      var hourStepperLabel = root.querySelector("[data-hour-stepper-label]");
       var quoteTotal = root.querySelector("[data-quote-total]");
       var quoteSummary = root.querySelector("[data-quote-summary]");
       var quoteBreakdown = root.querySelector("[data-quote-breakdown]");
@@ -978,6 +1017,8 @@
       var deviceChipButtons = root.querySelectorAll("[data-device-pick]");
       var hourChipButtons = root.querySelectorAll("[data-hour-pick]");
       var deviceStepButtons = root.querySelectorAll("[data-device-step]");
+      var hourStepButtons = root.querySelectorAll("[data-hour-step]");
+      var rememberedThisDevicePlanId = null;
 
       function payMode() {
         var checked = root.querySelector('input[name="pay_mode"]:checked');
@@ -995,6 +1036,41 @@
         };
       }
 
+      function syncPlanCardSelection() {
+        planInputs.forEach(function (input) {
+          var card = input.closest(".plan-card");
+          if (card) card.classList.toggle("is-selected", input.checked);
+        });
+      }
+
+      function ensureOtherDevicesPlanSelected() {
+        if (otherDevicesPlanOk(selectedPlanMeta())) {
+          syncPlanCardSelection();
+          return true;
+        }
+        var found = null;
+        planInputs.forEach(function (input) {
+          if (found) return;
+          if (input.getAttribute("data-other-enabled") !== "1") return;
+          var rate = parseFloat(input.getAttribute("data-hourly-rate") || "0") || 0;
+          if (rate > 0) found = input;
+        });
+        if (!found) return false;
+        found.checked = true;
+        syncPlanCardSelection();
+        return true;
+      }
+
+      function restoreThisDevicePlan() {
+        if (!rememberedThisDevicePlanId) return;
+        var restore = root.querySelector(
+          'input[name="plan_id"][value="' + rememberedThisDevicePlanId + '"]'
+        );
+        if (restore) restore.checked = true;
+        rememberedThisDevicePlanId = null;
+        syncPlanCardSelection();
+      }
+
       function formatKes(value, forceInteger) {
         var n = Math.max(0, Number(value) || 0);
         if (forceInteger || payMode() === "other_devices") {
@@ -1008,6 +1084,13 @@
         if (!devices || devices < 1) devices = 1;
         if (devices > 50) devices = 50;
         return devices;
+      }
+
+      function clampHours(raw) {
+        var hours = parseInt(raw, 10);
+        if (!hours || hours < 1) hours = 1;
+        if (hours > 168) hours = 168;
+        return hours;
       }
 
       function syncDeviceChips() {
@@ -1031,10 +1114,21 @@
 
       function syncHourChips() {
         if (!hoursInput) return;
-        var hours = Math.max(1, parseInt(hoursInput.value, 10) || 1);
+        var hours = clampHours(hoursInput.value);
+        hoursInput.value = String(hours);
+        if (hourStepperLabel) {
+          hourStepperLabel.textContent = hours === 1 ? "hour" : "hours";
+        }
+        var isPreset = [1, 2, 4, 8, 24].indexOf(hours) !== -1;
         hourChipButtons.forEach(function (btn) {
-          btn.classList.toggle("is-active", parseInt(btn.getAttribute("data-hour-pick"), 10) === hours);
+          var pick = btn.getAttribute("data-hour-pick");
+          if (pick === "custom") {
+            btn.classList.toggle("is-active", !isPreset);
+          } else {
+            btn.classList.toggle("is-active", parseInt(pick, 10) === hours);
+          }
         });
+        if (hourCustomWrap) hourCustomWrap.hidden = isPreset;
       }
 
       function otherDevicesPlanOk(meta) {
@@ -1043,9 +1137,19 @@
 
       function updateOtherDevicesQuote() {
         var meta = selectedPlanMeta();
-        if (!meta || payMode() !== "other_devices") return;
+        if (payMode() !== "other_devices") return;
+        var planOk = otherDevicesPlanOk(meta);
+        if (!planOk || !meta) {
+          if (otherPlanWarning) otherPlanWarning.hidden = false;
+          if (quoteTotal) quoteTotal.textContent = "KES 0";
+          if (quoteSummary) quoteSummary.textContent = "Not available";
+          if (quoteBreakdown) quoteBreakdown.textContent = "";
+          submit.textContent = "Other devices unavailable";
+          submit.disabled = true;
+          return;
+        }
         var devices = clampDeviceCount(deviceCountInput && deviceCountInput.value);
-        var hours = Math.max(1, parseInt(hoursInput && hoursInput.value, 10) || 1);
+        var hours = clampHours(hoursInput && hoursInput.value);
         // Standard price covers 1 device × 1 hour; rate applies to extras only.
         var extras = Math.max(0, devices * hours - 1);
         var topUp = meta.hourlyRate * extras;
@@ -1069,25 +1173,28 @@
           }
           quoteBreakdown.textContent = parts.join(" ");
         }
-        var planOk = otherDevicesPlanOk(meta);
-        if (otherPlanWarning) otherPlanWarning.hidden = planOk;
-        submit.textContent = planOk ? ("Pay " + formatKes(total, true)) : "Choose a supported package";
-        submit.disabled = !planOk || submit.getAttribute("aria-disabled") === "true";
+        if (otherPlanWarning) otherPlanWarning.hidden = true;
+        submit.textContent = "Pay " + formatKes(total, true);
+        submit.disabled = submit.getAttribute("aria-disabled") === "true";
       }
 
       function syncPayModeUi() {
-        var meta = selectedPlanMeta();
         var mode = payMode();
+        if (root) root.setAttribute("data-pay-mode", mode);
+        try { document.body.setAttribute("data-pay-mode", mode); } catch (err) {}
         if (otherDevicesPanel) otherDevicesPanel.hidden = mode !== "other_devices";
+        if (planSection) planSection.hidden = mode === "other_devices";
         payModeInputs.forEach(function (input) {
           var tab = input.closest(".pay-mode-tab");
           if (tab) tab.classList.toggle("is-active", input.checked);
         });
         if (mode === "other_devices") {
+          ensureOtherDevicesPlanSelected();
           syncDeviceChips();
           syncHourChips();
           updateOtherDevicesQuote();
         } else {
+          restoreThisDevicePlan();
           if (otherPlanWarning) otherPlanWarning.hidden = true;
           submit.disabled = submit.getAttribute("aria-disabled") === "true";
           updatePayButtonSimple();
@@ -1100,10 +1207,7 @@
       }
 
       function updatePayButton() {
-        planInputs.forEach(function (input) {
-          var card = input.closest(".plan-card");
-          if (card) card.classList.toggle("is-selected", input.checked);
-        });
+        syncPlanCardSelection();
         syncPayModeUi();
       }
 
@@ -1291,9 +1395,11 @@
 
       form.addEventListener("submit", function (event) {
         event.preventDefault();
-        if (payMode() === "other_devices" && !otherDevicesPlanOk(selectedPlanMeta())) {
-          offerRetry("This package does not support paying for other phones. Pick another package or tap This phone.");
-          return;
+        if (payMode() === "other_devices") {
+          if (!ensureOtherDevicesPlanSelected() || !otherDevicesPlanOk(selectedPlanMeta())) {
+            offerRetry("Other-device payments are not available right now. Tap This phone to buy a package.");
+            return;
+          }
         }
         var macInput = form.querySelector('input[name="mac"]');
         if (macInput) {
@@ -1406,7 +1512,13 @@
         }
       });
       payModeInputs.forEach(function (input) {
-        input.addEventListener("change", syncPayModeUi);
+        input.addEventListener("change", function () {
+          if (input.value === "other_devices" && input.checked) {
+            var current = selectedPlan();
+            if (current) rememberedThisDevicePlanId = current.value;
+          }
+          syncPayModeUi();
+        });
       });
       deviceChipButtons.forEach(function (btn) {
         btn.addEventListener("click", function () {
@@ -1436,8 +1548,28 @@
       });
       hourChipButtons.forEach(function (btn) {
         btn.addEventListener("click", function () {
+          var pick = btn.getAttribute("data-hour-pick");
           if (!hoursInput) return;
-          hoursInput.value = btn.getAttribute("data-hour-pick") || "1";
+          if (pick === "custom") {
+            if ([1, 2, 4, 8, 24].indexOf(parseInt(hoursInput.value, 10)) !== -1) {
+              hoursInput.value = "3";
+            }
+            syncHourChips();
+            try { hoursInput.focus(); } catch (err) {}
+          } else {
+            hoursInput.value = pick || "1";
+            syncHourChips();
+          }
+          updateOtherDevicesQuote();
+        });
+      });
+      hourStepButtons.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          if (!hoursInput) return;
+          var delta = parseInt(btn.getAttribute("data-hour-step"), 10) || 0;
+          hoursInput.value = String(
+            clampHours((parseInt(hoursInput.value, 10) || 1) + delta)
+          );
           syncHourChips();
           updateOtherDevicesQuote();
         });
@@ -1450,6 +1582,17 @@
         deviceCountInput.addEventListener("change", function () {
           deviceCountInput.value = String(clampDeviceCount(deviceCountInput.value));
           syncDeviceChips();
+          updateOtherDevicesQuote();
+        });
+      }
+      if (hoursInput) {
+        hoursInput.addEventListener("input", function () {
+          syncHourChips();
+          updateOtherDevicesQuote();
+        });
+        hoursInput.addEventListener("change", function () {
+          hoursInput.value = String(clampHours(hoursInput.value));
+          syncHourChips();
           updateOtherDevicesQuote();
         });
       }

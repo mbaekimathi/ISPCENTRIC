@@ -3666,6 +3666,63 @@ def _preferred_cpe_web_ports(
     return tuple(ordered)
 
 
+_NAS_LIST_PROBE_LOCKS: dict[str, threading.Lock] = {}
+_NAS_LIST_PROBE_REGISTRY_LOCK = threading.Lock()
+
+
+def _nas_list_probe_lock(nas_host: str) -> threading.Lock:
+    """Serialize list Remote-column NAT installs per NAS so surfing stays stable."""
+    key = dial_host(nas_host) or (nas_host or "").strip() or "_"
+    with _NAS_LIST_PROBE_REGISTRY_LOCK:
+        lock = _NAS_LIST_PROBE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _NAS_LIST_PROBE_LOCKS[key] = lock
+        return lock
+
+
+def _try_cached_cpe_web_ports(
+    nas_host: str,
+    scope: str,
+    address: str,
+    ports: tuple[int, ...],
+    connect_timeout: float,
+) -> int | None:
+    """
+    TCP-check an already-installed CPE web proxy without mutating NAS firewall.
+
+    Used by list Remote polls so surfing clients are not hit with NAT churn.
+    """
+    dial = dial_host(nas_host)
+    scope = (scope or "").strip()
+    address = (address or "").strip()
+    if not dial or not scope:
+        return None
+    seen: set[int] = set()
+    for port in ports:
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            continue
+        if port <= 0 or port in seen:
+            continue
+        seen.add(port)
+        key = (dial, f"{scope}|{port}")
+        entry = _load_cpe_web_proxy_entry(key)
+        if not _cpe_web_proxy_entry_matches(entry, expected_cpe_host=address):
+            continue
+        proxy_port = int(entry.get("port") or 0)
+        if proxy_port <= 0:
+            continue
+        try:
+            with socket.create_connection((dial, proxy_port), timeout=connect_timeout):
+                _touch_cpe_web_proxy_entry(key, entry)
+                return port
+        except (TimeoutError, OSError, TypeError, ValueError):
+            continue
+    return None
+
+
 def _tenda_web_login(
     proxy: dict[str, Any],
     password: str,
@@ -4756,6 +4813,7 @@ def probe_customer_cpe_web(
     nas_port: int = 8728,
     timeout: float = 8.0,
     auto_enable_www: bool = False,
+    light: bool = False,
 ) -> dict[str, Any]:
     """
     Preflight for client-router login: which web port answers from the ISP side.
@@ -4769,9 +4827,17 @@ def probe_customer_cpe_web(
     When auto_enable_www is True and no web port answers, MikroTik CPEs are
     prepared via API/SSH and WebFig is enabled, then ports are probed again.
 
+    light=True (Clients list Remote column): never auto-enable CPE services,
+    reuse a cached NAS proxy when possible, and install at most one NAT forward.
+    That avoids firewall thrash that can stall surfing clients on the same NAS.
+
     Returns keys: ok, session_active, cpe_host, port (int|None), reachable,
     ping_ok, error, hint, gateway, mode, api_ok, www_enabled, steps.
     """
+    if light:
+        # List polls must never mutate CPE www/api/ssh while customers are surfing.
+        auto_enable_www = False
+
     result: dict[str, Any] = {
         "ok": False,
         "session_active": False,
@@ -4787,6 +4853,7 @@ def probe_customer_cpe_web(
         "www_enabled": False,
         "prep_attempted": False,
         "steps": [],
+        "light": bool(light),
     }
 
     scope = (cpe_scope or pppoe_username or "").strip()
@@ -4849,10 +4916,25 @@ def probe_customer_cpe_web(
     result["mode"] = mode or ("static" if cpe_address else "pppoe")
     steps.append(f"found client IP {address}")
 
-    connect_timeout = max(1.5, min(timeout, 2.5))
+    connect_timeout = max(1.0, min(timeout, 1.8 if light else 2.5))
     candidate_ports = _preferred_cpe_web_ports(
         nas_host, scope, tuple(ports or CPE_WEB_PORTS)
     )
+    if light:
+        # One port only — full multi-port NAT install/remove thrash stalls
+        # forwarding for other surfing clients on the same NAS.
+        candidate_ports = candidate_ports[:1] or (80,)
+
+    cached_port = _try_cached_cpe_web_ports(
+        nas_host, scope, address, candidate_ports, connect_timeout
+    )
+    if cached_port:
+        result["ok"] = True
+        result["reachable"] = True
+        result["ping_ok"] = True
+        result["port"] = cached_port
+        steps.append(f"reused cached web proxy on :{cached_port}")
+        return result
 
     def _scan_ports(port_list: tuple[int, ...]) -> int | None:
         with _api_session(
@@ -4885,7 +4967,11 @@ def probe_customer_cpe_web(
             return found
 
     try:
-        found_port = _scan_ports(candidate_ports)
+        if light:
+            with _nas_list_probe_lock(nas_host):
+                found_port = _scan_ports(candidate_ports)
+        else:
+            found_port = _scan_ports(candidate_ports)
     except ConnectionError as exc:
         result["error"] = str(exc) or "Could not sign in to the ISP MikroTik."
         return result

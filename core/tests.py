@@ -12097,13 +12097,159 @@ class RouterConnectivityLoopTests(TestCase):
                     "hint": "",
                     "steps": ["found client IP 10.20.0.50", "ping ok"],
                 },
-            ),
+            ) as probe,
         ):
             result = evaluate_layered_cpe_access(self.customer, try_api=False)
         self.assertFalse(result["ok"])
         self.assertEqual(result["failure_class"], "wan_mgmt_blocked")
         self.assertTrue(result["details"]["layers"]["ping_ok"])
         self.assertFalse(result["details"]["layers"]["web_ok"])
+        probe.assert_called_once()
+
+    def test_layered_cpe_light_never_enables_cpe_web(self):
+        from core.connectivity_verification import evaluate_layered_cpe_access
+
+        with (
+            patch(
+                "core.connectivity_verification.evaluate_nas_connectivity",
+                return_value={
+                    "ok": True,
+                    "api_ok": True,
+                    "details": {"working_host": "10.9.0.5"},
+                },
+            ),
+            patch(
+                "core.mikrotik_connect.probe_customer_cpe_web",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "cpe_host": "10.20.0.50",
+                    "port": 80,
+                    "ping_ok": True,
+                    "error": "",
+                    "hint": "",
+                    "steps": [],
+                    "light": True,
+                },
+            ) as probe,
+        ):
+            result = evaluate_layered_cpe_access(
+                self.customer,
+                light=True,
+                try_api=True,
+                auto_enable=True,
+                enable_cpe_web=True,
+            )
+        self.assertTrue(result["ok"])
+        kwargs = probe.call_args.kwargs
+        self.assertTrue(kwargs.get("light"))
+        self.assertFalse(kwargs.get("auto_enable_www"))
+
+    def test_client_remote_access_row_uses_light_probe_and_never_enables_web(self):
+        from django.core.cache import cache
+
+        from core.views import _client_remote_access_row
+
+        cache.clear()
+        with patch(
+            "core.connectivity_verification.evaluate_layered_cpe_access",
+            return_value={
+                "ok": True,
+                "failure_class": "ok",
+                "hint": "",
+                "error": "",
+                "details": {
+                    "layers": {
+                        "nas_ok": True,
+                        "session_active": True,
+                        "ping_ok": True,
+                        "web_ok": True,
+                        "api_ok": False,
+                    }
+                },
+            },
+        ) as layered:
+            row = _client_remote_access_row(self.customer, force=True)
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["label"], "Ready")
+        kwargs = layered.call_args.kwargs
+        self.assertTrue(kwargs.get("light"))
+        self.assertFalse(kwargs.get("enable_cpe_web"))
+        self.assertFalse(kwargs.get("auto_enable"))
+        self.assertFalse(kwargs.get("try_api"))
+
+    def test_client_remote_access_row_probe_error_is_check_failed_not_unavailable(self):
+        from django.core.cache import cache
+
+        from core.views import _client_remote_access_row
+
+        cache.clear()
+        with patch(
+            "core.connectivity_verification.evaluate_layered_cpe_access",
+            side_effect=RuntimeError("boom"),
+        ):
+            row = _client_remote_access_row(self.customer, force=True)
+        self.assertEqual(row["status"], "offline")
+        self.assertEqual(row["label"], "Check failed")
+        self.assertEqual(row["failure_class"], "probe_error")
+        self.assertNotEqual(row["label"], "Unavailable")
+
+    def test_probe_customer_cpe_web_light_skips_auto_enable_and_limits_ports(self):
+        from core import mikrotik_connect as mk
+
+        with (
+            patch.object(
+                mk,
+                "resolve_customer_cpe_target",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "address": "10.20.0.50",
+                    "scope": "connuser",
+                    "gateway": "10.20.0.1",
+                    "mode": "pppoe",
+                },
+            ),
+            patch.object(mk, "_try_cached_cpe_web_ports", return_value=None),
+            patch.object(mk, "_preferred_cpe_web_ports", return_value=(80, 8080, 443)),
+            patch.object(mk, "_api_session") as api_session,
+            patch.object(
+                mk,
+                "_nas_socket_source_address",
+                return_value="10.9.0.1",
+            ),
+            patch.object(mk, "_ensure_hotspot_bypass"),
+            patch.object(
+                mk,
+                "_nas_ping_host",
+                return_value={"reachable": True, "error": ""},
+            ),
+            patch.object(
+                mk,
+                "_try_cpe_web_ports",
+                return_value=(None, ""),
+            ) as try_ports,
+            patch.object(
+                mk,
+                "prepare_customer_cpe_access",
+            ) as prepare,
+        ):
+            api_session.return_value.__enter__.return_value = object()
+            api_session.return_value.__exit__.return_value = False
+            result = mk.probe_customer_cpe_web(
+                "10.9.0.5",
+                "admin",
+                "secret",
+                customer=self.customer,
+                auto_enable_www=True,
+                light=True,
+                timeout=4.0,
+            )
+        self.assertTrue(result.get("session_active"))
+        self.assertFalse(result.get("ok"))
+        prepare.assert_not_called()
+        try_ports.assert_called_once()
+        self.assertEqual(try_ports.call_args.kwargs.get("ports"), (80,))
 
     def test_layered_cpe_loop_passes_when_web_ok(self):
         from core.connectivity_verification import run_layered_cpe_access_loop

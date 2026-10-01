@@ -665,6 +665,7 @@
   var timer = null;
   var started = false;
   var inFlight = false;
+  var lastById = {};
 
   function setRemoteStatus(el, status, label, title) {
     if (!el) return;
@@ -718,19 +719,45 @@
       headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin"
     })
-      .then(function (res) { return res.json(); })
+      .then(function (res) {
+        if (!res.ok) throw new Error("remote-access " + res.status);
+        return res.json();
+      })
       .then(function (data) {
-        if (!data || !data.ok || !data.clients) return;
+        if (!data || !data.ok || !data.clients) throw new Error("remote-access bad payload");
         data.clients.forEach(function (item) {
+          var id = String(item.id);
+          lastById[id] = {
+            status: item.status || "",
+            label: item.label || "",
+            title: item.title || ""
+          };
           document.querySelectorAll('[data-client-remote="' + item.id + '"]').forEach(function (el) {
             setRemoteStatus(el, item.status || "", item.label || "", item.title || "");
           });
         });
       })
       .catch(function () {
+        // Never paint every row "Unavailable" on a blip — keep last good status.
         document.querySelectorAll("[data-client-remote]").forEach(function (el) {
+          var id = el.getAttribute("data-client-remote") || "";
+          var prev = lastById[id];
+          if (prev) {
+            setRemoteStatus(
+              el,
+              prev.status,
+              prev.label,
+              (prev.title ? prev.title + " · " : "") + "Last check kept — retrying"
+            );
+            return;
+          }
           if (el.classList.contains("is-checking")) {
-            setRemoteStatus(el, "offline", "Unavailable", "Could not check remote access");
+            setRemoteStatus(
+              el,
+              "offline",
+              "Retry",
+              "Could not check remote access — will retry"
+            );
           }
         });
       })
