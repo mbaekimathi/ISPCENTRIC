@@ -534,7 +534,19 @@
   root.querySelectorAll("[data-router-retry]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       routerStarted = true;
-      connect(null, true);
+      var body = null;
+      if (passwordForm) {
+        var passInput = passwordForm.querySelector("input[name=cpe_password]");
+        var userInput = passwordForm.querySelector("input[name=cpe_username]");
+        var passValue = passInput ? String(passInput.value || "").trim() : "";
+        if (passValue) {
+          if (userInput) {
+            userInput.value = String(userInput.value || "").trim() || "admin";
+          }
+          body = new FormData(passwordForm);
+        }
+      }
+      connect(body, true);
     });
   });
   if (passwordForm) {

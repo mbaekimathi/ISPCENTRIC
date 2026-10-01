@@ -540,15 +540,28 @@ def current_period_voucher_macs(customer) -> list[str]:
     return seen
 
 
+def _unused_redeemable_voucher_exists(customer) -> bool:
+    """True when a VALID voucher is still waiting to be entered on a device."""
+    from billing.models import AccessVoucher
+
+    if customer is None or not getattr(customer, "pk", None):
+        return False
+    return AccessVoucher.objects.filter(
+        customer_id=customer.pk,
+        status=AccessVoucher.Status.VALID,
+        redeemed_mac="",
+    ).exists()
+
+
 def authorized_hotspot_macs_for_customer(customer) -> list[str]:
     """
     MACs allowed to have enabled Hotspot users while the package is live.
 
-    Voucher-capped packages: devices that claimed/redeemed a voucher this
-    period. If the package is paid but no claims exist yet (legacy STK /
-    staff renew / pre-voucher-gate installs), keep only the primary MAC so
-    a deploy sweep does not kick the paying phone — siblings still need a
-    voucher and must not free-ride from CustomerDevice links alone.
+    Voucher-capped packages: only devices that claimed/redeemed a voucher this
+    period. Unused codes (multi-device / pay-for-other-devices) must be entered
+    before any MAC is enabled — including the primary. Legacy paid installs with
+    no redeemable vouchers still keep the primary so a deploy sweep does not
+    kick the paying phone.
     Unlimited packages: all linked MACs (attach-without-voucher path).
     """
     if customer is None:
@@ -561,6 +574,9 @@ def authorized_hotspot_macs_for_customer(customer) -> list[str]:
     from billing.services import customer_can_surf_via_hotspot
 
     if not customer_can_surf_via_hotspot(customer):
+        return []
+    # Multi-device / other-devices batches wait until each code is used.
+    if _unused_redeemable_voucher_exists(customer):
         return []
     primary = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
     return [primary] if primary else []

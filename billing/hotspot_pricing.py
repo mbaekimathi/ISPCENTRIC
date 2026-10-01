@@ -18,7 +18,7 @@ MIN_STK_AMOUNT = Decimal("1")
 
 
 def other_devices_base_price(plan) -> Decimal:
-    """Standard base fee before hourly top-up."""
+    """Standard price: covers the first device for the first hour."""
     if plan is None:
         return Decimal("0")
     custom = getattr(plan, "hotspot_other_base_price", None)
@@ -28,6 +28,7 @@ def other_devices_base_price(plan) -> Decimal:
 
 
 def hourly_rate_per_device(plan) -> Decimal:
+    """Rate for every extra device-hour after the included first device × first hour."""
     if plan is None:
         return Decimal("0")
     return Decimal(getattr(plan, "hotspot_hourly_rate_per_device", 0) or 0).quantize(
@@ -47,12 +48,23 @@ def plan_supports_other_devices(plan) -> bool:
     return hourly_rate_per_device(plan) > 0
 
 
+def other_devices_extra_slots(*, device_count: int, hours: int) -> int:
+    """
+    Billable device-hours beyond the included first device × first hour.
+
+    Standard price already covers 1 device for 1 hour, so extras are:
+      (devices × hours) − 1
+    """
+    devices = max(0, int(device_count or 0))
+    hrs = max(0, int(hours or 0))
+    return max(0, devices * hrs - 1)
+
+
 def calculate_other_devices_total(plan, *, device_count: int, hours: int) -> Decimal:
     base = other_devices_base_price(plan)
     rate = hourly_rate_per_device(plan)
-    devices = max(0, int(device_count or 0))
-    hrs = max(0, int(hours or 0))
-    total = base + (rate * Decimal(devices) * Decimal(hrs))
+    extras = other_devices_extra_slots(device_count=device_count, hours=hours)
+    total = base + (rate * Decimal(extras))
     return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
@@ -82,7 +94,8 @@ def quote_other_devices_purchase(plan, *, device_count: int, hours: int) -> dict
 
     base = other_devices_base_price(plan)
     rate = hourly_rate_per_device(plan)
-    top_up = (rate * Decimal(devices) * Decimal(hrs)).quantize(
+    extras = other_devices_extra_slots(device_count=devices, hours=hrs)
+    top_up = (rate * Decimal(extras)).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )
     # Match M-Pesa STK integer rounding so the quoted total equals the charge.
@@ -99,6 +112,7 @@ def quote_other_devices_purchase(plan, *, device_count: int, hours: int) -> dict
         "hours": hrs,
         "base_price": str(base),
         "hourly_rate": str(rate),
+        "extra_slots": extras,
         "top_up": str(top_up),
         "total": str(total),
         "voucher_count": devices,

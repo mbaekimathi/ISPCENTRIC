@@ -1670,6 +1670,13 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "hotspot_hourly_rate_per_device",
             "offer_enabled",
             "offer_pay_count",
+            "fup_enabled",
+            "fup_period_value",
+            "fup_period_unit",
+            "fup_data_limit_gb",
+            "fup_action",
+            "fup_throttle_download_mbps",
+            "fup_throttle_upload_mbps",
             "image",
             "is_active",
             "routers",
@@ -1773,7 +1780,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "hotspot_other_base_price": forms.NumberInput(
                 attrs={
                     "class": "form-control",
-                    "placeholder": "e.g. 30.00 — first device, first hour",
+                    "placeholder": "e.g. 30 — 1 device, first hour",
                     "step": "0.01",
                     "min": "0",
                     "id": "id_package_hotspot_other_base_price",
@@ -1782,7 +1789,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "hotspot_hourly_rate_per_device": forms.NumberInput(
                 attrs={
                     "class": "form-control",
-                    "placeholder": "e.g. 10.00 — per device × per hour",
+                    "placeholder": "e.g. 10 — each extra device-hour",
                     "step": "0.01",
                     "min": "0",
                     "id": "id_package_hotspot_hourly_rate_per_device",
@@ -1801,6 +1808,60 @@ class BillingPackageRegisterForm(forms.ModelForm):
                     "min": "1",
                     "max": "100",
                     "id": "id_package_offer_pay_count",
+                }
+            ),
+            "fup_enabled": forms.CheckboxInput(
+                attrs={
+                    "id": "id_package_fup_enabled",
+                    "class": "package-fup-toggle",
+                }
+            ),
+            "fup_period_value": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "1",
+                    "min": "1",
+                    "max": "999",
+                    "step": "1",
+                    "inputmode": "numeric",
+                    "id": "id_package_fup_period_value",
+                }
+            ),
+            "fup_period_unit": forms.Select(
+                attrs={
+                    "class": "form-control",
+                    "id": "id_package_fup_period_unit",
+                }
+            ),
+            "fup_data_limit_gb": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "e.g. 50",
+                    "min": "0.01",
+                    "step": "0.01",
+                    "id": "id_package_fup_data_limit_gb",
+                }
+            ),
+            "fup_action": forms.Select(
+                attrs={
+                    "class": "form-control",
+                    "id": "id_package_fup_action",
+                }
+            ),
+            "fup_throttle_download_mbps": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "1",
+                    "min": "1",
+                    "id": "id_package_fup_throttle_download",
+                }
+            ),
+            "fup_throttle_upload_mbps": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "1",
+                    "min": "1",
+                    "id": "id_package_fup_throttle_upload",
                 }
             ),
             "image": forms.FileInput(
@@ -1830,9 +1891,16 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "max_devices": "Max devices",
             "hotspot_other_devices_enabled": "Enable pay-for-other-devices",
             "hotspot_other_base_price": "Other devices base price (KES)",
-            "hotspot_hourly_rate_per_device": "Hourly rate per device (KES)",
+            "hotspot_hourly_rate_per_device": "Extra per hour / device (KES)",
             "offer_enabled": "Enable buy-X-get-1-free offer",
             "offer_pay_count": "Paid sessions before free one",
+            "fup_enabled": "Enable fair usage policy",
+            "fup_period_value": "FUP period",
+            "fup_period_unit": "FUP period unit",
+            "fup_data_limit_gb": "Data limit per client (GB)",
+            "fup_action": "When limit is reached",
+            "fup_throttle_download_mbps": "Throttle download (Mbps)",
+            "fup_throttle_upload_mbps": "Throttle upload (Mbps)",
             "image": "Package image",
             "is_active": "Active package",
             "routers": "MikroTik routers",
@@ -1866,17 +1934,37 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "are already unlimited — this field does not add extra PPPoE sessions."
         )
         self.fields["hotspot_other_base_price"].help_text = (
-            "Hotspot multi-device: standard price for the first device, first hour. "
-            "Blank uses the package price."
+            "Covers one device for the first hour on the pay page."
         )
         self.fields["hotspot_hourly_rate_per_device"].help_text = (
-            "Hotspot multi-device: KES per hour per device. "
-            "Pay page total = standard price + (rate × devices × hours)."
+            "Charged for every extra device-hour after the first device’s first hour. "
+            "Total = standard + (rate × ((devices × hours) − 1))."
         )
+        self.fields["hotspot_hourly_rate_per_device"].label = "Extra per hour / device (KES)"
+        self.fields["hotspot_other_base_price"].label = "Standard price (KES)"
         self.fields["offer_enabled"].required = False
         self.fields["offer_pay_count"].required = False
         self.fields["offer_pay_count"].help_text = (
             "Example: 5 means after every 5 paid sessions the customer gets one extra session free."
+        )
+        self.fields["fup_enabled"].required = False
+        self.fields["fup_period_value"].required = False
+        self.fields["fup_period_unit"].required = False
+        self.fields["fup_data_limit_gb"].required = False
+        self.fields["fup_action"].required = False
+        self.fields["fup_throttle_download_mbps"].required = False
+        self.fields["fup_throttle_upload_mbps"].required = False
+        self.fields["fup_period_unit"].choices = BillingPlan.DurationUnit.choices
+        self.fields["fup_action"].choices = BillingPlan.FupAction.choices
+        self.fields["fup_period_value"].help_text = (
+            "Reset window for the data cap — e.g. every 1 month or every 7 days."
+        )
+        self.fields["fup_data_limit_gb"].help_text = (
+            "Total download + upload one client may use in each FUP period."
+        )
+        self.fields["fup_action"].help_text = (
+            "Disconnect blocks surfing until the period resets. "
+            "Throttle keeps them online at the reduced speed below."
         )
         self.fields["duration_value"].required = True
         self.fields["duration_unit"].required = True
@@ -1889,6 +1977,11 @@ class BillingPackageRegisterForm(forms.ModelForm):
             self.fields["duration_unit"].initial = BillingPlan.DurationUnit.MONTHS
             self.fields["is_active"].initial = True
             self.fields["service_type"].initial = BillingPlan.ServiceType.PPPOE
+            self.fields["fup_period_value"].initial = 1
+            self.fields["fup_period_unit"].initial = BillingPlan.DurationUnit.MONTHS
+            self.fields["fup_action"].initial = BillingPlan.FupAction.THROTTLE
+            self.fields["fup_throttle_download_mbps"].initial = 1
+            self.fields["fup_throttle_upload_mbps"].initial = 1
         elif getattr(self.instance, "pk", None):
             value, unit = self.instance.duration_parts()
             self.initial.setdefault("duration_value", value)
@@ -1918,6 +2011,13 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "hotspot_hourly_rate_per_device": f"id_{self.id_prefix}_hotspot_hourly_rate_per_device",
             "offer_enabled": f"id_{self.id_prefix}_offer_enabled",
             "offer_pay_count": f"id_{self.id_prefix}_offer_pay_count",
+            "fup_enabled": f"id_{self.id_prefix}_fup_enabled",
+            "fup_period_value": f"id_{self.id_prefix}_fup_period_value",
+            "fup_period_unit": f"id_{self.id_prefix}_fup_period_unit",
+            "fup_data_limit_gb": f"id_{self.id_prefix}_fup_data_limit_gb",
+            "fup_action": f"id_{self.id_prefix}_fup_action",
+            "fup_throttle_download_mbps": f"id_{self.id_prefix}_fup_throttle_download",
+            "fup_throttle_upload_mbps": f"id_{self.id_prefix}_fup_throttle_upload",
             "image": f"id_{self.id_prefix}_image",
             "is_active": f"id_{self.id_prefix}_is_active",
             "routers": f"id_{self.id_prefix}_routers",
@@ -1970,6 +2070,165 @@ class BillingPackageRegisterForm(forms.ModelForm):
                 offer_pay_count or getattr(self.instance, "offer_pay_count", None) or 5
             )
 
+        fup_enabled = bool(cleaned.get("fup_enabled"))
+        fup_period_value = cleaned.get("fup_period_value")
+        fup_period_unit = (cleaned.get("fup_period_unit") or "").strip().lower()
+        fup_data_limit = cleaned.get("fup_data_limit_gb")
+        fup_action = (cleaned.get("fup_action") or "").strip().lower()
+        fup_throttle_down = cleaned.get("fup_throttle_download_mbps")
+        fup_throttle_up = cleaned.get("fup_throttle_upload_mbps")
+        valid_units = {choice.value for choice in BillingPlan.DurationUnit}
+        valid_actions = {choice.value for choice in BillingPlan.FupAction}
+
+        if fup_enabled:
+            if fup_period_value in (None, ""):
+                self.add_error("fup_period_value", "Enter the FUP period length.")
+            else:
+                try:
+                    fup_period_value = int(fup_period_value)
+                except (TypeError, ValueError):
+                    fup_period_value = 0
+                if fup_period_value < 1:
+                    self.add_error(
+                        "fup_period_value",
+                        "FUP period must be at least 1.",
+                    )
+                elif fup_period_value > 999:
+                    self.add_error(
+                        "fup_period_value",
+                        "FUP period cannot exceed 999.",
+                    )
+                else:
+                    cleaned["fup_period_value"] = fup_period_value
+            if fup_period_unit not in valid_units:
+                self.add_error(
+                    "fup_period_unit",
+                    "Choose hours, days, weeks, months, or years.",
+                )
+            else:
+                cleaned["fup_period_unit"] = fup_period_unit
+            if fup_data_limit in (None, ""):
+                self.add_error(
+                    "fup_data_limit_gb",
+                    "Enter how much data one client may use in the FUP period.",
+                )
+            else:
+                try:
+                    fup_data_limit = Decimal(str(fup_data_limit))
+                except (InvalidOperation, TypeError, ValueError):
+                    fup_data_limit = Decimal("0")
+                if fup_data_limit <= 0:
+                    self.add_error(
+                        "fup_data_limit_gb",
+                        "Data limit must be greater than 0 GB.",
+                    )
+                else:
+                    cleaned["fup_data_limit_gb"] = fup_data_limit
+            if fup_action not in valid_actions:
+                self.add_error(
+                    "fup_action",
+                    "Choose disconnect or throttle when the limit is hit.",
+                )
+            else:
+                cleaned["fup_action"] = fup_action
+            if fup_action == BillingPlan.FupAction.THROTTLE:
+                download = int(cleaned.get("download_speed_mbps") or 0)
+                upload = int(cleaned.get("upload_speed_mbps") or 0)
+                if fup_throttle_down in (None, ""):
+                    self.add_error(
+                        "fup_throttle_download_mbps",
+                        "Enter the reduced download speed after the FUP limit.",
+                    )
+                else:
+                    try:
+                        fup_throttle_down = int(fup_throttle_down)
+                    except (TypeError, ValueError):
+                        fup_throttle_down = 0
+                    if fup_throttle_down < 1:
+                        self.add_error(
+                            "fup_throttle_download_mbps",
+                            "Throttle download must be at least 1 Mbps.",
+                        )
+                    elif download > 0 and fup_throttle_down > download:
+                        self.add_error(
+                            "fup_throttle_download_mbps",
+                            "Throttle download cannot exceed package download speed.",
+                        )
+                    else:
+                        cleaned["fup_throttle_download_mbps"] = fup_throttle_down
+                if fup_throttle_up in (None, ""):
+                    self.add_error(
+                        "fup_throttle_upload_mbps",
+                        "Enter the reduced upload speed after the FUP limit.",
+                    )
+                else:
+                    try:
+                        fup_throttle_up = int(fup_throttle_up)
+                    except (TypeError, ValueError):
+                        fup_throttle_up = 0
+                    if fup_throttle_up < 1:
+                        self.add_error(
+                            "fup_throttle_upload_mbps",
+                            "Throttle upload must be at least 1 Mbps.",
+                        )
+                    elif upload > 0 and fup_throttle_up > upload:
+                        self.add_error(
+                            "fup_throttle_upload_mbps",
+                            "Throttle upload cannot exceed package upload speed.",
+                        )
+                    else:
+                        cleaned["fup_throttle_upload_mbps"] = fup_throttle_up
+            else:
+                cleaned["fup_throttle_download_mbps"] = int(
+                    fup_throttle_down
+                    or getattr(self.instance, "fup_throttle_download_mbps", None)
+                    or 1
+                )
+                cleaned["fup_throttle_upload_mbps"] = int(
+                    fup_throttle_up
+                    or getattr(self.instance, "fup_throttle_upload_mbps", None)
+                    or 1
+                )
+        else:
+            cleaned["fup_period_value"] = int(
+                fup_period_value
+                or getattr(self.instance, "fup_period_value", None)
+                or 1
+            )
+            cleaned["fup_period_unit"] = (
+                fup_period_unit
+                if fup_period_unit in valid_units
+                else getattr(self.instance, "fup_period_unit", None)
+                or BillingPlan.DurationUnit.MONTHS
+            )
+            if fup_data_limit not in (None, ""):
+                try:
+                    cleaned["fup_data_limit_gb"] = Decimal(str(fup_data_limit))
+                except (InvalidOperation, TypeError, ValueError):
+                    cleaned["fup_data_limit_gb"] = getattr(
+                        self.instance, "fup_data_limit_gb", None
+                    ) or Decimal("0.00")
+            else:
+                cleaned["fup_data_limit_gb"] = getattr(
+                    self.instance, "fup_data_limit_gb", None
+                ) or Decimal("0.00")
+            cleaned["fup_action"] = (
+                fup_action
+                if fup_action in valid_actions
+                else getattr(self.instance, "fup_action", None)
+                or BillingPlan.FupAction.THROTTLE
+            )
+            cleaned["fup_throttle_download_mbps"] = int(
+                fup_throttle_down
+                or getattr(self.instance, "fup_throttle_download_mbps", None)
+                or 1
+            )
+            cleaned["fup_throttle_upload_mbps"] = int(
+                fup_throttle_up
+                or getattr(self.instance, "fup_throttle_upload_mbps", None)
+                or 1
+            )
+
         download = int(cleaned.get("download_speed_mbps") or 0)
         upload = int(cleaned.get("upload_speed_mbps") or 0)
         g_down = cleaned.get("download_guaranteed_mbps")
@@ -2007,6 +2266,32 @@ class BillingPackageRegisterForm(forms.ModelForm):
                 cleaned["upload_guaranteed_mbps"] = min(g_down, upload or g_down)
             elif g_up > 0 and g_down <= 0:
                 cleaned["download_guaranteed_mbps"] = min(g_up, download or g_up)
+
+        service_type = cleaned.get("service_type") or getattr(self.instance, "service_type", "")
+        if service_type == BillingPlan.ServiceType.HOTSPOT:
+            hourly = cleaned.get("hotspot_hourly_rate_per_device")
+            try:
+                hourly_val = Decimal(str(hourly or 0))
+            except (InvalidOperation, TypeError, ValueError):
+                hourly_val = Decimal("0")
+            other_enabled = bool(cleaned.get("hotspot_other_devices_enabled"))
+            if other_enabled and hourly_val <= 0:
+                self.add_error(
+                    "hotspot_hourly_rate_per_device",
+                    "Enter an hourly rate per device for pay-for-other-devices packages.",
+                )
+            elif hourly_val > 0:
+                cleaned["hotspot_other_devices_enabled"] = True
+            else:
+                cleaned["hotspot_other_devices_enabled"] = False
+                cleaned["hotspot_hourly_rate_per_device"] = Decimal("0.00")
+            base = cleaned.get("hotspot_other_base_price")
+            if cleaned["hotspot_other_devices_enabled"] and base in (None, ""):
+                cleaned["hotspot_other_base_price"] = cleaned.get("price")
+        else:
+            cleaned["hotspot_other_devices_enabled"] = False
+            cleaned["hotspot_hourly_rate_per_device"] = Decimal("0.00")
+
         return cleaned
 
     def clean_description(self):

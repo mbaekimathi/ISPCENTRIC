@@ -989,6 +989,10 @@ def mpesa_stk_callback(request):
     Always acknowledges so Safaricom treats the callback as received.
     Success fulfillment is verified inside process_stk_callback_payload (amount +
     Daraja STK Query) so a forged POST alone cannot activate service.
+
+    Never drop the body on IP allowlist mismatch: STK Query confirms payment, and
+    the SMS receipt (MpesaReceiptNumber) only arrives on this callback. Silently
+    returning Accepted without processing left payments with empty message refs.
     """
     import json
     import logging
@@ -999,13 +1003,18 @@ def mpesa_stk_callback(request):
 
     logger = logging.getLogger(__name__)
 
+    peer = (request.META.get("REMOTE_ADDR") or "").strip()
     allowed_raw = (getattr(settings, "MPESA_CALLBACK_ALLOWED_IPS", "") or "").strip()
     if allowed_raw:
-        peer = (request.META.get("REMOTE_ADDR") or "").strip()
         allowed = {ip.strip() for ip in allowed_raw.split(",") if ip.strip()}
-        if peer not in allowed:
-            logger.warning("Rejected M-Pesa STK callback from non-allowlisted IP %s", peer)
-            return JsonResponse({"ResultCode": 0, "ResultDesc": "Accepted"})
+        if peer and peer not in allowed:
+            # Soft warn only — still process. Hard-drop used to ACK Safaricom while
+            # discarding CallbackMetadata, so M-Pesa message refs never landed.
+            logger.warning(
+                "M-Pesa STK callback from unexpected IP %s (allowlist set); "
+                "processing anyway because Daraja STK Query gates fulfillment",
+                peer,
+            )
 
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
@@ -1013,7 +1022,8 @@ def mpesa_stk_callback(request):
         payload = {"raw": "[unparseable body]"}
 
     logger.info(
-        "M-Pesa STK callback received: %s",
+        "M-Pesa STK callback received from %s: %s",
+        peer or "unknown",
         redact_stk_callback_for_log(payload if isinstance(payload, dict) else {}),
     )
     try:

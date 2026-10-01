@@ -76,6 +76,8 @@
           </div>
         </details>
 
+        {% include "billing/includes/package_fup_fields.html" with pform=package_edit_form %}
+
         {% if package_edit_form.routers.field.queryset.exists %}
         <details class="pppoe-advanced">
           <summary>MikroTik routers <span class="pppoe-advanced-hint">Limit by router</span></summary>

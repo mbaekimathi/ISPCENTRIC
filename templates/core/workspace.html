@@ -31,16 +31,7 @@
   </header>
 
   <div class="packages-stats workspace-client-stats" aria-label="Client access now">
-    <button type="button" class="packages-stat tone-active workspace-access-stat is-active" data-access-tab="surfing" style="--i:0">
-      <span class="packages-stat-ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 13l4 4L19 7"/></svg>
-      </span>
-      <div class="packages-stat-text">
-        <p class="packages-stat-label">Surfing</p>
-        <p class="packages-stat-value" data-stat="access-surfing">—</p>
-      </div>
-    </button>
-    <button type="button" class="packages-stat tone-warn workspace-access-stat" data-access-tab="not_surfing" style="--i:1">
+    <button type="button" class="packages-stat tone-warn workspace-access-stat is-active" data-access-tab="not_surfing" style="--i:0">
       <span class="packages-stat-ico" aria-hidden="true">
         <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 9v4m0 4h.01"/></svg>
       </span>
@@ -49,22 +40,31 @@
         <p class="packages-stat-value" data-stat="access-not-surfing">—</p>
       </div>
     </button>
-    <button type="button" class="packages-stat tone-static workspace-access-stat" data-access-tab="disconnected" style="--i:2">
-      <span class="packages-stat-ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M18 6 6 18M6 6l12 12"/></svg>
-      </span>
-      <div class="packages-stat-text">
-        <p class="packages-stat-label">Disconnected</p>
-        <p class="packages-stat-value" data-stat="access-disconnected">—</p>
-      </div>
-    </button>
-    <button type="button" class="packages-stat tone-suspended workspace-access-stat" data-access-tab="expired" style="--i:3">
+    <button type="button" class="packages-stat tone-suspended workspace-access-stat is-active" data-access-tab="expired" style="--i:1">
       <span class="packages-stat-ico" aria-hidden="true">
         <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 8v4l3 3"/></svg>
       </span>
       <div class="packages-stat-text">
         <p class="packages-stat-label">Expired</p>
         <p class="packages-stat-value" data-stat="access-expired">—</p>
+      </div>
+    </button>
+    <button type="button" class="packages-stat tone-active workspace-access-stat" data-access-tab="surfing" style="--i:2">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 13l4 4L19 7"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Surfing</p>
+        <p class="packages-stat-value" data-stat="access-surfing">—</p>
+      </div>
+    </button>
+    <button type="button" class="packages-stat tone-static workspace-access-stat" data-access-tab="disconnected" style="--i:3">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M18 6 6 18M6 6l12 12"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Disconnected</p>
+        <p class="packages-stat-value" data-stat="access-disconnected">—</p>
       </div>
     </button>
   </div>
@@ -134,15 +134,100 @@
     <div class="workspace-dash-chart-wrap workspace-dash-chart-wrap-compact">
       <canvas id="chart-client-access-trend" height="200"></canvas>
     </div>
+    <div class="workspace-dash-panel-head workspace-dash-panel-head-nested">
+      <div>
+        <p class="workspace-dash-panel-kicker">Fair usage</p>
+        <h3 class="workspace-dash-chart-title">FUP hits by MikroTik</h3>
+        <p class="panel-sub">Clients at their fair-usage limit on each router — last 24 hours.</p>
+      </div>
+      <div class="workspace-dash-perf-summary">
+        <span class="workspace-dash-chip">At limit <strong data-stat="fup-hits-total">—</strong></span>
+        <span class="workspace-dash-chip">Routers <strong data-stat="fup-hits-routers">—</strong></span>
+      </div>
+    </div>
+    <div class="workspace-dash-chart-wrap workspace-dash-chart-wrap-compact">
+      <canvas id="chart-fup-hits-trend" height="200"></canvas>
+    </div>
   </section>
   </div>
+
+  <section class="workspace-dash-panel ops-panel workspace-fup-attention" data-fup-attention>
+    <div class="workspace-dash-panel-head">
+      <div>
+        <p class="workspace-dash-panel-kicker">Fair usage</p>
+        <h2>Near FUP limit</h2>
+        <p class="panel-sub">Clients at 80–100% of their package fair-usage data cap in the current FUP period.</p>
+      </div>
+      <div class="workspace-dash-perf-summary">
+        <span class="workspace-dash-chip">Total <strong data-fup-attention-count>{{ fup_attention.count|default:0 }}</strong></span>
+        <span class="workspace-dash-chip">At limit <strong data-fup-attention-hit>{{ fup_attention.at_limit|default:0 }}</strong></span>
+        <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:clients_general_usage' %}">Usage</a>
+      </div>
+    </div>
+    <div data-fup-attention-body>
+      {% if fup_attention.clients %}
+        <div class="workspace-dash-scroll">
+          <table class="workspace-dash-table is-stack">
+            <thead>
+              <tr>
+                <th class="workspace-dash-name-col">Client</th>
+                <th>Package</th>
+                <th>FUP</th>
+                <th>Used</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in fup_attention.clients %}
+                <tr class="{% if row.fup_restricted or row.fup_percent >= 100 %}is-fup-hit{% elif row.fup_percent >= 80 %}is-fup-near{% endif %}">
+                  <td class="workspace-dash-name-col" data-label="Client">
+                    <a class="workspace-dash-client" href="{% url 'core:client_detail' row.id %}">
+                      <strong>{{ row.full_name }}</strong>
+                      <small>
+                        {{ row.account_number }}{% if row.router_name %} · {{ row.router_name }}{% endif %}
+                      </small>
+                    </a>
+                  </td>
+                  <td data-label="Package">{{ row.plan_name|default:"—" }}</td>
+                  <td data-label="FUP">
+                    <div class="workspace-fup-meter{% if row.fup_restricted or row.fup_percent >= 100 %} is-hit{% elif row.fup_percent >= 80 %} is-near{% endif %}">
+                      <strong>{{ row.fup_percent|floatformat:0 }}%</strong>
+                      <span class="workspace-fup-track" aria-hidden="true">
+                        <span class="workspace-fup-fill" style="width: {{ row.fup_percent|floatformat:0 }}%;"></span>
+                      </span>
+                      <small>{% if row.fup_limit_label %}{{ row.fup_limit_label }}{% if row.fup_period_label %} / {{ row.fup_period_label }}{% endif %}{% else %}—{% endif %}</small>
+                    </div>
+                  </td>
+                  <td data-label="Used" data-fup-bytes-used="{{ row.fup_bytes_used|default:0 }}" data-fup-bytes-limit="{{ row.fup_bytes_limit|default:0 }}">—</td>
+                  <td data-label="Status">
+                    <span class="workspace-dash-badge {% if row.fup_restricted or row.fup_percent >= 100 %}is-danger{% else %}is-warn{% endif %}">
+                      {% if row.fup_status_label %}{{ row.fup_status_label }}{% elif row.fup_restricted %}At limit{% else %}Near limit{% endif %}
+                    </span>
+                  </td>
+                  <td data-label="">
+                    <a class="btn btn-ghost workspace-dash-btn-sm" href="{% url 'core:client_detail' row.id %}">Open</a>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="workspace-dash-empty">
+          <p class="workspace-dash-empty-title">No clients near FUP limit</p>
+          <p class="workspace-dash-empty-copy">When a client hits 80%+ of their fair-usage cap, they will appear here.</p>
+        </div>
+      {% endif %}
+    </div>
+  </section>
 
   <section class="workspace-dash-panel ops-panel workspace-client-access">
     <div class="workspace-dash-panel-head">
       <div>
         <p class="workspace-dash-panel-kicker">Live list</p>
-        <h2 data-access-panel-title>Surfing clients</h2>
-        <p class="panel-sub" data-access-panel-sub>Clients with an active package and working internet right now.</p>
+        <h2 data-access-panel-title>Not surfing &amp; expired</h2>
+        <p class="panel-sub" data-access-panel-sub>Clients dialed or in-package without internet, plus ended subscriptions.</p>
       </div>
       <div class="workspace-dash-perf-summary">
         <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:my_clients' %}">All clients</a>
@@ -174,15 +259,22 @@
   var inFlight = false;
   var initial = {{ analytics_json|safe }};
   var initialClientAccess = {{ initial_client_access_json|safe }};
+  var initialFupAttention = {{ fup_attention_json|safe }};
   var trendChart = null;
   var clientAccessChart = null;
+  var fupHitsChart = null;
   var lastRouters = null;
   var lastMikrotikDrops = (initial && initial.mikrotik_drops) || { events: [] };
   var lastNetworkDrops = (initial && initial.network_drops) || { events: [] };
   var lastClientAccessTrend = (initial && initial.client_access_trend) || null;
+  var lastFupHitsTrend = (initial && initial.fup_hits_trend) || null;
   var lastAccessClients = [];
-  var activeAccessTab = "surfing";
+  var activeAccessTab = "attention";
   var accessPanelCopy = {
+    attention: {
+      title: "Not surfing & expired",
+      sub: "Clients dialed or in-package without internet, plus ended subscriptions."
+    },
     surfing: {
       title: "Surfing clients",
       sub: "Active package with a live session and internet working."
@@ -491,6 +583,36 @@
     }
   }
 
+  function paintFupHitsTrend(trend) {
+    var canvas = document.getElementById("chart-fup-hits-trend");
+    if (!canvas || !window.Chart) return;
+    if (!trend) return;
+    var summary = trend.summary || {};
+    setText('[data-stat="fup-hits-total"]', summary.total != null ? summary.total : "—");
+    setText(
+      '[data-stat="fup-hits-routers"]',
+      summary.routers_hit != null ? summary.routers_hit : "—"
+    );
+    var labels = trend.labels || [];
+    var datasets = (trend.datasets || []).map(function (ds) {
+      return Object.assign({}, ds, {
+        fill: false,
+        spanGaps: true
+      });
+    });
+    if (!fupHitsChart) {
+      fupHitsChart = new Chart(canvas, {
+        type: "line",
+        data: { labels: labels, datasets: datasets },
+        options: networkChartDefaults()
+      });
+    } else {
+      fupHitsChart.data.labels = labels;
+      fupHitsChart.data.datasets = datasets;
+      fupHitsChart.update("none");
+    }
+  }
+
   function paintTrend(trend) {
     var canvas = document.getElementById("chart-mikrotik-trend");
     if (!canvas || !window.Chart) return;
@@ -660,11 +782,16 @@
   }
 
   function setActiveAccessTab(tab) {
-    activeAccessTab = tab || "surfing";
+    activeAccessTab = tab || "attention";
     root.querySelectorAll(".workspace-access-stat").forEach(function (btn) {
-      btn.classList.toggle("is-active", btn.getAttribute("data-access-tab") === activeAccessTab);
+      var btnTab = btn.getAttribute("data-access-tab");
+      var isActive =
+        btnTab === activeAccessTab ||
+        (activeAccessTab === "attention" &&
+          (btnTab === "not_surfing" || btnTab === "expired"));
+      btn.classList.toggle("is-active", isActive);
     });
-    var copy = accessPanelCopy[activeAccessTab] || accessPanelCopy.surfing;
+    var copy = accessPanelCopy[activeAccessTab] || accessPanelCopy.attention;
     var titleEl = root.querySelector("[data-access-panel-title]");
     var subEl = root.querySelector("[data-access-panel-sub]");
     if (titleEl) titleEl.textContent = copy.title;
@@ -677,10 +804,18 @@
     if (!body) return;
     tab = tab || activeAccessTab;
     var rows = (clients || []).filter(function (row) {
-      return clientState(row) === tab;
+      var state = clientState(row);
+      if (tab === "attention") {
+        return state === "not_surfing" || state === "expired";
+      }
+      return state === tab;
     });
-    if (tab === "not_surfing") {
+    if (tab === "attention" || tab === "not_surfing") {
       rows.sort(function (a, b) {
+        var order = { not_surfing: 0, expired: 1 };
+        var as = order[clientState(a)] != null ? order[clientState(a)] : 9;
+        var bs = order[clientState(b)] != null ? order[clientState(b)] : 9;
+        if (as !== bs) return as - bs;
         var ac = a.connected ? 1 : 0;
         var bc = b.connected ? 1 : 0;
         if (ac !== bc) return bc - ac;
@@ -695,7 +830,7 @@
         "</div>";
       return;
     }
-    var showDowntime = tab === "not_surfing";
+    var showDowntime = tab === "not_surfing" || tab === "attention";
     var html =
       '<div class="workspace-dash-scroll"><table class="workspace-dash-table is-stack"><thead><tr>' +
       '<th class="workspace-dash-name-col">Client</th><th>Service</th><th>Connection</th>' +
@@ -725,6 +860,9 @@
       if (showDowntime) {
         var times = Number(row.downtime_count || 0);
         var lost = row.lost_surfing_label || (row.connected ? "Connected now" : "—");
+        if (state === "expired" && !row.lost_surfing_label) {
+          lost = "—";
+        }
         html +=
           '<td data-label="Downtime"><strong>' +
           escapeHtml(lost) +
@@ -974,6 +1112,10 @@
         : null;
       paintClientAccessTrend(lastClientAccessTrend, liveSummary);
     }
+    if (data.fup_hits_trend) {
+      lastFupHitsTrend = data.fup_hits_trend;
+      paintFupHitsTrend(lastFupHitsTrend);
+    }
     lastMikrotikDrops = data.mikrotik_drops || lastMikrotikDrops;
     if (data.mikrotik_status_catalog) {
       statusCatalog = data.mikrotik_status_catalog;
@@ -1049,6 +1191,87 @@
     if (bundle.client_access) {
       applyClientAccessBundle(bundle.client_access);
     }
+    if (bundle.fup_attention) {
+      paintFupAttention(bundle.fup_attention);
+    }
+  }
+
+  function fmtFupBytes(bytes) {
+    var n = Number(bytes) || 0;
+    if (n >= 1073741824) return (n / 1073741824).toFixed(2) + " GB";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n >= 1024) return (n / 1024).toFixed(0) + " KB";
+    return Math.round(n) + " B";
+  }
+
+  function paintFupAttention(payload) {
+    var body = root.querySelector("[data-fup-attention-body]");
+    var countEl = root.querySelector("[data-fup-attention-count]");
+    var hitEl = root.querySelector("[data-fup-attention-hit]");
+    if (!body) return;
+    payload = payload || {};
+    var rows = Array.isArray(payload.clients) ? payload.clients : [];
+    var count = Number(payload.count != null ? payload.count : rows.length) || 0;
+    var hit = Number(payload.at_limit != null ? payload.at_limit : 0) || 0;
+    if (!hit && rows.length) {
+      hit = rows.filter(function (row) {
+        return row.fup_restricted || Number(row.fup_percent) >= 100;
+      }).length;
+    }
+    if (countEl) countEl.textContent = String(count);
+    if (hitEl) hitEl.textContent = String(hit);
+    if (!rows.length) {
+      body.innerHTML =
+        '<div class="workspace-dash-empty">' +
+        '<p class="workspace-dash-empty-title">No clients near FUP limit</p>' +
+        '<p class="workspace-dash-empty-copy">When a client hits 80%+ of their fair-usage cap, they will appear here.</p>' +
+        "</div>";
+      return;
+    }
+    var html =
+      '<div class="workspace-dash-scroll"><table class="workspace-dash-table is-stack"><thead><tr>' +
+      '<th class="workspace-dash-name-col">Client</th><th>Package</th><th>FUP</th><th>Used</th><th>Status</th><th></th>' +
+      "</tr></thead><tbody>";
+    rows.slice(0, 40).forEach(function (row) {
+      var id = row.id || row.customer_id;
+      var url = "/app/clients/" + id + "/";
+      var pct = Math.max(0, Math.min(100, Number(row.fup_percent) || 0));
+      var hitRow = !!(row.fup_restricted || pct >= 100);
+      var tone = hitRow ? " is-hit" : " is-near";
+      var rowTone = hitRow ? "is-fup-hit" : "is-fup-near";
+      var badge = hitRow ? "is-danger" : "is-warn";
+      var status = row.fup_status_label || (hitRow ? "At limit" : "Near limit");
+      var limitLabel = row.fup_limit_label || "";
+      if (limitLabel && row.fup_period_label) limitLabel += " / " + row.fup_period_label;
+      var usedLabel = fmtFupBytes(row.fup_bytes_used) + " / " + (row.fup_limit_label || fmtFupBytes(row.fup_bytes_limit));
+      html +=
+        '<tr class="' + rowTone + '">' +
+        '<td class="workspace-dash-name-col" data-label="Client"><a class="workspace-dash-client" href="' + escapeHtml(url) + '">' +
+        "<strong>" + escapeHtml(row.full_name || "Client") + "</strong><small>" +
+        escapeHtml(row.account_number || "—") +
+        (row.router_name ? " · " + escapeHtml(row.router_name) : "") +
+        "</small></a></td>" +
+        '<td data-label="Package">' + escapeHtml(row.plan_name || "—") + "</td>" +
+        '<td data-label="FUP"><div class="workspace-fup-meter' + tone + '">' +
+        "<strong>" + Math.round(pct) + "%</strong>" +
+        '<span class="workspace-fup-track" aria-hidden="true"><span class="workspace-fup-fill" style="width:' + pct + '%;"></span></span>' +
+        (limitLabel ? "<small>" + escapeHtml(limitLabel) + "</small>" : "") +
+        "</div></td>" +
+        '<td data-label="Used">' + escapeHtml(usedLabel) + "</td>" +
+        '<td data-label="Status"><span class="workspace-dash-badge ' + badge + '">' + escapeHtml(status) + "</span></td>" +
+        '<td data-label=""><a class="btn btn-ghost workspace-dash-btn-sm" href="' + escapeHtml(url) + '">Open</a></td>' +
+        "</tr>";
+    });
+    html += "</tbody></table></div>";
+    body.innerHTML = html;
+  }
+
+  function formatInitialFupBytes() {
+    root.querySelectorAll("[data-fup-bytes-used]").forEach(function (el) {
+      var used = Number(el.getAttribute("data-fup-bytes-used")) || 0;
+      var limit = Number(el.getAttribute("data-fup-bytes-limit")) || 0;
+      el.textContent = fmtFupBytes(used) + " / " + fmtFupBytes(limit);
+    });
   }
 
   function loadLive(opts) {
@@ -1111,7 +1334,16 @@
 
   root.querySelectorAll("[data-access-tab]").forEach(function (btn) {
     btn.addEventListener("click", function () {
-      setActiveAccessTab(btn.getAttribute("data-access-tab"));
+      var tab = btn.getAttribute("data-access-tab");
+      // Clicking the active not-surfing/expired filter again restores the combined list.
+      if (
+        (tab === "not_surfing" || tab === "expired") &&
+        activeAccessTab === tab
+      ) {
+        setActiveAccessTab("attention");
+        return;
+      }
+      setActiveAccessTab(tab);
     });
   });
 
@@ -1120,6 +1352,8 @@
     // from cache. Hard probes run on the poll cadence, not on every back/nav.
     applyAnalytics(initial);
     applyInitialClientAccess(initialClientAccess);
+    formatInitialFupBytes();
+    if (initialFupAttention) paintFupAttention(initialFupAttention);
     setActiveAccessTab(activeAccessTab);
     loadLive({});
     try {

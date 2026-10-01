@@ -237,6 +237,15 @@ def _handle_edit_package(request, org, *, success_url_name: str):
     previous_g_download = int(plan.download_guaranteed_mbps or 0)
     previous_g_upload = int(plan.upload_guaranteed_mbps or 0)
     previous_max_devices = int(plan.max_devices or 0)
+    previous_fup = (
+        bool(plan.fup_enabled),
+        int(plan.fup_period_value or 0),
+        (plan.fup_period_unit or ""),
+        str(plan.fup_data_limit_gb or "0"),
+        (plan.fup_action or ""),
+        int(plan.fup_throttle_download_mbps or 0),
+        int(plan.fup_throttle_upload_mbps or 0),
+    )
     form = BillingPackageRegisterForm(
         request.POST,
         request.FILES,
@@ -253,7 +262,16 @@ def _handle_edit_package(request, org, *, success_url_name: str):
             or int(plan.upload_guaranteed_mbps or 0) != previous_g_upload
         )
         devices_changed = int(plan.max_devices or 0) != previous_max_devices
-        if speeds_changed or devices_changed:
+        fup_changed = (
+            bool(plan.fup_enabled),
+            int(plan.fup_period_value or 0),
+            (plan.fup_period_unit or ""),
+            str(plan.fup_data_limit_gb or "0"),
+            (plan.fup_action or ""),
+            int(plan.fup_throttle_download_mbps or 0),
+            int(plan.fup_throttle_upload_mbps or 0),
+        ) != previous_fup
+        if speeds_changed or devices_changed or fup_changed:
             # Sync MikroTik in the background so nginx does not 504 while
             # every assigned client is reprovisioned on the router.
             _schedule_reprovision_customers_for_plan_speeds(plan.pk)
@@ -264,6 +282,8 @@ def _handle_edit_package(request, org, *, success_url_name: str):
                     extra.append("speeds")
                 if devices_changed:
                     extra.append("device limit")
+                if fup_changed:
+                    extra.append("fair usage policy")
                 pushed = " and ".join(extra)
                 messages.success(
                     request,

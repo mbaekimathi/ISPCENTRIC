@@ -3074,6 +3074,61 @@ def _forget_cpe_web_proxy_entry(key: tuple[str, str]) -> dict[str, Any] | None:
     return entry
 
 
+def _cpe_web_proxy_entry_matches(
+    entry: dict[str, Any] | None,
+    *,
+    expected_cpe_host: str = "",
+) -> bool:
+    """True when a cached NAS→CPE forward still targets the requested client IP."""
+    if not entry:
+        return False
+    expected = (expected_cpe_host or "").strip()
+    if not expected:
+        return True
+    cached_host = (entry.get("cpe_host") or "").strip()
+    return not cached_host or cached_host == expected
+
+
+def invalidate_customer_cpe_web_proxy(
+    nas_host: str,
+    *,
+    pppoe_username: str = "",
+    cpe_scope: str = "",
+    cpe_port: int = 80,
+    nas_username: str = "",
+    nas_password: str = "",
+    nas_port: int = 8728,
+    uninstall: bool = False,
+    timeout: float = 4.0,
+) -> dict[str, Any] | None:
+    """
+    Drop a cached CPE web forward so the next open reinstalls NAT.
+
+    Used after connection failures (stale PPPoE IP, router reboot wiped rules).
+    When uninstall=True and NAS credentials are provided, also remove the NAT
+    filter rules on the MikroTik (best-effort).
+    """
+    scope = (cpe_scope or pppoe_username or "").strip()
+    if not scope:
+        return None
+    key = (dial_host(nas_host), f"{scope}|{int(cpe_port)}")
+    with _cpe_web_proxy_lock(key):
+        entry = _forget_cpe_web_proxy_entry(key)
+    if uninstall and entry and (nas_username or "").strip():
+        try:
+            with _api_session(
+                nas_host,
+                nas_username,
+                nas_password or "",
+                port=nas_port,
+                timeout=timeout,
+            ) as nas_sock:
+                _uninstall_cpe_proxy(nas_sock, int(entry["port"]))
+        except Exception:
+            pass
+    return entry
+
+
 @contextmanager
 def customer_cpe_web_proxy(
     nas_host: str,
@@ -3087,6 +3142,7 @@ def customer_cpe_web_proxy(
     cpe_port: int = 80,
     nas_port: int = 8728,
     timeout: float = 8.0,
+    force_refresh: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """
     Expose one active CPE web port to this app, reusing a cached tunnel.
@@ -3095,38 +3151,76 @@ def customer_cpe_web_proxy(
     for `_CPE_WEB_PROXY_TTL` (aligned with the browser idle window). Concurrent
     requests reuse it behind a per-key lock; metadata is shared via Django cache
     across workers. Each hit slides the TTL so an in-use page does not drop NAT.
+
+    When ``cpe_address`` is supplied and differs from the cached target (PPPoE
+    renumber), the old forward is discarded and NAT is reinstalled to the live
+    IP. Pass ``force_refresh=True`` after a failed proxied request so a dead
+    forward (router reboot, wiped rules) is rebuilt even if the IP is unchanged.
     """
     scope = (cpe_scope or pppoe_username or "").strip()
     if not scope:
         raise ConnectionError("Missing client scope for CPE web proxy.")
     key = (dial_host(nas_host), f"{scope}|{cpe_port}")
+    expected_host = (cpe_address or "").strip()
 
-    cached = _load_cpe_web_proxy_entry(key)
-    if cached:
+    def _reuse_cached() -> dict[str, Any] | None:
+        if force_refresh:
+            return None
+        cached = _load_cpe_web_proxy_entry(key)
+        if not _cpe_web_proxy_entry_matches(cached, expected_cpe_host=expected_host):
+            return None
         cached = _touch_cpe_web_proxy_entry(key, cached)
-        yield {
+        return {
             "host": cached["host"],
             "port": cached["port"],
             "cpe_host": cached["cpe_host"],
             "source_address": cached.get("source_address", ""),
         }
+
+    reused = _reuse_cached()
+    if reused:
+        yield reused
         return
 
     lock = _cpe_web_proxy_lock(key)
     with lock:
         # Another thread / worker may have installed it while we waited.
-        cached = _load_cpe_web_proxy_entry(key)
-        if cached:
-            cached = _touch_cpe_web_proxy_entry(key, cached)
-            yield {
-                "host": cached["host"],
-                "port": cached["port"],
-                "cpe_host": cached["cpe_host"],
-                "source_address": cached.get("source_address", ""),
-            }
+        reused = _reuse_cached()
+        if reused:
+            yield reused
             return
 
-        cpe_host = (cpe_address or "").strip()
+        # Drop a mismatched or forced-stale entry before reinstalling so the
+        # next store cannot resurrect the old CPE IP / proxy port.
+        stale = _forget_cpe_web_proxy_entry(key)
+        if stale and force_refresh:
+            try:
+                with _api_session(
+                    nas_host,
+                    nas_username,
+                    nas_password,
+                    port=nas_port,
+                    timeout=min(timeout, 5.0),
+                ) as nas_sock:
+                    _uninstall_cpe_proxy(nas_sock, int(stale["port"]))
+            except Exception:
+                pass
+        elif stale:
+            stale_host = (stale.get("cpe_host") or "").strip()
+            if expected_host and stale_host and stale_host != expected_host:
+                try:
+                    with _api_session(
+                        nas_host,
+                        nas_username,
+                        nas_password,
+                        port=nas_port,
+                        timeout=min(timeout, 5.0),
+                    ) as nas_sock:
+                        _uninstall_cpe_proxy(nas_sock, int(stale["port"]))
+                except Exception:
+                    pass
+
+        cpe_host = expected_host
         resolved_gateway = (gateway_ip or PPPOE_LOCAL_ADDRESS).strip() or PPPOE_LOCAL_ADDRESS
         if not cpe_host:
             session = resolve_customer_cpe_session(
@@ -4620,6 +4714,15 @@ def _try_cpe_web_ports(
         try:
             with socket.create_connection((dial, proxy_port), timeout=connect_timeout):
                 if remember:
+                    cache_key = (dial, f"{scope}|{port}")
+                    previous = _load_cpe_web_proxy_entry(cache_key)
+                    if previous and int(previous.get("port") or 0) != int(proxy_port):
+                        # PPPoE renumber changed the hashed proxy port — drop the
+                        # orphaned NAT that still points at the old CPE IP.
+                        try:
+                            _uninstall_cpe_proxy(nas_sock, int(previous["port"]))
+                        except Exception:
+                            pass
                     _remember_cpe_web_proxy(
                         nas_host,
                         scope,
@@ -13015,6 +13118,14 @@ def _expected_hotspot_profile_for_customer(customer, organization=None) -> str:
 
 
 def _pppoe_speeds_for_customer(customer) -> tuple[int, int]:
+    try:
+        from billing.fup import customer_fup_throttle_speeds
+
+        throttled = customer_fup_throttle_speeds(customer)
+        if throttled:
+            return throttled
+    except Exception:
+        pass
     return _plan_speeds_mbps(getattr(customer, "plan", None))
 
 
@@ -20262,6 +20373,14 @@ def _hotspot_rate_limit_from_org(organization) -> str:
 
 def _hotspot_speeds_for_customer(customer, organization=None) -> tuple[int, int]:
     """Prefer the customer's package speeds; fall back to org Hotspot defaults."""
+    try:
+        from billing.fup import customer_fup_throttle_speeds
+
+        throttled = customer_fup_throttle_speeds(customer)
+        if throttled:
+            return throttled
+    except Exception:
+        pass
     upload, download = _plan_speeds_mbps(getattr(customer, "plan", None))
     if upload >= 1 and download >= 1:
         return upload, download

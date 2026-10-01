@@ -21,7 +21,8 @@
     }
     /* Captive fallback: never leave pay UI invisible (animation fill-mode bug). */
     .shell, .hero, .stage, .pay-dock, .access-banner,
-    .plan-categories, .plan-card, .pay-mode-tab, form.login {
+    .plan-categories, .plan-card, .pay-mode-tab, form.login,
+    .other-devices-panel, .voucher-results, .quote-simple, .device-stepper {
       opacity: 1 !important;
       visibility: visible !important;
       animation: none !important;
@@ -52,7 +53,7 @@
       font-weight: 600;
     }
   </style>
-  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=6">
+  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=7">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true">
@@ -149,27 +150,43 @@
                 <span class="pay-mode-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="14" height="10" rx="1.5"/><rect x="8" y="5" width="14" height="10" rx="1.5"/></svg>
                 </span>
-                <span class="pay-mode-title">Other phones</span>
-                <small>Get codes for family devices</small>
+                <span class="pay-mode-title">Other devices</span>
+                <small>Buy codes · share with family</small>
               </label>
             </div>
 
             <div class="other-devices-panel" data-other-devices-panel hidden>
-              <p class="pay-mode-hint">Pick how many devices and how long. After M-Pesa you get one easy code per device.</p>
+              <p class="pay-mode-hint">Choose how many devices. <strong>Standard price</strong> covers 1 device for the first hour; extras are charged per hour per device. After M-Pesa you get <strong>one voucher code per device</strong>.</p>
 
-              <div class="quick-pick-block">
-                <p class="quick-pick-label">How many devices?</p>
-                <div class="quick-pick-chips" data-device-chips role="group" aria-label="Number of devices">
-                  <button type="button" class="quick-pick-chip is-active" data-device-pick="1">1</button>
-                  <button type="button" class="quick-pick-chip" data-device-pick="2">2</button>
+              <div class="device-stepper-block">
+                <p class="quick-pick-label">Number of devices</p>
+                <div class="device-stepper" role="group" aria-label="Number of devices">
+                  <button type="button" class="device-stepper-btn" data-device-step="-1" aria-label="Fewer devices">−</button>
+                  <div class="device-stepper-value">
+                    <input
+                      id="hotspot-other-device-count"
+                      name="device_count"
+                      type="number"
+                      min="1"
+                      max="50"
+                      value="2"
+                      inputmode="numeric"
+                      data-other-device-count
+                      aria-label="Device count"
+                    >
+                    <span data-device-stepper-label>devices</span>
+                  </div>
+                  <button type="button" class="device-stepper-btn" data-device-step="1" aria-label="More devices">+</button>
+                </div>
+                <div class="quick-pick-chips" data-device-chips role="group" aria-label="Quick device picks">
+                  <button type="button" class="quick-pick-chip" data-device-pick="1">1</button>
+                  <button type="button" class="quick-pick-chip is-active" data-device-pick="2">2</button>
                   <button type="button" class="quick-pick-chip" data-device-pick="3">3</button>
                   <button type="button" class="quick-pick-chip" data-device-pick="4">4</button>
+                  <button type="button" class="quick-pick-chip" data-device-pick="5">5</button>
                   <button type="button" class="quick-pick-chip" data-device-pick="custom">More</button>
                 </div>
-                <div class="field field-compact" data-device-custom hidden>
-                  <label for="hotspot-other-device-count">Exact number</label>
-                  <input id="hotspot-other-device-count" name="device_count" type="number" min="1" max="50" value="1" inputmode="numeric" data-other-device-count>
-                </div>
+                <p class="device-stepper-hint" data-device-custom hidden>Type any number from 1–50 above.</p>
               </div>
 
               <div class="quick-pick-block">
@@ -185,9 +202,10 @@
               </div>
 
               <div class="quote-simple" data-quote-box aria-live="polite">
-                <p class="quote-simple-label">You pay</p>
+                <p class="quote-simple-label">Total to pay</p>
                 <p class="quote-simple-amount" data-quote-total>KES 0</p>
-                <p class="quote-simple-meta" data-quote-summary>1 code · 1 hour each</p>
+                <p class="quote-simple-meta" data-quote-summary>2 vouchers · 1 hour each</p>
+                <p class="quote-simple-break" data-quote-breakdown></p>
               </div>
 
               <p class="pay-mode-alert" data-other-plan-warning hidden role="status">
@@ -270,6 +288,22 @@
           {% endif %}
 
           <p class="meta" data-payment-status role="status" aria-live="polite" hidden></p>
+
+          <section class="voucher-results" data-voucher-results hidden aria-live="polite">
+            <div class="voucher-results-head">
+              <p class="voucher-results-kicker" data-voucher-results-kicker>Payment successful</p>
+              <h2 data-voucher-results-title>Your voucher codes</h2>
+              <p class="voucher-copy" data-voucher-results-copy>
+                Copy each code and enter it on another device under <strong>Have a voucher?</strong>
+              </p>
+            </div>
+            <ul class="voucher-results-list" data-voucher-results-list></ul>
+            <div class="voucher-results-actions">
+              <button type="button" class="cta voucher-copy-all" data-voucher-copy-all>Copy all codes</button>
+              <button type="button" class="voucher-results-done" data-voucher-results-done>Done</button>
+            </div>
+            <p class="voucher-results-note">Each code works once on one device. Unused codes stay valid until used.</p>
+          </section>
 
           <div class="voucher-code-reveal" data-voucher-reveal hidden>
             <div>
@@ -360,8 +394,9 @@
         Enter your PIN on your phone. This page updates automatically.
       </p>
       <div class="overlay-vouchers" data-overlay-vouchers hidden>
-        <p class="voucher-copy">Remaining valid vouchers for other devices:</p>
+        <p class="voucher-copy" data-overlay-voucher-heading>Your voucher codes — copy and use on each device:</p>
         <ul data-overlay-voucher-list></ul>
+        <button type="button" class="voucher-copy-all" data-overlay-copy-all>Copy all codes</button>
       </div>
       <div class="pay-overlay-actions">
         <button type="button" class="retry" data-payment-retry>Try again</button>
@@ -462,11 +497,21 @@
       var continueBtn = overlay && overlay.querySelector("[data-overlay-continue]");
       var overlayVouchers = overlay && overlay.querySelector("[data-overlay-vouchers]");
       var overlayVoucherList = overlay && overlay.querySelector("[data-overlay-voucher-list]");
+      var overlayCopyAll = overlay && overlay.querySelector("[data-overlay-copy-all]");
+      var overlayVoucherHeading = overlay && overlay.querySelector("[data-overlay-voucher-heading]");
       var paymentSteps = overlay && overlay.querySelector("[data-payment-steps]");
       var stepPaid = overlay && overlay.querySelector('[data-step="paid"]');
       var stepConnect = overlay && overlay.querySelector('[data-step="connect"]');
       var receiptEl = overlay && overlay.querySelector("[data-payment-receipt]");
       var receiptCodeEl = overlay && overlay.querySelector("[data-receipt-code]");
+      var voucherResults = root.querySelector("[data-voucher-results]");
+      var voucherResultsList = root.querySelector("[data-voucher-results-list]");
+      var voucherResultsTitle = root.querySelector("[data-voucher-results-title]");
+      var voucherResultsCopy = root.querySelector("[data-voucher-results-copy]");
+      var voucherResultsKicker = root.querySelector("[data-voucher-results-kicker]");
+      var voucherCopyAllBtn = root.querySelector("[data-voucher-copy-all]");
+      var voucherResultsDone = root.querySelector("[data-voucher-results-done]");
+      var lastPurchaseCodes = [];
       var activeCtx = null;
       var continueTarget = "";
       var rateLimitTimer = null;
@@ -528,7 +573,13 @@
         overlay.classList.toggle("is-error", !!isError);
         overlay.classList.toggle("is-success", !!isSuccess);
         document.body.classList.toggle("is-paying", !!active);
-        if (waitingLive) waitingLive.textContent = isError ? "Failed" : (isSuccess ? "Connected" : "Waiting");
+        if (waitingLive) {
+          waitingLive.textContent = isError
+            ? "Failed"
+            : (isSuccess
+              ? ((overlayVouchers && !overlayVouchers.hidden) ? "Ready" : "Connected")
+              : "Waiting");
+        }
         if (active) {
           if (waitingTitle && title) waitingTitle.textContent = title;
           if (waitingCopy && copy) waitingCopy.textContent = copy;
@@ -540,6 +591,11 @@
         clearRateLimitTimer();
         setWaiting(false);
         if (activeCtx && activeCtx.submit) activeCtx.submit.disabled = false;
+        try {
+          if (voucherResults && !voucherResults.hidden) {
+            voucherResults.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        } catch (err) {}
       }
 
       if (retryBtn) {
@@ -550,11 +606,118 @@
         });
       }
       if (dismissBtn) dismissBtn.addEventListener("click", closeOverlay);
-      if (continueBtn) {
-        continueBtn.addEventListener("click", function () {
-          if (continueTarget) window.location.replace(continueTarget);
-          else closeOverlay();
+
+      function copyText(text, button) {
+        if (!text) return;
+        var label = button ? button.textContent : "";
+        function done() {
+          if (!button) return;
+          button.textContent = "Copied";
+          window.setTimeout(function () {
+            button.textContent = label || "Copy";
+          }, 1600);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done).catch(function () {});
+          return;
+        }
+        try {
+          var area = document.createElement("textarea");
+          area.value = text;
+          area.setAttribute("readonly", "");
+          area.style.position = "fixed";
+          area.style.left = "-9999px";
+          document.body.appendChild(area);
+          area.select();
+          document.execCommand("copy");
+          document.body.removeChild(area);
+          done();
+        } catch (err) {}
+      }
+
+      function fillVoucherList(listEl, codes) {
+        if (!listEl) return;
+        listEl.innerHTML = "";
+        codes.forEach(function (code, index) {
+          var item = document.createElement("li");
+          var meta = document.createElement("div");
+          meta.className = "voucher-code-meta";
+          var num = document.createElement("span");
+          num.className = "voucher-code-num";
+          num.textContent = "Device " + (index + 1);
+          var label = document.createElement("strong");
+          label.className = "voucher-code-value";
+          label.textContent = code;
+          meta.appendChild(num);
+          meta.appendChild(label);
+          var copyBtn = document.createElement("button");
+          copyBtn.type = "button";
+          copyBtn.className = "voucher-copy-btn";
+          copyBtn.textContent = "Copy";
+          copyBtn.addEventListener("click", function () {
+            copyText(code, copyBtn);
+          });
+          item.appendChild(meta);
+          item.appendChild(copyBtn);
+          listEl.appendChild(item);
         });
+      }
+
+      function showPurchaseVouchers(codes, options) {
+        options = options || {};
+        codes = (codes || []).filter(Boolean);
+        if (!codes.length) return;
+        lastPurchaseCodes = codes.slice();
+        continueTarget = "";
+        if (waitingLive) waitingLive.textContent = "Ready";
+
+        fillVoucherList(overlayVoucherList, codes);
+        if (overlayVoucherHeading) {
+          overlayVoucherHeading.textContent =
+            codes.length === 1
+              ? "Your voucher code — copy and use on a device:"
+              : ("Your " + codes.length + " voucher codes — copy and use on each device:");
+        }
+        if (overlayVouchers) overlayVouchers.hidden = false;
+
+        if (voucherResultsList) fillVoucherList(voucherResultsList, codes);
+        if (voucherResultsKicker) {
+          voucherResultsKicker.textContent = options.kicker || "Payment successful";
+        }
+        if (voucherResultsTitle) {
+          voucherResultsTitle.textContent =
+            codes.length === 1 ? "Your voucher code" : ("Your " + codes.length + " voucher codes");
+        }
+        if (voucherResultsCopy) {
+          voucherResultsCopy.innerHTML =
+            options.copyHtml ||
+            "Copy each code and enter it on another device under <strong>Have a voucher?</strong>";
+        }
+        if (voucherResults) {
+          voucherResults.hidden = false;
+          voucherResults.classList.add("is-visible");
+        }
+
+        var input = root.querySelector("[data-voucher-input]");
+        if (input) input.value = codes[0];
+        var reveal = root.querySelector("[data-voucher-reveal]");
+        if (reveal) {
+          reveal.hidden = true;
+          reveal.classList.remove("is-visible");
+        }
+
+        setPaymentSteps("done");
+        setWaiting(
+          true,
+          options.title || "Voucher codes ready",
+          options.message ||
+            (codes.length === 1
+              ? "Copy the code below and enter it on the device that needs internet."
+              : ("Copy the " + codes.length + " codes below. Each device uses one code once.")),
+          false,
+          true
+        );
+        if (continueBtn) continueBtn.textContent = "View codes on this page";
       }
 
       function revealVoucher(codeOrCodes) {
@@ -562,10 +725,22 @@
           ? codeOrCodes.filter(Boolean)
           : (codeOrCodes ? [codeOrCodes] : []);
         if (!codes.length) return;
+        if (codes.length > 1) {
+          showPurchaseVouchers(codes, {
+            title: "Voucher codes ready",
+            message: "Use one unused code on this device. Share extras with other gadgets.",
+            kicker: "Codes available",
+          });
+          setWaiting(false);
+          try {
+            if (voucherResults) voucherResults.scrollIntoView({ behavior: "smooth", block: "center" });
+          } catch (err) {}
+          return;
+        }
         var reveal = root.querySelector("[data-voucher-reveal]");
         var display = root.querySelector("[data-voucher-code-display]");
         var input = root.querySelector("[data-voucher-input]");
-        if (display) display.textContent = codes.join("\n");
+        if (display) display.textContent = codes[0];
         if (reveal) {
           reveal.hidden = false;
           reveal.classList.add("is-visible");
@@ -579,13 +754,28 @@
           reveal.hidden = true;
           reveal.classList.remove("is-visible");
         }
+        if (voucherResults) {
+          voucherResults.hidden = true;
+          voucherResults.classList.remove("is-visible");
+        }
+        if (overlayVouchers) overlayVouchers.hidden = true;
+        lastPurchaseCodes = [];
       }
 
       function showVoucherFallback(codeOrCodes) {
         var codes = Array.isArray(codeOrCodes)
           ? codeOrCodes.filter(Boolean)
           : (codeOrCodes ? [codeOrCodes] : []);
-        revealVoucher(codes);
+        if (codes.length > 1) {
+          showPurchaseVouchers(codes, {
+            title: "Payment successful",
+            message: "Use one unused voucher below to connect this device. Share the rest.",
+            kicker: "Payment successful",
+          });
+          setWaiting(false);
+        } else {
+          revealVoucher(codes);
+        }
         var box = root.querySelector("[data-voucher-box]");
         if (!box) return;
         box.hidden = false;
@@ -613,37 +803,46 @@
       }
 
       function showConnectedVouchers(codes, stkId, token) {
+        showPurchaseVouchers(codes, {
+          title: "You're online",
+          message: "Share the remaining valid vouchers with other devices.",
+          kicker: "Connected",
+        });
         continueTarget = buildWelcomeUrl(stkId, token);
-        if (overlayVoucherList) {
-          overlayVoucherList.innerHTML = "";
-          codes.forEach(function (code) {
-            var item = document.createElement("li");
-            var label = document.createElement("span");
-            label.textContent = code;
-            var copyBtn = document.createElement("button");
-            copyBtn.type = "button";
-            copyBtn.className = "voucher-copy-btn";
-            copyBtn.textContent = "Copy";
-            copyBtn.addEventListener("click", function () {
-              if (!navigator.clipboard) return;
-              navigator.clipboard.writeText(code).then(function () {
-                copyBtn.textContent = "Copied";
-              }).catch(function () {});
-            });
-            item.appendChild(label);
-            item.appendChild(copyBtn);
-            overlayVoucherList.appendChild(item);
-          });
-        }
-        if (overlayVouchers) overlayVouchers.hidden = false;
-        setPaymentSteps("done");
-        setWaiting(
-          true,
-          "You're online",
-          "Share the remaining valid vouchers with other devices.",
-          false,
-          true
-        );
+        if (continueBtn) continueBtn.textContent = "Continue browsing";
+      }
+
+      if (overlayCopyAll) {
+        overlayCopyAll.addEventListener("click", function () {
+          copyText(lastPurchaseCodes.join("\n"), overlayCopyAll);
+        });
+      }
+      if (voucherCopyAllBtn) {
+        voucherCopyAllBtn.addEventListener("click", function () {
+          copyText(lastPurchaseCodes.join("\n"), voucherCopyAllBtn);
+        });
+      }
+      if (voucherResultsDone) {
+        voucherResultsDone.addEventListener("click", function () {
+          try {
+            voucherResultsDone.blur();
+          } catch (err) {}
+          show("", false);
+        });
+      }
+      if (continueBtn) {
+        continueBtn.addEventListener("click", function () {
+          if (continueTarget) {
+            window.location.replace(continueTarget);
+            return;
+          }
+          closeOverlay();
+          try {
+            if (voucherResults && !voucherResults.hidden) {
+              voucherResults.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+          } catch (err) {}
+        });
       }
 
       function buildWelcomeUrl(stkId, token) {
@@ -681,10 +880,7 @@
         copyBtn.addEventListener("click", function () {
           var display = root.querySelector("[data-voucher-code-display]");
           var text = display ? display.textContent : "";
-          if (!text || !navigator.clipboard) return;
-          navigator.clipboard.writeText(text).then(function () {
-            copyBtn.textContent = "Copied";
-          }).catch(function () {});
+          copyText(text, copyBtn);
         });
       }
       if (voucherForm && voucherSubmit) {
@@ -773,12 +969,15 @@
       var otherDevicesPanel = root.querySelector("[data-other-devices-panel]");
       var deviceCountInput = root.querySelector("[data-other-device-count]");
       var deviceCustomWrap = root.querySelector("[data-device-custom]");
+      var deviceStepperLabel = root.querySelector("[data-device-stepper-label]");
       var hoursInput = root.querySelector("[data-other-hours]");
       var quoteTotal = root.querySelector("[data-quote-total]");
       var quoteSummary = root.querySelector("[data-quote-summary]");
+      var quoteBreakdown = root.querySelector("[data-quote-breakdown]");
       var otherPlanWarning = root.querySelector("[data-other-plan-warning]");
       var deviceChipButtons = root.querySelectorAll("[data-device-pick]");
       var hourChipButtons = root.querySelectorAll("[data-hour-pick]");
+      var deviceStepButtons = root.querySelectorAll("[data-device-step]");
 
       function payMode() {
         var checked = root.querySelector('input[name="pay_mode"]:checked');
@@ -804,10 +1003,21 @@
         return "KES " + (Math.round(n * 100) / 100).toFixed(n % 1 === 0 ? 0 : 2);
       }
 
+      function clampDeviceCount(raw) {
+        var devices = parseInt(raw, 10);
+        if (!devices || devices < 1) devices = 1;
+        if (devices > 50) devices = 50;
+        return devices;
+      }
+
       function syncDeviceChips() {
         if (!deviceCountInput) return;
-        var devices = Math.max(1, parseInt(deviceCountInput.value, 10) || 1);
-        var isPreset = [1, 2, 3, 4].indexOf(devices) !== -1;
+        var devices = clampDeviceCount(deviceCountInput.value);
+        deviceCountInput.value = String(devices);
+        if (deviceStepperLabel) {
+          deviceStepperLabel.textContent = devices === 1 ? "device" : "devices";
+        }
+        var isPreset = [1, 2, 3, 4, 5].indexOf(devices) !== -1;
         deviceChipButtons.forEach(function (btn) {
           var pick = btn.getAttribute("data-device-pick");
           if (pick === "custom") {
@@ -834,15 +1044,30 @@
       function updateOtherDevicesQuote() {
         var meta = selectedPlanMeta();
         if (!meta || payMode() !== "other_devices") return;
-        var devices = Math.max(1, parseInt(deviceCountInput && deviceCountInput.value, 10) || 1);
+        var devices = clampDeviceCount(deviceCountInput && deviceCountInput.value);
         var hours = Math.max(1, parseInt(hoursInput && hoursInput.value, 10) || 1);
-        var topUp = meta.hourlyRate * devices * hours;
+        // Standard price covers 1 device × 1 hour; rate applies to extras only.
+        var extras = Math.max(0, devices * hours - 1);
+        var topUp = meta.hourlyRate * extras;
         var total = Math.round(meta.otherBase + topUp);
         if (quoteTotal) quoteTotal.textContent = formatKes(total, true);
         if (quoteSummary) {
           quoteSummary.textContent =
-            devices + " code" + (devices === 1 ? "" : "s") +
+            devices + " voucher" + (devices === 1 ? "" : "s") +
             " · " + hours + " hour" + (hours === 1 ? "" : "s") + " each";
+        }
+        if (quoteBreakdown) {
+          var parts = ["Includes 1 device × 1 hr (" + formatKes(meta.otherBase, true) + ")"];
+          if (extras > 0) {
+            parts.push(
+              "+ " +
+                formatKes(meta.hourlyRate, true) +
+                " × " +
+                extras +
+                " extra"
+            );
+          }
+          quoteBreakdown.textContent = parts.join(" ");
         }
         var planOk = otherDevicesPlanOk(meta);
         if (otherPlanWarning) otherPlanWarning.hidden = planOk;
@@ -964,6 +1189,22 @@
             if (data.mpesa_receipt) showMpesaReceipt(data.mpesa_receipt);
             if (data.success) {
               if (data.other_devices_purchase || data.pay_mode === "other_devices") {
+                var purchaseCodes = extraVoucherCodes(data);
+                if (!purchaseCodes.length && data.voucher_code) {
+                  purchaseCodes = [data.voucher_code];
+                }
+                if (purchaseCodes.length) {
+                  showPurchaseVouchers(purchaseCodes, {
+                    title: "Payment successful",
+                    message:
+                      purchaseCodes.length === 1
+                        ? "Copy this voucher and enter it on the device that needs internet."
+                        : ("Copy these " + purchaseCodes.length + " vouchers. Each device uses one code once."),
+                    kicker: "Payment successful",
+                  });
+                  submit.disabled = false;
+                  return;
+                }
                 setWaiting(true, "Payment successful", "Opening your voucher codes…", false, true);
                 openInternet(data.stk_id, token);
                 return;
@@ -1172,14 +1413,24 @@
           var pick = btn.getAttribute("data-device-pick");
           if (!deviceCountInput) return;
           if (pick === "custom") {
-            if (parseInt(deviceCountInput.value, 10) <= 4) deviceCountInput.value = "5";
-            if (deviceCustomWrap) deviceCustomWrap.hidden = false;
+            if (parseInt(deviceCountInput.value, 10) <= 5) deviceCountInput.value = "6";
             syncDeviceChips();
             try { deviceCountInput.focus(); } catch (err) {}
           } else {
             deviceCountInput.value = pick;
             syncDeviceChips();
           }
+          updateOtherDevicesQuote();
+        });
+      });
+      deviceStepButtons.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          if (!deviceCountInput) return;
+          var delta = parseInt(btn.getAttribute("data-device-step"), 10) || 0;
+          deviceCountInput.value = String(
+            clampDeviceCount((parseInt(deviceCountInput.value, 10) || 1) + delta)
+          );
+          syncDeviceChips();
           updateOtherDevicesQuote();
         });
       });
@@ -1193,6 +1444,11 @@
       });
       if (deviceCountInput) {
         deviceCountInput.addEventListener("input", function () {
+          syncDeviceChips();
+          updateOtherDevicesQuote();
+        });
+        deviceCountInput.addEventListener("change", function () {
+          deviceCountInput.value = String(clampDeviceCount(deviceCountInput.value));
           syncDeviceChips();
           updateOtherDevicesQuote();
         });

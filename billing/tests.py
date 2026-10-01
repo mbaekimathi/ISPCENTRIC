@@ -1615,6 +1615,69 @@ class FulfillIdempotencyTests(TestCase):
         self.assertEqual(payment.reference, "LATECB01")
 
     @patch("core.mikrotik_connect.sync_customer_subscription_access")
+    def test_flat_stk_callback_payload_backfills_receipt(self, sync_mock):
+        """Accept stkCallback without Body wrapper so SMS refs are not dropped."""
+        from billing.models import Payment, StkPushRequest
+        from billing.stk import fulfill_successful_stk, process_stk_callback_payload
+
+        sync_mock.return_value = {"ok": True, "allowed": True}
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_FLAT_CB",
+            merchant_request_id="ws_MR_FLAT_CB",
+            status=StkPushRequest.Status.PENDING,
+        )
+        fulfill_successful_stk(stk, mpesa_receipt="")
+        stk.refresh_from_db()
+        self.assertEqual(stk.payment.reference, "")
+
+        payload = {
+            "MerchantRequestID": "ws_MR_FLAT_CB",
+            "CheckoutRequestID": "ws_CO_FLAT_CB",
+            "ResultCode": 0,
+            "ResultDesc": "The service request is processed successfully.",
+            "CallbackMetadata": {
+                "Item": [
+                    {"Name": "Amount", "Value": float(self.plan.price)},
+                    {"Name": "MpesaReceiptNumber", "Value": "FLATRCP01"},
+                    {"Name": "PhoneNumber", "Value": 254700000777},
+                ]
+            },
+        }
+        result = process_stk_callback_payload(payload)
+        self.assertTrue(result["ok"])
+        stk.refresh_from_db()
+        self.assertEqual(stk.mpesa_receipt, "FLATRCP01")
+        payment = Payment.objects.get(pk=stk.payment_id)
+        self.assertEqual(payment.reference, "FLATRCP01")
+
+    @patch("billing.stk.schedule_late_mpesa_receipt_watch")
+    @patch("core.mikrotik_connect.sync_customer_subscription_access")
+    def test_query_first_success_schedules_receipt_watch(self, sync_mock, watch_mock):
+        """Empty-receipt STK success must watch for the late Safaricom callback."""
+        from billing.models import StkPushRequest
+        from billing.stk import fulfill_successful_stk
+
+        sync_mock.return_value = {"ok": True, "allowed": True}
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_WATCH",
+            status=StkPushRequest.Status.PENDING,
+        )
+        result = fulfill_successful_stk(stk, mpesa_receipt="")
+        self.assertTrue(result["ok"])
+        watch_mock.assert_called()
+        self.assertEqual(watch_mock.call_args.args[0], stk.pk)
+
+    @patch("core.mikrotik_connect.sync_customer_subscription_access")
     def test_pending_poll_backfills_receipt_before_success(self, sync_mock):
         """Status polls must store callback receipts while STK is still pending."""
         from billing.models import StkPushRequest
@@ -3028,12 +3091,20 @@ class HotspotMultiDeviceVoucherTests(TestCase):
         self.assertIn(payload["voucher_code"], valid_codes)
 
     def test_surfing_does_not_burn_unused_device_vouchers(self):
+        """Multi-device unused codes wait until each device redeems."""
         from billing.models import AccessVoucher
         from billing.stk import fulfill_successful_stk
-        from billing.vouchers import invalidate_vouchers_for_surfing_customers
+        from billing.vouchers import (
+            _claim_voucher_mac,
+            invalidate_vouchers_for_surfing_customers,
+        )
 
         stk = self._stk()
         fulfill_successful_stk(stk, result_code=0, result_desc="ok", mpesa_receipt="FAM4")
+        vouchers = list(AccessVoucher.objects.filter(stk_request=stk).order_by("id"))
+        # Paying device claimed one code; siblings must stay VALID.
+        _claim_voucher_mac(vouchers[0], self.customer.hotspot_mac)
+
         changed = invalidate_vouchers_for_surfing_customers([self.customer])
         self.assertEqual(changed, 1)
         statuses = list(
@@ -3043,6 +3114,16 @@ class HotspotMultiDeviceVoucherTests(TestCase):
         )
         self.assertEqual(statuses.count(AccessVoucher.Status.INVALID), 1)
         self.assertEqual(statuses.count(AccessVoucher.Status.VALID), 2)
+
+        # With only unused (unclaimed) codes left, surfing must not burn them.
+        changed_again = invalidate_vouchers_for_surfing_customers([self.customer])
+        self.assertEqual(changed_again, 0)
+        self.assertEqual(
+            AccessVoucher.objects.filter(
+                stk_request=stk, status=AccessVoucher.Status.VALID
+            ).count(),
+            2,
+        )
 
     def test_expired_package_burns_unused_device_vouchers(self):
         from billing.models import AccessVoucher, CustomerDevice

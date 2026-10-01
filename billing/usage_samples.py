@@ -24,7 +24,7 @@ _SAMPLE_MIN_INTERVAL = 25  # seconds between persisted samples per client
 _OFFLINE_SAMPLE_MIN_INTERVAL = 300  # avoid flooding zeros when clients are offline
 _ORG_SAMPLE_TTL = 60  # seconds between org-wide MikroTik sweeps
 _ORG_PAYLOAD_TTL = 20  # seconds for aggregated chart payloads
-_ORG_PAYLOAD_CACHE_VERSION = "v10"  # bump when payload shape / sampling changes
+_ORG_PAYLOAD_CACHE_VERSION = "v11"  # bump when payload shape / sampling changes
 _ORG_LIVE_USAGE_TTL = 120  # NAS presence snapshot after each org sweep
 # Hold last-known-active across one empty/flaky NAS poll (concurrent sweep / API load).
 _ORG_LIVE_SESSION_DROP_CONFIRMATIONS = 2
@@ -397,6 +397,24 @@ def record_customer_usage_sample(
     if not uptime_seconds and session_active:
         uptime_seconds = parse_uptime_seconds(payload.get("uptime") or "")
 
+    previous = (
+        CustomerUsageSample.objects.filter(customer_id=customer.pk)
+        .order_by("-sampled_at")
+        .values("session_active", "bytes_in", "bytes_out")
+        .first()
+    )
+    fup_delta = 0
+    if session_active or bytes_in or bytes_out:
+        previous_total = None
+        if previous is not None:
+            prev_active = bool(previous.get("session_active"))
+            prev_total = int(previous.get("bytes_in") or 0) + int(
+                previous.get("bytes_out") or 0
+            )
+            if prev_active or prev_total > 0:
+                previous_total = prev_total
+        fup_delta = _bytes_delta(previous_total, bytes_in + bytes_out)
+
     CustomerUsageSample.objects.create(
         customer=customer,
         organization_id=customer.organization_id,
@@ -414,6 +432,21 @@ def record_customer_usage_sample(
     if session_active:
         cache.set(f"usage_sample_offline:{customer.pk}", 1, _OFFLINE_SAMPLE_MIN_INTERVAL)
     _invalidate_client_usage_trend_cache(customer.pk)
+    if fup_delta > 0 or getattr(customer, "fup_restricted", False):
+        try:
+            from billing.fup import apply_fup_byte_delta, plan_fup_enabled
+
+            plan = getattr(customer, "plan", None)
+            if plan is None and getattr(customer, "plan_id", None):
+                from billing.models import BillingPlan
+
+                plan = BillingPlan.objects.filter(pk=customer.plan_id).first()
+            if plan_fup_enabled(plan):
+                apply_fup_byte_delta(customer, fup_delta, plan=plan)
+        except Exception:
+            logger.exception(
+                "FUP update failed for customer_id=%s", getattr(customer, "pk", None)
+            )
     return True
 
 
@@ -983,6 +1016,28 @@ def apply_live_usage_overlay(
         "online_ratio": [float(u.get("online_ratio") or 0) for u in offline_users],
         "downtime_count": [int(u.get("downtime_count") or 0) for u in offline_users],
     }
+    fup_users = sorted(
+        [u for u in top_users if isinstance(u, dict) and u.get("fup_enabled")],
+        key=lambda u: (
+            -float(u.get("fup_percent") or 0),
+            -int(u.get("fup_bytes_used") or 0),
+            (u.get("full_name") or "").casefold(),
+        ),
+    )
+    payload["fup_users"] = fup_users[:40]
+    payload["fup_chart"] = {
+        "labels": [u.get("full_name") or "Client" for u in fup_users[:20]],
+        "percent": [float(u.get("fup_percent") or 0) for u in fup_users[:20]],
+        "restricted": [bool(u.get("fup_restricted")) for u in fup_users[:20]],
+    }
+    if isinstance(summary, dict):
+        summary["fup_clients"] = len(fup_users)
+        summary["fup_restricted"] = sum(1 for u in fup_users if u.get("fup_restricted"))
+        summary["fup_near_limit"] = sum(
+            1
+            for u in fup_users
+            if not u.get("fup_restricted") and float(u.get("fup_percent") or 0) >= 80
+        )
     payload["live"] = {
         "ok": has_live,
         "at": live.get("at") or "",
@@ -3107,6 +3162,8 @@ def _empty_org_payload(hours: int, *, error: str = "", service: str = "") -> dic
         },
         "summary": {},
         "top_users": [],
+        "fup_users": [],
+        "fup_chart": {"labels": [], "percent": [], "restricted": []},
         "top_chart": {
             "labels": [],
             "data_used_mb": [],
@@ -3440,6 +3497,7 @@ def _build_org_usage_payload(
         ),
     )
     from billing.devices import customer_live_device_count
+    from billing.fup import customer_fup_usage_snapshot
 
     gadget_by_cid: dict[int, int] = {}
     for item in ranked:
@@ -3478,6 +3536,7 @@ def _build_org_usage_payload(
                 linked = 1
         prime_at = item.get("prime_at")
         lowest_at = item.get("lowest_at")
+        fup = customer_fup_usage_snapshot(customer, getattr(customer, "plan", None))
         top_users.append(
             {
                 "rank": len(top_users) + 1,
@@ -3544,6 +3603,15 @@ def _build_org_usage_payload(
                 "live_label": "Online" if item["latest_active"] else "Offline",
                 "access_state": "",
                 "access_label": "",
+                "fup_enabled": bool(fup.get("enabled")),
+                "fup_percent": float(fup.get("percent") or 0),
+                "fup_bytes_used": int(fup.get("bytes_used") or 0),
+                "fup_bytes_limit": int(fup.get("bytes_limit") or 0),
+                "fup_restricted": bool(fup.get("restricted")),
+                "fup_action": fup.get("action") or "",
+                "fup_limit_label": fup.get("limit_label") or "",
+                "fup_period_label": fup.get("period_label") or "",
+                "fup_status_label": fup.get("status_label") or "",
             }
         )
 
@@ -3616,6 +3684,22 @@ def _build_org_usage_payload(
                 (u.get("full_name") or "").casefold(),
             ),
         )[: min(40, len(top_users))]
+
+    fup_users = sorted(
+        [u for u in top_users if u.get("fup_enabled")],
+        key=lambda u: (
+            -float(u.get("fup_percent") or 0),
+            -int(u.get("fup_bytes_used") or 0),
+            (u.get("full_name") or "").casefold(),
+        ),
+    )
+    fup_restricted_count = sum(1 for u in fup_users if u.get("fup_restricted"))
+    fup_near_count = sum(
+        1
+        for u in fup_users
+        if not u.get("fup_restricted") and float(u.get("fup_percent") or 0) >= 80
+    )
+
     router_filter = _usage_router_cache_key(
         router_id=router_id, unassigned_only=unassigned_only
     )
@@ -3654,6 +3738,12 @@ def _build_org_usage_payload(
             "data_used_mb": data_used_mb,
         },
         "top_users": top_users,
+        "fup_users": fup_users[:40],
+        "fup_chart": {
+            "labels": [u["full_name"] for u in fup_users[:20]],
+            "percent": [float(u.get("fup_percent") or 0) for u in fup_users[:20]],
+            "restricted": [bool(u.get("fup_restricted")) for u in fup_users[:20]],
+        },
         "top_chart": {
             # Full ranked list (capped for readable charts) — used for decision visuals.
             "labels": [u["full_name"] for u in top_users[:40]],
@@ -3700,6 +3790,9 @@ def _build_org_usage_payload(
             "clients_offline": clients_offline,
             "clients_surfing_session": online_now,
             "gadgets_online": gadgets_online,
+            "fup_clients": len(fup_users),
+            "fup_restricted": fup_restricted_count,
+            "fup_near_limit": fup_near_count,
             "online_ratio": (
                 round((online_samples / meaningful_samples) * 100, 1)
                 if meaningful_samples
@@ -4196,6 +4289,387 @@ def workspace_client_access_trend(
         "summary": summary,
         "peak": peak,
         "sample_points": len(live_points),
+    }
+
+
+_WORKSPACE_FUP_HITS_TREND_TTL = _WORKSPACE_ACCESS_TREND_TTL
+_WORKSPACE_FUP_HITS_TREND_MIN_INTERVAL = _WORKSPACE_ACCESS_TREND_MIN_INTERVAL
+_WORKSPACE_FUP_HITS_TREND_MAX_POINTS = _WORKSPACE_ACCESS_TREND_MAX_POINTS
+
+
+def _workspace_fup_hits_trend_cache_key(organization_id: int) -> str:
+    return f"workspace_fup_hits_trend:v1:{organization_id}"
+
+
+def count_fup_hits_by_router(organization) -> dict[str, Any]:
+    """
+    Count clients currently at FUP limit, grouped by MikroTik router.
+
+    Used for the workspace Access-trend FUP chart (live stock per router).
+    """
+    empty = {"by_router": {}, "total": 0, "unassigned": 0, "routers_hit": 0}
+    if not organization:
+        return empty
+
+    rows = (
+        Customer.objects.filter(
+            organization=organization,
+            fup_restricted=True,
+            plan__fup_enabled=True,
+        )
+        .exclude(service_type=Customer.ServiceType.STATIC)
+        .values("router_id")
+    )
+    by_router: dict[str, int] = {}
+    unassigned = 0
+    total = 0
+    for row in rows:
+        total += 1
+        router_id = row.get("router_id")
+        if not router_id:
+            unassigned += 1
+            continue
+        key = str(int(router_id))
+        by_router[key] = by_router.get(key, 0) + 1
+    return {
+        "by_router": by_router,
+        "total": total,
+        "unassigned": unassigned,
+        "routers_hit": len(by_router),
+    }
+
+
+def record_workspace_fup_hits_snapshot(
+    organization_id: int | None,
+    counts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Append live per-MikroTik FUP-hit counts for the workspace trend chart."""
+    if not organization_id:
+        return {"by_router": {}, "total": 0, "unassigned": 0, "routers_hit": 0}
+
+    if counts is None:
+        from core.models import Organization
+
+        org = Organization.objects.filter(pk=int(organization_id)).first()
+        counts = count_fup_hits_by_router(org)
+
+    by_router_raw = counts.get("by_router") if isinstance(counts, dict) else {}
+    by_router: dict[str, int] = {}
+    if isinstance(by_router_raw, dict):
+        for key, value in by_router_raw.items():
+            try:
+                rid = str(int(key))
+                by_router[rid] = max(0, int(value or 0))
+            except (TypeError, ValueError):
+                continue
+    try:
+        total = max(0, int((counts or {}).get("total") or 0))
+    except (TypeError, ValueError):
+        total = sum(by_router.values())
+    try:
+        unassigned = max(0, int((counts or {}).get("unassigned") or 0))
+    except (TypeError, ValueError):
+        unassigned = 0
+
+    payload = {
+        "t": timezone.now().isoformat(),
+        "by_router": by_router,
+        "total": total,
+        "unassigned": unassigned,
+    }
+    key = _workspace_fup_hits_trend_cache_key(int(organization_id))
+    now = timezone.now()
+    points = list(cache.get(key) or [])
+    cutoff = now - timedelta(hours=26)
+    pruned: list[dict[str, Any]] = []
+    for row in points:
+        if not isinstance(row, dict):
+            continue
+        stamp = _parse_iso_stamp(row.get("t"))
+        if stamp is None or stamp < cutoff:
+            continue
+        clean_map: dict[str, int] = {}
+        raw_map = row.get("by_router") if isinstance(row.get("by_router"), dict) else {}
+        for rk, rv in raw_map.items():
+            try:
+                clean_map[str(int(rk))] = max(0, int(rv or 0))
+            except (TypeError, ValueError):
+                continue
+        pruned.append(
+            {
+                "t": stamp.isoformat(),
+                "by_router": clean_map,
+                "total": max(0, int(row.get("total") or sum(clean_map.values()))),
+                "unassigned": max(0, int(row.get("unassigned") or 0)),
+            }
+        )
+
+    if pruned:
+        last_stamp = _parse_iso_stamp(pruned[-1].get("t"))
+        if (
+            last_stamp is not None
+            and (now - last_stamp).total_seconds()
+            < _WORKSPACE_FUP_HITS_TREND_MIN_INTERVAL
+        ):
+            pruned[-1] = payload
+            cache.set(
+                key,
+                pruned[-_WORKSPACE_FUP_HITS_TREND_MAX_POINTS:],
+                _WORKSPACE_FUP_HITS_TREND_TTL,
+            )
+            return {
+                "by_router": by_router,
+                "total": total,
+                "unassigned": unassigned,
+                "routers_hit": len(by_router),
+            }
+
+    pruned.append(payload)
+    cache.set(
+        key,
+        pruned[-_WORKSPACE_FUP_HITS_TREND_MAX_POINTS:],
+        _WORKSPACE_FUP_HITS_TREND_TTL,
+    )
+    return {
+        "by_router": by_router,
+        "total": total,
+        "unassigned": unassigned,
+        "routers_hit": len(by_router),
+    }
+
+
+def workspace_fup_hits_trend(
+    organization,
+    *,
+    hours: int = 24,
+    live: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    24h trend of clients at FUP limit, one series per MikroTik.
+
+    Combines live cache snapshots with a DB seed from currently restricted
+    clients (step from ``fup_restricted_at``) so the chart is useful on cold start.
+    """
+    empty = {
+        "ok": False,
+        "hours": hours,
+        "labels": [],
+        "datasets": [],
+        "routers": [],
+        "summary": {"total": 0, "routers_hit": 0, "peak": 0},
+    }
+    if not organization:
+        return empty
+
+    from core.models import MikroTikRouter
+
+    hours = clamp_usage_hours(hours, default=24)
+    now = timezone.now()
+    since = now - timedelta(hours=hours)
+    bucket_secs = _bucket_seconds(hours)
+    window_start = int(since.timestamp() // bucket_secs) * bucket_secs
+    window_end = int(now.timestamp() // bucket_secs) * bucket_secs
+    bucket_keys = list(range(window_start, window_end + bucket_secs, bucket_secs))
+    if not bucket_keys:
+        bucket_keys = [window_start]
+
+    routers = list(
+        MikroTikRouter.objects.filter(organization=organization)
+        .only("id", "name", "host")
+        .order_by("name")
+    )
+    router_meta = {
+        r.pk: {"id": r.pk, "name": r.name, "host": r.host or ""} for r in routers
+    }
+    router_ids = {r.pk for r in routers}
+
+    # Seed: currently restricted clients contribute from their hit time forward.
+    seed_by_bucket: dict[int, dict[int, int]] = {k: {} for k in bucket_keys}
+    restricted_rows = list(
+        Customer.objects.filter(
+            organization=organization,
+            fup_restricted=True,
+            plan__fup_enabled=True,
+            router_id__isnull=False,
+        )
+        .exclude(service_type=Customer.ServiceType.STATIC)
+        .exclude(router_id__isnull=True)
+        .values("router_id", "fup_restricted_at")
+    )
+    for row in restricted_rows:
+        router_id = row.get("router_id")
+        if not router_id or int(router_id) not in router_ids:
+            continue
+        router_id = int(router_id)
+        hit_at = row.get("fup_restricted_at") or since
+        if timezone.is_naive(hit_at):
+            hit_at = timezone.make_aware(hit_at, timezone.get_current_timezone())
+        hit_bucket = int(hit_at.timestamp() // bucket_secs) * bucket_secs
+        if hit_bucket < window_start:
+            hit_bucket = window_start
+        for key in bucket_keys:
+            if key < hit_bucket:
+                continue
+            seed_by_bucket.setdefault(key, {})
+            seed_by_bucket[key][router_id] = (
+                seed_by_bucket[key].get(router_id, 0) + 1
+            )
+
+    snapshot_by_bucket: dict[int, dict[int, list[int]]] = {
+        k: {} for k in bucket_keys
+    }
+    live_points = list(
+        cache.get(_workspace_fup_hits_trend_cache_key(organization.pk)) or []
+    )
+    for row in live_points:
+        if not isinstance(row, dict):
+            continue
+        stamp = _parse_iso_stamp(row.get("t"))
+        if stamp is None or stamp < since:
+            continue
+        bucket = int(stamp.timestamp() // bucket_secs) * bucket_secs
+        if bucket < window_start:
+            bucket = window_start
+        if bucket > window_end:
+            bucket = window_end
+        raw_map = row.get("by_router") if isinstance(row.get("by_router"), dict) else {}
+        for rk, rv in raw_map.items():
+            try:
+                router_id = int(rk)
+                value = max(0, int(rv or 0))
+            except (TypeError, ValueError):
+                continue
+            if router_id not in router_ids:
+                continue
+            snapshot_by_bucket.setdefault(bucket, {}).setdefault(
+                router_id, []
+            ).append(value)
+
+    live_by_router: dict[int, int] = {}
+    live_total = 0
+    if live and isinstance(live, dict):
+        raw_live = live.get("by_router") if isinstance(live.get("by_router"), dict) else {}
+        for rk, rv in raw_live.items():
+            try:
+                router_id = int(rk)
+                live_by_router[router_id] = max(0, int(rv or 0))
+            except (TypeError, ValueError):
+                continue
+        try:
+            live_total = max(0, int(live.get("total") or 0))
+        except (TypeError, ValueError):
+            live_total = sum(live_by_router.values())
+        for router_id, value in live_by_router.items():
+            if router_id not in router_ids:
+                continue
+            snapshot_by_bucket.setdefault(window_end, {}).setdefault(
+                router_id, []
+            ).append(value)
+
+    labels: list[str] = []
+    series_by_router: dict[int, list[int | None]] = {r.pk: [] for r in routers}
+    peak = 0
+    has_any_sample = bool(live_points) or bool(restricted_rows) or bool(live_by_router)
+
+    for key in bucket_keys:
+        stamp = timezone.localtime(datetime.fromtimestamp(key, tz=dt_timezone.utc))
+        labels.append(stamp.strftime(_chart_label_format(hours)))
+        snap = snapshot_by_bucket.get(key) or {}
+        seed = seed_by_bucket.get(key) or {}
+        for router in routers:
+            rid = router.pk
+            if rid in snap and snap[rid]:
+                value = int(round(sum(snap[rid]) / len(snap[rid])))
+            elif seed:
+                value = int(seed.get(rid, 0))
+            elif not has_any_sample:
+                value = 0
+            else:
+                value = None
+            series_by_router[rid].append(value)
+            if value is not None:
+                peak = max(peak, value)
+
+    if live_by_router and series_by_router:
+        for rid, series in series_by_router.items():
+            if series:
+                series[-1] = int(live_by_router.get(rid, 0))
+                peak = max(peak, series[-1] or 0)
+
+    datasets = []
+    for idx, router in enumerate(routers):
+        color = _NETWORK_TREND_COLORS[idx % len(_NETWORK_TREND_COLORS)]
+        datasets.append(
+            {
+                "label": router.name,
+                "router_id": router.pk,
+                "data": series_by_router[router.pk],
+                "borderColor": color,
+                "backgroundColor": color + "33",
+                "tension": 0.3,
+                "spanGaps": True,
+                "pointRadius": 0 if len(bucket_keys) > 40 else 2,
+                "borderWidth": 2,
+            }
+        )
+
+    average: list[float | None] = []
+    for i in range(len(bucket_keys)):
+        vals = [
+            ds["data"][i]
+            for ds in datasets
+            if ds["data"][i] is not None
+        ]
+        average.append(round(sum(vals) / len(vals), 1) if vals else None)
+
+    if datasets:
+        datasets.insert(
+            0,
+            {
+                "label": "Average",
+                "router_id": None,
+                "data": average,
+                "borderColor": "#0b1f2a",
+                "backgroundColor": "rgba(11,31,42,0.08)",
+                "tension": 0.25,
+                "spanGaps": True,
+                "pointRadius": 0,
+                "borderWidth": 2.5,
+                "borderDash": [6, 4],
+            },
+        )
+
+    if live_total:
+        summary_total = live_total
+    else:
+        summary_total = 0
+        for router in routers:
+            for value in reversed(series_by_router[router.pk]):
+                if value is not None:
+                    summary_total += int(value)
+                    break
+
+    routers_hit = sum(
+        1
+        for router in routers
+        if any((v or 0) > 0 for v in series_by_router[router.pk] if v is not None)
+        or live_by_router.get(router.pk, 0) > 0
+    )
+
+    return {
+        "ok": True,
+        "hours": hours,
+        "labels": labels,
+        "datasets": datasets,
+        "routers": list(router_meta.values()),
+        "average": average,
+        "sample_points": len(live_points),
+        "summary": {
+            "total": summary_total,
+            "routers_hit": routers_hit,
+            "peak": peak,
+            "routers_tracked": len(routers),
+        },
     }
 
 

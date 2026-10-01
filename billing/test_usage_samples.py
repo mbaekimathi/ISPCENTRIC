@@ -5,18 +5,21 @@ from django.utils import timezone
 from unittest.mock import patch
 
 from accounts.models import Organization, User
-from billing.models import Customer, CustomerUsageSample
+from billing.models import BillingPlan, Customer, CustomerUsageSample
 from billing.usage_samples import (
     build_client_session_breakdown,
+    count_fup_hits_by_router,
     network_performance_drops,
     org_usage_payload,
     parse_uptime_seconds,
     parse_usage_filter,
+    record_workspace_fup_hits_snapshot,
     resolve_usage_window,
     router_network_performance_trend,
     sample_organization_usage,
     usage_filter_querystring,
     usage_trend_payload,
+    workspace_fup_hits_trend,
 )
 from core.models import MikroTikRouter
 
@@ -779,6 +782,91 @@ class NetworkPerformanceTrendTests(TestCase):
             "offline" in reason or "unreachable" in reason,
             reason,
         )
+
+
+class WorkspaceFupHitsTrendTests(TestCase):
+    def setUp(self):
+        from decimal import Decimal
+
+        owner = User.objects.create_user("fup-trend-owner", password="x")
+        self.org = Organization.objects.create(
+            name="FUP Trend Org", owner=owner, join_code="FUP001"
+        )
+        self.router_a = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Tower A",
+            host="10.0.0.1",
+            username="admin",
+        )
+        self.router_b = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Tower B",
+            host="10.0.0.2",
+            username="admin",
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="FUP Plan",
+            price=Decimal("1000.00"),
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            duration=BillingPlan.Duration.MONTHLY,
+            is_active=True,
+            fup_enabled=True,
+            fup_period_value=1,
+            fup_period_unit=BillingPlan.DurationUnit.MONTHS,
+            fup_data_limit_gb=Decimal("5.00"),
+            fup_action=BillingPlan.FupAction.THROTTLE,
+            fup_throttle_download_mbps=1,
+            fup_throttle_upload_mbps=1,
+        )
+        now = timezone.now()
+        self.customer_a = Customer.objects.create(
+            organization=self.org,
+            router=self.router_a,
+            plan=self.plan,
+            full_name="FUP A",
+            phone="0700000011",
+            account_number="PPP-FUP-A",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="fupa",
+            fup_restricted=True,
+            fup_restricted_at=now - timezone.timedelta(hours=2),
+            fup_bytes_used=6 * 1024 * 1024 * 1024,
+        )
+        self.customer_b = Customer.objects.create(
+            organization=self.org,
+            router=self.router_b,
+            plan=self.plan,
+            full_name="FUP B",
+            phone="0700000012",
+            account_number="PPP-FUP-B",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="fupb",
+            fup_restricted=True,
+            fup_restricted_at=now - timezone.timedelta(hours=1),
+            fup_bytes_used=6 * 1024 * 1024 * 1024,
+        )
+
+    def test_counts_restricted_clients_per_router(self):
+        counts = count_fup_hits_by_router(self.org)
+        self.assertEqual(counts["total"], 2)
+        self.assertEqual(counts["by_router"][str(self.router_a.pk)], 1)
+        self.assertEqual(counts["by_router"][str(self.router_b.pk)], 1)
+
+    def test_trend_has_one_series_per_mikrotik(self):
+        live = count_fup_hits_by_router(self.org)
+        record_workspace_fup_hits_snapshot(self.org.pk, live)
+        trend = workspace_fup_hits_trend(self.org, hours=24, live=live)
+        self.assertTrue(trend["ok"])
+        self.assertEqual(len(trend["routers"]), 2)
+        self.assertEqual(trend["summary"]["total"], 2)
+        router_ds = [
+            ds for ds in trend["datasets"] if ds.get("router_id") is not None
+        ]
+        self.assertEqual(len(router_ds), 2)
+        for ds in router_ds:
+            self.assertTrue(any((v or 0) >= 1 for v in ds["data"]))
 
 
 class SampleOrganizationUsageTests(TestCase):

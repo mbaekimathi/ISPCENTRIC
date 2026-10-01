@@ -86,16 +86,22 @@ def voucher_count_for_stk(stk: StkPushRequest) -> int:
 
 
 def customer_unused_voucher_count(customer) -> int:
+    """Count VALID vouchers still free to enter (not reserved for a MAC)."""
     if customer is None or not getattr(customer, "pk", None):
         return 0
     return AccessVoucher.objects.filter(
         customer_id=customer.pk,
         status=AccessVoucher.Status.VALID,
+        redeemed_mac="",
     ).count()
 
 
 def valid_hotspot_voucher_codes_for_customer(customer) -> list[str]:
-    """Unused voucher codes a Hotspot client can share with other devices."""
+    """Unused voucher codes a Hotspot client can share with other devices.
+
+    Claimed-but-not-yet-burned codes (paying device awaiting NAS) are hidden
+    so they cannot be shared while reserved for one MAC.
+    """
     from billing.devices import customer_devices_unlimited
 
     if customer is None or not getattr(customer, "pk", None):
@@ -107,6 +113,7 @@ def valid_hotspot_voucher_codes_for_customer(customer) -> list[str]:
         for row in AccessVoucher.objects.filter(
             customer_id=customer.pk,
             status=AccessVoucher.Status.VALID,
+            redeemed_mac="",
         ).order_by("id")
     ]
 
@@ -364,22 +371,38 @@ def voucher_payload(
     *,
     all_vouchers: list[AccessVoucher] | None = None,
 ) -> dict:
-    """Pay-page fields: only still-valid (unused) voucher codes."""
+    """Pay-page fields for voucher status and shareable sibling codes."""
     if voucher is None and not all_vouchers:
         return {}
     if all_vouchers is None and voucher is not None:
         all_vouchers = vouchers_for_batch(voucher)
     elif all_vouchers is None:
         all_vouchers = [voucher] if voucher else []
-    valid = [row for row in all_vouchers if row.status == AccessVoucher.Status.VALID]
-    codes = [format_voucher_code(row.code) for row in valid]
-    primary = valid[0] if valid else None
+    valid_all = [
+        row for row in all_vouchers if row.status == AccessVoucher.Status.VALID
+    ]
+    # Shareable = VALID and not reserved for a MAC (claim before NAS burn).
+    shareable = [
+        row
+        for row in valid_all
+        if not (getattr(row, "redeemed_mac", "") or "").strip()
+    ]
+    codes = [format_voucher_code(row.code) for row in shareable]
+    # Focus voucher may be claimed-but-VALID (NAS retry) even when not shareable.
+    if voucher is not None and voucher.status == AccessVoucher.Status.VALID:
+        primary = voucher
+    elif shareable:
+        primary = shareable[0]
+    else:
+        primary = None
     return {
         "voucher_id": primary.pk if primary else None,
-        "voucher_code": codes[0] if codes else "",
+        "voucher_code": (
+            format_voucher_code(primary.code) if primary is not None else ""
+        ),
         "voucher_codes": codes,
         "voucher_count": len(all_vouchers),
-        "voucher_valid_count": len(valid),
+        "voucher_valid_count": len(shareable),
         "voucher_status": (
             primary.status if primary is not None else AccessVoucher.Status.INVALID
         ),
@@ -920,6 +943,8 @@ def _activate_paid_subscription_stk_locked(
     from billing.hotspot_pricing import PAY_MODE_OTHER_DEVICES
 
     # Outside the row lock — MikroTik latency must not block other payers.
+    # other_devices: still sync so previously enabled MACs are disabled; no
+    # MAC is authorized until each voucher is redeemed.
     nas = {"ok": False, "allowed": False}
     nas_deduped = False
     try:
@@ -966,6 +991,10 @@ def _activate_paid_subscription_stk_locked(
     from core.subscription_sync import nas_access_ready
 
     authorized = nas_access_ready(nas)
+    # Pay-for-other-devices: codes wait until each device redeems — never
+    # treat the payer as authorized from this activate alone.
+    if stk_pay_mode_value == PAY_MODE_OTHER_DEVICES:
+        authorized = False
     voucher = (
         AccessVoucher.objects.filter(pk=voucher_pk).first() if voucher_pk else None
     )
@@ -1038,8 +1067,13 @@ def _activate_paid_subscription_stk_locked(
                 plan=getattr(customer, "plan", None),
                 stk_id=stk_pk,
                 detail={
-                    "authorization_error": nas.get("message") or "",
+                    "authorization_error": (
+                        "Enter a voucher on each device to connect."
+                        if stk_pay_mode_value == PAY_MODE_OTHER_DEVICES
+                        else (nas.get("message") or "")
+                    ),
                     "offline": bool(nas.get("offline")),
+                    "pay_mode": stk_pay_mode_value,
                 },
                 debounce_seconds=120,
             )
@@ -1060,11 +1094,17 @@ def _activate_paid_subscription_stk_locked(
             ""
             if authorized
             else (
-                nas.get("message")
-                or "Package activated; router authorize retry needed."
+                "Package activated. Enter a voucher on each device to connect."
+                if stk_pay_mode_value == PAY_MODE_OTHER_DEVICES
+                else (
+                    nas.get("message")
+                    or "Package activated; router authorize retry needed."
+                )
             )
         ),
-        "can_retry_authorize": not authorized,
+        "can_retry_authorize": (
+            not authorized and stk_pay_mode_value != PAY_MODE_OTHER_DEVICES
+        ),
         "stk_id": stk_pk,
         **voucher_payload(voucher, all_vouchers=siblings),
     }
@@ -1151,9 +1191,8 @@ def invalidate_vouchers_for_surfing_customers(customers: Iterable[Customer]) -> 
     """
     Burn vouchers once the client is surfing.
 
-    Hotspot: only the voucher for a device that already claimed/redeemed this
-    period, or the primary device when none have been claimed yet. Unused
-    sibling device vouchers stay VALID so other phones can still connect.
+    Hotspot: only vouchers already claimed/redeemed for a MAC this period.
+    Unused sibling / pay-for-other-devices codes stay VALID until entered.
     PPPoE: burn the single line voucher.
 
     - VALID → INVALID: also apply the paid package so money is not lost
@@ -1200,8 +1239,7 @@ def invalidate_vouchers_for_surfing_customers(customers: Iterable[Customer]) -> 
                     updated += 1
                 continue
 
-            # Prefer finishing claim→burn for MACs already bound this period.
-            # Do not auto-burn unused sibling codes for every linked gadget.
+            # Finish claim→burn for MACs already bound this period.
             claimed = [
                 v
                 for v in valid
@@ -1215,8 +1253,11 @@ def invalidate_vouchers_for_surfing_customers(customers: Iterable[Customer]) -> 
                     updated += 1
                 continue
 
-            # Safety net: package surfing with no claim yet — burn one code for
-            # the paying device (STK hotspot_mac) or primary, never every linked MAC.
+            # Single unlock code (1-device / unlimited): burn on confirmed surfing.
+            # Multi-device batches wait until each device enters its voucher.
+            if len(valid) != 1:
+                continue
+
             pay_mac = ""
             latest_stk = (
                 StkPushRequest.objects.filter(
@@ -1228,6 +1269,14 @@ def invalidate_vouchers_for_surfing_customers(customers: Iterable[Customer]) -> 
                 .first()
             )
             if latest_stk is not None:
+                from billing.hotspot_pricing import (
+                    PAY_MODE_OTHER_DEVICES,
+                    stk_pay_mode,
+                )
+
+                # Pay-for-other-devices never auto-consumes — wait for redeem.
+                if stk_pay_mode(latest_stk) == PAY_MODE_OTHER_DEVICES:
+                    continue
                 raw = (
                     latest_stk.raw_callback
                     if isinstance(latest_stk.raw_callback, dict)
@@ -1360,7 +1409,10 @@ def build_voucher_share(voucher: AccessVoucher, *, request=None, pay_url: str = 
         "sms_url": sms_url,
         "email_url": email_url,
         "phone": phone,
-        "can_share": voucher.status == AccessVoucher.Status.VALID,
+        "can_share": (
+            voucher.status == AccessVoucher.Status.VALID
+            and not (getattr(voucher, "redeemed_mac", "") or "").strip()
+        ),
     }
 
 

@@ -25,21 +25,23 @@
 
 <div class="package-hotspot-multi-pricing field-span-2" data-package-hotspot-multi-pricing hidden>
   <p class="package-multi-formula">
-    Pay page total = <strong>standard price</strong> + (<strong>per hour per device</strong> × devices × hours).
-    Customers pick device and hour counts; the cost is calculated automatically.
+    <strong>Standard price</strong> = 1 device for the first hour.
+    <strong>Per hour per device</strong> is charged only for extras
+    (more devices, or hours after the first).
+    Total = standard + (rate × extras).
   </p>
   <div class="pppoe-grid">
     <div class="field">
       <label for="{{ pform.hotspot_other_base_price.id_for_label }}">Standard price (KES)</label>
       {{ pform.hotspot_other_base_price }}
       {% if pform.hotspot_other_base_price.errors %}<div class="field-error">{{ pform.hotspot_other_base_price.errors|striptags }}</div>{% endif %}
-      <p class="field-hint">First device, first hour — the base fee before the hourly top-up.</p>
+      <p class="field-hint">Covers one device for the first hour.</p>
     </div>
     <div class="field">
-      <label for="{{ pform.hotspot_hourly_rate_per_device.id_for_label }}">Per hour per device (KES)</label>
+      <label for="{{ pform.hotspot_hourly_rate_per_device.id_for_label }}">Extra per hour / device (KES)</label>
       {{ pform.hotspot_hourly_rate_per_device }}
       {% if pform.hotspot_hourly_rate_per_device.errors %}<div class="field-error">{{ pform.hotspot_hourly_rate_per_device.errors|striptags }}</div>{% endif %}
-      <p class="field-hint">Added for each device × each hour the customer selects.</p>
+      <p class="field-hint">Added for each extra device, and for each hour after the first.</p>
     </div>
   </div>
   <div class="visually-hidden" aria-hidden="true">
@@ -64,3 +66,9 @@
   {% if pform.max_devices.errors %}<div class="field-error">{{ pform.max_devices.errors|striptags }}</div>{% endif %}
   <p class="field-hint" data-package-max-devices-hint>PPPoE: leave blank for unlimited.</p>
 </div>
+<p class="field-hint field-span-2" data-package-hotspot-fixed-hint hidden>
+  Hotspot fixed package: enter how many devices get a voucher after payment (1–50). Leave blank for unlimited devices on this account.
+</p>
+<p class="field-hint field-span-2" data-package-hotspot-multi-hint hidden>
+  Customers choose device count and hours on the pay page. One voucher is created per selected device.
+</p>

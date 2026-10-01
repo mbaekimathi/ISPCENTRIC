@@ -2602,6 +2602,26 @@ class PaymentGatewaySandboxCallbackTests(SimpleTestCase):
             local,
         )
 
+    @override_settings(
+        HOSTED=True,
+        MPESA_CALLBACK_ALLOWED_IPS="196.201.214.200",
+    )
+    @patch("billing.stk.process_stk_callback_payload")
+    def test_stk_callback_processes_even_when_ip_not_allowlisted(self, process_mock):
+        """Allowlist mismatch must not discard CallbackMetadata / SMS receipt."""
+        from django.test import Client
+
+        process_mock.return_value = {"ok": True}
+        client = Client()
+        response = client.post(
+            "/api/mpesa/stk-callback/",
+            data=b'{"Body":{"stkCallback":{"ResultCode":0}}}',
+            content_type="application/json",
+            REMOTE_ADDR="203.0.113.99",
+        )
+        self.assertEqual(response.status_code, 200)
+        process_mock.assert_called_once()
+
     @override_settings(HOSTED=True, PUBLIC_BASE_URL="https://isp.example.com")
     def test_hosted_deploy_defaults_to_hosted_sandbox_callback(self):
         hosted = PaymentGateway.sandbox_hosted_callback_url()

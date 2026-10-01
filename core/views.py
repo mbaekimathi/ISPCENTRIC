@@ -143,6 +143,7 @@ from core.mikrotik_connect import (
     customer_cpe_access_mode,
     customer_cpe_default_credentials,
     customer_cpe_proxy_scope,
+    invalidate_customer_cpe_web_proxy,
     dial_host,
     resolve_customer_cpe_target,
     probe_customer_cpe_web,
@@ -7701,17 +7702,25 @@ def workspace(request):
         snapshot["mikrotik_status_catalog"] = {}
     try:
         from billing.usage_samples import (
+            count_fup_hits_by_router,
             network_performance_drops,
             pppoe_connected_not_surfing_trend,
+            record_workspace_fup_hits_snapshot,
             router_network_performance_trend,
+            workspace_client_access_trend,
+            workspace_fup_hits_trend,
         )
 
         snapshot["network_trend"] = router_network_performance_trend(org, hours=24)
         snapshot["network_drops"] = network_performance_drops(org, hours=24)
         snapshot["not_surfing_trend"] = pppoe_connected_not_surfing_trend(org, hours=24)
-        from billing.usage_samples import workspace_client_access_trend
-
         snapshot["client_access_trend"] = workspace_client_access_trend(org, hours=24)
+        fup_hits_live = count_fup_hits_by_router(org)
+        if org:
+            record_workspace_fup_hits_snapshot(org.pk, fup_hits_live)
+        snapshot["fup_hits_trend"] = workspace_fup_hits_trend(
+            org, hours=24, live=fup_hits_live
+        )
     except Exception:
         snapshot["network_trend"] = {
             "ok": False,
@@ -7738,6 +7747,13 @@ def workspace(request):
                 "expired": 0,
             },
         }
+        snapshot["fup_hits_trend"] = {
+            "ok": False,
+            "labels": [],
+            "datasets": [],
+            "routers": [],
+            "summary": {"total": 0, "routers_hit": 0, "peak": 0},
+        }
     referral_enabled = bool(ClientSettings.get_solo().referral_enabled)
     referral_count = 0
     referral_active_count = 0
@@ -7751,6 +7767,19 @@ def workspace(request):
         referral_pending_count = referred_qs.filter(
             referral_status=Organization.ReferralStatus.PENDING
         ).count()
+    try:
+        from billing.fup import organization_fup_attention_clients
+
+        fup_attention = organization_fup_attention_clients(org, min_percent=80.0, limit=40)
+    except Exception:
+        fup_attention = {
+            "ok": False,
+            "clients": [],
+            "count": 0,
+            "at_limit": 0,
+            "near_limit": 0,
+            "min_percent": 80.0,
+        }
     return render(
         request,
         "core/workspace.html",
@@ -7765,6 +7794,8 @@ def workspace(request):
             initial_client_access_json=json.dumps(
                 _workspace_initial_client_access(org)
             ),
+            fup_attention=fup_attention,
+            fup_attention_json=json.dumps(fup_attention),
             analytics_url=reverse("core:workspace_analytics"),
             workspace_live_url=reverse("core:workspace_live"),
             mikrotik_status_url=reverse("core:mikrotik_status"),
@@ -8244,10 +8275,14 @@ def _workspace_analytics_payload(org, *, force: bool = False, hours: int = 24) -
 
     try:
         from billing.usage_samples import (
+            count_fup_hits_by_router,
             network_performance_drops,
             pppoe_connected_not_surfing_trend,
+            record_workspace_fup_hits_snapshot,
             router_network_performance_trend,
             sample_organization_usage,
+            workspace_client_access_trend,
+            workspace_fup_hits_trend,
         )
 
         # Never force the org-wide MikroTik usage sweep from the dashboard poll —
@@ -8264,7 +8299,6 @@ def _workspace_analytics_payload(org, *, force: bool = False, hours: int = 24) -
         snapshot["not_surfing_trend"] = pppoe_connected_not_surfing_trend(
             org, hours=hours
         )
-        from billing.usage_samples import workspace_client_access_trend
 
         parts = cache.get(f"workspace_access_parts:v1:{org.pk}") or {}
         live_access = None
@@ -8282,6 +8316,12 @@ def _workspace_analytics_payload(org, *, force: bool = False, hours: int = 24) -
                     live_access[key] += max(0, int(part.get(key) or 0))
         snapshot["client_access_trend"] = workspace_client_access_trend(
             org, hours=hours, live=live_access
+        )
+        fup_hits_live = count_fup_hits_by_router(org)
+        if org:
+            record_workspace_fup_hits_snapshot(org.pk, fup_hits_live)
+        snapshot["fup_hits_trend"] = workspace_fup_hits_trend(
+            org, hours=hours, live=fup_hits_live
         )
     except Exception:
         snapshot["network_trend"] = {
@@ -8308,6 +8348,13 @@ def _workspace_analytics_payload(org, *, force: bool = False, hours: int = 24) -
                 "disconnected": 0,
                 "expired": 0,
             },
+        }
+        snapshot["fup_hits_trend"] = {
+            "ok": False,
+            "labels": [],
+            "datasets": [],
+            "routers": [],
+            "summary": {"total": 0, "routers_hit": 0, "peak": 0},
         }
 
     return snapshot
@@ -8500,6 +8547,22 @@ def workspace_live(request):
             bundle["client_access"] = cached_all
         else:
             bundle["client_access"] = _workspace_initial_client_access(org)
+
+    try:
+        from billing.fup import organization_fup_attention_clients
+
+        bundle["fup_attention"] = organization_fup_attention_clients(
+            org, min_percent=80.0, limit=40
+        )
+    except Exception:
+        bundle["fup_attention"] = {
+            "ok": False,
+            "clients": [],
+            "count": 0,
+            "at_limit": 0,
+            "near_limit": 0,
+            "min_percent": 80.0,
+        }
 
     return JsonResponse(bundle)
 
@@ -16536,6 +16599,8 @@ def client_router_login_start(request, customer_id: int):
         guidance = _cpe_router_guidance(failure_class="needs_password")
 
     steps = list(probe.get("steps") or []) + list(login.get("steps") or [])
+    # Fresh successful open — drop the list Remote-column cache so operators see Ready.
+    cache.delete(f"client_remote_access:{customer.pk}:v3")
     return JsonResponse(
         {
             **base_meta,
@@ -16620,7 +16685,6 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
     cpe_scope = (token_payload.get("scope") or "").strip() or customer_cpe_proxy_scope(
         customer
     )
-    used_token_host = bool(cpe_host)
 
     if not cpe_host:
         cpe_target = resolve_customer_cpe_target(
@@ -16657,7 +16721,7 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
     cookie_key = "cpe-web:" + hashlib.sha256(token.encode()).hexdigest()
     router_cookies = dict(cache.get(cookie_key) or {})
 
-    def _open_upstream(address: str, gw: str, scope: str):
+    def _open_upstream(address: str, gw: str, scope: str, *, force_refresh: bool = False):
         with customer_cpe_web_proxy(
             nas_host,
             nas.username,
@@ -16667,6 +16731,7 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
             gateway_ip=gw,
             cpe_port=cpe_port,
             timeout=10.0,
+            force_refresh=force_refresh,
         ) as proxy_ctx:
             headers = {}
             for name, value in request.headers.items():
@@ -16725,40 +16790,58 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
             cpe_host, gateway, cpe_scope
         )
     except (ConnectionError, OSError, TimeoutError, http.client.HTTPException) as exc:
-        # Token may hold a stale PPPoE IP after renumber — one live re-resolve.
-        if used_token_host:
-            cpe_target = resolve_customer_cpe_target(
+        # Stale PPPoE IP, wiped NAT after NAS reboot, or dead cached forward —
+        # drop the cache, re-resolve the live client IP, and reinstall once.
+        try:
+            invalidate_customer_cpe_web_proxy(
                 nas_host,
-                nas.username,
-                nas.password or "",
-                customer,
-                timeout=8.0,
+                cpe_scope=cpe_scope,
+                cpe_port=cpe_port,
+                nas_username=nas.username,
+                nas_password=nas.password or "",
+                uninstall=True,
             )
-            if cpe_target.get("ok") and cpe_target.get("session_active"):
-                live_host = (cpe_target.get("address") or "").strip()
-                live_gateway = (
-                    (cpe_target.get("gateway") or "").strip() or MK_PPPOE_LOCAL_ADDRESS
+        except Exception:
+            pass
+        live_host = cpe_host
+        live_gateway = gateway
+        live_scope = cpe_scope
+        cpe_target = resolve_customer_cpe_target(
+            nas_host,
+            nas.username,
+            nas.password or "",
+            customer,
+            timeout=8.0,
+        )
+        if cpe_target.get("ok") and cpe_target.get("session_active"):
+            live_host = (cpe_target.get("address") or "").strip() or cpe_host
+            live_gateway = (
+                (cpe_target.get("gateway") or "").strip() or MK_PPPOE_LOCAL_ADDRESS
+            )
+            live_scope = (
+                (cpe_target.get("scope") or "").strip()
+                or customer_cpe_proxy_scope(customer)
+            )
+        if live_host:
+            try:
+                proxy, body, upstream_headers, status = _open_upstream(
+                    live_host,
+                    live_gateway,
+                    live_scope,
+                    force_refresh=True,
                 )
-                live_scope = (
-                    (cpe_target.get("scope") or "").strip()
-                    or customer_cpe_proxy_scope(customer)
-                )
-                if live_host and live_host != cpe_host:
-                    try:
-                        proxy, body, upstream_headers, status = _open_upstream(
-                            live_host, live_gateway, live_scope
-                        )
-                        cpe_host = live_host
-                        gateway = live_gateway
-                    except (
-                        ConnectionError,
-                        OSError,
-                        TimeoutError,
-                        http.client.HTTPException,
-                    ) as retry_exc:
-                        exc = retry_exc
-                    else:
-                        exc = None
+                cpe_host = live_host
+                gateway = live_gateway
+                cpe_scope = live_scope
+            except (
+                ConnectionError,
+                OSError,
+                TimeoutError,
+                http.client.HTTPException,
+            ) as retry_exc:
+                exc = retry_exc
+            else:
+                exc = None
         if exc is not None:
             detail = str(exc) or exc.__class__.__name__
             timed_out = "timed out" in detail.lower() or isinstance(exc, TimeoutError)
@@ -17922,6 +18005,8 @@ def clients_general_usage(request):
             },
             "summary": {},
             "top_users": [],
+        "fup_users": [],
+        "fup_chart": {"labels": [], "percent": [], "restricted": []},
         "top_chart": {
             "labels": [],
             "data_used_mb": [],

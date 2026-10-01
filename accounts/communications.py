@@ -10,6 +10,7 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
 
@@ -192,6 +193,19 @@ CLIENT_COMMUNICATION_EVENTS = (
         "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
         "default_message": (
             "Your invoice or receipt is ready. Details are included in this message."
+        ),
+    },
+    {
+        "key": "fup_limit_reached",
+        "title": "Fair usage limit reached",
+        "when": "The client uses their full package fair-usage data allowance for the current FUP period.",
+        "includes": "Package name, data limit, and whether access was throttled or disconnected.",
+        "channels": ("sms", "whatsapp", "email"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Hi {client_name}, you have reached the fair usage limit "
+            "({fup_limit_label}) on {package_name}. Your service is now "
+            "{fup_action_label} until the FUP period resets."
         ),
     },
 )
@@ -464,6 +478,24 @@ ISP_COMMUNICATION_EVENTS = (
         "recipient_options": ("organization_owner",),
         "default_message": (
             "A new client was registered under your ISP. Review their account details in your workspace."
+        ),
+    },
+    {
+        "key": "isp_fup_limit_reached",
+        "title": "Client hit fair usage limit",
+        "category": "clients",
+        "when": (
+            "A subscriber reaches their package fair-usage data cap and is "
+            "throttled or disconnected for the rest of the FUP period."
+        ),
+        "includes": "Client name, account number, package, data limit, and action taken.",
+        "channels": ("sms", "email", "whatsapp"),
+        "recipient": "ISP Client",
+        "recipient_options": ORG_ISP_CLIENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "FUP alert: {client_name} ({account_number}) reached the fair usage "
+            "limit ({fup_limit_label}) on {package_name}. Service is now "
+            "{fup_action_label}."
         ),
     },
 )
@@ -1264,6 +1296,10 @@ def dispatch_platform_event(
                     subject=email_subject,
                     body=body,
                     credentials=settings,
+                    event_key=event_key,
+                    title=str(event.get("title") or ""),
+                    company_name=str(ctx.get("company_name") or ""),
+                    recipient_name=str(contact.get("name") or ""),
                 )
             elif channel == "sms":
                 to = contact.get("phone") or ""
@@ -1502,6 +1538,10 @@ def dispatch_org_event(
                     to=to,
                     subject=email_subject,
                     body=body,
+                    event_key=event_key,
+                    title=str(event.get("title") or ""),
+                    company_name=str(ctx.get("company_name") or ""),
+                    recipient_name=str(contact.get("name") or ""),
                 )
             elif channel == "sms":
                 to = contact.get("phone") or ""
@@ -2009,6 +2049,117 @@ def maybe_notify_pppoe_connected_not_surfing(
     )
 
 
+def maybe_notify_fup_limit_reached(
+    customer,
+    *,
+    plan=None,
+    action: str = "",
+    bytes_used: int = 0,
+    bytes_limit: int = 0,
+) -> dict:
+    """
+    Notify the subscriber and ISP Client once when FUP restriction is applied.
+
+    Deduped per customer + FUP window so repeat samples in the same period do
+    not re-spam either audience.
+    """
+    from django.core.cache import cache
+    from django.utils import timezone
+
+    if customer is None or not getattr(customer, "pk", None):
+        return {"ok": False, "skipped": True, "reason": "missing"}
+
+    organization = getattr(customer, "organization", None)
+    if organization is None:
+        return {"ok": False, "skipped": True, "reason": "no_organization"}
+
+    plan = plan or getattr(customer, "plan", None)
+    action_key = (action or getattr(plan, "fup_action", "") or "").strip().lower()
+    if action_key == "disconnect":
+        action_label = "disconnected"
+    elif action_key == "throttle":
+        action_label = "throttled"
+    else:
+        action_label = "restricted"
+
+    window_start = getattr(customer, "fup_window_start", None)
+    if window_start is not None:
+        if timezone.is_naive(window_start):
+            window_start = timezone.make_aware(
+                window_start, timezone.get_current_timezone()
+            )
+        window_key = timezone.localtime(window_start).isoformat()
+    else:
+        restricted_at = getattr(customer, "fup_restricted_at", None)
+        if restricted_at is not None:
+            if timezone.is_naive(restricted_at):
+                restricted_at = timezone.make_aware(
+                    restricted_at, timezone.get_current_timezone()
+                )
+            window_key = timezone.localtime(restricted_at).isoformat()
+        else:
+            window_key = "now"
+
+    dedupe_key = f"comms:fup_hit:{customer.pk}:{window_key}"
+    if not cache.add(dedupe_key, 1, timeout=60 * 60 * 24 * 45):
+        return {"ok": False, "skipped": True, "reason": "already_alerted"}
+
+    try:
+        from billing.fup import customer_fup_usage_snapshot
+
+        snap = customer_fup_usage_snapshot(customer, plan)
+        limit_label = snap.get("limit_label") or ""
+        period_label = snap.get("period_label") or ""
+    except Exception:
+        limit_label = ""
+        period_label = ""
+        snap = {}
+
+    if not limit_label and bytes_limit:
+        try:
+            gb = round(float(bytes_limit) / float(1024**3), 2)
+            limit_label = f"{gb:g} GB"
+        except Exception:
+            limit_label = str(bytes_limit)
+
+    ctx = {
+        "fup_action": action_key,
+        "fup_action_label": action_label,
+        "fup_limit_label": limit_label or "data cap",
+        "fup_period_label": period_label,
+        "fup_bytes_used": str(int(bytes_used or snap.get("bytes_used") or 0)),
+        "fup_bytes_limit": str(int(bytes_limit or snap.get("bytes_limit") or 0)),
+    }
+
+    client_result = notify_org_event(
+        "fup_limit_reached",
+        organization=organization,
+        client=customer,
+        context=ctx,
+        subject="Fair usage limit reached",
+    )
+    isp_result = notify_org_event(
+        "isp_fup_limit_reached",
+        organization=organization,
+        client=customer,
+        context=ctx,
+        subject=(
+            f"FUP: {getattr(customer, 'full_name', '') or 'Client'} "
+            f"hit fair usage limit"
+        ),
+    )
+
+    client_sent = int(client_result.get("sent") or 0) if isinstance(client_result, dict) else 0
+    isp_sent = int(isp_result.get("sent") or 0) if isinstance(isp_result, dict) else 0
+    return {
+        "ok": (client_sent + isp_sent) > 0,
+        "skipped": False,
+        "client": client_result,
+        "isp": isp_result,
+        "sent": client_sent + isp_sent,
+    }
+
+
 def customer_notification_context(customer) -> dict:
     """Common template values for client-facing messages."""
     if customer is None:
@@ -2232,8 +2383,26 @@ def send_sms(*, organization=None, to: str, message: str, credentials=None) -> d
     return {"ok": True, "provider": provider, "data": result.get("data")}
 
 
-def send_email(*, organization=None, to: str, subject: str, body: str, credentials=None) -> dict:
-    """Send email using organization or explicit SMTP credentials."""
+def send_email(
+    *,
+    organization=None,
+    to: str,
+    subject: str,
+    body: str,
+    credentials=None,
+    html_body: str | None = None,
+    event_key: str = "",
+    title: str = "",
+    company_name: str = "",
+    recipient_name: str = "",
+    theme: str = "",
+) -> dict:
+    """Send email using organization or explicit SMTP credentials.
+
+    Always attaches a modern HTML alternative (unless ``html_body`` is provided
+    or explicitly disabled with ``html_body=""``). Plain text remains the
+    primary part for clients that prefer it.
+    """
     if credentials is None:
         org_comms = settings_for(organization)
         if org_comms is None:
@@ -2256,8 +2425,36 @@ def send_email(*, organization=None, to: str, subject: str, body: str, credentia
     password = (comms.email_host_password or "").strip()
     from_email = (comms.email_from_email or "").strip() or username
     from_name = (comms.email_from_name or "").strip()
-    message = MIMEText(body or "", "plain", "utf-8")
-    message["Subject"] = (subject or "").strip() or "Message"
+    plain = body or ""
+    subject_line = (subject or "").strip() or "Message"
+
+    brand = (company_name or "").strip()
+    if not brand and organization is not None:
+        brand = (getattr(organization, "name", "") or "").strip()
+    if not brand:
+        brand = (from_name or "").strip() or "ISPCENTRIC"
+
+    if html_body is None:
+        from accounts.email_design import build_transactional_email_html
+
+        html_body = build_transactional_email_html(
+            body=plain,
+            subject=subject_line,
+            title=title or subject_line,
+            company_name=brand,
+            event_key=event_key,
+            theme=theme,
+            recipient_name=recipient_name,
+        )
+
+    if html_body:
+        message = MIMEMultipart("alternative")
+        message.attach(MIMEText(plain, "plain", "utf-8"))
+        message.attach(MIMEText(html_body, "html", "utf-8"))
+    else:
+        message = MIMEText(plain, "plain", "utf-8")
+
+    message["Subject"] = subject_line
     message["From"] = formataddr((from_name, from_email)) if from_name else from_email
     message["To"] = recipient
     try:

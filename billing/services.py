@@ -731,6 +731,7 @@ def customer_receives_internet(customer, organization=None, *, today: date | Non
     - today/now is outside package_start / package_end (when set)
     - Hotspot or PPPoE customer has no purchased period at all
     - PPPoE is compulsory and a non-Hotspot customer is not a registered PPPoE user
+    - package FUP disconnect is active for the current fair-usage window
 
     Prefer ``customer_can_surf_via_hotspot`` / ``customer_can_surf_via_pppoe`` when
     enforcing the dynamic dual-path model (PPPoE compulsory + Hotspot fallback).
@@ -740,6 +741,13 @@ def customer_receives_internet(customer, organization=None, *, today: date | Non
         return False
     if customer_package_is_paused(customer):
         return False
+    try:
+        from billing.fup import customer_fup_blocks_internet
+
+        if customer_fup_blocks_internet(customer):
+            return False
+    except Exception:
+        pass
     if customer.service_type in {
         Customer.ServiceType.HOTSPOT,
         Customer.ServiceType.PPPOE,
@@ -1148,6 +1156,12 @@ def apply_subscription_period(customer, *, plan=None, start=None, end=None):
     customer.package_end = end_dt
     customer.usage_tracking_since = start_dt
     update_fields = ["package_start", "package_end", "usage_tracking_since"]
+    try:
+        from billing.fup import reset_customer_fup_window
+
+        update_fields.extend(reset_customer_fup_window(customer, at=start_dt, save=False))
+    except Exception:
+        pass
     if clear_customer_package_pause(customer, save=False):
         update_fields.append("package_paused_at")
     customer.save(update_fields=update_fields)
@@ -1243,6 +1257,14 @@ def apply_subscription_renewal(customer, *, plan=None):
     if fresh_start or getattr(customer, "usage_tracking_since", None) is None:
         customer.usage_tracking_since = access_start
         update_fields.append("usage_tracking_since")
+        try:
+            from billing.fup import reset_customer_fup_window
+
+            for field in reset_customer_fup_window(customer, at=access_start, save=False):
+                if field not in update_fields:
+                    update_fields.append(field)
+        except Exception:
+            pass
     if clear_customer_package_pause(customer, save=False):
         update_fields.append("package_paused_at")
     customer.save(update_fields=update_fields)
@@ -1283,6 +1305,14 @@ def set_customer_package_renewed(customer, *, renewed_at, plan=None):
         customer.package_end = end
         update_fields.append("package_end")
     customer.usage_tracking_since = start_dt
+    try:
+        from billing.fup import reset_customer_fup_window
+
+        for field in reset_customer_fup_window(customer, at=start_dt, save=False):
+            if field not in update_fields:
+                update_fields.append(field)
+    except Exception:
+        pass
     if clear_customer_package_pause(customer, save=False):
         update_fields.append("package_paused_at")
     customer.save(update_fields=update_fields)

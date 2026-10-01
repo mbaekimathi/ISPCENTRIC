@@ -783,6 +783,49 @@ class HotspotNasMultiMacTests(TestCase):
         self.assertEqual(enabled, ["AA:AA:AA:AA:AA:02"])
         self.assertIn("AA:AA:AA:AA:AA:01", disabled)
 
+    def test_unused_vouchers_block_primary_until_redeem(self):
+        """Multi-device codes wait — primary cannot free-surf without redeeming."""
+        from billing.devices import authorized_hotspot_macs_for_customer
+        from billing.models import AccessVoucher
+        from core.mikrotik_connect import _apply_hotspot_customer_on_socket
+
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="WAIT01",
+            status=AccessVoucher.Status.VALID,
+        )
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="WAIT02",
+            status=AccessVoucher.Status.VALID,
+        )
+        self.assertEqual(authorized_hotspot_macs_for_customer(self.customer), [])
+
+        users = []
+
+        def fake_ensure(sock, **kwargs):
+            users.append(kwargs)
+            return "created"
+
+        with (
+            patch("core.mikrotik_connect._remove_lan_wide_hotspot_bypasses"),
+            patch("core.mikrotik_connect._ensure_hotspot_rate_profile", return_value="hs-profile"),
+            patch("core.mikrotik_connect._ensure_hotspot_user", side_effect=fake_ensure),
+            patch("core.mikrotik_connect._expire_hotspot_mac_sessions"),
+            patch("core.mikrotik_connect._purge_hotspot_ok_list_for_mac", return_value=0),
+            patch("core.mikrotik_connect._remove_hotspot_simple_queue"),
+            patch("core.mikrotik_connect._ensure_hotspot_simple_queue"),
+        ):
+            applied = _apply_hotspot_customer_on_socket(object(), self.customer)
+
+        self.assertTrue(applied.get("ok"))
+        enabled = [row["username"] for row in users if not row["disabled"]]
+        self.assertEqual(enabled, [])
+
     def test_apply_keeps_primary_when_no_voucher_claims_yet(self):
         """Deploy sweep must not kick the paying phone before any redeem/claim."""
         from billing.devices import authorized_hotspot_macs_for_customer

@@ -52,10 +52,17 @@ class HotspotOtherDevicesPricingTests(TestCase):
     def test_quote_other_devices_total(self):
         quote = quote_other_devices_purchase(self.plan, device_count=3, hours=2)
         self.assertTrue(quote["ok"])
-        # base 30 + (10 × 3 × 2) = 90
-        self.assertEqual(quote["total"], "90")
+        # Standard 30 covers 1 device × 1 hr; extras = (3×2)−1 = 5 → 30 + (10×5) = 80
+        self.assertEqual(quote["extra_slots"], 5)
+        self.assertEqual(quote["total"], "80")
         self.assertEqual(quote["voucher_count"], 3)
         self.assertEqual(quote["package_hours"], 2)
+
+    def test_quote_one_device_one_hour_is_standard_only(self):
+        quote = quote_other_devices_purchase(self.plan, device_count=1, hours=1)
+        self.assertTrue(quote["ok"])
+        self.assertEqual(quote["extra_slots"], 0)
+        self.assertEqual(quote["total"], "30")
 
     def test_quote_rounds_to_integer_kes(self):
         plan = BillingPlan.objects.create(
@@ -72,8 +79,8 @@ class HotspotOtherDevicesPricingTests(TestCase):
         )
         quote = quote_other_devices_purchase(plan, device_count=2, hours=1)
         self.assertTrue(quote["ok"])
-        # 10.50 + 6.66 = 17.16 → rounds to 17
-        self.assertEqual(quote["total"], "17")
+        # 10.50 + 3.33×1 = 13.83 → rounds to 14
+        self.assertEqual(quote["total"], "14")
 
     def test_quote_rejects_disabled_plan(self):
         self.plan.hotspot_hourly_rate_per_device = Decimal("0")
@@ -132,7 +139,7 @@ class HotspotOtherDevicesPricingTests(TestCase):
             patch("core.views._resolve_request_hotspot_mac", return_value=self.mac),
             patch(
                 "billing.stk.start_subscription_stk_payment",
-                return_value={"ok": True, "stk_id": 901, "amount": "90"},
+                return_value={"ok": True, "stk_id": 901, "amount": "80"},
             ) as stk,
         ):
             response = self.client.post(
@@ -148,7 +155,7 @@ class HotspotOtherDevicesPricingTests(TestCase):
             )
         self.assertEqual(response.status_code, 200)
         kwargs = stk.call_args.kwargs
-        self.assertEqual(kwargs["amount"], Decimal("90"))
+        self.assertEqual(kwargs["amount"], Decimal("80"))
         self.assertEqual(kwargs["pay_metadata"]["pay_mode"], PAY_MODE_OTHER_DEVICES)
         self.assertEqual(kwargs["pay_metadata"]["device_count"], 3)
         self.assertEqual(kwargs["pay_metadata"]["voucher_count"], 3)
@@ -275,3 +282,105 @@ class HotspotOtherDevicesPricingTests(TestCase):
             raw_callback={"hotspot_mac": self.mac},
         )
         self.assertEqual(stk_pay_mode(stk), PAY_MODE_THIS_DEVICE)
+
+    def test_other_devices_primary_not_authorized_until_redeem(self):
+        """Selected-device purchase must not enable the payer without a voucher."""
+        from billing.devices import (
+            authorized_hotspot_macs_for_customer,
+            hotspot_mac_can_surf,
+        )
+
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Payer",
+            phone="254712345678",
+            service_type=Customer.ServiceType.HOTSPOT,
+            plan=self.plan,
+            hotspot_mac=self.mac,
+            status=Customer.Status.ACTIVE,
+        )
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=customer,
+            plan=self.plan,
+            amount=Decimal("90"),
+            phone="254712345678",
+            account_reference="HS8181",
+            status=StkPushRequest.Status.SUCCESS,
+            raw_callback={
+                "pay_mode": PAY_MODE_OTHER_DEVICES,
+                "device_count": 2,
+                "hours": 2,
+                "package_hours": 2,
+                "voucher_count": 2,
+                "hotspot_mac": self.mac,
+            },
+        )
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": True, "allowed": True},
+        ), patch(
+            "core.subscription_sync.nas_access_ready",
+            return_value=True,
+        ):
+            result = activate_paid_subscription_stk(stk, mac=self.mac)
+
+        self.assertTrue(result.get("ok"))
+        self.assertFalse(result.get("authorized"))
+        self.assertEqual(result.get("voucher_valid_count"), 2)
+        customer.refresh_from_db()
+        self.assertEqual(authorized_hotspot_macs_for_customer(customer), [])
+        self.assertFalse(hotspot_mac_can_surf(customer, self.mac))
+        for row in AccessVoucher.objects.filter(stk_request=stk):
+            self.assertEqual(row.status, AccessVoucher.Status.VALID)
+            self.assertFalse((row.redeemed_mac or "").strip())
+
+    def test_this_device_single_burns_voucher_on_authorize(self):
+        """Single-device this-device pay uses the voucher immediately on connect."""
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="1 Device",
+            price=Decimal("50.00"),
+            download_speed_mbps=5,
+            upload_speed_mbps=2,
+            duration=BillingPlan.Duration.HOURLY,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=1,
+        )
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Solo",
+            phone="254712345679",
+            service_type=Customer.ServiceType.HOTSPOT,
+            plan=plan,
+            hotspot_mac=self.mac,
+            status=Customer.Status.ACTIVE,
+        )
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=customer,
+            plan=plan,
+            amount=Decimal("50"),
+            phone="254712345679",
+            account_reference="HS8182",
+            status=StkPushRequest.Status.SUCCESS,
+            raw_callback={"hotspot_mac": self.mac},
+        )
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": True, "allowed": True},
+        ), patch(
+            "core.subscription_sync.nas_access_ready",
+            return_value=True,
+        ), patch(
+            "billing.services.notify_client_internet_reconnected",
+        ):
+            result = activate_paid_subscription_stk(stk, mac=self.mac)
+
+        self.assertTrue(result.get("ok"))
+        self.assertTrue(result.get("authorized"))
+        vouchers = list(AccessVoucher.objects.filter(stk_request=stk))
+        self.assertEqual(len(vouchers), 1)
+        self.assertEqual(vouchers[0].status, AccessVoucher.Status.INVALID)
+        self.assertEqual(vouchers[0].redeemed_mac, self.mac)
+        self.assertEqual(result.get("voucher_valid_count"), 0)

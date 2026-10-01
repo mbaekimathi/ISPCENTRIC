@@ -413,6 +413,8 @@ class CommunicationSendTests(TestCase):
         self.comms.email_from_name = "Send ISP"
         self.comms.save()
 
+        captured = {}
+
         class FakeSMTP:
             def __init__(self, *args, **kwargs):
                 self.args = args
@@ -434,6 +436,9 @@ class CommunicationSendTests(TestCase):
                 self.sender = sender
                 self.recipients = recipients
                 self.message = message
+                captured["message"] = message
+                captured["sender"] = sender
+                captured["recipients"] = recipients
 
         with patch("accounts.communications.smtplib.SMTP", FakeSMTP):
             result = send_email(
@@ -441,8 +446,89 @@ class CommunicationSendTests(TestCase):
                 to="client@example.com",
                 subject="Invoice",
                 body="Pay now",
+                event_key="invoice_receipt",
+                title="Invoice or receipt",
             )
         self.assertTrue(result["ok"], result)
+        raw = captured.get("message") or ""
+        self.assertIn("multipart/alternative", raw)
+        self.assertIn("text/plain", raw)
+        self.assertIn("text/html", raw)
+
+        import email
+        from email import policy
+
+        parsed = email.message_from_string(raw, policy=policy.default)
+        parts = {
+            part.get_content_type(): part.get_content()
+            for part in parsed.iter_parts()
+        }
+        self.assertIn("Pay now", parts.get("text/plain", ""))
+        html = parts.get("text/html", "")
+        self.assertIn("Pay now", html)
+        self.assertIn("ISPCENTRIC", html)
+        self.assertIn("#0c7a84", html)  # info theme accent for invoices
+
+    def test_send_email_fup_warning_theme(self):
+        self.comms.email_enabled = True
+        self.comms.email_credential_source = CommunicationSettings.CredentialSource.OWN
+        self.comms.email_host = "smtp.example.com"
+        self.comms.email_port = 587
+        self.comms.email_use_tls = True
+        self.comms.email_host_user = "noreply@example.com"
+        self.comms.email_host_password = "secret"
+        self.comms.email_from_email = "billing@example.com"
+        self.comms.email_from_name = "Send ISP"
+        self.comms.save()
+
+        captured = {}
+
+        class FakeSMTP:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def starttls(self, context=None):
+                pass
+
+            def login(self, user, password):
+                pass
+
+            def sendmail(self, sender, recipients, message):
+                captured["message"] = message
+
+        with patch("accounts.communications.smtplib.SMTP", FakeSMTP):
+            result = send_email(
+                organization=self.org,
+                to="client@example.com",
+                subject="Fair usage limit reached",
+                body="You have reached the fair usage limit. Service is now throttled.",
+                event_key="fup_limit_reached",
+                title="Fair usage limit reached",
+                company_name="Send ISP",
+            )
+        self.assertTrue(result["ok"], result)
+
+        import email
+        from email import policy
+
+        parsed = email.message_from_string(
+            captured.get("message") or "", policy=policy.default
+        )
+        html = ""
+        for part in parsed.iter_parts():
+            if part.get_content_type() == "text/html":
+                html = part.get_content()
+                break
+        self.assertIn("#e09a12", html)  # warning accent
+        self.assertIn("Attention", html)
+        self.assertIn("Fair usage limit reached", html)
+        self.assertIn("throttled", html)
 
     def test_send_whatsapp_meta(self):
         self.comms.whatsapp_enabled = True
@@ -1665,3 +1751,135 @@ class DpoRecipientResolutionTests(TestCase):
         body = first.get("message") or ""
         self.assertIn("Core-NAS", body)
         self.assertIn("ether1", body)
+
+    def test_fup_limit_events_exist_in_catalog(self):
+        from accounts.communications import (
+            CLIENT_COMMUNICATION_EVENTS,
+            ISP_COMMUNICATION_EVENTS,
+        )
+
+        client_event = next(
+            e for e in CLIENT_COMMUNICATION_EVENTS if e["key"] == "fup_limit_reached"
+        )
+        self.assertEqual(client_event["recipient_options"][0], "client")
+        isp_event = next(
+            e for e in ISP_COMMUNICATION_EVENTS if e["key"] == "isp_fup_limit_reached"
+        )
+        self.assertEqual(isp_event["recipient_options"][0], "isp_client")
+        self.assertEqual(isp_event["category"], "clients")
+        self.assertIn("organization_owner", isp_event["recipient_options"])
+
+    def test_fup_limit_notifies_client_and_isp_once_per_window(self):
+        from decimal import Decimal
+
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        from accounts.communications import maybe_notify_fup_limit_reached
+        from accounts.models import CommunicationSettings
+        from billing.models import BillingPlan, Customer
+
+        cache.clear()
+        self.owner.email = "ispowner@example.com"
+        self.owner.save(update_fields=["email"])
+        self.org.phone = "0712000999"
+        self.org.save(update_fields=["phone"])
+
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="FUP Alert Plan",
+            price=Decimal("1000.00"),
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            duration=BillingPlan.Duration.MONTHLY,
+            fup_enabled=True,
+            fup_period_value=1,
+            fup_period_unit=BillingPlan.DurationUnit.MONTHS,
+            fup_data_limit_gb=Decimal("50.00"),
+            fup_action=BillingPlan.FupAction.THROTTLE,
+            fup_throttle_download_mbps=1,
+            fup_throttle_upload_mbps=1,
+        )
+        now = timezone.localtime()
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="FUP Alert Client",
+            phone="0712111222",
+            email="client@example.com",
+            account_number="FUP-ALERT-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+            plan=plan,
+            package_start=now,
+            package_end=now + timezone.timedelta(days=30),
+            fup_window_start=now,
+            fup_bytes_used=50 * (1024**3),
+            fup_restricted=True,
+            fup_restricted_at=now,
+        )
+
+        comms = CommunicationSettings.for_organization(self.org)
+        comms.sms_enabled = True
+        comms.email_enabled = True
+        comms.sms_credential_source = CommunicationSettings.CredentialSource.OWN
+        comms.email_credential_source = CommunicationSettings.CredentialSource.OWN
+        comms.sms_provider = CommunicationSettings.SmsProvider.AFRICASTALKING
+        comms.sms_username = "sandbox"
+        comms.sms_api_key = "key"
+        comms.email_host = "smtp.example.com"
+        comms.email_host_user = "noreply@example.com"
+        comms.email_host_password = "secret"
+        comms.email_from_email = "noreply@example.com"
+        comms.enabled_messages = {
+            "fup_limit_reached": {
+                "message": (
+                    "Client {client_name} hit FUP ({fup_limit_label}); "
+                    "now {fup_action_label}."
+                ),
+                "recipients": ["client"],
+                "channels": ["sms"],
+            },
+            "isp_fup_limit_reached": {
+                "message": (
+                    "ISP: {client_name} ({account_number}) hit "
+                    "{fup_limit_label}; {fup_action_label}."
+                ),
+                "recipients": ["isp_client"],
+                "channels": ["email"],
+            },
+        }
+        comms.save()
+
+        with (
+            patch("accounts.communications.send_sms") as mock_sms,
+            patch("accounts.communications.send_email") as mock_email,
+        ):
+            mock_sms.return_value = {"ok": True}
+            mock_email.return_value = {"ok": True}
+            first = maybe_notify_fup_limit_reached(
+                customer,
+                plan=plan,
+                action="throttle",
+                bytes_used=customer.fup_bytes_used,
+                bytes_limit=50 * (1024**3),
+            )
+            second = maybe_notify_fup_limit_reached(
+                customer,
+                plan=plan,
+                action="throttle",
+                bytes_used=customer.fup_bytes_used,
+                bytes_limit=50 * (1024**3),
+            )
+
+        self.assertTrue(first.get("ok"))
+        self.assertFalse(first.get("skipped"))
+        self.assertTrue(second.get("skipped"))
+        self.assertEqual(second.get("reason"), "already_alerted")
+        self.assertEqual(mock_sms.call_count, 1)
+        self.assertEqual(mock_email.call_count, 1)
+        sms_msg = mock_sms.call_args.kwargs.get("message") or ""
+        email_body = mock_email.call_args.kwargs.get("body") or ""
+        self.assertIn("FUP Alert Client", sms_msg)
+        self.assertIn("throttled", sms_msg)
+        self.assertIn("FUP-ALERT-1", email_body)
+        self.assertIn("50 GB", email_body)

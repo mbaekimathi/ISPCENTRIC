@@ -1,0 +1,54 @@
+{# Fair usage policy fields for register/edit package modals. Expects `pform`. #}
+<details class="pppoe-advanced" data-package-fup-section>
+  <summary>Fair usage policy <span class="pppoe-advanced-hint">Data cap per period</span></summary>
+  <div class="pppoe-grid">
+    <div class="field field-span-2">
+      <label class="mikrotik-confirm-check package-active-check" for="{{ pform.fup_enabled.id_for_label }}">
+        {{ pform.fup_enabled }}
+        <span>Enable fair usage policy</span>
+      </label>
+      <p class="field-hint">Cap how much data one client may use in a period. When they hit it, disconnect them or drop their speed until the period resets.</p>
+      {% if pform.fup_enabled.errors %}<div class="field-error">{{ pform.fup_enabled.errors|striptags }}</div>{% endif %}
+    </div>
+
+    <div class="field field-span-2 package-fup-fields" data-fup-fields hidden>
+      <div class="pppoe-grid">
+        <div class="field field-span-2 package-billing-period" data-fup-period-row>
+          <label for="{{ pform.fup_period_value.id_for_label }}">FUP period</label>
+          <div class="package-duration-custom" data-package-duration-row>
+            <span class="package-duration-every">Every</span>
+            {{ pform.fup_period_value }}
+            <div class="pppoe-select package-duration-unit">{{ pform.fup_period_unit }}</div>
+          </div>
+          <p class="field-hint">After this window, the data counter resets and full speed is restored.</p>
+          {% if pform.fup_period_value.errors %}<div class="field-error">{{ pform.fup_period_value.errors|striptags }}</div>{% endif %}
+          {% if pform.fup_period_unit.errors %}<div class="field-error">{{ pform.fup_period_unit.errors|striptags }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label for="{{ pform.fup_data_limit_gb.id_for_label }}">Data limit (GB)</label>
+          {{ pform.fup_data_limit_gb }}
+          <p class="field-hint">Total download + upload per client in the period.</p>
+          {% if pform.fup_data_limit_gb.errors %}<div class="field-error">{{ pform.fup_data_limit_gb.errors|striptags }}</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label for="{{ pform.fup_action.id_for_label }}">When limit is reached</label>
+          {{ pform.fup_action }}
+          {% if pform.fup_action.errors %}<div class="field-error">{{ pform.fup_action.errors|striptags }}</div>{% endif %}
+        </div>
+
+        <div class="field" data-fup-throttle-fields>
+          <label for="{{ pform.fup_throttle_download_mbps.id_for_label }}">Throttle download (Mbps)</label>
+          {{ pform.fup_throttle_download_mbps }}
+          {% if pform.fup_throttle_download_mbps.errors %}<div class="field-error">{{ pform.fup_throttle_download_mbps.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="field" data-fup-throttle-fields>
+          <label for="{{ pform.fup_throttle_upload_mbps.id_for_label }}">Throttle upload (Mbps)</label>
+          {{ pform.fup_throttle_upload_mbps }}
+          {% if pform.fup_throttle_upload_mbps.errors %}<div class="field-error">{{ pform.fup_throttle_upload_mbps.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</details>

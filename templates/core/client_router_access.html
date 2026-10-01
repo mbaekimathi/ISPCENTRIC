@@ -412,7 +412,17 @@
   }
 
   root.querySelectorAll("[data-router-retry]").forEach(function (btn) {
-    btn.addEventListener("click", function () { connect(); });
+    btn.addEventListener("click", function () {
+      var body = null;
+      if (passwordForm) {
+        var input = passwordForm.querySelector("input[name=cpe_password]");
+        var value = input ? String(input.value || "").trim() : "";
+        if (value) {
+          body = new FormData(passwordForm);
+        }
+      }
+      connect(body);
+    });
   });
   if (passwordForm) {
     passwordForm.addEventListener("submit", function (event) {

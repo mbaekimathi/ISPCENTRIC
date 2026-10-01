@@ -163,6 +163,56 @@ class BillingPlan(models.Model):
         validators=[MinValueValidator(1), MaxValueValidator(100)],
         help_text="Buy X get 1 free — e.g. 5 means every 5 paid sessions grants one extra session.",
     )
+
+    class FupAction(models.TextChoices):
+        DISCONNECT = "disconnect", "Disconnect until period resets"
+        THROTTLE = "throttle", "Throttle speed until period resets"
+
+    fup_enabled = models.BooleanField(
+        "Fair usage policy enabled",
+        default=False,
+        help_text="When enabled, each client on this package is limited to a data cap per FUP period.",
+    )
+    fup_period_value = models.PositiveIntegerField(
+        "FUP period length",
+        default=1,
+        validators=[MinValueValidator(1), MaxValueValidator(999)],
+        help_text="How many units the fair-usage window lasts before it resets.",
+    )
+    fup_period_unit = models.CharField(
+        "FUP period unit",
+        max_length=10,
+        choices=DurationUnit.choices,
+        default=DurationUnit.MONTHS,
+        help_text="Unit for the fair-usage reset window (hours, days, weeks, months, or years).",
+    )
+    fup_data_limit_gb = models.DecimalField(
+        "FUP data limit (GB)",
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="Maximum data (download + upload) one client may use in each FUP period.",
+    )
+    fup_action = models.CharField(
+        "FUP action",
+        max_length=20,
+        choices=FupAction.choices,
+        default=FupAction.THROTTLE,
+        help_text="What happens when a client hits the FUP data limit.",
+    )
+    fup_throttle_download_mbps = models.PositiveIntegerField(
+        "FUP throttle download (Mbps)",
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text="Download speed after the FUP limit is hit (throttle action only).",
+    )
+    fup_throttle_upload_mbps = models.PositiveIntegerField(
+        "FUP throttle upload (Mbps)",
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text="Upload speed after the FUP limit is hit (throttle action only).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -304,6 +354,39 @@ class BillingPlan(models.Model):
         if count < 1:
             return ""
         return f"Buy {count} get 1 free"
+
+    @property
+    def fup_display_label(self) -> str:
+        """Short label for package tables (e.g. '50 GB / month · throttle')."""
+        if not self.fup_enabled:
+            return ""
+        try:
+            limit = Decimal(str(self.fup_data_limit_gb or 0))
+        except Exception:
+            limit = Decimal("0")
+        if limit <= 0:
+            return ""
+        value = int(self.fup_period_value or 1)
+        unit = (self.fup_period_unit or self.DurationUnit.MONTHS).strip().lower()
+        labels = {
+            self.DurationUnit.HOURS: ("hour", "hours"),
+            self.DurationUnit.DAYS: ("day", "days"),
+            self.DurationUnit.WEEKS: ("week", "weeks"),
+            self.DurationUnit.MONTHS: ("month", "months"),
+            self.DurationUnit.YEARS: ("year", "years"),
+        }
+        singular, plural = labels.get(unit, ("period", "periods"))
+        period = singular if value == 1 else f"{value} {plural}"
+        if limit == limit.to_integral_value():
+            limit_label = str(int(limit))
+        else:
+            limit_label = format(limit.normalize(), "f").rstrip("0").rstrip(".")
+        action = "disconnect" if self.fup_action == self.FupAction.DISCONNECT else "throttle"
+        if action == "throttle":
+            down = int(self.fup_throttle_download_mbps or 1)
+            up = int(self.fup_throttle_upload_mbps or 1)
+            return f"{limit_label} GB / {period} → {down}/{up} Mbps"
+        return f"{limit_label} GB / {period} → disconnect"
 
     @property
     def router_scope_label(self) -> str:
@@ -505,6 +588,28 @@ class Customer(models.Model):
             "When set, data-used totals ignore traffic before this moment "
             "(package renewal or manual reset). Historical samples are kept."
         ),
+    )
+    fup_window_start = models.DateTimeField(
+        "FUP window start",
+        null=True,
+        blank=True,
+        help_text="Start of the client's current fair-usage period window.",
+    )
+    fup_bytes_used = models.BigIntegerField(
+        "FUP bytes used",
+        default=0,
+        help_text="Bytes counted toward the package FUP limit in the current window.",
+    )
+    fup_restricted = models.BooleanField(
+        "FUP restricted",
+        default=False,
+        help_text="True when the client has hit the package FUP limit in the current window.",
+    )
+    fup_restricted_at = models.DateTimeField(
+        "FUP restricted at",
+        null=True,
+        blank=True,
+        help_text="When the current FUP restriction was applied.",
     )
     router = models.ForeignKey(
         "core.MikroTikRouter",
@@ -1040,8 +1145,10 @@ class AccessVoucher(models.Model):
 
     Transitions:
       payment success → valid (N codes for a Hotspot device package)
+      this-device pay / auto-connect → claim MAC, then invalid after NAS
+      pay-for-other-devices → N codes stay valid until each device redeems
       redeem or successful auto-connect → invalid (this device only)
-      surfing while valid → invalid for that device’s voucher only
+      surfing while claimed (or single unused) → invalid for that device only
       unused sibling vouchers stay valid for other devices
     """
 

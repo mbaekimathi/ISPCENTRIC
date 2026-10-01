@@ -58,13 +58,24 @@
                   {% endif %}
                 </span>
                 <span class="package-period">{{ plan.get_duration_display }}</span>
+                {% if plan.fup_enabled and plan.fup_display_label %}
+                  <span class="package-fup-chip" title="Fair usage policy">FUP {{ plan.fup_display_label }}</span>
+                {% endif %}
               </div>
             </td>
             <td data-label="Devices">
               <span class="package-period">{{ plan.max_devices_label }}</span>
+              {% if plan.service_type == "hotspot" and plan.hotspot_other_devices_enabled and plan.hotspot_hourly_rate_per_device %}
+                <span class="package-period">Extra · KES {{ plan.hotspot_hourly_rate_per_device|floatformat:"0" }}/hr/device</span>
+              {% endif %}
             </td>
             <td data-label="Price">
-              <strong class="package-price"><span class="package-price-currency">KES</span> {{ plan.price|floatformat:"0" }}</strong>
+              {% if plan.service_type == "hotspot" and plan.hotspot_other_devices_enabled %}
+                <strong class="package-price"><span class="package-price-currency">KES</span> {{ plan.hotspot_other_base_price|default:plan.price|floatformat:"0" }}</strong>
+                <span class="package-period">+ hourly</span>
+              {% else %}
+                <strong class="package-price"><span class="package-price-currency">KES</span> {{ plan.price|floatformat:"0" }}</strong>
+              {% endif %}
             </td>
             <td data-label="Offer">
               {% if plan.offer_enabled and plan.offer_display_label %}
@@ -126,6 +137,13 @@
                     data-package-hotspot-hourly-rate="{{ plan.hotspot_hourly_rate_per_device|default:'' }}"
                     data-package-offer-enabled="{% if plan.offer_enabled %}1{% else %}0{% endif %}"
                     data-package-offer-pay-count="{{ plan.offer_pay_count }}"
+                    data-package-fup-enabled="{% if plan.fup_enabled %}1{% else %}0{% endif %}"
+                    data-package-fup-period-value="{{ plan.fup_period_value|default:1 }}"
+                    data-package-fup-period-unit="{{ plan.fup_period_unit|default:'months' }}"
+                    data-package-fup-data-limit="{{ plan.fup_data_limit_gb|default:'' }}"
+                    data-package-fup-action="{{ plan.fup_action|default:'throttle' }}"
+                    data-package-fup-throttle-download="{{ plan.fup_throttle_download_mbps|default:1 }}"
+                    data-package-fup-throttle-upload="{{ plan.fup_throttle_upload_mbps|default:1 }}"
                     data-package-active="{% if plan.is_active %}1{% else %}0{% endif %}"
                     data-package-image="{% if plan.image %}{{ plan.image.url }}{% endif %}"
                     data-package-routers="{% for r in plan.routers.all %}{{ r.id }}{% if not forloop.last %},{% endif %}{% endfor %}"

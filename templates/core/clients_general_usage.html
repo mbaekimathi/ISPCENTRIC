@@ -314,6 +314,11 @@
         <strong data-sum="gadgets">—</strong>
         <small>Active now</small>
       </div>
+      <div class="clients-usage-summary-item">
+        <span class="clients-usage-summary-label">FUP</span>
+        <strong data-sum="fup-clients">—</strong>
+        <small><span data-sum="fup-restricted">0</span> at limit</small>
+      </div>
     </section>
 
     <section class="clients-usage-insights-panel" data-usage-panel="insights"{% if view_mode == 'raw' %} hidden{% endif %}>
@@ -392,6 +397,29 @@
       </div>
     </section>
 
+    <section class="clients-usage-fup-panel" data-usage-panel="fup"{% if view_mode == 'raw' %} hidden{% endif %}>
+      <header class="clients-usage-section-head clients-usage-section-head-inline">
+        <div>
+          <p class="clients-usage-section-kicker">Fair usage</p>
+          <h2>FUP progress</h2>
+          <p class="clients-usage-section-meta">
+            How close each client is to their package fair-usage data cap in the current FUP period.
+          </p>
+        </div>
+        <div class="clients-usage-fup-summary" data-fup-summary hidden>
+          <span data-fup-summary-clients>0 on FUP</span>
+          <span data-fup-summary-near>0 near limit</span>
+          <span data-fup-summary-hit>0 at limit</span>
+        </div>
+      </header>
+
+      <div class="clients-usage-fup-board" data-fup-board>
+        <p class="clients-usage-fup-empty" data-fup-empty>
+          No clients on FUP packages yet. Enable fair usage on a package to track progress here.
+        </p>
+      </div>
+    </section>
+
     <section class="clients-usage-visual-panel" data-usage-panel="visual"{% if view_mode == 'raw' %} hidden{% endif %}>
       <header class="clients-usage-section-head clients-usage-section-head-inline">
         <div>
@@ -459,6 +487,7 @@
             <option value="online-desc">Surfing first</option>
             <option value="offline-desc">Offline first</option>
             <option value="devices-desc">Most devices</option>
+            <option value="fup-desc">Highest FUP %</option>
             <option value="downtime-desc">Most downtimes</option>
           </select>
         </div>
@@ -472,6 +501,7 @@
               <th>Client</th>
               <th>Status</th>
               <th>Data used</th>
+              <th>FUP</th>
               <th>Live</th>
               <th>Online</th>
               <th>Down</th>
@@ -512,6 +542,19 @@
                 <td data-label="Data used">
                   <strong class="clients-usage-data-value" data-bytes="{{ user.data_used_bytes|default:0 }}">—</strong>
                 </td>
+                <td data-label="FUP">
+                  {% if user.fup_enabled %}
+                    <div class="clients-usage-fup-cell{% if user.fup_restricted %} is-hit{% elif user.fup_percent >= 80 %} is-near{% endif %}">
+                      <strong>{{ user.fup_percent|floatformat:0 }}%</strong>
+                      <span class="clients-usage-fup-mini-track" aria-hidden="true">
+                        <span class="clients-usage-fup-mini-fill" style="width: {{ user.fup_percent|floatformat:0 }}%;"></span>
+                      </span>
+                      <small>{% if user.fup_status_label %}{{ user.fup_status_label }}{% else %}{{ user.fup_limit_label }}{% endif %}</small>
+                    </div>
+                  {% else %}
+                    <span class="clients-usage-fup-na">—</span>
+                  {% endif %}
+                </td>
                 <td data-label="Live">
                   <div class="clients-usage-rate-stack" data-live-rate>
                     <strong data-live-down data-bps="{{ user.live_download_bps|default:0 }}">—</strong>
@@ -539,7 +582,7 @@
               </tr>
             {% empty %}
               <tr class="clients-usage-empty-row" data-empty-row>
-                <td colspan="10">
+                <td colspan="11">
                   No {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} clients yet. Add clients, assign a MikroTik, then Refresh.
                 </td>
               </tr>
@@ -566,7 +609,7 @@
   var surfingUrl = "{{ surfing_url|default:'/app/clients/surfing/'|escapejs }}";
   var showGadgets = true;
   var devicesLabel = tab === "hotspot" ? "Gadgets" : "Devices";
-  var colSpan = 10;
+  var colSpan = 11;
   var stamp = document.querySelector("[data-usage-stamp]");
   var refreshBtn = document.querySelector("[data-usage-refresh]");
   var countEl = document.querySelector("[data-users-count]");
@@ -594,6 +637,7 @@
     "online-desc": "Surfing clients first",
     "offline-desc": "Offline clients first",
     "devices-desc": "Most devices first",
+    "fup-desc": "Highest FUP percentage first",
     "downtime-desc": "Most downtimes first"
   };
 
@@ -640,6 +684,16 @@
       }
       if (mode === "devices-desc") {
         if (ag !== bg) return bg - ag;
+        if (ab !== bb) return bb - ab;
+        return an.localeCompare(bn);
+      }
+      if (mode === "fup-desc") {
+        var af = Number((a && a.fup_percent) || 0);
+        var bf = Number((b && b.fup_percent) || 0);
+        var ae = !!(a && a.fup_enabled);
+        var be = !!(b && b.fup_enabled);
+        if (ae !== be) return be ? 1 : -1;
+        if (af !== bf) return bf - af;
         if (ab !== bb) return bb - ab;
         return an.localeCompare(bn);
       }
@@ -749,6 +803,110 @@
     return { state: state, label: label, title: (user && user.access_reason) || label };
   }
 
+  function fupCellHtml(user) {
+    if (!user || !user.fup_enabled) {
+      return '<span class="clients-usage-fup-na">—</span>';
+    }
+    var pct = Math.max(0, Math.min(100, Number(user.fup_percent) || 0));
+    var tone = user.fup_restricted ? " is-hit" : (pct >= 80 ? " is-near" : "");
+    var status = user.fup_status_label || user.fup_limit_label || "";
+    return (
+      '<div class="clients-usage-fup-cell' + tone + '">' +
+        "<strong>" + esc(Math.round(pct)) + "%</strong>" +
+        '<span class="clients-usage-fup-mini-track" aria-hidden="true">' +
+          '<span class="clients-usage-fup-mini-fill" style="width:' + esc(pct) + '%;"></span>' +
+        "</span>" +
+        (status ? ("<small>" + esc(status) + "</small>") : "") +
+      "</div>"
+    );
+  }
+
+  function fupBoardCardHtml(user) {
+    var pct = Math.max(0, Math.min(100, Number(user.fup_percent) || 0));
+    var tone = user.fup_restricted ? " is-hit" : (pct >= 80 ? " is-near" : (pct >= 50 ? " is-mid" : ""));
+    var detail = "/app/clients/" + user.customer_id + "/";
+    var usedLabel = fmtBytes(Number(user.fup_bytes_used) || 0);
+    var limitLabel = user.fup_limit_label || fmtBytes(Number(user.fup_bytes_limit) || 0);
+    var meta = [];
+    if (user.plan_name) meta.push(user.plan_name);
+    if (user.fup_period_label) meta.push("every " + user.fup_period_label);
+    if (user.fup_status_label) meta.push(user.fup_status_label);
+    return (
+      '<article class="clients-usage-fup-card' + tone + '">' +
+        '<a class="clients-usage-fup-card-link" href="' + detail + '">' +
+          '<div class="clients-usage-fup-card-head">' +
+            '<span class="clients-avatar" aria-hidden="true">' + esc((user.full_name || "?").slice(0, 1).toUpperCase()) + "</span>" +
+            '<div class="clients-usage-fup-card-copy">' +
+              "<strong>" + esc(user.full_name || "Client") + "</strong>" +
+              "<span>" + esc(meta.join(" · ") || (user.account_number || "")) + "</span>" +
+            "</div>" +
+            '<div class="clients-usage-fup-card-pct">' +
+              "<strong>" + esc(pct.toFixed(pct % 1 ? 1 : 0)) + "%</strong>" +
+            "</div>" +
+          "</div>" +
+          '<div class="clients-usage-fup-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + esc(Math.round(pct)) + '" aria-label="FUP usage">' +
+            '<span class="clients-usage-fup-fill" style="width:' + esc(pct) + '%;"></span>' +
+          "</div>" +
+          '<div class="clients-usage-fup-card-foot">' +
+            "<span>" + esc(usedLabel) + " of " + esc(limitLabel) + "</span>" +
+            (user.fup_restricted
+              ? '<span class="clients-usage-fup-badge is-hit">' + esc(user.fup_action === "disconnect" ? "Disconnected" : "Throttled") + "</span>"
+              : (pct >= 80 ? '<span class="clients-usage-fup-badge is-near">Near limit</span>' : "")) +
+          "</div>" +
+        "</a>" +
+      "</article>"
+    );
+  }
+
+  function paintFupBoard(data, users) {
+    var board = document.querySelector("[data-fup-board]");
+    var summary = document.querySelector("[data-fup-summary]");
+    if (!board) return;
+    var list = (data && data.fup_users) || [];
+    if (!list.length && users && users.length) {
+      list = users.filter(function (u) { return u && u.fup_enabled; }).slice().sort(function (a, b) {
+        var ap = Number(a.fup_percent) || 0;
+        var bp = Number(b.fup_percent) || 0;
+        if (ap !== bp) return bp - ap;
+        return String(a.full_name || "").localeCompare(String(b.full_name || ""));
+      });
+    }
+    var s = (data && data.summary) || {};
+    var clients = Number(s.fup_clients != null ? s.fup_clients : list.length) || 0;
+    var near = Number(s.fup_near_limit != null ? s.fup_near_limit : 0) || 0;
+    var hit = Number(s.fup_restricted != null ? s.fup_restricted : 0) || 0;
+    if (!near && list.length) {
+      near = list.filter(function (u) {
+        return !u.fup_restricted && (Number(u.fup_percent) || 0) >= 80;
+      }).length;
+    }
+    if (!hit && list.length) {
+      hit = list.filter(function (u) { return !!u.fup_restricted; }).length;
+    }
+    setSum("fup-clients", clients);
+    setSum("fup-restricted", hit);
+    if (summary) {
+      summary.hidden = clients <= 0;
+      var cEl = summary.querySelector("[data-fup-summary-clients]");
+      var nEl = summary.querySelector("[data-fup-summary-near]");
+      var hEl = summary.querySelector("[data-fup-summary-hit]");
+      if (cEl) cEl.textContent = clients + (clients === 1 ? " on FUP" : " on FUP");
+      if (nEl) nEl.textContent = near + " near limit";
+      if (hEl) hEl.textContent = hit + " at limit";
+    }
+    if (!list.length) {
+      board.innerHTML =
+        '<p class="clients-usage-fup-empty" data-fup-empty>' +
+        "No clients on FUP packages yet. Enable fair usage on a package to track progress here." +
+        "</p>";
+      return;
+    }
+    board.innerHTML =
+      '<div class="clients-usage-fup-grid">' +
+      list.slice(0, 24).map(fupBoardCardHtml).join("") +
+      "</div>";
+  }
+
   function rowHtml(user) {
     var bytes = userBytes(user);
     var level = user.usage_level || "Idle";
@@ -780,6 +938,7 @@
           '<span class="clients-usage-level is-' + esc(levelKey) + '">' + esc(level) + "</span>" +
         "</td>" +
         '<td data-label="Data used"><strong class="clients-usage-data-value" data-bytes="' + esc(bytes) + '">—</strong></td>' +
+        '<td data-label="FUP">' + fupCellHtml(user) + "</td>" +
         '<td data-label="Live">' +
           '<div class="clients-usage-rate-stack" data-live-rate>' +
             '<strong data-live-down data-bps="' + esc(liveDown) + '">—</strong>' +
@@ -1012,6 +1171,8 @@
     setSum("peak-down", fmtBps(summary.peak_download_bps));
     setSum("data", fmtBytes(summary.data_used_bytes));
     setSum("gadgets", live.gadgets_online != null ? live.gadgets_online : (summary.gadgets_online != null ? summary.gadgets_online : "0"));
+    setSum("fup-clients", summary.fup_clients != null ? summary.fup_clients : "0");
+    setSum("fup-restricted", summary.fup_restricted != null ? summary.fup_restricted : "0");
     setSum("top-user", summary.top_user_name || "—");
     setSum("top-user-data", summary.top_user_name
       ? fmtBytes(summary.top_user_bytes)
@@ -1329,6 +1490,7 @@
     }
     applySummary(data, opts);
     paintCharts(data, users);
+    paintFupBoard(data, users);
     var totalHint = (data && (data.users_total_count || (data.summary && data.summary.clients_total))) || users.length;
     usersCache = users;
     usersTotalHint = totalHint;

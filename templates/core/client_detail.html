@@ -1133,26 +1133,82 @@
     var trigger = wrap.querySelector("[data-client-more-trigger]");
     var menu = wrap.querySelector("[data-client-more-menu]");
     if (!trigger || !menu) return;
+    var homeParent = wrap;
+    var repositionRaf = 0;
+
+    function placeFloatingMenu() {
+      if (menu.hidden) return;
+      var rect = trigger.getBoundingClientRect();
+      var gap = 6;
+      var pad = 8;
+      var menuWidth = menu.offsetWidth || 200;
+      var menuHeight = menu.offsetHeight || 0;
+      var left = Math.min(
+        Math.max(pad, rect.right - menuWidth),
+        window.innerWidth - menuWidth - pad
+      );
+      var top = rect.bottom + gap;
+      if (top + menuHeight > window.innerHeight - pad && rect.top > menuHeight + gap + pad) {
+        top = Math.max(pad, rect.top - menuHeight - gap);
+      } else {
+        top = Math.min(top, Math.max(pad, window.innerHeight - menuHeight - pad));
+      }
+      menu.style.top = top + "px";
+      menu.style.left = left + "px";
+    }
+
+    function scheduleReposition() {
+      if (repositionRaf) cancelAnimationFrame(repositionRaf);
+      repositionRaf = requestAnimationFrame(placeFloatingMenu);
+    }
+
     function closeMore() {
       menu.hidden = true;
+      menu.classList.remove("is-floating");
+      menu.style.top = "";
+      menu.style.left = "";
+      if (menu.parentElement !== homeParent) homeParent.appendChild(menu);
       trigger.setAttribute("aria-expanded", "false");
       wrap.classList.remove("is-open");
+      window.removeEventListener("resize", scheduleReposition);
+      window.removeEventListener("scroll", scheduleReposition, true);
     }
+
+    function openMore() {
+      document.querySelectorAll("[data-client-more-menu]").forEach(function (m) {
+        if (m === menu) return;
+        m.hidden = true;
+        m.classList.remove("is-floating");
+        m.style.top = "";
+        m.style.left = "";
+        var otherWrap = m.closest("[data-client-more]");
+        if (otherWrap && m.parentElement !== otherWrap) otherWrap.appendChild(m);
+        var otherTrigger = otherWrap && otherWrap.querySelector("[data-client-more-trigger]");
+        if (otherTrigger) otherTrigger.setAttribute("aria-expanded", "false");
+        if (otherWrap) otherWrap.classList.remove("is-open");
+      });
+      document.body.appendChild(menu);
+      menu.classList.add("is-floating");
+      menu.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+      wrap.classList.add("is-open");
+      placeFloatingMenu();
+      window.addEventListener("resize", scheduleReposition);
+      window.addEventListener("scroll", scheduleReposition, true);
+    }
+
     trigger.addEventListener("click", function (e) {
       e.stopPropagation();
-      var open = menu.hidden;
-      document.querySelectorAll("[data-client-more-menu]").forEach(function (m) {
-        m.hidden = true;
-      });
-      menu.hidden = !open;
-      trigger.setAttribute("aria-expanded", open ? "true" : "false");
-      wrap.classList.toggle("is-open", open);
+      if (menu.hidden) openMore();
+      else closeMore();
     });
     menu.addEventListener("click", function (e) {
       if (e.target.closest("[data-open-modal]") || e.target.closest("a[href]")) closeMore();
     });
     document.addEventListener("click", function (e) {
-      if (!wrap.contains(e.target)) closeMore();
+      if (menu.hidden) return;
+      if (wrap.contains(e.target) || menu.contains(e.target)) return;
+      closeMore();
     });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") closeMore();

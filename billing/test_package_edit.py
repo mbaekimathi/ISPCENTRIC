@@ -390,3 +390,145 @@ class PackageEditTests(TestCase):
         self.assertIn('name="duration_unit"', html)
         self.assertIn('data-package-duration-value=', html)
         self.assertIn('data-package-duration-unit=', html)
+
+    def test_edit_hotspot_fixed_package_updates_devices_and_details(self):
+        hotspot = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hot Daily",
+            price=Decimal("50.00"),
+            download_speed_mbps=5,
+            upload_speed_mbps=2,
+            duration=BillingPlan.Duration.DAILY,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=1,
+            is_active=True,
+        )
+        res = self.client.post(
+            reverse("billing:packages"),
+            {
+                "action": "edit_package",
+                "package_id": str(hotspot.id),
+                "name": "Hot Family",
+                "description": "Three phones",
+                "price": "120.00",
+                "download_speed_mbps": "8",
+                "upload_speed_mbps": "4",
+                "duration_value": "1",
+                "duration_unit": BillingPlan.DurationUnit.DAYS,
+                "service_type": BillingPlan.ServiceType.HOTSPOT,
+                "max_devices": "3",
+                "hotspot_other_devices_enabled": "",
+                "hotspot_hourly_rate_per_device": "0",
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(res.status_code, 302)
+        hotspot.refresh_from_db()
+        self.assertEqual(hotspot.name, "HOT FAMILY")
+        self.assertEqual(hotspot.price, Decimal("120.00"))
+        self.assertEqual(hotspot.download_speed_mbps, 8)
+        self.assertEqual(hotspot.max_devices, 3)
+        self.assertFalse(hotspot.hotspot_other_devices_enabled)
+        self.assertEqual(hotspot.max_devices_label, "3 devices · 3 vouchers")
+
+    def test_edit_hotspot_other_devices_pricing(self):
+        hotspot = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hot Hourly",
+            price=Decimal("30.00"),
+            download_speed_mbps=5,
+            upload_speed_mbps=2,
+            duration=BillingPlan.Duration.HOURLY,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=0,
+            hotspot_other_devices_enabled=True,
+            hotspot_other_base_price=Decimal("30.00"),
+            hotspot_hourly_rate_per_device=Decimal("10.00"),
+            is_active=True,
+        )
+        res = self.client.post(
+            reverse("billing:packages"),
+            {
+                "action": "edit_package",
+                "package_id": str(hotspot.id),
+                "name": "Hot Hourly",
+                "description": "",
+                "price": "40.00",
+                "download_speed_mbps": "6",
+                "upload_speed_mbps": "3",
+                "duration_value": "1",
+                "duration_unit": BillingPlan.DurationUnit.HOURS,
+                "service_type": BillingPlan.ServiceType.HOTSPOT,
+                "hotspot_other_devices_enabled": "on",
+                "hotspot_other_base_price": "40.00",
+                "hotspot_hourly_rate_per_device": "15.00",
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(res.status_code, 302)
+        hotspot.refresh_from_db()
+        self.assertEqual(hotspot.price, Decimal("40.00"))
+        self.assertEqual(hotspot.download_speed_mbps, 6)
+        self.assertTrue(hotspot.hotspot_other_devices_enabled)
+        self.assertEqual(hotspot.hotspot_other_base_price, Decimal("40.00"))
+        self.assertEqual(hotspot.hotspot_hourly_rate_per_device, Decimal("15.00"))
+
+    def test_edit_hotspot_other_devices_requires_hourly_rate(self):
+        hotspot = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hot Needs Rate",
+            price=Decimal("30.00"),
+            download_speed_mbps=5,
+            upload_speed_mbps=2,
+            duration=BillingPlan.Duration.HOURLY,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            hotspot_other_devices_enabled=True,
+            hotspot_hourly_rate_per_device=Decimal("10.00"),
+            is_active=True,
+        )
+        res = self.client.post(
+            reverse("billing:packages"),
+            {
+                "action": "edit_package",
+                "package_id": str(hotspot.id),
+                "name": "Hot Needs Rate",
+                "description": "",
+                "price": "30.00",
+                "download_speed_mbps": "5",
+                "upload_speed_mbps": "2",
+                "duration_value": "1",
+                "duration_unit": BillingPlan.DurationUnit.HOURS,
+                "service_type": BillingPlan.ServiceType.HOTSPOT,
+                "hotspot_other_devices_enabled": "on",
+                "hotspot_other_base_price": "30.00",
+                "hotspot_hourly_rate_per_device": "0",
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertContains(res, "hourly rate per device")
+        hotspot.refresh_from_db()
+        self.assertEqual(hotspot.hotspot_hourly_rate_per_device, Decimal("10.00"))
+
+    def test_packages_page_exposes_hotspot_edit_fields(self):
+        BillingPlan.objects.create(
+            organization=self.org,
+            name="Portal Hot",
+            price=Decimal("50.00"),
+            download_speed_mbps=5,
+            upload_speed_mbps=2,
+            duration=BillingPlan.Duration.DAILY,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=2,
+            is_active=True,
+        )
+        res = self.client.get(reverse("billing:packages"))
+        self.assertEqual(res.status_code, 200)
+        html = res.content.decode()
+        self.assertIn('data-package-service-type="hotspot"', html)
+        self.assertIn("data-package-hotspot-other-enabled=", html)
+        self.assertIn("data-package-hotspot-hourly-rate=", html)
+        self.assertIn("hotspot_hourly_rate_per_device", html)
+        self.assertIn("data-package-hotspot-fixed-hint", html)
+        self.assertIn("Fixed package", html)
+        self.assertIn("Other devices", html)

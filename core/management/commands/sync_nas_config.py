@@ -28,6 +28,17 @@ class Command(BaseCommand):
             help="Limit to one organization id.",
         )
         parser.add_argument(
+            "--router",
+            type=int,
+            default=0,
+            help="Limit to one MikroTik router id (soft stack push; no secret rewrite).",
+        )
+        parser.add_argument(
+            "--name",
+            default="",
+            help="Limit to routers whose name contains this text (case-insensitive).",
+        )
+        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="List routers that would be updated without touching them.",
@@ -75,6 +86,8 @@ class Command(BaseCommand):
         sync_secrets = bool(options.get("sync_secrets"))
         force = bool(options.get("force"))
         org_id = int(options.get("organization") or 0)
+        router_id = int(options.get("router") or 0)
+        name_filter = (options.get("name") or "").strip()
 
         lock_held = False
         if not dry_run and not force:
@@ -101,6 +114,10 @@ class Command(BaseCommand):
             )
             if org_id:
                 qs = qs.filter(organization_id=org_id)
+            if router_id:
+                qs = qs.filter(pk=router_id)
+            if name_filter:
+                qs = qs.filter(name__icontains=name_filter)
 
             routers = list(qs)
             if not routers:

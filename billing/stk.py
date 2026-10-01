@@ -490,6 +490,56 @@ def ensure_stk_payment_receipt(
     return found
 
 
+def schedule_late_mpesa_receipt_watch(stk_id: int) -> None:
+    """
+    After query-first STK success, keep watching briefly for the Safaricom
+    callback that carries MpesaReceiptNumber (STK Query never returns it).
+    """
+    import threading
+    import time
+
+    if not stk_id:
+        return
+    try:
+        from django.core.cache import cache
+
+        # One watcher per STK for ~3 minutes.
+        if not cache.add(f"stk:receipt-watch:{stk_id}", 1, 180):
+            return
+    except Exception:
+        pass
+
+    def _run():
+        # Exponential-ish waits covering typical late-callback windows.
+        for wait in (2, 3, 5, 8, 13, 21, 34):
+            time.sleep(wait)
+            try:
+                stk = StkPushRequest.objects.filter(pk=stk_id).first()
+                if stk is None:
+                    return
+                if (stk.mpesa_receipt or "").strip():
+                    ensure_stk_payment_receipt(stk, receipt=stk.mpesa_receipt)
+                    return
+                recovered = backfill_mpesa_receipt_for_stk(stk)
+                if recovered:
+                    logger.info(
+                        "Late M-Pesa receipt recovered for STK %s -> %s",
+                        stk_id,
+                        recovered,
+                    )
+                    return
+            except Exception:
+                logger.exception("Late M-Pesa receipt watch failed for STK %s", stk_id)
+        logger.warning(
+            "STK %s still missing M-Pesa SMS receipt after late-callback wait",
+            stk_id,
+        )
+
+    threading.Thread(
+        target=_run, daemon=True, name=f"stk-receipt-watch-{stk_id}"
+    ).start()
+
+
 def ensure_stk_payment_phone(
     stk: StkPushRequest,
     *,
@@ -538,12 +588,34 @@ def ensure_stk_payment_phone(
     return display
 
 
+def _stk_callback_dict_from_payload(payload: dict) -> dict | None:
+    """
+    Normalize Daraja callback shapes to the inner stkCallback object.
+
+    Production posts ``{Body: {stkCallback: {...}}}``. Some gateways/proxies
+    forward the inner object alone; accept both so the SMS receipt is not lost.
+    """
+    if not isinstance(payload, dict):
+        return None
+    body = payload.get("Body") if isinstance(payload.get("Body"), dict) else None
+    if isinstance(body, dict):
+        nested = body.get("stkCallback")
+        if isinstance(nested, dict):
+            return nested
+    direct = payload.get("stkCallback")
+    if isinstance(direct, dict):
+        return direct
+    # Already the stkCallback object (CheckoutRequestID / ResultCode at top level).
+    if payload.get("CheckoutRequestID") or payload.get("CallbackMetadata") is not None:
+        return payload
+    return None
+
+
 def redact_stk_callback_for_log(payload) -> dict:
     """Keep IDs/result codes for ops logs; drop phones, receipts, and raw dumps."""
     if not isinstance(payload, dict):
         return {"type": type(payload).__name__}
-    body = payload.get("Body") if isinstance(payload.get("Body"), dict) else {}
-    callback = body.get("stkCallback") if isinstance(body.get("stkCallback"), dict) else {}
+    callback = _stk_callback_dict_from_payload(payload) or {}
     meta_items = []
     meta = callback.get("CallbackMetadata")
     if isinstance(meta, dict) and isinstance(meta.get("Item"), list):
@@ -1708,13 +1780,16 @@ def fulfill_successful_stk(
         stk.mpesa_receipt = receipt[:64]
 
     if stk.status == StkPushRequest.Status.SUCCESS and stk.subscription_applied:
-        return _persist_stk_receipt_fields(
+        persisted = _persist_stk_receipt_fields(
             stk,
             raw=stk.raw_callback if raw is not None else None,
             result_desc=result_desc,
             result_code=result_code,
             receipt=receipt,
         )
+        if not (persisted.get("mpesa_receipt") or "").strip():
+            schedule_late_mpesa_receipt_watch(stk.pk)
+        return persisted
 
     if stk.purpose == StkPushRequest.Purpose.LEAD_ALLOCATION:
         return _fulfill_lead_allocation_stk(stk)
@@ -1779,6 +1854,8 @@ def fulfill_successful_stk(
         persisted["provision_ok"] = False
         persisted["provision_allowed"] = False
         persisted.update(voucher_payload(voucher, all_vouchers=vouchers))
+        if not (persisted.get("mpesa_receipt") or "").strip():
+            schedule_late_mpesa_receipt_watch(stk.pk)
         return persisted
 
     paid_plan = stk.plan or customer.plan
@@ -1856,6 +1933,8 @@ def fulfill_successful_stk(
 
     final_receipt = backfill_mpesa_receipt_for_stk(stk)
     stk.refresh_from_db()
+    if not (stk.mpesa_receipt or final_receipt or "").strip():
+        schedule_late_mpesa_receipt_watch(stk.pk)
 
     # Payment recorded here; package apply happens on voucher redeem.
     # subscription_extended / reconnect fire when the package is applied.
@@ -1995,8 +2074,7 @@ def process_stk_callback_payload(payload: dict) -> dict:
     Daraja STK Query confirmation before fulfillment. Unverified success is left
     pending so captive pay-page polling can finish the job safely.
     """
-    body = payload.get("Body") if isinstance(payload, dict) else None
-    callback = body.get("stkCallback") if isinstance(body, dict) else None
+    callback = _stk_callback_dict_from_payload(payload if isinstance(payload, dict) else {})
     if not isinstance(callback, dict):
         return {"ok": False, "error": "Unrecognized callback payload."}
 
@@ -2037,6 +2115,13 @@ def process_stk_callback_payload(payload: dict) -> dict:
         ).strip()
         payer_phone = str(metadata.get("PhoneNumber") or "").strip()
 
+        # Prefer the original Daraja envelope so late heal can re-parse metadata.
+        callback_envelope = (
+            payload
+            if isinstance(payload, dict) and isinstance(payload.get("Body"), dict)
+            else {"Body": {"stkCallback": callback}}
+        )
+
         amount_ok, amount_error = _callback_amount_matches(stk, metadata)
         if not amount_ok:
             logger.warning(
@@ -2046,7 +2131,7 @@ def process_stk_callback_payload(payload: dict) -> dict:
                 amount_error,
             )
             reject_raw = {
-                "callback_rejected": payload,
+                "callback_rejected": callback_envelope,
                 "reject_reason": amount_error,
                 "callback_receipt": receipt,
                 "callback_phone": payer_phone,
@@ -2075,7 +2160,7 @@ def process_stk_callback_payload(payload: dict) -> dict:
                 or "The service request is processed successfully.",
                 mpesa_receipt=receipt,
                 raw={
-                    "callback": payload,
+                    "callback": callback_envelope,
                     "callback_receipt": receipt,
                     "callback_phone": payer_phone,
                 },
@@ -2084,7 +2169,7 @@ def process_stk_callback_payload(payload: dict) -> dict:
         confirmed = _confirm_stk_success_with_daraja(stk)
         if confirmed.get("pending"):
             callback_raw = {
-                "callback": payload,
+                "callback": callback_envelope,
                 "awaiting_daraja_confirm": True,
                 "callback_receipt": receipt,
                 "callback_phone": payer_phone,
@@ -2126,13 +2211,13 @@ def process_stk_callback_payload(payload: dict) -> dict:
                     or confirmed.get("error")
                     or "Daraja did not confirm payment.",
                     cancelled=bool(confirmed.get("cancelled")),
-                    raw={"callback": payload, "query": confirmed.get("data") or {}},
+                    raw={"callback": callback_envelope, "query": confirmed.get("data") or {}},
                 )
             else:
                 stk.raw_callback = _merge_stk_raw_callback(
                     stk.raw_callback,
                     {
-                        "callback_rejected": payload,
+                        "callback_rejected": callback_envelope,
                         "query": confirmed.get("data") or {},
                         "reject_reason": confirmed.get("error") or "unconfirmed",
                     },
@@ -2158,7 +2243,7 @@ def process_stk_callback_payload(payload: dict) -> dict:
             result_desc=result_desc or "The service request is processed successfully.",
             mpesa_receipt=receipt,
             raw={
-                "callback": payload,
+                "callback": callback_envelope,
                 "callback_receipt": receipt,
                 "callback_phone": payer_phone,
             },
@@ -2169,7 +2254,7 @@ def process_stk_callback_payload(payload: dict) -> dict:
                 stk,
                 explicit=receipt,
                 raw={
-                    "callback": payload,
+                    "callback": callback_envelope,
                     "callback_receipt": receipt,
                     "callback_phone": payer_phone,
                 },
@@ -2552,6 +2637,8 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
         )
         stk.refresh_from_db()
         final_receipt = backfill_mpesa_receipt_for_stk(stk, raw={"query": data})
+        if not (final_receipt or stk.mpesa_receipt or "").strip():
+            schedule_late_mpesa_receipt_watch(stk.pk)
         customer = stk.customer
         if customer is not None:
             customer.refresh_from_db()

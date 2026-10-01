@@ -437,6 +437,49 @@ class ClientRouterProxyTests(TestCase):
             response = self.client.get(proxy_url + "status.asp")
         self.assertEqual(response.status_code, 200)
 
+    def test_dead_proxy_invalidates_and_retries_with_live_host(self):
+        """After a failed open, drop the cached NAT and reinstall for the live IP."""
+        proxy_url = self._start_url()
+        opens: list[dict] = []
+
+        @contextmanager
+        def _proxy_tracking(*args, **kwargs):
+            opens.append(dict(kwargs))
+            if len(opens) == 1:
+                raise TimeoutError("timed out")
+            yield {
+                "host": "10.9.0.2",
+                "port": 39002,
+                "cpe_host": kwargs.get("cpe_address") or "10.20.0.77",
+            }
+
+        with (
+            patch(
+                "core.views.invalidate_customer_cpe_web_proxy",
+                return_value={"port": 39001, "cpe_host": "10.20.0.55"},
+            ) as invalidate,
+            patch(
+                "core.views.resolve_customer_cpe_target",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "address": "10.20.0.77",
+                    "scope": "customer1",
+                    "gateway": "10.20.0.1",
+                    "mode": "pppoe",
+                },
+            ),
+            patch("core.views.customer_cpe_web_proxy", _proxy_tracking),
+            patch("core.views.http.client.HTTPConnection", _FakeConnection),
+        ):
+            response = self.client.get(proxy_url + "status.asp")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(opens), 2)
+        invalidate.assert_called_once()
+        self.assertTrue(opens[1].get("force_refresh"))
+        self.assertEqual(opens[1].get("cpe_address"), "10.20.0.77")
+
     @patch("core.views.http.client.HTTPConnection", _FakeConnection)
     @patch("core.views.customer_cpe_web_proxy", _proxy)
     def test_active_requests_keep_the_session_alive(self):
@@ -1426,6 +1469,113 @@ class CustomerCpeWebProxyCacheTests(TestCase):
                 slid = mikrotik_connect._CPE_WEB_PROXY_CACHE[key]["expires_at"]
         self.assertEqual(first["port"], second["port"])
         self.assertGreater(slid, first_expiry - 1)
+
+    def test_ip_renumber_reinstalls_proxy_to_new_host(self):
+        @contextmanager
+        def _fake_api_session(*args, **kwargs):
+            class _Sock:
+                def getsockname(self):
+                    return ("192.168.88.253", 0)
+
+            yield _Sock()
+
+        installs: list[tuple[str, int]] = []
+
+        def _install(sock, proxy_port, cpe_host, cpe_port=8728, **kwargs):
+            installs.append((cpe_host, int(proxy_port)))
+            return None
+
+        with (
+            patch.object(mikrotik_connect, "_api_session", _fake_api_session),
+            patch.object(mikrotik_connect, "_install_cpe_proxy", side_effect=_install),
+            patch.object(mikrotik_connect, "_uninstall_cpe_proxy") as uninstall,
+        ):
+            with mikrotik_connect.customer_cpe_web_proxy(
+                "10.9.0.2",
+                "admin",
+                "secret",
+                pppoe_username="customer1",
+                cpe_address="10.20.0.11",
+                cpe_port=80,
+            ) as first:
+                self.assertEqual(first["cpe_host"], "10.20.0.11")
+            with mikrotik_connect.customer_cpe_web_proxy(
+                "10.9.0.2",
+                "admin",
+                "secret",
+                pppoe_username="customer1",
+                cpe_address="10.20.0.99",
+                cpe_port=80,
+            ) as second:
+                self.assertEqual(second["cpe_host"], "10.20.0.99")
+
+        self.assertEqual([host for host, _port in installs], ["10.20.0.11", "10.20.0.99"])
+        self.assertNotEqual(first["port"], second["port"])
+        uninstall.assert_called()
+
+    def test_force_refresh_reinstalls_even_when_ip_unchanged(self):
+        @contextmanager
+        def _fake_api_session(*args, **kwargs):
+            class _Sock:
+                def getsockname(self):
+                    return ("192.168.88.253", 0)
+
+            yield _Sock()
+
+        with (
+            patch.object(mikrotik_connect, "_api_session", _fake_api_session),
+            patch.object(
+                mikrotik_connect, "_install_cpe_proxy", return_value=None
+            ) as install,
+            patch.object(mikrotik_connect, "_uninstall_cpe_proxy"),
+        ):
+            with mikrotik_connect.customer_cpe_web_proxy(
+                "10.9.0.2",
+                "admin",
+                "secret",
+                pppoe_username="customer1",
+                cpe_address="10.20.0.11",
+                cpe_port=80,
+            ):
+                pass
+            self.assertEqual(install.call_count, 1)
+            with mikrotik_connect.customer_cpe_web_proxy(
+                "10.9.0.2",
+                "admin",
+                "secret",
+                pppoe_username="customer1",
+                cpe_address="10.20.0.11",
+                cpe_port=80,
+            ):
+                pass
+            self.assertEqual(install.call_count, 1)
+            with mikrotik_connect.customer_cpe_web_proxy(
+                "10.9.0.2",
+                "admin",
+                "secret",
+                pppoe_username="customer1",
+                cpe_address="10.20.0.11",
+                cpe_port=80,
+                force_refresh=True,
+            ):
+                pass
+            self.assertEqual(install.call_count, 2)
+
+    def test_invalidate_customer_cpe_web_proxy_clears_cache(self):
+        key = ("10.9.0.2", "customer1|80")
+        mikrotik_connect._store_cpe_web_proxy_entry(
+            key,
+            mikrotik_connect._cpe_web_proxy_entry_payload(
+                "10.9.0.2", 39001, "10.20.0.11", "192.168.88.253"
+            ),
+        )
+        forgotten = mikrotik_connect.invalidate_customer_cpe_web_proxy(
+            "10.9.0.2",
+            pppoe_username="customer1",
+            cpe_port=80,
+        )
+        self.assertEqual(forgotten["cpe_host"], "10.20.0.11")
+        self.assertIsNone(mikrotik_connect._load_cpe_web_proxy_entry(key))
 
 
 class CustomerCpeAccessModeTests(TestCase):
