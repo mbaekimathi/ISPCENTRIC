@@ -341,9 +341,8 @@
             <ul class="voucher-results-list" data-voucher-results-list></ul>
             <div class="voucher-results-actions">
               <button type="button" class="cta voucher-copy-all" data-voucher-copy-all>Copy all codes</button>
-              <button type="button" class="voucher-results-done" data-voucher-results-done>Done</button>
             </div>
-            <p class="voucher-results-note">Each code works once on one device. Unused codes stay valid until used.</p>
+            <p class="voucher-results-note">Each code works once on one device. Enter a code below to connect this phone, or copy codes for other gadgets. Unused codes stay valid until used.</p>
           </section>
 
           <div class="voucher-code-reveal" data-voucher-reveal hidden>
@@ -551,7 +550,6 @@
       var voucherResultsCopy = root.querySelector("[data-voucher-results-copy]");
       var voucherResultsKicker = root.querySelector("[data-voucher-results-kicker]");
       var voucherCopyAllBtn = root.querySelector("[data-voucher-copy-all]");
-      var voucherResultsDone = root.querySelector("[data-voucher-results-done]");
       var lastPurchaseCodes = [];
       var activeCtx = null;
       var continueTarget = "";
@@ -710,16 +708,11 @@
         if (!codes.length) return;
         lastPurchaseCodes = codes.slice();
         continueTarget = "";
-        if (waitingLive) waitingLive.textContent = "Ready";
 
-        fillVoucherList(overlayVoucherList, codes);
-        if (overlayVoucherHeading) {
-          overlayVoucherHeading.textContent =
-            codes.length === 1
-              ? "Your voucher code — copy and use on a device:"
-              : ("Your " + codes.length + " voucher codes — copy and use on each device:");
-        }
-        if (overlayVouchers) overlayVouchers.hidden = false;
+        // Never keep a popup or navigate away — codes stay on this pay page.
+        if (overlayVouchers) overlayVouchers.hidden = true;
+        setWaiting(false);
+        setPaymentSteps("hidden");
 
         if (voucherResultsList) fillVoucherList(voucherResultsList, codes);
         if (voucherResultsKicker) {
@@ -727,12 +720,15 @@
         }
         if (voucherResultsTitle) {
           voucherResultsTitle.textContent =
-            codes.length === 1 ? "Your voucher code" : ("Your " + codes.length + " voucher codes");
+            options.title ||
+            (codes.length === 1 ? "Your voucher code" : ("Your " + codes.length + " voucher codes"));
         }
         if (voucherResultsCopy) {
           voucherResultsCopy.innerHTML =
             options.copyHtml ||
-            "Copy each code and enter it on another device under <strong>Have a voucher?</strong>";
+            (codes.length === 1
+              ? "Copy this code, or enter it below under <strong>Have a voucher?</strong> to connect a device."
+              : "Copy these codes, or enter one below under <strong>Have a voucher?</strong>. Each device uses one code once.");
         }
         if (voucherResults) {
           voucherResults.hidden = false;
@@ -740,25 +736,41 @@
         }
 
         var input = root.querySelector("[data-voucher-input]");
-        if (input) input.value = codes[0];
+        if (input && !input.value) input.value = codes[0];
         var reveal = root.querySelector("[data-voucher-reveal]");
         if (reveal) {
           reveal.hidden = true;
           reveal.classList.remove("is-visible");
         }
 
-        setPaymentSteps("done");
-        setWaiting(
-          true,
-          options.title || "Voucher codes ready",
+        var box = root.querySelector("[data-voucher-box]");
+        if (box) {
+          box.hidden = false;
+          box.classList.add("is-fallback");
+          var heading = box.querySelector("h2");
+          if (heading) heading.textContent = "Connect with a voucher";
+          var copy = box.querySelector(".voucher-copy");
+          if (copy) {
+            copy.textContent =
+              codes.length === 1
+                ? "Paste or type the code above to connect this device, or copy it for another gadget."
+                : "Enter one unused code to connect this device. Copy the rest for other gadgets.";
+          }
+        }
+
+        show(
           options.message ||
             (codes.length === 1
-              ? "Copy the code below and enter it on the device that needs internet."
-              : ("Copy the " + codes.length + " codes below. Each device uses one code once.")),
-          false,
-          true
+              ? "Payment successful — your voucher is ready below."
+              : ("Payment successful — " + codes.length + " vouchers ready below.")),
+          false
         );
-        if (continueBtn) continueBtn.textContent = "View codes on this page";
+
+        try {
+          if (voucherResults) {
+            voucherResults.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        } catch (err) {}
       }
 
       function revealVoucher(codeOrCodes) {
@@ -768,14 +780,10 @@
         if (!codes.length) return;
         if (codes.length > 1) {
           showPurchaseVouchers(codes, {
-            title: "Voucher codes ready",
+            title: "Your voucher codes",
             message: "Use one unused code on this device. Share extras with other gadgets.",
             kicker: "Codes available",
           });
-          setWaiting(false);
-          try {
-            if (voucherResults) voucherResults.scrollIntoView({ behavior: "smooth", block: "center" });
-          } catch (err) {}
           return;
         }
         var reveal = root.querySelector("[data-voucher-reveal]");
@@ -801,6 +809,7 @@
         }
         if (overlayVouchers) overlayVouchers.hidden = true;
         lastPurchaseCodes = [];
+        continueTarget = "";
       }
 
       function showVoucherFallback(codeOrCodes) {
@@ -809,11 +818,10 @@
           : (codeOrCodes ? [codeOrCodes] : []);
         if (codes.length > 1) {
           showPurchaseVouchers(codes, {
-            title: "Payment successful",
+            title: "Your voucher codes",
             message: "Use one unused voucher below to connect this device. Share the rest.",
             kicker: "Payment successful",
           });
-          setWaiting(false);
         } else {
           revealVoucher(codes);
         }
@@ -848,9 +856,9 @@
           title: "You're online",
           message: "Share the remaining valid vouchers with other devices.",
           kicker: "Connected",
+          copyHtml:
+            "Copy unused codes for other gadgets, or enter one below if this device still needs access.",
         });
-        continueTarget = buildWelcomeUrl(stkId, token);
-        if (continueBtn) continueBtn.textContent = "Continue browsing";
       }
 
       if (overlayCopyAll) {
@@ -861,14 +869,6 @@
       if (voucherCopyAllBtn) {
         voucherCopyAllBtn.addEventListener("click", function () {
           copyText(lastPurchaseCodes.join("\n"), voucherCopyAllBtn);
-        });
-      }
-      if (voucherResultsDone) {
-        voucherResultsDone.addEventListener("click", function () {
-          try {
-            voucherResultsDone.blur();
-          } catch (err) {}
-          show("", false);
         });
       }
       if (continueBtn) {
@@ -1343,23 +1343,26 @@
                 payMode() === "other_devices";
 
               if (isOtherDevices) {
-                // Other devices: never auto-connect this phone — show codes to copy.
+                // Other devices: never auto-connect or leave this page — show codes inline.
                 var purchaseCodes = extraVoucherCodes(data);
                 if (!purchaseCodes.length && data.voucher_code) {
                   purchaseCodes = [data.voucher_code];
                 }
                 if (purchaseCodes.length) {
                   showPurchaseVouchers(purchaseCodes, {
-                    title: "Payment successful",
+                    title:
+                      purchaseCodes.length === 1
+                        ? "Your voucher code"
+                        : ("Your " + purchaseCodes.length + " voucher codes"),
                     message:
                       purchaseCodes.length === 1
-                        ? "Copy this voucher and enter it on the device that needs internet."
-                        : ("Copy these " + purchaseCodes.length + " vouchers. Each device uses one code once."),
+                        ? "Payment successful — copy the code below or enter it under Have a voucher?"
+                        : ("Payment successful — copy these " + purchaseCodes.length + " codes below, or enter one under Have a voucher?"),
                     kicker: "Payment successful",
                     copyHtml:
                       purchaseCodes.length === 1
-                        ? "Copy this code and enter it on the other device under <strong>Have a voucher?</strong>"
-                        : "Copy each code and enter it on another device under <strong>Have a voucher?</strong>",
+                        ? "Copy this code for another device, or enter it below to connect <strong>this</strong> phone."
+                        : "Copy each code for another device, or enter one below to connect <strong>this</strong> phone. Each code works once.",
                   });
                   submit.disabled = false;
                   return;
@@ -1375,12 +1378,10 @@
                   }, POLL_FAST_MS);
                   return;
                 }
-                setWaiting(
-                  true,
-                  "Payment successful",
-                  "Voucher codes are taking longer than usual. Stay on this page — they will appear under Have a voucher once ready.",
-                  false,
-                  true
+                setWaiting(false);
+                show(
+                  "Payment successful. Voucher codes are taking longer than usual — stay on this page and refresh if they do not appear under Have a voucher.",
+                  false
                 );
                 submit.disabled = false;
                 return;

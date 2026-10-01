@@ -167,6 +167,7 @@
               <th scope="col">Status</th>
               <th scope="col">Last seen</th>
               {% if router_data_url %}<th scope="col">IP</th><th scope="col">Traffic</th>{% endif %}
+              {% if customer.service_type == "hotspot" %}<th scope="col">Actions</th>{% endif %}
             </tr>
           </thead>
           <tbody data-usage-device-list>
@@ -187,10 +188,24 @@
                 </td>
                 <td data-label="Last seen">{% if device.last_seen_label %}{{ device.last_seen_label }}{% else %}—{% endif %}</td>
                 {% if router_data_url %}<td data-label="IP">—</td><td data-label="Traffic">—</td>{% endif %}
+                {% if customer.service_type == "hotspot" %}
+                  <td data-label="Actions">
+                    <form
+                      method="post"
+                      action="{% url 'core:client_device_delete' customer.pk %}"
+                      class="client-usage-device-delete"
+                      onsubmit="return confirm('Remove device {{ device.mac }}? NAS access is cleared; payments stay.');"
+                    >
+                      {% csrf_token %}
+                      <input type="hidden" name="mac" value="{{ device.mac }}">
+                      <button type="submit" class="btn btn-ghost btn-sm">Remove</button>
+                    </form>
+                  </td>
+                {% endif %}
               </tr>
             {% empty %}
               <tr data-usage-devices-empty data-usage-devices-state="loading">
-                <td colspan="{% if router_data_url %}6{% else %}4{% endif %}">
+                <td colspan="{% if router_data_url %}{% if customer.service_type == 'hotspot' %}7{% else %}6{% endif %}{% else %}{% if customer.service_type == 'hotspot' %}5{% else %}4{% endif %}{% endif %}">
                   <p class="clients-usage-users-empty-copy" style="margin:0.75rem 0">
                     {% if customer.service_type == "hotspot" %}
                       No devices linked to this account yet.

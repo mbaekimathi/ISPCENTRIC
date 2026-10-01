@@ -16875,6 +16875,162 @@ def provision_customer_pppoe(
     }
 
 
+def remove_customer_pppoe_secret(customer, *, router=None) -> dict[str, Any]:
+    """
+    Remove /ppp/secret and kick the live session for a deleted PPPoE client.
+
+    Prefer this over disable-only when the customer row is being removed so the
+    username/password cannot dial again after they re-register from the pay page.
+    """
+    if customer is None:
+        return {"ok": False, "error": "No customer provided.", "skipped": False}
+
+    username = (getattr(customer, "pppoe_username", None) or "").strip()
+    if not username:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No PPPoE username to remove.",
+        }
+
+    target = router or getattr(customer, "router", None)
+    if target is None:
+        org = getattr(customer, "organization", None)
+        if org is not None:
+            from core.models import MikroTikRouter
+
+            routers = list(
+                MikroTikRouter.objects.filter(
+                    organization=org,
+                    account_status=MikroTikRouter.AccountStatus.ACTIVE,
+                ).order_by("id")
+            )
+            if len(routers) == 1:
+                target = routers[0]
+            elif len(routers) > 1:
+                results = [
+                    remove_customer_pppoe_secret(customer, router=item)
+                    for item in routers
+                ]
+                ok_results = [item for item in results if item.get("ok")]
+                if ok_results:
+                    return {
+                        "ok": True,
+                        "username": username,
+                        "routers": results,
+                        "message": (
+                            f"PPPoE secret “{username}” removed on "
+                            f"{len(ok_results)} MikroTik router(s)."
+                        ),
+                    }
+                first_error = next(
+                    (item.get("error") for item in results if item.get("error")),
+                    "Could not reach any organization MikroTik.",
+                )
+                any_deferred = any(item.get("timeout") for item in results)
+                return {
+                    "ok": bool(any_deferred),
+                    "skipped": bool(any_deferred),
+                    "timeout": bool(any_deferred),
+                    "error": None if any_deferred else first_error,
+                    "results": results,
+                }
+        if target is None:
+            return {
+                "ok": True,
+                "skipped": True,
+                "message": "No router assigned for PPPoE secret removal.",
+            }
+
+    host = (getattr(target, "host", None) or "").strip()
+    api_user = (getattr(target, "username", None) or "").strip()
+    api_password = getattr(target, "password", None) or ""
+    router_id = getattr(target, "pk", None)
+    router_name = getattr(target, "name", "") or host
+    if not host or not api_user:
+        return {
+            "ok": False,
+            "router_id": router_id,
+            "router_name": router_name,
+            "error": "Router host or API username is missing.",
+        }
+
+    probe = check_mikrotik_reachable(host, timeout=1.5)
+    if not probe.get("online"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "timeout": True,
+            "router_id": router_id,
+            "router_name": router_name,
+            "username": username,
+            "message": "Router offline — PPPoE secret removal deferred.",
+        }
+
+    kicked = 0
+    removed = False
+    try:
+        with _api_session(host, api_user, api_password, timeout=8.0) as sock:
+            kicked = _disconnect_pppoe_sessions(sock, username)
+            try:
+                _clear_pppoe_blocked_address_list(sock, username)
+            except Exception:
+                pass
+            secret_id = ""
+            rows = _print(
+                sock,
+                "/ppp/secret",
+                props=".id,name",
+                query={"name": username},
+            )
+            if not rows:
+                rows = _print(sock, "/ppp/secret", props=".id,name")
+            for row in rows:
+                if (row.get("name") or "").strip().lower() == username.lower():
+                    secret_id = (row.get(".id") or "").strip()
+                    break
+            if secret_id:
+                terminal = _remove(sock, "/ppp/secret", secret_id)
+                if terminal.get("_reply") == "!trap":
+                    return {
+                        "ok": False,
+                        "router_id": router_id,
+                        "router_name": router_name,
+                        "username": username,
+                        "error": _trap_message(
+                            terminal, "Could not remove PPPoE secret."
+                        ),
+                    }
+                removed = True
+            try:
+                _remove_pppoe_simple_queue(sock, username)
+            except Exception:
+                pass
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "router_id": router_id,
+            "router_name": router_name,
+            "username": username,
+            "error": str(exc) or "Could not remove PPPoE secret.",
+        }
+
+    return {
+        "ok": True,
+        "skipped": not removed and kicked == 0,
+        "router_id": router_id,
+        "router_name": router_name,
+        "username": username,
+        "removed": removed,
+        "kicked": kicked,
+        "message": (
+            f"PPPoE secret “{username}” removed on {router_name}."
+            if removed
+            else f"No PPPoE secret “{username}” on {router_name}."
+        ),
+    }
+
+
 def _cpe_lan_bridge_name(sock: socket.socket) -> str:
     """Pick a LAN bridge on the CPE for the renew hotspot."""
     for row in _print(sock, "/interface/bridge", props="name,.id"):
@@ -19660,10 +19816,15 @@ def sync_customer_subscription_access(
         from billing.devices import (
             authorized_hotspot_macs_for_customer,
             customer_max_devices,
+            ensure_primary_hotspot_voucher_claim,
         )
 
         device_key = f"d{int(customer_max_devices(customer) or 0)}"
         if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+            try:
+                ensure_primary_hotspot_voucher_claim(customer)
+            except Exception:
+                pass
             auth_macs = authorized_hotspot_macs_for_customer(customer)
             mac_key = ",".join(sorted(auth_macs)) if auth_macs else "none"
         else:
@@ -19795,6 +19956,14 @@ def sync_customer_subscription_access(
         provisioned = bool(
             provision_result.get("ok") and not provision_result.get("skipped")
         )
+        try:
+            allowed_count = int(provision_result.get("allowed_count") or 0)
+        except (TypeError, ValueError):
+            allowed_count = 0
+        # Billing may be Active while MikroTik enabled zero MACs (unused vouchers /
+        # failed claim). Do not report provision success in that case.
+        if allowed and provisioned and allowed_count <= 0:
+            provisioned = False
         return _finish(
             {
                 "ok": provisioned,
@@ -19804,10 +19973,15 @@ def sync_customer_subscription_access(
                 "offline": bool(provision_result.get("skipped")),
                 "message": (
                     "Paid device authorized automatically."
-                    if allowed and provisioned
+                    if allowed and provisioned and allowed_count > 0
                     else (
                         provision_result.get("message")
-                        or "Hotspot access is blocked or could not be synchronized."
+                        or (
+                            "Package is active but no device is authorized on the "
+                            "Hotspot yet. Enter a voucher or retry payment connect."
+                            if allowed and allowed_count <= 0
+                            else "Hotspot access is blocked or could not be synchronized."
+                        )
                     )
                 ),
             }
@@ -21575,12 +21749,18 @@ def _allowed_hotspot_macs_for_customer(customer) -> list[str]:
     from billing.devices import (
         authorized_hotspot_macs_for_customer,
         customer_max_devices,
+        ensure_primary_hotspot_voucher_claim,
         hotspot_macs_for_customer,
     )
     from billing.services import customer_can_surf_via_hotspot
 
     if customer is None or not customer_can_surf_via_hotspot(customer):
         return []
+    # Heal Active-but-blocked this-phone pays (single unused voucher, no claim).
+    try:
+        ensure_primary_hotspot_voucher_claim(customer)
+    except Exception:
+        pass
     primary = _normalize_hotspot_mac(getattr(customer, "hotspot_mac", "") or "")
     known = [
         _normalize_hotspot_mac(m)
@@ -22240,7 +22420,12 @@ def defer_hotspot_pay_wall(
         _schedule()
 
 
-def disconnect_hotspot_customer(customer, *, router=None) -> dict[str, Any]:
+def disconnect_hotspot_customer(
+    customer,
+    *,
+    router=None,
+    macs: list[str] | None = None,
+) -> dict[str, Any]:
     """
     Force-disable Hotspot MAC users and kick live sessions immediately.
 
@@ -22248,22 +22433,31 @@ def disconnect_hotspot_customer(customer, *, router=None) -> dict[str, Any]:
     their package would still be considered paid. Hotspot MAC users are synced
     onto every org AP, so this best-effort kicks across all active routers
     unless a single ``router`` is passed.
+
+    Pass ``macs`` to purge specific gadgets only (device delete).
     """
-    from billing.devices import hotspot_macs_for_customer
+    from billing.devices import hotspot_macs_for_customer, normalize_device_mac
     from core.models import MikroTikRouter
 
-    if customer is None:
+    if customer is None and not macs:
         return {"ok": False, "error": "No customer provided.", "skipped": False}
 
-    macs = [
-        _normalize_hotspot_mac(mac)
-        for mac in hotspot_macs_for_customer(customer)
-        if _normalize_hotspot_mac(mac)
-    ]
-    if not macs:
-        primary = _normalize_hotspot_mac(getattr(customer, "hotspot_mac", "") or "")
-        if primary:
-            macs = [primary]
+    if macs is None:
+        macs = [
+            _normalize_hotspot_mac(mac)
+            for mac in hotspot_macs_for_customer(customer)
+            if _normalize_hotspot_mac(mac)
+        ]
+        if not macs and customer is not None:
+            primary = _normalize_hotspot_mac(getattr(customer, "hotspot_mac", "") or "")
+            if primary:
+                macs = [primary]
+    else:
+        macs = [
+            _normalize_hotspot_mac(normalize_device_mac(m) or m)
+            for m in macs
+            if _normalize_hotspot_mac(normalize_device_mac(m) or m)
+        ]
     if not macs:
         return {
             "ok": True,
@@ -22271,12 +22465,12 @@ def disconnect_hotspot_customer(customer, *, router=None) -> dict[str, Any]:
             "message": "No Hotspot device MAC to disconnect.",
         }
 
-    org = getattr(customer, "organization", None)
+    org = getattr(customer, "organization", None) if customer is not None else None
     targets: list = []
     if router is not None:
         targets = [router]
     else:
-        bound = getattr(customer, "router", None)
+        bound = getattr(customer, "router", None) if customer is not None else None
         if bound is not None:
             targets.append(bound)
         if org is not None:

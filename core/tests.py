@@ -3280,13 +3280,112 @@ class HotspotDisconnectOnDeleteTests(TestCase):
         invoice = Invoice.objects.get(pk=invoice_id)
         payment = Payment.objects.get(pk=payment_id)
         stk = StkPushRequest.objects.get(pk=stk_id)
-        voucher = AccessVoucher.objects.get(pk=voucher_id)
         self.assertIsNone(invoice.customer_id)
         self.assertEqual(payment.invoice_id, invoice_id)
         self.assertIsNone(stk.customer_id)
-        self.assertIsNone(voucher.customer_id)
-        self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
-        self.assertIsNotNone(voucher.invalidated_at)
+        # Access vouchers are credentials — purged on client delete.
+        self.assertFalse(AccessVoucher.objects.filter(pk=voucher_id).exists())
+
+    def test_client_device_delete_purges_mac_keeps_billing(self):
+        from datetime import date
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from billing.models import (
+            AccessVoucher,
+            BillingPlan,
+            Customer,
+            CustomerDevice,
+            Invoice,
+            Payment,
+        )
+
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Device Delete Plan",
+            price=Decimal("300.00"),
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=2,
+        )
+        self.customer.plan = plan
+        self.customer.save(update_fields=["plan"])
+
+        mac_keep = "AA:BB:CC:11:22:33"
+        mac_drop = "AA:BB:CC:44:55:66"
+        CustomerDevice.objects.get_or_create(
+            organization=self.org,
+            mac=mac_keep,
+            defaults={"customer": self.customer},
+        )
+        CustomerDevice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            mac=mac_drop,
+        )
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=plan,
+            code="DEVDELETE01",
+            status=AccessVoucher.Status.INVALID,
+            redeemed_mac=mac_drop,
+        )
+        sibling = AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=plan,
+            code="DEVKEEP001",
+            status=AccessVoucher.Status.VALID,
+        )
+        invoice = Invoice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            invoice_number="INV-DEV-1",
+            amount=plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        Payment.objects.create(
+            organization=self.org,
+            invoice=invoice,
+            amount=plan.price,
+            method=Payment.Method.MPESA,
+            reference="MPESA-DEV-1",
+        )
+        customer_id = self.customer.pk
+
+        with patch(
+            "core.mikrotik_connect.disconnect_hotspot_customer",
+            return_value={"ok": True},
+        ) as disconnect:
+            response = self.client.post(
+                f"/app/clients/{customer_id}/devices/delete/",
+                {"mac": mac_drop},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        disconnect.assert_called()
+        self.assertEqual(disconnect.call_args.kwargs.get("macs"), [mac_drop])
+        self.assertTrue(Customer.objects.filter(pk=customer_id).exists())
+        self.assertFalse(
+            CustomerDevice.objects.filter(mac__iexact=mac_drop).exists()
+        )
+        self.assertTrue(
+            CustomerDevice.objects.filter(
+                customer_id=customer_id, mac__iexact=mac_keep
+            ).exists()
+            or Customer.objects.get(pk=customer_id).hotspot_mac == mac_keep
+        )
+        self.assertFalse(
+            AccessVoucher.objects.filter(code="DEVDELETE01").exists()
+        )
+        self.assertTrue(AccessVoucher.objects.filter(pk=sibling.pk).exists())
+        self.assertTrue(
+            Invoice.objects.filter(pk=invoice.pk, customer_id=customer_id).exists()
+        )
+        self.assertTrue(Payment.objects.filter(invoice_id=invoice.pk).exists())
 
     def test_client_delete_purges_usage_and_frees_mac_for_pay_page(self):
         from unittest.mock import patch
@@ -3323,13 +3422,44 @@ class HotspotDisconnectOnDeleteTests(TestCase):
         self.assertNotEqual(resolved["customer"].pk, customer_id)
 
     def test_end_subscription_resets_access_and_keeps_client(self):
+        from decimal import Decimal
         from unittest.mock import patch
 
         from django.utils import timezone
 
-        from billing.models import Customer, CustomerUsageSample
+        from billing.models import (
+            AccessVoucher,
+            BillingPlan,
+            Customer,
+            CustomerDevice,
+            CustomerUsageSample,
+        )
         from billing.services import customer_receives_internet, customer_subscription_expired
 
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="End Access Plan",
+            price=Decimal("200.00"),
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=2,
+        )
+        self.customer.plan = plan
+        self.customer.save(update_fields=["plan"])
+        mac = "AA:BB:CC:11:22:33"
+        CustomerDevice.objects.get_or_create(
+            organization=self.org,
+            mac=mac,
+            defaults={"customer": self.customer},
+        )
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=plan,
+            code="ENDACCESS01",
+            status=AccessVoucher.Status.VALID,
+        )
         CustomerUsageSample.objects.create(
             organization=self.org,
             customer=self.customer,
@@ -3337,12 +3467,7 @@ class HotspotDisconnectOnDeleteTests(TestCase):
             session_active=True,
         )
         customer_id = self.customer.pk
-        sync_calls = []
         disconnect_calls = []
-
-        def sync_side_effect(customer, **kwargs):
-            sync_calls.append((customer.pk, kwargs))
-            return {"ok": True, "allowed": False, "portal": {"ok": True}}
 
         def disconnect_side_effect(customer):
             disconnect_calls.append(customer.pk)
@@ -3350,12 +3475,12 @@ class HotspotDisconnectOnDeleteTests(TestCase):
 
         with (
             patch(
-                "core.mikrotik_connect.sync_customer_subscription_access",
-                side_effect=sync_side_effect,
-            ),
-            patch(
                 "billing.customer_delete.disconnect_customer_from_nas",
                 side_effect=disconnect_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect.disconnect_hotspot_customer",
+                return_value={"ok": True},
             ),
             patch(
                 "core.mikrotik_connect.invalidate_captive_redirect_cache_for_customer"
@@ -3374,10 +3499,24 @@ class HotspotDisconnectOnDeleteTests(TestCase):
         self.assertFalse(
             CustomerUsageSample.objects.filter(customer_id=customer_id).exists()
         )
-        self.assertEqual(len(sync_calls), 1)
-        self.assertTrue(sync_calls[0][1].get("reauthenticate"))
+        self.assertFalse(
+            CustomerDevice.objects.filter(customer_id=customer_id).exists()
+        )
+        self.assertFalse((customer.hotspot_mac or "").strip())
+        self.assertFalse(
+            AccessVoucher.objects.filter(customer_id=customer_id).exists()
+        )
         self.assertEqual(disconnect_calls, [customer_id])
 
+        # MAC is free for a fresh pay-page registration (same phone optional).
+        from billing.devices import resolve_or_create_hotspot_customer
+
+        resolved = resolve_or_create_hotspot_customer(
+            self.org, mac=mac, phone="0700111222"
+        )
+        self.assertTrue(resolved.get("ok"))
+        self.assertFalse(resolved.get("already_paid"))
+        self.assertEqual(resolved["customer"].pk, customer_id)
 
 class HotspotOrphanScrubTests(TestCase):
     def setUp(self):

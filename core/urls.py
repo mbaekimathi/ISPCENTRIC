@@ -205,6 +205,11 @@ urlpatterns = [
         views.client_delete,
         name="client_delete",
     ),
+    path(
+        "app/clients/<int:customer_id>/devices/delete/",
+        views.client_device_delete,
+        name="client_device_delete",
+    ),
     path("app/clients/<int:customer_id>/usage/", views.client_usage, name="client_usage"),
     path(
         "app/clients/<int:customer_id>/usage-analysis/",

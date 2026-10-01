@@ -1168,7 +1168,10 @@ class AccessVoucher(models.Model):
         null=True,
         blank=True,
         related_name="access_vouchers",
-        help_text="Subscriber this voucher was issued for. Cleared if the client is deleted; the voucher stays.",
+        help_text=(
+            "Subscriber this voucher was issued for. Client delete purges vouchers "
+            "as access credentials; payment/invoice rows stay."
+        ),
     )
     plan = models.ForeignKey(
         BillingPlan,

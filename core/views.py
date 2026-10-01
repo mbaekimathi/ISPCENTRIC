@@ -15876,8 +15876,9 @@ def client_detail(request, customer_id: int):
                 reauthenticate=True,
             )
             msg = (
-                "Access ended. Active sessions were cleared and surfing is blocked. "
-                "The client must pay on Wi‑Fi again to surf. Recharge here to start a new package."
+                "Access ended. Devices and credentials were cleared so they can open "
+                "the Wi‑Fi pay page again. Billing history is kept — recharge here or "
+                "pay on Hotspot to start a new package."
             )
             if is_ajax:
                 return _package_json_response(
@@ -16011,8 +16012,9 @@ def client_detail(request, customer_id: int):
 def client_delete(request, customer_id: int):
     """Confirm and permanently delete one subscriber (Customer).
 
-    Billing history (invoices, payments, vouchers, STK attempts) is retained;
-    those rows are unlinked from the deleted client rather than removed.
+    Billing history (invoices, payments, STK attempts) is retained and unlinked.
+    Access credentials (vouchers, device MACs, NAS users/secrets) are purged so
+    the same phone/device can open the Hotspot pay page again.
     """
     org = resolve_organization(request.user, request)
     customer = get_object_or_404(
@@ -16031,7 +16033,7 @@ def client_delete(request, customer_id: int):
         delete_customer_preserving_transactions(customer)
         messages.success(
             request,
-            f"Deleted client {name}. Sessions and profile removed; payment history kept — "
+            f"Deleted client {name}. Credentials and sessions removed; payment history kept — "
             f"they can pay again from the Wi‑Fi page.",
         )
         return redirect(f"{reverse('core:my_clients')}?tab={service_tab}")
@@ -16060,6 +16062,51 @@ def client_delete(request, customer_id: int):
     ctx["sidebar_label"] = "Client"
     apply_client_shared_forms(ctx, customer, org)
     return render(request, "core/client_delete.html", ctx)
+
+
+@client_workspace_required
+@require_POST
+def client_device_delete(request, customer_id: int):
+    """Remove one Hotspot gadget: NAS credential + device link; keep billing."""
+    from billing.customer_delete import delete_hotspot_device
+    from billing.devices import normalize_device_mac
+
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("plan", "router", "organization"),
+        pk=customer_id,
+        organization=org,
+    )
+    mac = normalize_device_mac(request.POST.get("mac") or "")
+    if not mac:
+        messages.error(request, "Could not identify that device.")
+        return redirect(
+            reverse("core:client_usage_analysis", kwargs={"customer_id": customer.pk})
+        )
+
+    result = delete_hotspot_device(customer, mac)
+    if not result.get("ok"):
+        messages.error(request, result.get("error") or "Could not remove that device.")
+        return redirect(
+            reverse("core:client_usage_analysis", kwargs={"customer_id": customer.pk})
+        )
+
+    if result.get("customer_deleted"):
+        messages.success(
+            request,
+            f"Removed device {mac}. Unused account cleared — they can pay again from Wi‑Fi.",
+        )
+        return redirect(
+            f"{reverse('core:my_clients')}?tab={Customer.ServiceType.HOTSPOT}"
+        )
+
+    messages.success(
+        request,
+        f"Removed device {mac}. NAS access cleared; payment history kept.",
+    )
+    return redirect(
+        reverse("core:client_usage_analysis", kwargs={"customer_id": customer.pk})
+    )
 
 
 _CPE_PROXY_SALT = "core.client-cpe-web.v1"

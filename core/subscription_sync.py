@@ -204,12 +204,26 @@ def acquire_subscription_sweep_lock_with_retry(
 
 
 def nas_access_ready(result: dict[str, Any] | None) -> bool:
-    """True when the ISP NAS can let this customer surf (CPE popup may still lag)."""
+    """True when the ISP NAS can let this customer surf (CPE popup may still lag).
+
+    For Hotspot, billing ``allowed`` alone is not enough — MikroTik must have
+    enabled at least one MAC (``provision.allowed_count > 0``). Otherwise payers
+    see Active / authorized while the device stays blocked on the NAS.
+    """
     if not result or not result.get("allowed"):
         return False
+    provision = result.get("provision")
+    if isinstance(provision, dict):
+        if provision.get("skipped"):
+            return False
+        if "allowed_count" in provision:
+            try:
+                if int(provision.get("allowed_count") or 0) <= 0:
+                    return False
+            except (TypeError, ValueError):
+                return False
     if result.get("ok"):
         return True
-    provision = result.get("provision")
     if isinstance(provision, dict) and provision.get("ok") and not provision.get("skipped"):
         return True
     return False

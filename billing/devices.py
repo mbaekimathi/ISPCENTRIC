@@ -494,6 +494,32 @@ def unlink_hotspot_devices(customer, *, keep_macs: list[str] | None = None) -> l
         for mac in keep_ordered:
             ensure_customer_device(customer, mac)
 
+    # Purge unlinked MACs from the NAS so they cannot keep surfing on old credentials.
+    if removed:
+        try:
+            from core.mikrotik_connect import disconnect_hotspot_customer
+
+            nas = disconnect_hotspot_customer(customer, macs=list(removed))
+            if nas.get("skipped") or nas.get("timeout") or not nas.get("ok"):
+                from billing.customer_delete import enqueue_hotspot_macs_block
+
+                enqueue_hotspot_macs_block(
+                    getattr(customer, "organization", None), list(removed)
+                )
+        except Exception:
+            logger.exception(
+                "NAS purge failed while unlinking Hotspot devices customer=%s",
+                getattr(customer, "pk", None),
+            )
+            try:
+                from billing.customer_delete import enqueue_hotspot_macs_block
+
+                enqueue_hotspot_macs_block(
+                    getattr(customer, "organization", None), list(removed)
+                )
+            except Exception:
+                pass
+
     return removed
 
 
@@ -553,21 +579,62 @@ def _unused_redeemable_voucher_exists(customer) -> bool:
     ).exists()
 
 
+def ensure_primary_hotspot_voucher_claim(customer) -> bool:
+    """
+    Heal this-phone pays that have exactly one unused voucher and a primary MAC.
+
+    After payment the package can show Active while MikroTik stays blocked if
+    the MAC was never claimed onto that voucher. Multi-code batches (other
+    devices) are left alone — those codes must be entered manually.
+    """
+    from billing.models import AccessVoucher
+
+    if customer is None or not getattr(customer, "pk", None):
+        return False
+    if current_period_voucher_macs(customer):
+        return False
+    primary = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
+    if not primary:
+        return False
+    unused = list(
+        AccessVoucher.objects.filter(
+            customer_id=customer.pk,
+            status=AccessVoucher.Status.VALID,
+            redeemed_mac="",
+        ).order_by("id")[:2]
+    )
+    if len(unused) != 1:
+        return False
+    try:
+        from billing.vouchers import _claim_voucher_mac
+
+        _claim_voucher_mac(unused[0], primary)
+    except Exception:
+        logger.exception(
+            "Could not auto-claim primary Hotspot voucher customer=%s mac=%s",
+            customer.pk,
+            primary,
+        )
+        return False
+    unused[0].refresh_from_db()
+    return normalize_device_mac(unused[0].redeemed_mac or "") == primary
+
+
 def authorized_hotspot_macs_for_customer(customer) -> list[str]:
     """
     MACs allowed to have enabled Hotspot users while the package is live.
 
     Voucher-capped packages: only devices that claimed/redeemed a voucher this
     period. Unused codes (multi-device / pay-for-other-devices) must be entered
-    before any MAC is enabled — including the primary. Legacy paid installs with
-    no redeemable vouchers still keep the primary so a deploy sweep does not
-    kick the paying phone.
-    Unlimited packages: all linked MACs (attach-without-voucher path).
+    before any MAC is enabled — including the primary and unlimited plans —
+    otherwise the UI shows Active while MikroTik keeps the device blocked.
+
+    Legacy paid installs with no redeemable vouchers still keep the primary so
+    a deploy sweep does not kick the paying phone.
+    Unlimited packages with no pending codes: all linked MACs.
     """
     if customer is None:
         return []
-    if customer_devices_unlimited(customer):
-        return hotspot_macs_for_customer(customer)
     claimed = current_period_voucher_macs(customer)
     if claimed:
         return claimed
@@ -576,8 +643,13 @@ def authorized_hotspot_macs_for_customer(customer) -> list[str]:
     if not customer_can_surf_via_hotspot(customer):
         return []
     # Multi-device / other-devices batches wait until each code is used.
+    # Must run before the unlimited shortcut — otherwise an Active package with
+    # unused codes still enables the payer MAC and clients cannot redeem cleanly,
+    # or (worse) authorize reports success while allowed_count stays 0 on capped plans.
     if _unused_redeemable_voucher_exists(customer):
         return []
+    if customer_devices_unlimited(customer):
+        return hotspot_macs_for_customer(customer)
     primary = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
     return [primary] if primary else []
 
@@ -803,7 +875,9 @@ def discard_unpaid_hotspot_pay_shell(customer, *, except_stk_id=None) -> bool:
     """
     Delete a never-paid Hotspot STK shell so the MAC is free for the next attempt.
 
-    Keeps the shell when another pending STK still references it.
+    Purges NAS credentials / vouchers first (same path as client delete) while
+    keeping any Payment / Invoice / STK history. Keeps the shell when another
+    pending STK still references it.
     """
     from billing.models import StkPushRequest
 
@@ -818,10 +892,16 @@ def discard_unpaid_hotspot_pay_shell(customer, *, except_stk_id=None) -> bool:
     if pending.exists():
         return False
     try:
+        from billing.customer_delete import delete_customer_preserving_transactions
+
         customer_id = customer.pk
-        customer.delete()
-        logger.info("Discarded unpaid Hotspot pay shell customer=%s", customer_id)
-        return True
+        result = delete_customer_preserving_transactions(customer)
+        logger.info(
+            "Discarded unpaid Hotspot pay shell customer=%s ok=%s",
+            customer_id,
+            result.get("ok"),
+        )
+        return bool(result.get("ok"))
     except Exception:
         logger.exception(
             "Could not discard unpaid Hotspot pay shell customer=%s",

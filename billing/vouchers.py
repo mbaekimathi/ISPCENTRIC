@@ -919,9 +919,14 @@ def _activate_paid_subscription_stk_locked(
             for candidate in candidates:
                 try:
                     _claim_voucher_mac(candidate, device_mac)
-                    voucher = candidate
-                    claimed = True
-                    break
+                    candidate.refresh_from_db()
+                    if (
+                        normalize_device_mac(candidate.redeemed_mac or "")
+                        == device_mac
+                    ):
+                        voucher = candidate
+                        claimed = True
+                        break
                 except ValueError:
                     continue
             if not claimed:
@@ -930,6 +935,17 @@ def _activate_paid_subscription_stk_locked(
                     stk.pk,
                     device_mac,
                 )
+            else:
+                # Ensure CustomerDevice exists before NAS sync so unlimited /
+                # linked-MAC paths see this gadget.
+                try:
+                    attach_hotspot_device(customer, device_mac, enforce_cap=False)
+                except Exception:
+                    logger.exception(
+                        "STK %s claimed MAC %s but could not attach device row",
+                        stk.pk,
+                        device_mac,
+                    )
 
         customer_pk = customer.pk
         voucher_pk = voucher.pk if voucher is not None else None
@@ -977,7 +993,7 @@ def _activate_paid_subscription_stk_locked(
                 customer_pk,
             )
     else:
-        from billing.devices import customer_owns_hotspot_mac
+        from billing.devices import hotspot_mac_can_surf
         from billing.services import customer_receives_internet
 
         customer = Customer.objects.filter(pk=customer_pk).first()
@@ -985,12 +1001,30 @@ def _activate_paid_subscription_stk_locked(
         mac_ok = bool(
             device_mac
             and customer
-            and customer_owns_hotspot_mac(customer, device_mac)
+            and hotspot_mac_can_surf(customer, device_mac)
         )
-        nas = {"ok": paid, "allowed": paid and mac_ok}
+        nas = {
+            "ok": paid and mac_ok,
+            "allowed": paid,
+            "provision": {"ok": mac_ok, "allowed_count": 1 if mac_ok else 0},
+        }
     from core.subscription_sync import nas_access_ready
 
     authorized = nas_access_ready(nas)
+    # Prefer the live allow-list over a soft NAS result — package Active must
+    # not imply surfing when the MAC was never claimed/enabled.
+    if (
+        stk_pay_mode_value != PAY_MODE_OTHER_DEVICES
+        and device_mac
+        and customer_pk
+    ):
+        from billing.devices import hotspot_mac_can_surf
+
+        surf_customer = Customer.objects.filter(pk=customer_pk).first()
+        if surf_customer is not None and not hotspot_mac_can_surf(
+            surf_customer, device_mac
+        ):
+            authorized = False
     # Pay-for-other-devices: codes wait until each device redeems — never
     # treat the payer as authorized from this activate alone.
     if stk_pay_mode_value == PAY_MODE_OTHER_DEVICES:
@@ -1005,8 +1039,10 @@ def _activate_paid_subscription_stk_locked(
         and voucher is not None
         and voucher.status == AccessVoucher.Status.VALID
     ):
-        # Consume only this device's voucher; sibling device codes stay valid.
-        if device_mac or (voucher.redeemed_mac or "").strip():
+        # Consume only after the MAC is actually allowed to surf. Burning on a
+        # false authorized left Active packages with no enabled Hotspot user.
+        claimed_mac = (voucher.redeemed_mac or "").strip()
+        if device_mac or claimed_mac:
             with transaction.atomic():
                 locked = (
                     AccessVoucher.objects.select_for_update()
@@ -1098,7 +1134,13 @@ def _activate_paid_subscription_stk_locked(
                 if stk_pay_mode_value == PAY_MODE_OTHER_DEVICES
                 else (
                     nas.get("message")
-                    or "Package activated; router authorize retry needed."
+                    or (
+                        "Package is active but this device is not authorized yet. "
+                        "Open the pay page and tap Pay again, or enter a voucher under "
+                        "Have a voucher?"
+                        if device_mac
+                        else "Package activated; router authorize retry needed."
+                    )
                 )
             )
         ),

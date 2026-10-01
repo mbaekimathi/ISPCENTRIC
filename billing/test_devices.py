@@ -211,6 +211,65 @@ class HotspotDeviceLimitTests(TestCase):
         self.assertTrue(second["ok"])
         self.assertEqual(CustomerDevice.objects.filter(customer=self.customer).count(), 3)
 
+    def test_unused_vouchers_block_even_unlimited_until_claim(self):
+        """Active package + unused codes must not enable MAC (other-devices / unclaimed)."""
+        from billing.devices import (
+            authorized_hotspot_macs_for_customer,
+            ensure_primary_hotspot_voucher_claim,
+        )
+        from billing.models import AccessVoucher
+
+        self.plan.max_devices = 0
+        self.plan.save(update_fields=["max_devices"])
+        now = timezone.now()
+        self.customer.package_start = now - timedelta(minutes=5)
+        self.customer.package_end = now + timedelta(hours=2)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="SPEC1",
+            status=AccessVoucher.Status.VALID,
+        )
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="SPEC2",
+            status=AccessVoucher.Status.VALID,
+        )
+        self.assertEqual(authorized_hotspot_macs_for_customer(self.customer), [])
+        self.assertFalse(hotspot_mac_can_surf(self.customer, self.customer.hotspot_mac))
+        # Multi-code batch must not auto-claim the primary.
+        self.assertFalse(ensure_primary_hotspot_voucher_claim(self.customer))
+
+    def test_single_unused_voucher_auto_claims_primary(self):
+        from billing.devices import (
+            authorized_hotspot_macs_for_customer,
+            ensure_primary_hotspot_voucher_claim,
+        )
+        from billing.models import AccessVoucher
+
+        now = timezone.now()
+        self.customer.package_start = now - timedelta(minutes=5)
+        self.customer.package_end = now + timedelta(hours=2)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="SOLO1",
+            status=AccessVoucher.Status.VALID,
+        )
+        self.assertEqual(authorized_hotspot_macs_for_customer(self.customer), [])
+        self.assertTrue(ensure_primary_hotspot_voucher_claim(self.customer))
+        self.assertEqual(
+            authorized_hotspot_macs_for_customer(self.customer),
+            [normalize_device_mac(self.customer.hotspot_mac)],
+        )
+        self.assertTrue(hotspot_mac_can_surf(self.customer, self.customer.hotspot_mac))
+
     def test_attach_third_mac_is_rejected(self):
         attach_hotspot_device(self.customer, "AA:BB:CC:DD:EE:02")
         result = attach_hotspot_device(self.customer, "AA:BB:CC:DD:EE:03")

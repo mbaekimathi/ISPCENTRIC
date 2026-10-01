@@ -17,17 +17,17 @@
 
     <p class="org-delete-warn" role="alert">
       <strong>This cannot be undone.</strong>
-      The client profile, device links, live sessions, and usage history are removed.
+      The client profile, device links, live sessions, usage history, and access
+      credentials (vouchers, Hotspot MAC users, PPPoE secrets) are removed.
       Invoices and payments stay in your books (unlinked) so the same phone or device
       can open the Hotspot pay page and pay again when they rejoin Wi‑Fi.
-      Unused voucher codes are cancelled.
     </p>
 
     <ul class="cc-delete-list">
       <li class="cc-delete-item">
         <div class="cc-delete-item-head">
           <span>Removed</span>
-          <strong>Profile · sessions · devices · usage</strong>
+          <strong>Profile · sessions · devices · usage · credentials</strong>
         </div>
       </li>
       <li class="cc-delete-item">
@@ -44,7 +44,7 @@
       </li>
       <li class="cc-delete-item">
         <div class="cc-delete-item-head">
-          <span>Voucher records kept (codes cancelled)</span>
+          <span>Access vouchers removed</span>
           <strong>{{ voucher_count }}</strong>
         </div>
       </li>

@@ -641,8 +641,9 @@ def end_customer_subscription(customer, *, now: datetime | None = None):
     """
     Immediately end the prepaid window and cut surfing.
 
-    Remaining time is forfeited (unlike pause). Hotspot unused vouchers are
-    invalidated so devices cannot reconnect until the next recharge.
+    Remaining time is forfeited (unlike pause). Callers should then run
+    ``reset_live_access_for_repay`` to clear devices/vouchers/NAS credentials
+    so the client can open the pay page again.
     """
     if getattr(customer, "package_start", None) is None and getattr(
         customer, "package_end", None
@@ -670,13 +671,6 @@ def end_customer_subscription(customer, *, now: datetime | None = None):
             timezone.get_current_timezone(),
         )
     customer.save(update_fields=["package_end", "package_paused_at"])
-
-    try:
-        from billing.vouchers import invalidate_unused_customer_vouchers
-
-        invalidate_unused_customer_vouchers(customer)
-    except Exception:  # noqa: BLE001 — ending must not fail on voucher cleanup
-        pass
     return customer
 
 
