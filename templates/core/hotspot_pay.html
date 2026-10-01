@@ -54,7 +54,7 @@
       font-weight: 600;
     }
   </style>
-  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=11">
+  <link rel="stylesheet" href="{% static 'css/portal-pay.css' %}?v=12">
 </head>
 <body data-pay-mode="this_device">
   <div class="atmosphere" aria-hidden="true">
@@ -159,11 +159,72 @@
                 </span>
               </label>
             </div>
+          </section>
+          {% endif %}
 
+          <div class="plan-section" data-plan-section>
+            <div class="plan-section-head">
+              <p class="section-label" data-plan-section-label>{% if has_other_devices_option %}Choose a package{% else %}Choose your access{% endif %}</p>
+              {% if has_other_devices_option %}
+                <p class="plan-section-hint" data-plan-section-hint>For this phone only — tap a package, then pay.</p>
+              {% endif %}
+            </div>
+            <div class="plan-categories" data-plan-select>
+              {% with hsel=hotspot_selected_plan_id|default:selected_plan_id %}
+              {% regroup hotspot_plans by duration_group as plan_groups %}
+              {% for group in plan_groups %}
+                <section class="plan-category">
+                  <h2 class="category-label">{{ group.list.0.duration_group }}</h2>
+                  <div class="plan-scroll" data-count="{{ group.list|length }}">
+                    {% for plan in group.list %}
+                      <label
+                        class="plan-card{% if hsel and hsel|stringformat:'s' == plan.pk|stringformat:'s' %} is-selected{% elif not hsel and forloop.parentloop.first and forloop.first %} is-selected{% endif %}"
+                        style="--name-len: {{ plan.name|length }};{% if plan.offer_enabled and plan.offer_label %} --offer-len: {{ plan.offer_label|length }};{% endif %}"
+                      >
+                        <input
+                          type="radio"
+                          name="plan_id"
+                          value="{{ plan.pk }}"
+                          data-price="{{ plan.price }}"
+                          data-other-enabled="{% if plan.hotspot_other_devices_offer %}1{% else %}0{% endif %}"
+                          data-other-base="{{ plan.hotspot_other_base_price }}"
+                          data-hourly-rate="{{ plan.hotspot_hourly_rate }}"
+                          {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}checked{% elif not hsel and forloop.parentloop.first and forloop.first %}checked{% endif %}
+                          required
+                        >
+                        <span class="plan-check" aria-hidden="true"></span>
+                        <span class="plan-copy">
+                          <strong>{{ plan.name }}</strong>
+                        </span>
+                        <span class="plan-price">
+                          <small>KES</small><b data-plan-price-display>{{ plan.price|floatformat:"0" }}</b>
+                          <em class="plan-price-note" data-plan-price-note hidden>standard</em>
+                        </span>
+                        <span class="plan-meta">
+                          <span class="plan-chips">
+                            {% if plan.speed_label %}<span>{{ plan.speed_label }}</span>{% endif %}
+                            {% if plan.max_devices %}
+                              <span>{% if plan.max_devices == 1 %}1 device{% else %}{{ plan.max_devices }} devices{% endif %}</span>
+                            {% else %}
+                              <span>Unlimited</span>
+                            {% endif %}
+                          </span>
+                          {% include "billing/includes/plan_offer_badge.html" %}
+                        </span>
+                      </label>
+                    {% endfor %}
+                  </div>
+                </section>
+              {% endfor %}
+              {% endwith %}
+            </div>
+          </div>
+
+          {% if has_other_devices_option %}
             <div class="other-devices-panel" data-other-devices-panel hidden>
               <div class="other-devices-intro">
                 <strong>Build your vouchers</strong>
-                <p>Choose devices and hours. You get <strong>one code per device</strong> after payment.</p>
+                <p>From the package above — choose devices and hours. You get <strong>one code per device</strong> after payment.</p>
               </div>
 
               <div class="other-devices-controls">
@@ -241,63 +302,7 @@
                 Other-device payments are not available right now. Tap <strong>This phone</strong> to buy a package for this device.
               </p>
             </div>
-          </section>
           {% endif %}
-
-          <div class="plan-section" data-plan-section>
-            <div class="plan-section-head">
-              <p class="section-label" data-plan-section-label>{% if has_other_devices_option %}Choose a package{% else %}Choose your access{% endif %}</p>
-              {% if has_other_devices_option %}
-                <p class="plan-section-hint" data-plan-section-hint>For this phone only — tap a package, then pay.</p>
-              {% endif %}
-            </div>
-            <div class="plan-categories" data-plan-select>
-              {% with hsel=hotspot_selected_plan_id|default:selected_plan_id %}
-              {% regroup hotspot_plans by duration_group as plan_groups %}
-              {% for group in plan_groups %}
-                <section class="plan-category">
-                  <h2 class="category-label">{{ group.list.0.duration_group }}</h2>
-                  <div class="plan-scroll" data-count="{{ group.list|length }}">
-                    {% for plan in group.list %}
-                      <label
-                        class="plan-card{% if hsel and hsel|stringformat:'s' == plan.pk|stringformat:'s' %} is-selected{% elif not hsel and forloop.parentloop.first and forloop.first %} is-selected{% endif %}"
-                        style="--name-len: {{ plan.name|length }};{% if plan.offer_enabled and plan.offer_label %} --offer-len: {{ plan.offer_label|length }};{% endif %}"
-                      >
-                        <input
-                          type="radio"
-                          name="plan_id"
-                          value="{{ plan.pk }}"
-                          data-price="{{ plan.price }}"
-                          data-other-enabled="{% if plan.hotspot_other_devices_offer %}1{% else %}0{% endif %}"
-                          data-other-base="{{ plan.hotspot_other_base_price }}"
-                          data-hourly-rate="{{ plan.hotspot_hourly_rate }}"
-                          {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}checked{% elif not hsel and forloop.parentloop.first and forloop.first %}checked{% endif %}
-                          required
-                        >
-                        <span class="plan-check" aria-hidden="true"></span>
-                        <span class="plan-copy">
-                          <strong>{{ plan.name }}</strong>
-                        </span>
-                        <span class="plan-price"><small>KES</small><b>{{ plan.price|floatformat:"0" }}</b></span>
-                        <span class="plan-meta">
-                          <span class="plan-chips">
-                            {% if plan.speed_label %}<span>{{ plan.speed_label }}</span>{% endif %}
-                            {% if plan.max_devices %}
-                              <span>{% if plan.max_devices == 1 %}1 device{% else %}{{ plan.max_devices }} devices{% endif %}</span>
-                            {% else %}
-                              <span>Unlimited</span>
-                            {% endif %}
-                          </span>
-                          {% include "billing/includes/plan_offer_badge.html" %}
-                        </span>
-                      </label>
-                    {% endfor %}
-                  </div>
-                </section>
-              {% endfor %}
-              {% endwith %}
-            </div>
-          </div>
         </form>
 
         <div class="pay-dock">
@@ -1135,6 +1140,40 @@
         return !!(meta && meta.otherEnabled && meta.hourlyRate > 0);
       }
 
+      function syncPlanCardPrices() {
+        var mode = payMode();
+        var otherMode = mode === "other_devices";
+        planInputs.forEach(function (input) {
+          var card = input.closest(".plan-card");
+          if (!card) return;
+          var amountEl = card.querySelector("[data-plan-price-display]");
+          var noteEl = card.querySelector("[data-plan-price-note]");
+          var thisPrice = parseFloat(input.getAttribute("data-price") || "0") || 0;
+          var otherBase =
+            parseFloat(input.getAttribute("data-other-base") || input.getAttribute("data-price") || "0") || 0;
+          var amount = otherMode ? otherBase : thisPrice;
+          if (amountEl) amountEl.textContent = String(Math.round(amount));
+          if (noteEl) noteEl.hidden = !otherMode;
+          var okOther =
+            input.getAttribute("data-other-enabled") === "1" &&
+            (parseFloat(input.getAttribute("data-hourly-rate") || "0") || 0) > 0;
+          card.classList.toggle("is-unavailable-other", otherMode && !okOther);
+        });
+      }
+
+      function syncPlanSectionCopy() {
+        var hint = root.querySelector("[data-plan-section-hint]");
+        var label = root.querySelector("[data-plan-section-label]");
+        if (!hint && !label) return;
+        if (payMode() === "other_devices") {
+          if (label) label.textContent = "Choose a package";
+          if (hint) hint.textContent = "Pick a package first — then build vouchers below.";
+        } else {
+          if (label) label.textContent = "Choose a package";
+          if (hint) hint.textContent = "For this phone only — tap a package, then pay.";
+        }
+      }
+
       function updateOtherDevicesQuote() {
         var meta = selectedPlanMeta();
         if (payMode() !== "other_devices") return;
@@ -1182,14 +1221,20 @@
         var mode = payMode();
         if (root) root.setAttribute("data-pay-mode", mode);
         try { document.body.setAttribute("data-pay-mode", mode); } catch (err) {}
+        // This phone: packages only. Other devices: packages first, then voucher builder.
         if (otherDevicesPanel) otherDevicesPanel.hidden = mode !== "other_devices";
-        if (planSection) planSection.hidden = mode === "other_devices";
+        if (planSection) planSection.hidden = false;
+        if (deviceCountInput) deviceCountInput.disabled = mode !== "other_devices";
+        if (hoursInput) hoursInput.disabled = mode !== "other_devices";
         payModeInputs.forEach(function (input) {
           var tab = input.closest(".pay-mode-tab");
           if (tab) tab.classList.toggle("is-active", input.checked);
         });
+        syncPlanSectionCopy();
+        syncPlanCardPrices();
         if (mode === "other_devices") {
           ensureOtherDevicesPlanSelected();
+          syncPlanCardPrices();
           syncDeviceChips();
           syncHourChips();
           updateOtherDevicesQuote();
@@ -1292,7 +1337,13 @@
             }
             if (data.mpesa_receipt) showMpesaReceipt(data.mpesa_receipt);
             if (data.success) {
-              if (data.other_devices_purchase || data.pay_mode === "other_devices") {
+              var isOtherDevices =
+                data.other_devices_purchase ||
+                data.pay_mode === "other_devices" ||
+                payMode() === "other_devices";
+
+              if (isOtherDevices) {
+                // Other devices: never auto-connect this phone — show codes to copy.
                 var purchaseCodes = extraVoucherCodes(data);
                 if (!purchaseCodes.length && data.voucher_code) {
                   purchaseCodes = [data.voucher_code];
@@ -1305,21 +1356,39 @@
                         ? "Copy this voucher and enter it on the device that needs internet."
                         : ("Copy these " + purchaseCodes.length + " vouchers. Each device uses one code once."),
                     kicker: "Payment successful",
+                    copyHtml:
+                      purchaseCodes.length === 1
+                        ? "Copy this code and enter it on the other device under <strong>Have a voucher?</strong>"
+                        : "Copy each code and enter it on another device under <strong>Have a voucher?</strong>",
                   });
                   submit.disabled = false;
                   return;
                 }
-                setWaiting(true, "Payment successful", "Opening your voucher codes…", false, true);
-                openInternet(data.stk_id, token);
-                return;
-              }
-              setPaymentSteps("connecting");
-              if (data.authorized || data.surfing) {
-                var extra = extraVoucherCodes(data);
-                if (extra.length) {
-                  showConnectedVouchers(extra, data.stk_id, token);
+                if ((Date.now() - pollStartedAt) < POLL_GIVE_UP_MS) {
+                  setWaiting(
+                    true,
+                    "Payment successful",
+                    "Preparing your voucher codes…"
+                  );
+                  pollTimer = window.setTimeout(function () {
+                    poll(url, token, false);
+                  }, POLL_FAST_MS);
                   return;
                 }
+                setWaiting(
+                  true,
+                  "Payment successful",
+                  "Voucher codes are taking longer than usual. Stay on this page — they will appear under Have a voucher once ready.",
+                  false,
+                  true
+                );
+                submit.disabled = false;
+                return;
+              }
+
+              // This phone: auto-connect once the NAS authorizes.
+              setPaymentSteps("connecting");
+              if (data.authorized || data.surfing) {
                 openInternet(data.stk_id, token);
                 return;
               }

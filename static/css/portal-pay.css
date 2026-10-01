@@ -911,6 +911,12 @@
       box-shadow: 0 12px 28px rgba(194, 65, 12, 0.08);
     }
 
+    /* Class display rules must not override the HTML hidden attribute. */
+    .other-devices-panel[hidden],
+    .plan-section[hidden] {
+      display: none !important;
+    }
+
     .other-devices-intro {
       display: grid;
       gap: 0.2rem;
@@ -1134,6 +1140,38 @@
       color: var(--muted);
     }
 
+    .plan-price {
+      display: inline-flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.25rem 0.35rem;
+    }
+
+    .plan-price-note {
+      font-style: normal;
+      font-size: 0.62rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #c2410c;
+      opacity: 0.9;
+    }
+
+    .plan-card.is-unavailable-other {
+      opacity: 0.45;
+      filter: grayscale(0.35);
+      pointer-events: none;
+    }
+
+    .stage[data-pay-mode="other_devices"] .plan-section {
+      order: 1;
+    }
+
+    .stage[data-pay-mode="other_devices"] .other-devices-panel:not([hidden]) {
+      order: 2;
+      margin-top: 0.35rem;
+    }
+
     /* This-phone mode: cool teal frame around packages */
     .stage[data-pay-mode="this_device"] .plan-categories {
       border-color: rgba(14, 124, 134, 0.28);
@@ -1167,6 +1205,14 @@
       --tab-accent: #fb923c;
       --tab-soft: rgba(251, 146, 60, 0.14);
       --tab-line: rgba(251, 146, 60, 0.5);
+    }
+
+    [data-theme="dark"] .plan-price-note {
+      color: #fdba74;
+    }
+
+    [data-theme="dark"] .plan-card.is-unavailable-other {
+      opacity: 0.4;
     }
 
     [data-theme="dark"] .other-devices-panel {
