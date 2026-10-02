@@ -95,6 +95,7 @@ class NocBoardTests(TestCase):
         self.assertIn("performance", board["routers"][0])
         self.assertIn("improvements", board)
         self.assertIn("non_optimal_clients", board)
+        self.assertIn("upgrade_clients", board)
         self.assertTrue(
             any(i["kind"] == "router_down" for i in board["improvements"])
         )
@@ -165,6 +166,71 @@ class NocBoardTests(TestCase):
             )
         )
 
+    def test_build_noc_board_flags_upgrade_candidates(self):
+        cache.set(
+            f"mikrotik_status:{self.org.pk}",
+            [
+                {
+                    "id": self.router.pk,
+                    "name": "Edge A",
+                    "host": "10.9.0.10",
+                    "online": True,
+                    "status": "connected",
+                    "error": "",
+                    "via": "api",
+                }
+            ],
+            60,
+        )
+        now = timezone.now()
+        # Peak ~9.5 Mbps on a 10 Mbps plan — near ceiling / upgrade candidate.
+        for minutes_ago in (1, 3, 5, 8):
+            CustomerUsageSample.objects.create(
+                customer=self.customer,
+                organization=self.org,
+                sampled_at=now - timedelta(minutes=minutes_ago),
+                session_active=True,
+                uptime_seconds=600,
+                download_bps=9_500_000,
+                upload_bps=500_000,
+                bytes_in=50_000_000,
+                bytes_out=2_000_000,
+            )
+        cache.set(
+            f"org_live_usage:v1:{self.org.pk}",
+            {
+                "ok": True,
+                "at": now.isoformat(),
+                "pppoe": {
+                    self.customer.pk: {
+                        "session_active": True,
+                        "download_bps": 9_200_000,
+                        "upload_bps": 400_000,
+                        "gadgets": 1,
+                    }
+                },
+                "hotspot": {},
+            },
+            120,
+        )
+
+        board = build_noc_board(self.org)
+        self.assertTrue(board["ok"])
+        self.assertGreaterEqual(board["summary"]["clients_upgrade_candidates"], 1)
+        self.assertTrue(board["upgrade_clients"])
+        row = board["upgrade_clients"][0]
+        self.assertEqual(row["kind"], "upgrade")
+        self.assertEqual(row["id"], self.customer.pk)
+        self.assertGreaterEqual(row["attainment_pct"], 85)
+        perf = board["routers"][0]["performance"]
+        self.assertGreaterEqual(perf["upgrade_count"], 1)
+        self.assertTrue(
+            any(
+                i["kind"] in {"upgrade", "upgrade_client"}
+                for i in board["improvements"]
+            )
+        )
+
     def test_noc_board_sold_vs_uplink_capacity(self):
         self.router.uplink_capacity_mbps = 20
         self.router.save(update_fields=["uplink_capacity_mbps"])
@@ -224,7 +290,9 @@ class NocBoardTests(TestCase):
         self.assertContains(performance, "MikroTik performance")
         self.assertContains(performance, 'data-noc-view="performance"')
         self.assertContains(performance, "Suggested actions")
-        self.assertContains(performance, "Clients below plan")
+        self.assertContains(performance, "Consider plan increase")
+        self.assertNotContains(performance, "Clients below plan")
+        self.assertContains(performance, "Upgrade now")
 
         down = self.client.get(reverse("core:noc") + "?focus=down")
         self.assertEqual(down.status_code, 200)
@@ -237,13 +305,20 @@ class NocBoardTests(TestCase):
         self.assertEqual(impact.status_code, 200)
         self.assertContains(impact, "Client quality")
         self.assertContains(impact, 'data-noc-view="impact"')
-        self.assertContains(impact, "Quality issues")
+        self.assertContains(impact, "Consider plan increase")
+        self.assertNotContains(impact, "Quality issues")
+        self.assertContains(impact, "Upgrade now")
 
         faults = self.client.get(reverse("core:noc") + "?focus=faults")
         self.assertEqual(faults.status_code, 200)
-        self.assertContains(faults, "Open faults")
+        self.assertContains(faults, "Drops &amp; surfing")
         self.assertContains(faults, 'data-noc-view="faults"')
-        self.assertContains(faults, "Unassigned")
+        self.assertContains(faults, "MikroTik drops")
+        self.assertContains(faults, "Unable to surf")
+        self.assertContains(faults, "Client drops")
+        self.assertContains(faults, 'data-fault-stat="mt-drops"')
+        self.assertContains(faults, 'data-fault-stat="not-surfing"')
+        self.assertNotContains(faults, "Open faults")
 
         summary = self.client.get(reverse("core:noc_summary"))
         self.assertEqual(summary.status_code, 200)
@@ -253,8 +328,16 @@ class NocBoardTests(TestCase):
         self.assertIn("sites", payload)
         self.assertIn("timeline", payload)
         self.assertIn("non_optimal_clients", payload)
+        self.assertIn("upgrade_clients", payload)
         self.assertIn("improvements", payload)
+        self.assertIn("client_drops", payload)
+        self.assertIn("not_surfing_episodes", payload)
         self.assertIn("clients_non_optimal", payload["summary"])
+        self.assertIn("clients_upgrade_candidates", payload["summary"])
+        self.assertIn("mikrotik_drops_24h", payload["summary"])
+        self.assertIn("client_drops_24h", payload["summary"])
+        self.assertIn("not_surfing_episodes_24h", payload["summary"])
+        self.assertIn("clients_unable_to_surf", payload["summary"])
 
     def test_mikrotik_nav_includes_noc_not_workspace(self):
         self.client.force_login(self.owner)
@@ -275,6 +358,7 @@ class NocBoardTests(TestCase):
         self.assertNotContains(clients, "Ops board")
         self.assertNotContains(clients, "Down routers")
         self.assertNotContains(clients, "Open faults")
+        self.assertNotContains(clients, "Drops &amp; surfing")
 
         noc = self.client.get(reverse("core:noc"))
         self.assertEqual(noc.status_code, 200)
@@ -282,4 +366,5 @@ class NocBoardTests(TestCase):
         self.assertContains(noc, "Performance")
         self.assertContains(noc, "Down routers")
         self.assertContains(noc, "Client quality")
-        self.assertContains(noc, "Open faults")
+        self.assertContains(noc, "Drops &amp; surfing")
+        self.assertNotContains(noc, "Open faults")

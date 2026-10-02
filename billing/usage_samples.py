@@ -2997,12 +2997,14 @@ def _router_usage_tracking_since(router) -> datetime | None:
     return _aware_local(getattr(router, "usage_tracking_since", None))
 
 
-def compute_router_usage_bytes_since_reset(router) -> dict[str, Any]:
+def compute_router_usage_bytes_since_reset(router, *, service: str = "") -> dict[str, Any]:
     """
-    Sum sample byte deltas for all clients on ``router`` since its usage reset.
+    Sum sample byte deltas for clients on ``router`` since its usage reset.
 
     Historical samples are kept; traffic before ``usage_tracking_since`` is ignored.
     When the reset date is unset, baseline defaults to now (no alert until reset).
+    Optional ``service`` limits the sum to PPPoE or Hotspot clients (alerts still
+    use the full combined total unless callers pass a service).
     """
     if router is None or not getattr(router, "pk", None):
         return {
@@ -3023,11 +3025,13 @@ def compute_router_usage_bytes_since_reset(router) -> dict[str, Any]:
             "reason": "no_reset",
         }
 
-    customer_ids = list(
-        Customer.objects.filter(router_id=router.pk)
-        .exclude(service_type=Customer.ServiceType.STATIC)
-        .values_list("pk", flat=True)
+    customers = Customer.objects.filter(router_id=router.pk).exclude(
+        service_type=Customer.ServiceType.STATIC
     )
+    service_key = _normalize_usage_service(service)
+    if service_key:
+        customers = customers.filter(service_type=service_key)
+    customer_ids = list(customers.values_list("pk", flat=True))
     if not customer_ids:
         return {
             "ok": True,
@@ -4677,6 +4681,49 @@ def _pppoe_ns_episodes_cache_key(organization_id: int) -> str:
     return f"pppoe_ns_episodes:v1:{organization_id}"
 
 
+def pppoe_not_surfing_episode_summary(
+    organization, *, hours: int = 24
+) -> dict[str, Any]:
+    """
+    Count open + closed dialed-but-not-surfing episodes in the lookback window.
+    """
+    empty = {
+        "ok": False,
+        "hours": hours,
+        "current": 0,
+        "episodes_24h": 0,
+        "clients_affected": 0,
+    }
+    if not organization:
+        return empty
+
+    hours = clamp_usage_hours(hours, default=24)
+    now = timezone.now()
+    since = now - timedelta(hours=hours)
+    state = cache.get(_pppoe_ns_episodes_cache_key(organization.pk)) or {}
+    open_eps: dict[str, Any] = dict(state.get("open") or {})
+    closed: list[dict[str, Any]] = list(state.get("closed") or [])
+
+    closed_in_window = 0
+    affected: set[str] = set(open_eps.keys())
+    for ep in closed:
+        cid = str(ep.get("id") or "")
+        until = _parse_iso_stamp(ep.get("until")) or _parse_iso_stamp(ep.get("since"))
+        if until is None or until < since:
+            continue
+        closed_in_window += 1
+        if cid:
+            affected.add(cid)
+
+    return {
+        "ok": True,
+        "hours": hours,
+        "current": len(open_eps),
+        "episodes_24h": len(open_eps) + closed_in_window,
+        "clients_affected": len(affected),
+    }
+
+
 def _parse_iso_stamp(raw) -> datetime | None:
     if not raw:
         return None
@@ -5272,11 +5319,13 @@ def network_performance_drops(
 
     events.sort(key=lambda row: row.get("at_iso") or "", reverse=True)
     current_count = sum(1 for row in events if row.get("current"))
+    total_count = len(events)
     return {
         "ok": True,
         "hours": hours,
         "events": events[: max(1, int(max_events or 8))],
         "current_count": current_count,
+        "total_count": total_count,
     }
 
 

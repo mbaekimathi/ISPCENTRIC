@@ -1629,12 +1629,14 @@ def mikrotik_performance_drops(
         )
     ]
     historical.reverse()
+    total_count = len(current) + len(historical)
     events = (current + historical)[: max(1, int(max_events or 8))]
     return {
         "ok": True,
         "hours": hours,
         "events": events,
         "current_count": len(current),
+        "total_count": total_count,
     }
 
 

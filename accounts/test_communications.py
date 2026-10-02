@@ -1487,14 +1487,66 @@ class RouterUsageSettingsTests(TestCase):
                 "router": str(router.pk),
                 "at": stamp.strftime("%Y-%m-%dT%H:%M"),
                 "usage_high_threshold_tb": "4.5",
+                "uplink_account_no": "ACC-77881",
             },
         )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload.get("ok"))
+        self.assertEqual(payload.get("uplink_account_no"), "ACC-77881")
         router.refresh_from_db()
         self.assertIsNotNone(router.usage_tracking_since)
         self.assertEqual(router.usage_high_threshold_tb, Decimal("4.50"))
+        self.assertEqual(router.uplink_account_no, "ACC-77881")
+
+        clear_response = self.client.post(
+            reverse("core:clients_usage_router_settings"),
+            {
+                "router": str(router.pk),
+                "uplink_account_no": "",
+                "usage_high_threshold_tb": "4.5",
+            },
+        )
+        self.assertEqual(clear_response.status_code, 200)
+        self.assertTrue(clear_response.json().get("ok"))
+        router.refresh_from_db()
+        self.assertEqual(router.uplink_account_no, "")
+
+    def test_router_settings_reset_period_sets_now(self):
+        from django.utils import timezone
+
+        from core.models import MikroTikRouter
+
+        router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Reset-NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.2.2.3",
+            username="admin",
+            password="x",
+            usage_tracking_since=timezone.localtime() - timezone.timedelta(days=10),
+        )
+        before = timezone.localtime()
+        response = self.client.post(
+            reverse("core:clients_usage_router_settings"),
+            {
+                "router": str(router.pk),
+                "reset_period": "1",
+                "usage_high_threshold_tb": "3",
+                "uplink_account_no": "ACC-1",
+            },
+        )
+        after = timezone.localtime()
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(payload.get("toast_title"), "Period reset")
+        router.refresh_from_db()
+        self.assertIsNotNone(router.usage_tracking_since)
+        stamp = timezone.localtime(router.usage_tracking_since)
+        self.assertGreaterEqual(stamp, before.replace(second=0, microsecond=0))
+        self.assertLessEqual(stamp, after + timezone.timedelta(seconds=5))
+        self.assertEqual(router.uplink_account_no, "ACC-1")
 
 
 class PackageLifecycleNotifyTests(TestCase):
@@ -1691,14 +1743,17 @@ class DpoRecipientResolutionTests(TestCase):
             self.assertEqual(event["recipient_options"][0], "dpo")
             self.assertIn("organization_owner", event["recipient_options"])
 
-    def test_mikrotik_link_no_internet_defaults_to_isp_client(self):
+    def test_mikrotik_link_no_internet_defaults_to_client(self):
         from accounts.communications import ISP_COMMUNICATION_EVENTS
 
         event = next(
             e for e in ISP_COMMUNICATION_EVENTS if e["key"] == "isp_mikrotik_link_no_internet"
         )
-        self.assertEqual(event["recipient_options"][0], "isp_client")
+        self.assertEqual(event["recipient_options"][0], "client")
+        self.assertIn("isp_client", event["recipient_options"])
         self.assertIn("organization_owner", event["recipient_options"])
+        self.assertIn("connected", (event.get("when") or "").lower())
+        self.assertIn("not", (event.get("when") or "").lower())
 
     def test_mikrotik_link_no_internet_notifies_once_per_port(self):
         from django.core.cache import cache
@@ -1751,6 +1806,92 @@ class DpoRecipientResolutionTests(TestCase):
         body = first.get("message") or ""
         self.assertIn("Core-NAS", body)
         self.assertIn("ether1", body)
+
+    def test_mikrotik_link_no_internet_notifies_connected_not_disconnected(self):
+        from datetime import timedelta
+
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        from accounts.communications import maybe_notify_mikrotik_link_no_internet
+        from billing.models import BillingPlan, Customer
+        from core.models import MikroTikRouter
+
+        cache.clear()
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Home",
+            price="1000.00",
+            duration=BillingPlan.Duration.MONTHLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Core-NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.9.9.1",
+            username="admin",
+            password="x",
+        )
+        connected = Customer.objects.create(
+            organization=self.org,
+            full_name="Dialed Client",
+            phone="0711000091",
+            email="dialed@example.com",
+            account_number="PPP-DIAL",
+            status=Customer.Status.ACTIVE,
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="dialed_user",
+            pppoe_password="secret",
+            plan=plan,
+            package_end=timezone.now() + timedelta(days=7),
+            router=router,
+        )
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Offline Client",
+            phone="0711000092",
+            email="offline@example.com",
+            account_number="PPP-OFF",
+            status=Customer.Status.ACTIVE,
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="offline_user",
+            pppoe_password="secret",
+            plan=plan,
+            package_end=timezone.now() + timedelta(days=7),
+            router=router,
+        )
+
+        comms = CommunicationSettings.for_organization(self.org)
+        comms.enabled_messages = {
+            "isp_mikrotik_link_no_internet": {
+                "message": "Hi {client_name}, outage on {router_name}",
+                "recipients": ["client"],
+                "channels": ["email"],
+            }
+        }
+        comms.save(update_fields=["enabled_messages", "updated_at"])
+
+        links = [{"port": "ether1", "reason": "ether1 has no cable link"}]
+        with patch(
+            "accounts.communications._connected_subscribed_not_surfing_clients_for_router",
+            return_value=[connected],
+        ), patch("accounts.communications.send_email") as mock_email:
+            mock_email.return_value = {"ok": True}
+            result = maybe_notify_mikrotik_link_no_internet(
+                organization=self.org,
+                router_id=router.pk,
+                router_name=router.name,
+                affected_links=links,
+                router=router,
+            )
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(mock_email.call_count, 1)
+        self.assertEqual(mock_email.call_args.kwargs["to"], "dialed@example.com")
+        body = result.get("message") or ""
+        self.assertIn("Dialed Client", body)
+        self.assertNotIn("Offline Client", body)
 
     def test_fup_limit_events_exist_in_catalog(self):
         from accounts.communications import (

@@ -629,17 +629,18 @@
 }
 
 .clients-usage-uplink-panel {
-  margin: 0 0 1rem;
-  padding: 1rem 1.05rem 1.1rem;
-  border-radius: var(--ax-radius);
-  border: 1px solid var(--ax-line);
-  background: var(--ax-panel-elev);
-  box-shadow: var(--ax-shadow);
+  margin: 0;
+  padding: clamp(1rem, 1.8vw, 1.25rem) clamp(1rem, 2vw, 1.35rem);
+  border: 0;
+  border-top: 1px solid var(--ax-line);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--ax-panel) 70%, transparent);
+  box-shadow: none;
 }
 
 .clients-usage-uplink-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
   gap: 0.75rem;
 }
 
@@ -676,6 +677,18 @@
   margin: 0.15rem 0 0;
   font-size: 0.74rem;
   color: var(--ax-muted);
+}
+
+.clients-usage-uplink-account {
+  margin: 0.2rem 0 0;
+  font-size: 0.74rem;
+  color: var(--ax-muted);
+}
+
+.clients-usage-uplink-account strong {
+  color: var(--ax-ink);
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .clients-usage-uplink-badge {

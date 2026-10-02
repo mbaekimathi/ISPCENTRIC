@@ -353,17 +353,27 @@ ISP_COMMUNICATION_EVENTS = (
         "title": "ISP link without internet",
         "category": "mikrotik",
         "when": (
-            "A configured WAN / ISP port loses link, ISP connectivity, or is "
-            "sidelined as slow or unstable."
+            "A configured WAN / ISP port loses internet. Notifies clients who "
+            "are connected with an active subscription but cannot surf — not "
+            "disconnected clients."
         ),
-        "includes": "Router name and a list of affected ports with reasons.",
+        "includes": (
+            "Router name, affected uplink ports, and a short outage notice "
+            "to each dialed / in-package client who is not surfing."
+        ),
         "channels": ("sms", "email", "whatsapp"),
-        "recipient": "ISP Client",
-        "recipient_options": ORG_ISP_CLIENT_RECIPIENT_OPTIONS,
+        "recipient": "Client",
+        "recipient_options": (
+            "client",
+            "isp_client",
+            "organization_owner",
+            "dpo",
+        ),
         "default_message": (
-            "Alert: MikroTik “{router_name}” has ISP link(s) without internet:\n"
-            "{affected_links}\n"
-            "Open Assigned ports to investigate."
+            "Hi {client_name}, internet on “{router_name}” is temporarily "
+            "unavailable (ISP link without internet). Your account is still "
+            "connected and in package — service will resume when the uplink "
+            "recovers. Affected link(s):\n{affected_links}"
         ),
     },
     {
@@ -1468,11 +1478,14 @@ def dispatch_org_event(
     subject: str = "",
     client=None,
     technician=None,
+    recipients_override: list[str] | tuple[str, ...] | None = None,
 ) -> dict:
     """
     Send an enabled organization communications event using that ISP's gateway.
 
     Uses CommunicationSettings for the organization (company or own credentials).
+    ``recipients_override`` limits delivery to a subset of the rule's recipients
+    (still intersected with the event's allowed recipient options).
     """
     event_key = str(key or "").strip()
     catalog = _org_event_by_key()
@@ -1492,6 +1505,15 @@ def dispatch_org_event(
 
     channels = list(rule.get("channels") or [])
     recipients = list(rule.get("recipients") or [])
+    if recipients_override is not None:
+        allowed = set(event.get("recipient_options") or ())
+        override = {
+            str(item or "").strip()
+            for item in recipients_override
+            if str(item or "").strip()
+        }
+        # Only the callers' subset that is both rule-enabled and catalog-allowed.
+        recipients = [rid for rid in recipients if rid in override and rid in allowed]
     if not channels or not recipients:
         return {"ok": False, "skipped": True, "reason": "incomplete_rule"}
 
@@ -1917,16 +1939,88 @@ def format_mikrotik_link_no_internet_list(rows: list[dict], *, limit: int = 8) -
     return "\n".join(lines) if lines else "- (none listed)"
 
 
+def _connected_subscribed_not_surfing_clients_for_router(router) -> list:
+    """
+    Clients dialed in with an active package who are not surfing on this NAS.
+
+    Skips disconnected clients (no live PPPoE session) even when their
+    subscription is still valid.
+    """
+    if router is None:
+        return []
+    try:
+        from core import mikrotik_connect
+    except Exception:
+        return []
+
+    try:
+        paid = [
+            customer
+            for customer in mikrotik_connect._pppoe_customers_for_router(router)
+            if mikrotik_connect._customer_internet_allowed(customer)
+            and not mikrotik_connect._customer_pppoe_secret_disabled(customer)
+        ]
+    except Exception:
+        paid = []
+    if not paid:
+        return []
+
+    host = (getattr(router, "host", None) or "").strip()
+    api_user = (getattr(router, "username", None) or "").strip()
+    api_password = getattr(router, "password", None) or ""
+    if not host or not api_user:
+        return []
+
+    try:
+        live = mikrotik_connect.fetch_active_pppoe_usernames(
+            host,
+            api_user,
+            api_password,
+            port=int(getattr(router, "port", None) or 8728),
+            timeout=5.0,
+        )
+    except Exception:
+        return []
+    if not live.get("ok"):
+        # Without a live active list we cannot tell dialed from disconnected —
+        # skip rather than notify offline subscribers.
+        return []
+
+    active_lower = {
+        str(name or "").strip().lower()
+        for name in (live.get("usernames") or [])
+        if str(name or "").strip()
+    }
+    if not active_lower:
+        return []
+
+    targets: list = []
+    seen_ids: set[int] = set()
+    for customer in paid:
+        username = (getattr(customer, "pppoe_username", "") or "").strip().lower()
+        if not username or username not in active_lower:
+            continue  # disconnected — do not notify
+        cid = int(getattr(customer, "pk", 0) or 0)
+        if not cid or cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        targets.append(customer)
+    return targets
+
+
 def maybe_notify_mikrotik_link_no_internet(
     *,
     organization,
     router_id: int,
     router_name: str = "",
     affected_links: list[dict],
+    router=None,
 ) -> dict:
     """
-    Notify the ISP client when configured uplink ports lose internet.
+    When ISP uplink ports lose internet, notify connected + subscribed clients
+    who cannot surf (skip disconnected clients).
 
+    Also delivers to any staff recipients enabled on the rule (ISP Client / owner / DPO).
     Fires when new ports enter a bad state (deduped per port for ~12h).
     Clears episode flags when the port recovers.
     """
@@ -1982,19 +2076,89 @@ def maybe_notify_mikrotik_link_no_internet(
 
     listing = format_mikrotik_link_no_internet_list(affected)
     router_label = (router_name or "").strip() or f"Router #{router_id}"
-    return notify_org_event(
-        "isp_mikrotik_link_no_internet",
-        organization=organization,
-        context={
-            "router_name": router_label,
-            "affected_count": str(len(affected)),
-            "affected_links": listing,
-        },
-        subject=(
-            f"ISP link without internet — {router_label} "
-            f"({len(affected)} port(s))"
-        ),
+    context = {
+        "router_name": router_label,
+        "affected_count": str(len(affected)),
+        "affected_links": listing,
+    }
+    subject = (
+        f"ISP link without internet — {router_label} "
+        f"({len(affected)} port(s))"
     )
+
+    # Resolve which audiences are enabled so we only fan out when needed.
+    org_comms = settings_for(organization)
+    rule = org_event_message_rule(org_comms, "isp_mikrotik_link_no_internet") if org_comms else None
+    selected = {
+        str(item or "").strip()
+        for item in ((rule or {}).get("recipients") or [])
+        if str(item or "").strip()
+    }
+    if not selected:
+        selected = {"client"}
+
+    results: list[dict] = []
+    sent = 0
+
+    staff_recipients = selected & {"isp_client", "organization_owner", "dpo"}
+    if staff_recipients:
+        staff_result = notify_org_event(
+            "isp_mikrotik_link_no_internet",
+            organization=organization,
+            context=context,
+            subject=subject,
+            recipients_override=sorted(staff_recipients),
+        )
+        results.append(staff_result if isinstance(staff_result, dict) else {})
+        sent += int((staff_result or {}).get("sent") or 0)
+
+    if "client" in selected:
+        router_obj = router
+        if router_obj is None:
+            try:
+                from core.models import MikroTikRouter
+
+                router_obj = (
+                    MikroTikRouter.objects.filter(
+                        pk=int(router_id),
+                        organization_id=organization.pk,
+                    )
+                    .first()
+                )
+            except Exception:
+                router_obj = None
+        clients = _connected_subscribed_not_surfing_clients_for_router(router_obj)
+        for customer in clients:
+            client_result = notify_org_event(
+                "isp_mikrotik_link_no_internet",
+                organization=organization,
+                client=customer,
+                context=context,
+                subject=subject,
+                recipients_override=["client"],
+            )
+            results.append(client_result if isinstance(client_result, dict) else {})
+            sent += int((client_result or {}).get("sent") or 0)
+
+    if not results:
+        return {"ok": False, "skipped": True, "reason": "no_recipients"}
+
+    return {
+        "ok": sent > 0,
+        "skipped": False,
+        "sent": sent,
+        "client_count": sum(
+            1
+            for row in results
+            if row.get("event") == "isp_mikrotik_link_no_internet"
+        ),
+        "results": results,
+        "message": (
+            results[0].get("message")
+            if results and isinstance(results[0], dict)
+            else ""
+        ),
+    }
 
 
 def maybe_notify_pppoe_connected_not_surfing(

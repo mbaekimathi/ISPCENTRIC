@@ -326,7 +326,7 @@ CLIENT_SIDEBARS = {
             },
             {
                 "key": "noc_faults",
-                "label": "Open faults",
+                "label": "Drops & surfing",
                 "url_name": "core:noc",
                 "query": "focus=faults",
             },
@@ -359,6 +359,16 @@ CLIENT_SIDEBARS = {
         "label": "MikroTik",
         "items": [
             {"key": "mikrotik", "label": "All routers", "url_name": "core:mikrotik"},
+            {
+                "key": "transfer_clients",
+                "label": "Transfer clients",
+                "url_name": "core:mikrotik_transfer_clients",
+            },
+            {
+                "key": "import_clients",
+                "label": "Import clients",
+                "url_name": "core:mikrotik_import_clients",
+            },
             {"key": "noc", "label": "NOC", "url_name": "core:noc"},
             {
                 "key": "onboard",
@@ -379,6 +389,11 @@ CLIENT_SIDEBARS = {
                 "label": "Register PPPoE client",
                 "action": "open_modal",
                 "modal": "pppoe-register-modal",
+            },
+            {
+                "key": "import_clients",
+                "label": "Import clients",
+                "url_name": "core:mikrotik_import_clients",
             },
             {
                 "key": "pending_activation",
@@ -7073,6 +7088,7 @@ def _maybe_notify_mikrotik_link_no_internet(
                 router_id=int(router.pk),
                 router_name=(router.name or router.host or "").strip(),
                 affected_links=[],
+                router=router,
             )
         except Exception:
             pass
@@ -7085,6 +7101,7 @@ def _maybe_notify_mikrotik_link_no_internet(
             router_id=int(router.pk),
             router_name=(router.name or router.host or "").strip(),
             affected_links=affected,
+            router=router,
         )
     except Exception:
         pass
@@ -7826,13 +7843,13 @@ def noc(request):
     page_titles = {
         "down": "Down routers",
         "impact": "Client quality",
-        "faults": "Open faults",
+        "faults": "Drops & surfing",
         "performance": "MikroTik performance",
     }
     page_subs = {
         "down": "Outage and degraded routers ready for triage and reconnect.",
-        "impact": "Stuck sessions and dialed clients running below package speed.",
-        "faults": "Open field fault tickets with technician assignment.",
+        "impact": "Stuck sessions and clients near their package ceiling.",
+        "faults": "How often MikroTiks and clients drop, and when they cannot surf.",
         "performance": "How each MikroTik and its clients are performing, plus what to improve.",
     }
     return render(
@@ -8937,6 +8954,7 @@ def mikrotik_transfer_clients(request):
     """Bulk move clients between MikroTik routers (or from unassigned)."""
     from core.mikrotik_client_transfer import (
         build_transfer_groups,
+        clients_excel_response,
         transfer_customer_to_router,
     )
 
@@ -8951,6 +8969,31 @@ def mikrotik_transfer_clients(request):
         org, focus_router_id=focus_router_id
     )
     router_by_id = {r.pk: r for r in routers}
+
+    export_flag = (request.GET.get("export") or request.POST.get("export") or "").strip().lower()
+    wants_export = export_flag in {"1", "true", "yes", "excel", "xlsx"}
+    if wants_export:
+        raw_ids = request.POST.getlist("customer_ids") or []
+        if not raw_ids:
+            ids_param = (request.GET.get("ids") or request.POST.get("ids") or "").strip()
+            if ids_param:
+                raw_ids = [part.strip() for part in ids_param.split(",") if part.strip()]
+        try:
+            id_set = {int(x) for x in raw_ids if str(x).isdigit()}
+        except (TypeError, ValueError):
+            id_set = set()
+        export_rows = (
+            [c for c in customers if c.pk in id_set] if id_set else list(customers)
+        )
+        if focus_router_id and not id_set:
+            export_rows = [
+                c for c in export_rows if c.router_id == focus_router_id
+            ]
+        return clients_excel_response(
+            export_rows,
+            org_name=getattr(org, "name", "") or "",
+            selected=bool(id_set),
+        )
 
     if request.method == "POST":
         raw_ids = request.POST.getlist("customer_ids")
@@ -9008,14 +9051,193 @@ def mikrotik_transfer_clients(request):
     return render(
         request,
         "core/mikrotik_transfer_clients.html",
-        {
-            "org": org,
-            "routers": routers,
-            "groups": groups,
-            "customers_total": len(customers),
-            "focus_router_id": focus_router_id,
-            "page_subtitle": "PPPoE clients only — select and move them to another MikroTik. Hotspot is not listed.",
-        },
+        client_page_context(
+            request,
+            active_nav="mikrotik",
+            sidebar_active="transfer_clients",
+            routers=routers,
+            groups=groups,
+            customers_total=len(customers),
+            focus_router_id=focus_router_id,
+            page_subtitle=(
+                "PPPoE clients only — select and move them to another MikroTik. "
+                "Hotspot is not listed."
+            ),
+        ),
+    )
+
+
+@client_workspace_required
+@require_http_methods(["GET", "POST"])
+def mikrotik_import_clients(request):
+    """Guided spreadsheet import for PPPoE clients (Excel/CSV + column mapping)."""
+    import json
+
+    from billing.models import BillingPlan
+    from core.client_import import (
+        IMPORT_FIELDS,
+        IMPORT_SESSION_KEY,
+        draft_to_session,
+        import_template_response,
+        parse_upload,
+        preview_mapped_rows,
+        run_client_import,
+        suggest_column_mapping,
+    )
+
+    org = resolve_organization(request.user, request)
+    if not org:
+        messages.error(request, "No organization is linked to this workspace.")
+        return redirect("core:mikrotik")
+
+    if (request.GET.get("template") or "").strip() in {"1", "true", "yes", "xlsx"}:
+        return import_template_response()
+
+    routers = list(
+        MikroTikRouter.objects.filter(organization=org).order_by("name", "host")
+    )
+    plans = list(
+        BillingPlan.objects.filter(
+            organization=org,
+            service_type=BillingPlan.ServiceType.PPPOE,
+            is_active=True,
+        ).order_by("name")
+    )
+
+    draft = request.session.get(IMPORT_SESSION_KEY) or None
+    import_result = None
+    step = "upload"
+    mapping: dict = {}
+    preview_rows: list = []
+    parse_error = ""
+    default_router_id = ""
+    default_plan_id = ""
+
+    if request.method == "POST":
+        action = (request.POST.get("action") or "").strip().lower()
+        if action == "clear":
+            request.session.pop(IMPORT_SESSION_KEY, None)
+            draft = None
+            messages.info(request, "Import draft cleared. Upload a new file when ready.")
+            return redirect("core:mikrotik_import_clients")
+
+        if action == "parse":
+            uploaded = request.FILES.get("import_file")
+            if not uploaded:
+                parse_error = "Choose an Excel (.xlsx) or CSV file to upload."
+            else:
+                try:
+                    parsed = parse_upload(uploaded)
+                    draft = draft_to_session(parsed)
+                    request.session[IMPORT_SESSION_KEY] = draft
+                    request.session.modified = True
+                    messages.success(
+                        request,
+                        (
+                            f"Loaded {len(parsed.rows)} row"
+                            f"{'' if len(parsed.rows) == 1 else 's'} from "
+                            f"“{parsed.filename}”. Match columns, then import."
+                        ),
+                    )
+                    return redirect("core:mikrotik_import_clients")
+                except Exception as exc:  # noqa: BLE001 — show friendly parse errors
+                    parse_error = str(exc) or "Could not read that file."
+
+        elif action == "import":
+            if not draft:
+                messages.error(request, "Upload a spreadsheet first.")
+                return redirect("core:mikrotik_import_clients")
+            mapping = {}
+            for field in IMPORT_FIELDS:
+                raw = (request.POST.get(f"map_{field['key']}") or "").strip()
+                mapping[field["key"]] = int(raw) if raw.isdigit() else None
+            default_router_id = (request.POST.get("default_router_id") or "").strip()
+            default_plan_id = (request.POST.get("default_plan_id") or "").strip()
+            default_router = None
+            default_plan = None
+            if default_router_id.isdigit():
+                default_router = next(
+                    (r for r in routers if r.pk == int(default_router_id)), None
+                )
+            if default_plan_id.isdigit():
+                default_plan = next(
+                    (p for p in plans if p.pk == int(default_plan_id)), None
+                )
+            try:
+                import_result = run_client_import(
+                    org,
+                    draft,
+                    mapping,
+                    default_router=default_router,
+                    default_plan=default_plan,
+                    registered_by=request.user,
+                )
+            except ValueError as exc:
+                messages.error(request, str(exc))
+                step = "map"
+                preview_rows = preview_mapped_rows(draft, mapping, limit=6)
+            else:
+                request.session.pop(IMPORT_SESSION_KEY, None)
+                draft = None
+                step = "done"
+                created = import_result.get("created") or 0
+                failed = import_result.get("failed") or 0
+                if created and not failed:
+                    messages.success(
+                        request,
+                        f"Imported {created} client{'' if created == 1 else 's'} successfully.",
+                    )
+                elif created:
+                    messages.warning(
+                        request,
+                        (
+                            f"Imported {created} client{'' if created == 1 else 's'}; "
+                            f"{failed} row{'' if failed == 1 else 's'} need attention."
+                        ),
+                    )
+                else:
+                    messages.error(
+                        request,
+                        "No clients were imported. Check the row errors below.",
+                    )
+
+    if draft and step != "done":
+        step = "map"
+        if not mapping:
+            mapping = draft.get("suggested") or suggest_column_mapping(
+                draft.get("headers") or []
+            )
+        if not preview_rows:
+            preview_rows = preview_mapped_rows(draft, mapping, limit=6)
+        if not default_router_id and len(routers) == 1:
+            default_router_id = str(routers[0].pk)
+        if not default_plan_id and len(plans) == 1:
+            default_plan_id = str(plans[0].pk)
+
+    return render(
+        request,
+        "core/mikrotik_import_clients.html",
+        client_page_context(
+            request,
+            active_nav="mikrotik",
+            sidebar_active="import_clients",
+            step=step,
+            draft=draft,
+            import_fields=IMPORT_FIELDS,
+            mapping=mapping,
+            preview_rows=preview_rows,
+            routers=routers,
+            plans=plans,
+            parse_error=parse_error,
+            import_result=import_result,
+            default_router_id=default_router_id,
+            default_plan_id=default_plan_id,
+            mapping_json=json.dumps(mapping or {}),
+            page_subtitle=(
+                "Upload Excel or CSV from any billing system, match the columns, "
+                "and import PPPoE clients."
+            ),
+        ),
     )
 
 
@@ -17835,7 +18057,7 @@ def _clients_usage_router_filter(request, org):
     }
 
 
-def _clients_usage_router_settings(org):
+def _clients_usage_router_settings(org, *, service: str = ""):
     """Per-MikroTik uplink period start and usage alert threshold for the usage page."""
     if not org:
         return []
@@ -17845,9 +18067,17 @@ def _clients_usage_router_settings(org):
     rows = []
     routers = MikroTikRouter.objects.filter(organization=org).order_by("name", "host")
     for router in routers:
-        stats = compute_router_usage_bytes_since_reset(router)
+        # Card totals follow the active PPPoE/Hotspot tab; alert badge uses
+        # the full MikroTik combined total against the ISP package limit.
+        stats = compute_router_usage_bytes_since_reset(router, service=service)
+        alert_stats = (
+            stats
+            if not service
+            else compute_router_usage_bytes_since_reset(router)
+        )
         since = getattr(router, "usage_tracking_since", None)
         total_bytes = int(stats.get("total_bytes") or 0)
+        alert_bytes = int(alert_stats.get("total_bytes") or 0)
         threshold_bytes = resolve_mikrotik_usage_high_threshold_bytes(router)
         threshold_tb = getattr(router, "usage_high_threshold_tb", None)
         rows.append(
@@ -17855,6 +18085,7 @@ def _clients_usage_router_settings(org):
                 "id": router.pk,
                 "name": router.name,
                 "host": router.host or "",
+                "uplink_account_no": (getattr(router, "uplink_account_no", None) or "").strip(),
                 "usage_tracking_since": (
                     timezone.localtime(since).isoformat() if since else ""
                 ),
@@ -17871,7 +18102,8 @@ def _clients_usage_router_settings(org):
                 "usage_high_threshold_tb": float(threshold_tb or 3),
                 "threshold_bytes": threshold_bytes,
                 "client_count": int(stats.get("client_count") or 0),
-                "alert_active": bool(since and total_bytes >= threshold_bytes),
+                "alert_active": bool(since and alert_bytes >= threshold_bytes),
+                "service": service or "all",
             }
         )
     return rows
@@ -17881,7 +18113,13 @@ def _clients_usage_router_settings(org):
 def clients_attempted_connections(request):
     """Hotspot funnel analytics: visits, payment attempts, paid-not-surfing."""
     org = resolve_organization(request.user, request)
-    from billing.attempts import EVENT_LABELS, attempt_summary_for_org
+    from billing.attempts import (
+        DEFAULT_FILTER,
+        EVENT_LABELS,
+        FILTER_CHOICES,
+        FILTER_KEYS,
+        attempt_summary_for_org,
+    )
 
     days_raw = (request.GET.get("days") or "7").strip()
     try:
@@ -17891,21 +18129,31 @@ def clients_attempted_connections(request):
     if days not in {1, 7, 14, 30}:
         days = 7
 
+    view = (request.GET.get("view") or DEFAULT_FILTER).strip().lower()
+    if view not in FILTER_KEYS:
+        view = DEFAULT_FILTER
+
+    empty_summary = {
+        "days": days,
+        "view": view,
+        "portal_hits": 0,
+        "unique_devices": 0,
+        "payment_attempts": 0,
+        "payment_success": 0,
+        "payment_failed": 0,
+        "authorized": 0,
+        "paid_not_surfing": 0,
+        "rows": [],
+        "row_count": 0,
+        "filter_counts": {key: 0 for key, _label in FILTER_CHOICES},
+        "filter_tabs": [
+            {"key": key, "label": label, "count": 0} for key, label in FILTER_CHOICES
+        ],
+        "event_labels": EVENT_LABELS,
+        "filter_choices": FILTER_CHOICES,
+    }
     summary = (
-        attempt_summary_for_org(org, days=days)
-        if org
-        else {
-            "days": days,
-            "portal_hits": 0,
-            "unique_devices": 0,
-            "payment_attempts": 0,
-            "payment_success": 0,
-            "payment_failed": 0,
-            "authorized": 0,
-            "paid_not_surfing": 0,
-            "recent": [],
-            "event_labels": EVENT_LABELS,
-        }
+        attempt_summary_for_org(org, days=days, view=view) if org else empty_summary
     )
 
     return render(
@@ -17916,7 +18164,7 @@ def clients_attempted_connections(request):
             active_nav="clients",
             sidebar_active="attempted_connections",
             page_title="Attempted connections",
-            page_kicker="My clients",
+            page_kicker="Hotspot funnel",
             page_subtitle=(
                 "Hotspot portal visits, payment attempts, and devices that paid "
                 "but could not start surfing."
@@ -17924,6 +18172,8 @@ def clients_attempted_connections(request):
             attempt_summary=summary,
             attempt_days=days,
             attempt_day_choices=(1, 7, 14, 30),
+            attempt_view=view,
+            attempt_filter_choices=FILTER_CHOICES,
         ),
     )
 
@@ -17958,7 +18208,7 @@ def clients_general_usage(request):
         except Exception:
             pass
 
-    usage_filter = parse_usage_filter(request, default_time="6")
+    usage_filter = parse_usage_filter(request, default_time="6", default_range="day")
     hours = usage_filter["hours"]
     tab = (request.GET.get("tab") or "pppoe").strip().lower()
     if tab not in {"pppoe", "hotspot"}:
@@ -17967,28 +18217,35 @@ def clients_general_usage(request):
     if view_mode not in {"visual", "raw"}:
         view_mode = "visual"
     router_ctx = _clients_usage_router_filter(request, org)
+    # Service tab switches always open live today; the range filter form is
+    # how staff pick another window (month / period / etc.).
+    live_today_filter = {
+        "range": "day",
+        "day": timezone.localdate().isoformat(),
+    }
+    router_extra = router_ctx.get("clients_router_param") or ""
     filter_qs = usage_filter_querystring(
         usage_filter,
         extra={
             "tab": tab,
             "view": view_mode,
-            "router": router_ctx.get("clients_router_param") or "",
+            "router": router_extra,
         },
     )
     filter_qs_pppoe = usage_filter_querystring(
-        usage_filter,
+        live_today_filter,
         extra={
             "tab": "pppoe",
             "view": view_mode,
-            "router": router_ctx.get("clients_router_param") or "",
+            "router": router_extra,
         },
     )
     filter_qs_hotspot = usage_filter_querystring(
-        usage_filter,
+        live_today_filter,
         extra={
             "tab": "hotspot",
             "view": view_mode,
-            "router": router_ctx.get("clients_router_param") or "",
+            "router": router_extra,
         },
     )
     filter_qs_visual = usage_filter_querystring(
@@ -17996,7 +18253,7 @@ def clients_general_usage(request):
         extra={
             "tab": tab,
             "view": "visual",
-            "router": router_ctx.get("clients_router_param") or "",
+            "router": router_extra,
         },
     )
     filter_qs_raw = usage_filter_querystring(
@@ -18004,7 +18261,7 @@ def clients_general_usage(request):
         extra={
             "tab": tab,
             "view": "raw",
-            "router": router_ctx.get("clients_router_param") or "",
+            "router": router_extra,
         },
     )
     filter_qs_clear_router = usage_filter_querystring(
@@ -18107,7 +18364,7 @@ def clients_general_usage(request):
             usage_reset_url=reverse("core:clients_usage_reset"),
             usage_set_renewed_url=reverse("core:clients_usage_set_renewed"),
             usage_router_settings_url=reverse("core:clients_usage_router_settings"),
-            router_usage_settings=_clients_usage_router_settings(org),
+            router_usage_settings=_clients_usage_router_settings(org, service=tab),
             **router_ctx,
         ),
     )
@@ -18126,7 +18383,7 @@ def clients_general_usage_trends(request):
         sample_organization_usage,
     )
 
-    usage_filter = parse_usage_filter(request, default_time="6")
+    usage_filter = parse_usage_filter(request, default_time="6", default_range="day")
     hours = usage_filter["hours"]
     tab = (request.GET.get("tab") or request.GET.get("service") or "pppoe").strip().lower()
     if tab not in {"pppoe", "hotspot"}:
@@ -18416,14 +18673,18 @@ def clients_usage_router_settings(request):
         return JsonResponse({"ok": False, "error": "MikroTik not found."}, status=404)
 
     update_fields: list[str] = []
-    clear_period = (request.POST.get("clear_period") or "").strip().lower() in {
+    reset_period = (
+        request.POST.get("reset_period") or request.POST.get("clear_period") or ""
+    ).strip().lower() in {
         "1",
         "true",
         "yes",
     }
     period_raw = (request.POST.get("at") or request.POST.get("period_start") or "").strip()
-    if clear_period:
-        router.usage_tracking_since = None
+    if reset_period:
+        # Baseline combined usage + alerts from the moment Reset is clicked.
+        stamp = timezone.localtime()
+        router.usage_tracking_since = stamp
         update_fields.append("usage_tracking_since")
     elif period_raw:
         stamp = _parse_usage_tracking_datetime(period_raw)
@@ -18459,11 +18720,26 @@ def clients_usage_router_settings(request):
         router.usage_high_threshold_tb = threshold.quantize(Decimal("0.01"))
         update_fields.append("usage_high_threshold_tb")
 
+    # Always accept account no. when the field is posted (including clearing it).
+    if "uplink_account_no" in request.POST or "account_no" in request.POST:
+        account_no = (
+            request.POST.get("uplink_account_no")
+            or request.POST.get("account_no")
+            or ""
+        ).strip()
+        if len(account_no) > 64:
+            return JsonResponse(
+                {"ok": False, "error": "Account No. must be 64 characters or fewer."},
+                status=400,
+            )
+        router.uplink_account_no = account_no
+        update_fields.append("uplink_account_no")
+
     if not update_fields:
         return JsonResponse(
             {
                 "ok": False,
-                "error": "Set a period start date, alert limit, or clear the period.",
+                "error": "Set a period start, alert limit, account no., or reset the period.",
             },
             status=400,
         )
@@ -18480,18 +18756,40 @@ def clients_usage_router_settings(request):
     dj_cache.delete(f"comms:mikrotik_usage:{org.pk}:{router.pk}")
     invalidate_org_usage_caches(org)
 
-    stats = compute_router_usage_bytes_since_reset(router)
+    service = (
+        request.POST.get("service") or request.POST.get("tab") or ""
+    ).strip().lower()
+    if service not in {"pppoe", "hotspot"}:
+        service = ""
+    stats = compute_router_usage_bytes_since_reset(router, service=service)
+    alert_stats = (
+        stats if not service else compute_router_usage_bytes_since_reset(router)
+    )
     since = router.usage_tracking_since
     total_bytes = int(stats.get("total_bytes") or 0)
+    alert_bytes = int(alert_stats.get("total_bytes") or 0)
     threshold_bytes = resolve_mikrotik_usage_high_threshold_bytes(router)
     since_label = (
         timezone.localtime(since).strftime("%b %d, %Y · %H:%M") if since else "Not set"
     )
     threshold_tb = float(router.usage_high_threshold_tb or 3)
+    account_no = (router.uplink_account_no or "").strip()
+    account_bit = f" account {account_no}" if account_no else ""
+    toast_title = "Period reset" if reset_period else "Uplink settings saved"
+    message = (
+        f"“{router.name}”{account_bit}: counting from {since_label}; "
+        f"alert at {threshold_tb:g} TB."
+        if since
+        else (
+            f"“{router.name}”{account_bit}: period not set; "
+            f"alert at {threshold_tb:g} TB."
+        )
+    )
     return JsonResponse(
         {
             "ok": True,
             "router_id": router.pk,
+            "uplink_account_no": account_no,
             "usage_tracking_since": (
                 timezone.localtime(since).isoformat() if since else ""
             ),
@@ -18502,12 +18800,10 @@ def clients_usage_router_settings(request):
             "usage_high_threshold_tb": threshold_tb,
             "usage_total_bytes": total_bytes,
             "usage_total_tb": round(total_bytes / float(1024**4), 3),
-            "alert_active": bool(since and total_bytes >= threshold_bytes),
-            "toast_title": "Uplink settings saved",
-            "message": (
-                f"“{router.name}”: usage counts from {since_label.lower() if since else 'not set'}; "
-                f"alert at {threshold_tb:g} TB."
-            ),
+            "client_count": int(stats.get("client_count") or 0),
+            "alert_active": bool(since and alert_bytes >= threshold_bytes),
+            "toast_title": toast_title,
+            "message": message,
         }
     )
 

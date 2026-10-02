@@ -3,8 +3,8 @@
 {% block title %}Attempted connections — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="client-detail-page clients-attempted-page ops-page">
-  <header class="packages-hero ops-hero">
+<div class="clients-attempted-page ops-page is-view-{{ attempt_view|default:'failed' }}">
+  <header class="packages-hero ops-hero clients-attempted-hero">
     <div class="packages-hero-main">
       <span class="packages-hero-mark" aria-hidden="true">
         <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Z"/></svg>
@@ -17,11 +17,39 @@
     </div>
     <div class="packages-hero-actions">
       <a class="btn btn-ghost btn-sm" href="{% url 'core:my_clients' %}?tab=hotspot">Hotspot clients</a>
+      <a class="btn btn-ghost btn-sm" href="{% url 'core:leads' %}">Leads</a>
     </div>
   </header>
 
   <div class="packages-stats clients-attempted-overview-stats" aria-label="Funnel summary">
-    <article class="packages-stat tone-hotspot" style="--i:0">
+    <a class="packages-stat tone-warn{% if attempt_view == 'failed' %} is-active-audit{% endif %}" href="?days={{ attempt_days }}&amp;view=failed#attempted-feed" style="--i:0">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 9v4m0 4h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Failed</p>
+        <p class="packages-stat-value">{{ attempt_summary.payment_failed }}</p>
+      </div>
+    </a>
+    <a class="packages-stat tone-suspended{% if attempt_view == 'paid_not_surfing' %} is-active-audit{% endif %}" href="?days={{ attempt_days }}&amp;view=paid_not_surfing#attempted-feed" style="--i:1">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 8v4l2.5 2.5M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Paid, not surfing</p>
+        <p class="packages-stat-value">{{ attempt_summary.paid_not_surfing }}</p>
+      </div>
+    </a>
+    <a class="packages-stat tone-good{% if attempt_view == 'surfing' %} is-active-audit{% endif %}" href="?days={{ attempt_days }}&amp;view=surfing#attempted-feed" style="--i:2">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Paid &amp; surfing</p>
+        <p class="packages-stat-value">{{ attempt_summary.authorized }}</p>
+      </div>
+    </a>
+    <a class="packages-stat tone-hotspot{% if attempt_view == 'portal' %} is-active-audit{% endif %}" href="?days={{ attempt_days }}&amp;view=portal#attempted-feed" style="--i:3">
       <span class="packages-stat-ico" aria-hidden="true">
         <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M3 12h4l3 9 4-18 3 9h4"/></svg>
       </span>
@@ -29,91 +57,160 @@
         <p class="packages-stat-label">Portal visits</p>
         <p class="packages-stat-value">{{ attempt_summary.portal_hits }}</p>
       </div>
-    </article>
-    <article class="packages-stat tone-total" style="--i:1">
-      <span class="packages-stat-ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 9h16M4 15h16M8 5v14M16 5v14"/></svg>
-      </span>
-      <div class="packages-stat-text">
-        <p class="packages-stat-label">Pay attempts</p>
-        <p class="packages-stat-value">{{ attempt_summary.payment_attempts }}</p>
-      </div>
-    </article>
-    <article class="packages-stat tone-good" style="--i:2">
-      <span class="packages-stat-ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M20 6 9 17l-5-5"/></svg>
-      </span>
-      <div class="packages-stat-text">
-        <p class="packages-stat-label">Succeeded</p>
-        <p class="packages-stat-value">{{ attempt_summary.payment_success }}</p>
-      </div>
-    </article>
-    <article class="packages-stat tone-active" style="--i:3">
-      <span class="packages-stat-ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
-      </span>
-      <div class="packages-stat-text">
-        <p class="packages-stat-label">Surfing</p>
-        <p class="packages-stat-value">{{ attempt_summary.authorized }}</p>
-      </div>
-    </article>
+    </a>
   </div>
 
-  <section class="clients-usage-workspace ops-panel">
-    <nav class="clients-seg clients-attempted-range" aria-label="Time range">
-      {% for d in attempt_day_choices %}
-        <a
-          class="clients-seg-item{% if attempt_days == d %} is-active{% endif %}"
-          href="?days={{ d }}"
-          {% if attempt_days == d %}aria-current="page"{% endif %}
-        >
-          <span class="clients-seg-label">{% if d == 1 %}Today{% else %}{{ d }} days{% endif %}</span>
-        </a>
-      {% endfor %}
-    </nav>
+  <section class="clients-attempted-board ops-panel" id="attempted-feed">
+    <div class="clients-attempted-board-head">
+      <div>
+        <p class="clients-attempted-board-kicker">Filtered list</p>
+        <h2>
+          {% if attempt_view == 'failed' %}
+            Failed attempts
+          {% elif attempt_view == 'paid_not_surfing' %}
+            Paid, not surfing
+          {% elif attempt_view == 'surfing' %}
+            Paid &amp; surfing
+          {% else %}
+            Portal visits
+          {% endif %}
+          {% if attempt_summary.rows %}
+            <span class="clients-attempted-count">{{ attempt_summary.row_count }}</span>
+          {% endif %}
+        </h2>
+        <p>
+          {% if attempt_view == 'failed' %}
+            Devices that tried to pay but failed — attempt counts show how many times each device tried.
+          {% elif attempt_view == 'paid_not_surfing' %}
+            Paid successfully but never started surfing.
+          {% elif attempt_view == 'surfing' %}
+            Paid and authorized — currently or recently surfing.
+          {% else %}
+            Hotspot portal opens in this period, grouped by device.
+          {% endif %}
+        </p>
+      </div>
+    </div>
 
-    <p class="clients-attempted-extra-meta">
-      {{ attempt_summary.unique_devices }} unique device{{ attempt_summary.unique_devices|pluralize }}
-      · {{ attempt_summary.payment_failed }} failed
-      · {{ attempt_summary.paid_not_surfing }} paid, not surfing
-    </p>
+    <div class="clients-attempted-toolbar">
+      <nav class="clients-attempted-seg" aria-label="Attempt outcome">
+        {% for tab in attempt_summary.filter_tabs %}
+          <a
+            class="clients-attempted-seg-item{% if attempt_view == tab.key %} is-active{% endif %}"
+            href="?days={{ attempt_days }}&amp;view={{ tab.key }}#attempted-feed"
+            {% if attempt_view == tab.key %}aria-current="page"{% endif %}
+          >
+            <span class="clients-attempted-seg-label">{{ tab.label }}</span>
+            <span class="clients-attempted-seg-count">{{ tab.count }}</span>
+          </a>
+        {% endfor %}
+      </nav>
+      <nav class="clients-attempted-seg clients-attempted-days" aria-label="Time range">
+        {% for d in attempt_day_choices %}
+          <a
+            class="clients-attempted-seg-item{% if attempt_days == d %} is-active{% endif %}"
+            href="?days={{ d }}&amp;view={{ attempt_view }}#attempted-feed"
+            {% if attempt_days == d %}aria-current="page"{% endif %}
+          >
+            {% if d == 1 %}Today{% else %}{{ d }} days{% endif %}
+          </a>
+        {% endfor %}
+      </nav>
+    </div>
 
-    <section class="clients-attempted-feed">
-      <header class="clients-attempted-feed-head">
-        <div>
-          <h2>Recent activity</h2>
-          <p>Latest portal and payment events for this ISP.</p>
-        </div>
-      </header>
-      {% if attempt_summary.recent %}
-        <div class="org-table-shell clients-attempted-table-shell">
-          <table class="org-table clients-attempted-table">
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Event</th>
-                <th>MAC</th>
-                <th>Phone</th>
-                <th>Package</th>
+    {% if attempt_summary.rows %}
+      <div class="org-table-shell clients-attempted-table-shell">
+        <table class="org-table clients-attempted-table">
+          <thead>
+            <tr>
+              <th class="clients-attempted-when">Last seen</th>
+              <th>Status</th>
+              <th class="is-num">Attempts</th>
+              <th>MAC</th>
+              <th>Phone</th>
+              <th>Package</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in attempt_summary.rows %}
+              <tr class="clients-attempted-row is-{{ row.event|default:attempt_view }}">
+                <td class="clients-attempted-when" data-label="Last seen">
+                  {% if row.last_at %}
+                    <span class="clients-attempted-when-date">{{ row.last_at|date:"d M Y" }}</span>
+                    <span class="clients-attempted-when-time">{{ row.last_at|date:"H:i" }}</span>
+                  {% else %}
+                    <span class="clients-attempted-muted">—</span>
+                  {% endif %}
+                </td>
+                <td data-label="Status">
+                  <span class="clients-attempted-event is-{{ row.event|default:attempt_view }}">
+                    {{ row.event_label|default:"—" }}
+                  </span>
+                </td>
+                <td class="is-num" data-label="Attempts">
+                  <strong class="clients-attempted-tries">{{ row.attempt_count }}</strong>
+                </td>
+                <td data-label="MAC">
+                  {% if row.mac %}
+                    <span class="org-code">{{ row.mac }}</span>
+                  {% else %}
+                    <span class="clients-attempted-muted">—</span>
+                  {% endif %}
+                </td>
+                <td data-label="Phone">
+                  {% if row.phone %}
+                    <a class="clients-attempted-phone" href="tel:{{ row.phone }}">{{ row.phone }}</a>
+                  {% else %}
+                    <span class="clients-attempted-muted">—</span>
+                  {% endif %}
+                </td>
+                <td data-label="Package">
+                  {% if row.customer_id %}
+                    <a class="clients-attempted-pkg-link" href="{% url 'core:client_detail' row.customer_id %}">
+                      {% if row.plan_name %}{{ row.plan_name }}{% elif row.plan %}{{ row.plan.name }}{% else %}Client{% endif %}
+                    </a>
+                  {% elif row.plan_name %}
+                    {{ row.plan_name }}
+                  {% elif row.plan %}
+                    {{ row.plan.name }}
+                  {% else %}
+                    <span class="clients-attempted-muted">—</span>
+                  {% endif %}
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {% for row in attempt_summary.recent %}
-                <tr>
-                  <td data-label="When">{{ row.created_at|date:"d M Y H:i" }}</td>
-                  <td data-label="Event">{{ row.get_event_display }}</td>
-                  <td data-label="MAC"><span class="org-code">{{ row.mac|default:"—" }}</span></td>
-                  <td data-label="Phone">{{ row.phone|default:"—" }}</td>
-                  <td data-label="Package">{% if row.plan %}{{ row.plan.name }}{% else %}—{% endif %}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <p class="clients-attempted-empty">No Hotspot connection attempts recorded in this period yet.</p>
-      {% endif %}
-    </section>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="clients-attempted-empty">
+        <span class="clients-attempted-empty-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
+        </span>
+        <strong>
+          {% if attempt_view == 'failed' %}
+            No failed payment attempts
+          {% elif attempt_view == 'paid_not_surfing' %}
+            No paid-but-not-surfing devices
+          {% elif attempt_view == 'surfing' %}
+            No surfing connections yet
+          {% else %}
+            No portal visits yet
+          {% endif %}
+        </strong>
+        <p>
+          {% if attempt_view == 'failed' %}
+            When Hotspot payment attempts fail or are cancelled, devices and attempt counts show up here.
+          {% elif attempt_view == 'paid_not_surfing' %}
+            Devices that pay but never authorize will appear in this list.
+          {% elif attempt_view == 'surfing' %}
+            Successful authorize events will appear here after pay + connect.
+          {% else %}
+            Portal opens for Hotspot devices in this period will appear here.
+          {% endif %}
+        </p>
+      </div>
+    {% endif %}
   </section>
 </div>
 {% endblock %}

@@ -257,6 +257,16 @@ class MikroTikRouter(models.Model):
             "this amount since the uplink package period start."
         ),
     )
+    uplink_account_no = models.CharField(
+        "Uplink account no.",
+        max_length=64,
+        blank=True,
+        default="",
+        help_text=(
+            "Provider / ISP account number used by this MikroTik — "
+            "stored for staff reference on the usage page."
+        ),
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

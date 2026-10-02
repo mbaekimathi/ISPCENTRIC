@@ -63,77 +63,81 @@
   <section class="clients-usage-workspace ops-panel">
     <div class="clients-usage-control-deck">
       <div class="clients-usage-toolbar">
-        <nav class="clients-seg clients-general-usage-tabs" aria-label="Service type">
-          <a
-            class="clients-seg-item tone-pppoe{% if active_tab == 'pppoe' %} is-active{% endif %}"
-            href="?{{ usage_filter_qs_pppoe }}"
-            {% if active_tab == 'pppoe' %}aria-current="page"{% endif %}
-          >
-            <span class="clients-seg-label">PPPoE</span>
-          </a>
-          <a
-            class="clients-seg-item tone-hotspot{% if active_tab == 'hotspot' %} is-active{% endif %}"
-            href="?{{ usage_filter_qs_hotspot }}"
-            {% if active_tab == 'hotspot' %}aria-current="page"{% endif %}
-          >
-            <span class="clients-seg-label">Hotspot</span>
-          </a>
-        </nav>
-
-        <nav class="clients-seg clients-usage-view-tabs" aria-label="Usage view">
-          <a
-            class="clients-seg-item{% if view_mode != 'raw' %} is-active{% endif %}"
-            href="?{{ usage_filter_qs_visual }}"
-            {% if view_mode != 'raw' %}aria-current="page"{% endif %}
-          >
-            <span class="clients-seg-label">Visual analytics</span>
-          </a>
-          <a
-            class="clients-seg-item{% if view_mode == 'raw' %} is-active{% endif %}"
-            href="?{{ usage_filter_qs_raw }}"
-            {% if view_mode == 'raw' %}aria-current="page"{% endif %}
-          >
-            <span class="clients-seg-label">Raw data</span>
-          </a>
-        </nav>
-
-        <form class="clients-router-filter clients-usage-router-filter" method="get" action="{% url 'core:clients_general_usage' %}">
-          <input type="hidden" name="tab" value="{{ active_tab|default:'pppoe' }}">
-          <input type="hidden" name="view" value="{{ view_mode|default:'visual' }}">
-          <input type="hidden" name="range" value="{{ usage_filter.range }}">
-          {% if usage_filter.range == 'time' %}
-            <input type="hidden" name="time" value="{{ usage_filter.time }}">
-          {% elif usage_filter.range == 'day' %}
-            <input type="hidden" name="day" value="{{ usage_filter.day }}">
-          {% elif usage_filter.range == 'period' %}
-            <input type="hidden" name="start" value="{{ usage_filter.start }}">
-            <input type="hidden" name="end" value="{{ usage_filter.end }}">
-          {% elif usage_filter.range == 'month' %}
-            <input type="hidden" name="month" value="{{ usage_filter.month }}">
-          {% elif usage_filter.range == 'year' %}
-            <input type="hidden" name="year" value="{{ usage_filter.year }}">
-          {% endif %}
-          <label class="clients-router-filter-label" for="usage-router-filter">MikroTik</label>
-          <div class="clients-router-select">
-            <select
-              id="usage-router-filter"
-              name="router"
-              class="clients-router-filter-select"
-              aria-label="Filter usage by MikroTik router"
-              onchange="this.form.submit()"
+        <div class="clients-usage-seg-stack">
+          <nav class="clients-seg clients-general-usage-tabs" aria-label="Service type">
+            <a
+              class="clients-seg-item tone-pppoe{% if active_tab == 'pppoe' %} is-active{% endif %}"
+              href="?{{ usage_filter_qs_pppoe }}"
+              {% if active_tab == 'pppoe' %}aria-current="page"{% endif %}
             >
-              <option value="" {% if not clients_router_param %}selected{% endif %}>All routers</option>
-              <option value="none" {% if clients_router_param == "none" %}selected{% endif %}>No router assigned</option>
-              {% for router in client_routers %}
-                <option value="{{ router.id }}" {% if clients_router_id == router.id %}selected{% endif %}>
-                  {{ router.name }}{% if router.host %} · {{ router.host }}{% endif %}
-                </option>
-              {% endfor %}
-            </select>
-          </div>
-        </form>
+              <span class="clients-seg-label">PPPoE</span>
+            </a>
+            <a
+              class="clients-seg-item tone-hotspot{% if active_tab == 'hotspot' %} is-active{% endif %}"
+              href="?{{ usage_filter_qs_hotspot }}"
+              {% if active_tab == 'hotspot' %}aria-current="page"{% endif %}
+            >
+              <span class="clients-seg-label">Hotspot</span>
+            </a>
+          </nav>
 
-        <span class="mikrotik-live-stamp clients-usage-stamp" data-usage-stamp>Loading…</span>
+          <nav class="clients-seg clients-usage-view-tabs" aria-label="Usage view">
+            <a
+              class="clients-seg-item{% if view_mode != 'raw' %} is-active{% endif %}"
+              href="?{{ usage_filter_qs_visual }}"
+              {% if view_mode != 'raw' %}aria-current="page"{% endif %}
+            >
+              <span class="clients-seg-label">Visual</span>
+            </a>
+            <a
+              class="clients-seg-item{% if view_mode == 'raw' %} is-active{% endif %}"
+              href="?{{ usage_filter_qs_raw }}"
+              {% if view_mode == 'raw' %}aria-current="page"{% endif %}
+            >
+              <span class="clients-seg-label">Raw</span>
+            </a>
+          </nav>
+        </div>
+
+        <div class="clients-usage-toolbar-meta">
+          <form class="clients-router-filter clients-usage-router-filter" method="get" action="{% url 'core:clients_general_usage' %}">
+            <input type="hidden" name="tab" value="{{ active_tab|default:'pppoe' }}">
+            <input type="hidden" name="view" value="{{ view_mode|default:'visual' }}">
+            <input type="hidden" name="range" value="{{ usage_filter.range }}">
+            {% if usage_filter.range == 'time' %}
+              <input type="hidden" name="time" value="{{ usage_filter.time }}">
+            {% elif usage_filter.range == 'day' %}
+              <input type="hidden" name="day" value="{{ usage_filter.day }}">
+            {% elif usage_filter.range == 'period' %}
+              <input type="hidden" name="start" value="{{ usage_filter.start }}">
+              <input type="hidden" name="end" value="{{ usage_filter.end }}">
+            {% elif usage_filter.range == 'month' %}
+              <input type="hidden" name="month" value="{{ usage_filter.month }}">
+            {% elif usage_filter.range == 'year' %}
+              <input type="hidden" name="year" value="{{ usage_filter.year }}">
+            {% endif %}
+            <label class="clients-router-filter-label" for="usage-router-filter">MikroTik</label>
+            <div class="clients-router-select">
+              <select
+                id="usage-router-filter"
+                name="router"
+                class="clients-router-filter-select"
+                aria-label="Filter usage by MikroTik router"
+                onchange="this.form.submit()"
+              >
+                <option value="" {% if not clients_router_param %}selected{% endif %}>All routers</option>
+                <option value="none" {% if clients_router_param == "none" %}selected{% endif %}>No router assigned</option>
+                {% for router in client_routers %}
+                  <option value="{{ router.id }}" {% if clients_router_id == router.id %}selected{% endif %}>
+                    {{ router.name }}{% if router.host %} · {{ router.host }}{% endif %}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+          </form>
+
+          <span class="mikrotik-live-stamp clients-usage-stamp" data-usage-stamp>Loading…</span>
+        </div>
       </div>
 
       <div class="clients-usage-range-wrap">
@@ -185,8 +189,9 @@
           <h2 class="clients-usage-section-title">MikroTik period &amp; alerts</h2>
         </div>
         <p class="clients-usage-section-meta">
-          Set when each uplink package period starts so combined usage is counted from that day.
-          Adjust the alert limit per MikroTik (default 3 TB).
+          Set the provider account no. for reference, when each uplink package period starts,
+          and the alert limit per MikroTik (default 3 TB).
+          Reset starts counting combined usage and alerts from right now.
         </p>
       </header>
 
@@ -201,6 +206,9 @@
                 <div>
                   <h3>{{ row.name }}</h3>
                   {% if row.host %}<p class="clients-usage-uplink-host">{{ row.host }}</p>{% endif %}
+                  <p class="clients-usage-uplink-account" data-uplink-account-display{% if not row.uplink_account_no %} hidden{% endif %}>
+                    Acc. <strong data-uplink-account-text>{{ row.uplink_account_no|default:'' }}</strong>
+                  </p>
                 </div>
                 <span class="clients-usage-uplink-badge" data-uplink-badge>
                   {% if row.alert_active %}Over limit{% elif row.usage_tracking_label != "Not set" %}Tracking{% else %}Not started{% endif %}
@@ -209,19 +217,32 @@
 
               <dl class="clients-usage-uplink-stats">
                 <div>
-                  <dt>Combined usage</dt>
+                  <dt>{% if active_tab == 'hotspot' %}Hotspot usage{% else %}PPPoE usage{% endif %}</dt>
                   <dd>
                     <strong data-uplink-used>{{ row.usage_total_tb }} TB</strong>
                     <span>since period start</span>
                   </dd>
                 </div>
                 <div>
-                  <dt>Clients</dt>
+                  <dt>{% if active_tab == 'hotspot' %}Hotspot clients{% else %}PPPoE clients{% endif %}</dt>
                   <dd data-uplink-clients>{{ row.client_count }}</dd>
                 </div>
               </dl>
 
               <div class="clients-usage-uplink-fields">
+                <label class="clients-usage-uplink-field">
+                  <span>Account No.</span>
+                  <input
+                    type="text"
+                    data-uplink-account-no
+                    value="{{ row.uplink_account_no|default:'' }}"
+                    maxlength="64"
+                    autocomplete="off"
+                    placeholder="Provider account number"
+                    aria-label="Uplink account number for {{ row.name }}"
+                  >
+                  <small>ISP / provider account used by this MikroTik</small>
+                </label>
                 <label class="clients-usage-uplink-field">
                   <span>Period start</span>
                   <input
@@ -252,7 +273,7 @@
 
               <div class="clients-usage-uplink-actions">
                 <button type="button" class="btn btn-primary btn-sm" data-uplink-save>Save</button>
-                <button type="button" class="btn btn-ghost btn-sm" data-uplink-clear-period>Clear period</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-uplink-reset-period>Reset</button>
               </div>
             </article>
           {% endfor %}
@@ -328,7 +349,8 @@
           <h2>Client insights</h2>
           <p class="clients-usage-section-meta">
             Highest data users, online ratio, offline clients, usage mix, and devices for
-            {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %}.
+            {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %}
+            · live today by default (switch tabs to refresh today). Use the filter above for another window.
           </p>
         </div>
       </header>
@@ -1675,6 +1697,14 @@
     if (used) used.textContent = String(row.usage_total_tb != null ? row.usage_total_tb : 0) + " TB";
     var clients = card.querySelector("[data-uplink-clients]");
     if (clients) clients.textContent = String(row.client_count != null ? row.client_count : 0);
+    var accountNo = card.querySelector("[data-uplink-account-no]");
+    if (accountNo && row.uplink_account_no != null) {
+      accountNo.value = String(row.uplink_account_no || "");
+    }
+    var accountDisplay = card.querySelector("[data-uplink-account-display]");
+    var accountText = card.querySelector("[data-uplink-account-text]");
+    if (accountText) accountText.textContent = String(row.uplink_account_no || "");
+    if (accountDisplay) accountDisplay.hidden = !String(row.uplink_account_no || "").trim();
     var period = card.querySelector("[data-uplink-period-start]");
     if (period && row.usage_tracking_input != null) period.value = row.usage_tracking_input || "";
     var threshold = card.querySelector("[data-uplink-threshold]");
@@ -1695,20 +1725,23 @@
     var routerId = card.getAttribute("data-router-id");
     if (!routerId) return Promise.resolve(null);
     var saveBtn = card.querySelector("[data-uplink-save]");
-    var clearBtn = card.querySelector("[data-uplink-clear-period]");
+    var resetBtn = card.querySelector("[data-uplink-reset-period]");
     if (saveBtn) saveBtn.disabled = true;
-    if (clearBtn) clearBtn.disabled = true;
+    if (resetBtn) resetBtn.disabled = true;
 
     var body = new URLSearchParams();
     body.append("router", routerId);
-    if (opts.clearPeriod) {
-      body.append("clear_period", "1");
+    body.append("tab", tab || "pppoe");
+    if (opts.resetPeriod) {
+      body.append("reset_period", "1");
     } else {
       var period = card.querySelector("[data-uplink-period-start]");
       if (period && period.value) body.append("at", period.value);
     }
     var threshold = card.querySelector("[data-uplink-threshold]");
     if (threshold && threshold.value) body.append("usage_high_threshold_tb", threshold.value);
+    var accountNo = card.querySelector("[data-uplink-account-no]");
+    body.append("uplink_account_no", accountNo ? String(accountNo.value || "").trim() : "");
 
     return fetch(routerSettingsUrl, {
       method: "POST",
@@ -1739,7 +1772,7 @@
       })
       .finally(function () {
         if (saveBtn) saveBtn.disabled = false;
-        if (clearBtn) clearBtn.disabled = false;
+        if (resetBtn) resetBtn.disabled = false;
       });
   }
 
@@ -1748,18 +1781,18 @@
       var target = event.target;
       if (!target || !target.closest) return;
       var saveBtn = target.closest("[data-uplink-save]");
-      var clearBtn = target.closest("[data-uplink-clear-period]");
+      var resetBtn = target.closest("[data-uplink-reset-period]");
       var card = target.closest("[data-router-id]");
       if (!card) return;
       if (saveBtn) {
         event.preventDefault();
         saveUplinkCard(card, {});
-      } else if (clearBtn) {
+      } else if (resetBtn) {
         event.preventDefault();
-        if (!window.confirm("Clear the uplink period start for this MikroTik? Combined usage will stop counting until you set a new start date.")) {
+        if (!window.confirm("Reset this MikroTik period to now? Combined usage and alerts will start counting from this moment.")) {
           return;
         }
-        saveUplinkCard(card, { clearPeriod: true });
+        saveUplinkCard(card, { resetPeriod: true });
       }
     });
   }

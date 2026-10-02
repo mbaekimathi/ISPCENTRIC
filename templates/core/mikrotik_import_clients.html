@@ -1,0 +1,424 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Import clients — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<div class="mikrotik-import ops-page" data-client-import>
+  <header class="packages-hero ops-hero mikrotik-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M5 19h14"/></svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Fleet · PPPoE</p>
+        <h1 class="packages-title">Import clients</h1>
+        <p class="packages-lead">{{ page_subtitle }}</p>
+      </div>
+    </div>
+    <div class="packages-hero-actions">
+      <a class="btn btn-ghost btn-sm mikrotik-hero-btn" href="{% url 'core:mikrotik_import_clients' %}?template=1">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6"/></svg>
+        <span>Download template</span>
+      </a>
+      <a class="btn btn-ghost btn-sm mikrotik-hero-btn" href="{% url 'core:mikrotik_transfer_clients' %}">
+        <span>Transfer clients</span>
+      </a>
+    </div>
+  </header>
+
+  <ol class="ci-steps" aria-label="Import steps">
+    <li class="ci-step{% if step == 'upload' %} is-active{% endif %}{% if step == 'map' or step == 'done' %} is-done{% endif %}">
+      <span class="ci-step-n">1</span>
+      <span>Upload file</span>
+    </li>
+    <li class="ci-step{% if step == 'map' %} is-active{% endif %}{% if step == 'done' %} is-done{% endif %}">
+      <span class="ci-step-n">2</span>
+      <span>Match columns</span>
+    </li>
+    <li class="ci-step{% if step == 'done' %} is-active is-done{% endif %}">
+      <span class="ci-step-n">3</span>
+      <span>Import</span>
+    </li>
+  </ol>
+
+  <section class="ci-help" aria-labelledby="ci-help-title">
+    <div class="ci-help-head">
+      <h2 id="ci-help-title">How it works</h2>
+      <p>Anyone can import — even from another billing system. You do not need perfect column names.</p>
+    </div>
+    <div class="ci-help-grid">
+      <article class="ci-help-card tone-teal">
+        <strong>1. Start with a file</strong>
+        <p>Download our template, or use any Excel/CSV export (old system, MikroTik list, Google Sheet download, etc.).</p>
+      </article>
+      <article class="ci-help-card tone-sky">
+        <strong>2. We guess the columns</strong>
+        <p>ISPCENTRIC auto-matches common headers like Name, Phone, Package, Router. You can fix any mismatch.</p>
+      </article>
+      <article class="ci-help-card tone-amber">
+        <strong>3. Fill the gaps</strong>
+        <p>If your file has no MikroTik or Package column, pick defaults once — they apply to every row missing that value.</p>
+      </article>
+      <article class="ci-help-card tone-rose">
+        <strong>4. Safe defaults</strong>
+        <p>Missing passwords and account numbers are generated. New clients start as <em>queued</em> for install unless Status says active.</p>
+      </article>
+    </div>
+    <ul class="ci-help-bullets">
+      <li><strong>Required:</strong> Full name + Phone (every row).</li>
+      <li><strong>Package &amp; MikroTik:</strong> in the file, or chosen as defaults below.</li>
+      <li><strong>Duplicates:</strong> same phone or PPPoE username in this ISP is skipped with an error.</li>
+      <li><strong>Limit:</strong> up to 2,000 rows per upload.</li>
+    </ul>
+  </section>
+
+  {% if step == 'upload' or parse_error %}
+  <section class="ci-panel ci-upload-panel">
+    <header class="ci-panel-head">
+      <h2>Upload spreadsheet</h2>
+      <p>Accepted: <code>.xlsx</code>, <code>.xlsm</code>, <code>.csv</code></p>
+    </header>
+    {% if parse_error %}
+      <div class="ci-alert is-error" role="alert">{{ parse_error }}</div>
+    {% endif %}
+    {% if not routers %}
+      <div class="ci-alert is-warn">
+        Connect at least one MikroTik before importing clients.
+        <a href="{% url 'core:mikrotik' %}">Go to MikroTik</a>
+      </div>
+    {% elif not plans %}
+      <div class="ci-alert is-warn">
+        Create at least one active PPPoE package before importing.
+        <a href="{% url 'billing:dashboard' %}">Go to Billings</a>
+      </div>
+    {% else %}
+      <form method="post" enctype="multipart/form-data" class="ci-upload-form" id="ci-upload-form">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="parse">
+        <label class="ci-drop" for="ci-file">
+          <input type="file" name="import_file" id="ci-file" accept=".xlsx,.xlsm,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" required>
+          <span class="ci-drop-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="28" height="28"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 16V4m0 0l-4 4m4-4l4 4M5 20h14"/></svg>
+          </span>
+          <strong data-ci-file-label>Drop your file here or click to browse</strong>
+          <small>Excel from another ISP system works — you will map columns next</small>
+        </label>
+        <div class="ci-upload-actions">
+          <button type="submit" class="btn btn-primary">Continue to column matching</button>
+          <a class="btn btn-ghost" href="{% url 'core:mikrotik_import_clients' %}?template=1">Download blank template</a>
+        </div>
+      </form>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if step == 'map' and draft %}
+  <section class="ci-panel">
+    <header class="ci-panel-head ci-panel-head-row">
+      <div>
+        <h2>Match columns</h2>
+        <p>
+          File: <strong>{{ draft.filename }}</strong>
+          · {{ draft.rows|length }} data row{{ draft.rows|length|pluralize }}
+          {% if draft.sheet_name %}· sheet {{ draft.sheet_name }}{% endif %}
+        </p>
+      </div>
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="clear">
+        <button type="submit" class="btn btn-ghost btn-sm">Upload a different file</button>
+      </form>
+    </header>
+
+    <form method="post" class="ci-map-form" id="ci-map-form">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="import">
+
+      <div class="ci-defaults">
+        <div class="ci-field">
+          <label for="ci-default-router">Default MikroTik</label>
+          <select class="form-control input" name="default_router_id" id="ci-default-router">
+            <option value="">— Only use MikroTik from the file —</option>
+            {% for router in routers %}
+              <option value="{{ router.id }}" {% if default_router_id == router.id|stringformat:"s" %}selected{% endif %}>
+                {{ router.name }}{% if router.host %} · {{ router.host }}{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+          <small>Used when a row has no MikroTik (or the name does not match).</small>
+        </div>
+        <div class="ci-field">
+          <label for="ci-default-plan">Default package</label>
+          <select class="form-control input" name="default_plan_id" id="ci-default-plan">
+            <option value="">— Only use package from the file —</option>
+            {% for plan in plans %}
+              <option value="{{ plan.id }}" {% if default_plan_id == plan.id|stringformat:"s" %}selected{% endif %}>
+                {{ plan.name }}
+              </option>
+            {% endfor %}
+          </select>
+          <small>Used when a row has no package name.</small>
+        </div>
+      </div>
+
+      <div class="ci-map-grid">
+        {% for field in import_fields %}
+          <label class="ci-map-row{% if field.required %} is-required{% endif %}">
+            <span class="ci-map-label">
+              <strong>{{ field.label }}{% if field.required %} *{% endif %}</strong>
+              <small>{{ field.help }}</small>
+            </span>
+            <select class="form-control input" name="map_{{ field.key }}" data-map-field="{{ field.key }}">
+              <option value="">— Not in this file —</option>
+              {% for header in draft.headers %}
+                <option value="{{ forloop.counter0 }}">{{ header|default:"(empty header)" }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        {% endfor %}
+      </div>
+
+      {% if preview_rows %}
+      <div class="ci-preview">
+        <h3>Preview (first {{ preview_rows|length }} rows)</h3>
+        <div class="ci-preview-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Phone</th>
+                <th>Package</th>
+                <th>MikroTik</th>
+                <th>Username</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in preview_rows %}
+                <tr>
+                  <td>{{ row.full_name|default:"—" }}</td>
+                  <td>{{ row.phone|default:"—" }}</td>
+                  <td>{{ row.plan|default:"—" }}</td>
+                  <td>{{ row.mikrotik|default:"—" }}</td>
+                  <td>{{ row.pppoe_username|default:"—" }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="ci-preview-note">Preview uses the auto-matched columns. Adjust dropdowns above if a column looks wrong, then import.</p>
+      </div>
+      {% endif %}
+
+      <div class="ci-import-actions">
+        <button type="submit" class="btn btn-primary" id="ci-import-submit">
+          Import {{ draft.rows|length }} client{{ draft.rows|length|pluralize }}
+        </button>
+        <p class="ci-import-hint">Duplicates and bad rows are skipped; you will see a clear report.</p>
+      </div>
+    </form>
+  </section>
+  {% endif %}
+
+  {% if step == 'done' and import_result %}
+  <section class="ci-panel ci-result-panel">
+    <header class="ci-panel-head">
+      <h2>Import complete</h2>
+      <p>Review the summary, then open My clients or run another import.</p>
+    </header>
+    <div class="ci-result-stats">
+      <div class="ci-stat tone-ok"><em>{{ import_result.created }}</em><span>imported</span></div>
+      <div class="ci-stat tone-bad"><em>{{ import_result.failed }}</em><span>failed</span></div>
+      <div class="ci-stat tone-mute"><em>{{ import_result.skipped }}</em><span>blank skipped</span></div>
+      <div class="ci-stat tone-info"><em>{{ import_result.total_rows }}</em><span>rows read</span></div>
+    </div>
+    {% if import_result.created_names %}
+      <p class="ci-created-names">
+        Examples:
+        {% for name in import_result.created_names %}{{ name }}{% if not forloop.last %}, {% endif %}{% endfor %}
+        {% if import_result.created > import_result.created_names|length %}…{% endif %}
+      </p>
+    {% endif %}
+    {% if import_result.errors %}
+      <div class="ci-errors">
+        <h3>Rows that need attention</h3>
+        <ul>
+          {% for err in import_result.errors %}
+            <li>
+              <strong>Row {{ err.row }}</strong>
+              {% if err.name %}· {{ err.name }}{% endif %}
+              {% if err.phone %}· {{ err.phone }}{% endif %}
+              — {{ err.error }}
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+    <div class="ci-upload-actions">
+      <a class="btn btn-primary" href="{% url 'core:my_clients' %}?tab=pppoe">View My clients</a>
+      <a class="btn btn-ghost" href="{% url 'core:mikrotik_import_clients' %}">Import another file</a>
+    </div>
+  </section>
+  {% endif %}
+</div>
+
+<style>
+.mikrotik-import { --ci-teal:#0d9488; --ci-ink:#0f172a; --ci-muted:#64748b; max-width:none; padding-bottom:3.5rem; }
+.ci-steps { list-style:none; margin:0 0 1.1rem; padding:0; display:flex; flex-wrap:wrap; gap:.55rem; }
+.ci-step { display:inline-flex; align-items:center; gap:.45rem; padding:.45rem .8rem; border-radius:999px; font-size:.82rem; font-weight:700; color:var(--ci-muted); background:rgba(15,23,42,.04); border:1px solid rgba(15,23,42,.06); }
+.ci-step-n { width:1.35rem; height:1.35rem; border-radius:999px; display:grid; place-items:center; font-size:.72rem; background:#fff; border:1px solid rgba(15,23,42,.1); }
+.ci-step.is-active { color:#0f766e; background:rgba(13,148,136,.12); border-color:rgba(13,148,136,.25); }
+.ci-step.is-active .ci-step-n { background:var(--ci-teal); color:#fff; border-color:var(--ci-teal); }
+.ci-step.is-done { color:#0369a1; background:rgba(14,165,233,.1); border-color:rgba(14,165,233,.22); }
+
+.ci-help { margin:0 0 1.1rem; padding:1.1rem 1.15rem; border-radius:18px; border:1px solid rgba(13,148,136,.16); background:linear-gradient(145deg,rgba(240,253,250,.95),rgba(239,246,255,.9)); }
+.ci-help-head h2 { margin:0 0 .25rem; font-size:1.05rem; color:var(--ci-ink); }
+.ci-help-head p { margin:0 0 .85rem; color:var(--ci-muted); }
+.ci-help-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.7rem; margin-bottom:.85rem; }
+.ci-help-card { padding:.85rem .9rem; border-radius:14px; background:#fff; border:1px solid rgba(15,23,42,.06); box-shadow:0 6px 16px rgba(15,23,42,.04); }
+.ci-help-card strong { display:block; margin-bottom:.3rem; color:var(--ci-ink); font-size:.9rem; }
+.ci-help-card p { margin:0; color:var(--ci-muted); font-size:.82rem; line-height:1.4; }
+.ci-help-card.tone-teal { border-top:3px solid #0d9488; }
+.ci-help-card.tone-sky { border-top:3px solid #0284c7; }
+.ci-help-card.tone-amber { border-top:3px solid #d97706; }
+.ci-help-card.tone-rose { border-top:3px solid #e11d48; }
+.ci-help-bullets { margin:0; padding-left:1.15rem; color:var(--ci-muted); font-size:.86rem; display:grid; gap:.25rem; }
+
+.ci-panel { margin:0 0 1.1rem; padding:1.1rem 1.15rem 1.25rem; border-radius:18px; border:1px solid rgba(15,23,42,.08); background:#fff; box-shadow:0 10px 28px rgba(15,23,42,.05); }
+.ci-panel-head h2 { margin:0 0 .2rem; font-size:1.05rem; }
+.ci-panel-head p { margin:0; color:var(--ci-muted); font-size:.88rem; }
+.ci-panel-head-row { display:flex; flex-wrap:wrap; gap:.75rem; justify-content:space-between; align-items:flex-start; margin-bottom:1rem; }
+
+.ci-alert { margin:0 0 1rem; padding:.75rem .9rem; border-radius:12px; font-size:.9rem; }
+.ci-alert.is-error { background:rgba(225,29,72,.08); color:#9f1239; border:1px solid rgba(225,29,72,.2); }
+.ci-alert.is-warn { background:rgba(217,119,6,.1); color:#92400e; border:1px solid rgba(217,119,6,.22); }
+.ci-alert a { color:inherit; font-weight:700; }
+
+.ci-drop { display:grid; justify-items:center; gap:.45rem; text-align:center; padding:1.75rem 1rem; border:2px dashed rgba(13,148,136,.35); border-radius:16px; background:rgba(13,148,136,.05); cursor:pointer; transition:border-color .15s ease, background .15s ease; }
+.ci-drop:hover, .ci-drop.is-drag { border-color:#0d9488; background:rgba(13,148,136,.1); }
+.ci-drop input { position:absolute; opacity:0; pointer-events:none; width:1px; height:1px; }
+.ci-drop-icon { color:#0d9488; }
+.ci-drop strong { color:var(--ci-ink); }
+.ci-drop small { color:var(--ci-muted); max-width:28rem; }
+.ci-upload-actions { display:flex; flex-wrap:wrap; gap:.6rem; margin-top:1rem; }
+
+.ci-defaults { display:grid; grid-template-columns:1fr 1fr; gap:.9rem; margin:0 0 1.1rem; padding:.9rem; border-radius:14px; background:linear-gradient(135deg,rgba(13,148,136,.07),rgba(14,165,233,.07)); border:1px solid rgba(13,148,136,.14); }
+.ci-field label { display:block; font-size:.78rem; font-weight:750; letter-spacing:.04em; text-transform:uppercase; color:var(--ci-muted); margin-bottom:.3rem; }
+.ci-field small { display:block; margin-top:.3rem; color:var(--ci-muted); font-size:.78rem; }
+
+.ci-map-grid { display:grid; grid-template-columns:1fr 1fr; gap:.65rem .9rem; }
+.ci-map-row { display:grid; gap:.35rem; padding:.7rem .75rem; border-radius:12px; border:1px solid rgba(15,23,42,.07); background:rgba(248,250,252,.9); }
+.ci-map-row.is-required { border-color:rgba(13,148,136,.28); background:rgba(13,148,136,.05); }
+.ci-map-label strong { display:block; color:var(--ci-ink); font-size:.88rem; }
+.ci-map-label small { color:var(--ci-muted); font-size:.75rem; }
+
+.ci-preview { margin:1.15rem 0; }
+.ci-preview h3 { margin:0 0 .55rem; font-size:.95rem; }
+.ci-preview-scroll { overflow:auto; border-radius:12px; border:1px solid rgba(15,23,42,.08); }
+.ci-preview table { width:100%; border-collapse:collapse; font-size:.84rem; }
+.ci-preview th, .ci-preview td { padding:.55rem .7rem; text-align:left; border-bottom:1px solid rgba(15,23,42,.06); white-space:nowrap; }
+.ci-preview th { background:rgba(13,148,136,.1); color:#0f766e; font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; }
+.ci-preview-note { margin:.5rem 0 0; color:var(--ci-muted); font-size:.8rem; }
+.ci-import-actions { display:flex; flex-wrap:wrap; gap:.75rem; align-items:center; margin-top:1rem; }
+.ci-import-hint { margin:0; color:var(--ci-muted); font-size:.82rem; }
+
+.ci-result-stats { display:flex; flex-wrap:wrap; gap:.55rem; margin:0 0 1rem; }
+.ci-stat { min-width:6.5rem; padding:.7rem .85rem; border-radius:14px; background:#f8fafc; border:1px solid rgba(15,23,42,.06); }
+.ci-stat em { display:block; font-style:normal; font-size:1.35rem; font-weight:800; color:var(--ci-ink); }
+.ci-stat span { font-size:.75rem; font-weight:700; color:var(--ci-muted); text-transform:uppercase; letter-spacing:.04em; }
+.ci-stat.tone-ok { background:rgba(5,150,105,.1); border-color:rgba(5,150,105,.2); }
+.ci-stat.tone-ok em { color:#047857; }
+.ci-stat.tone-bad { background:rgba(225,29,72,.08); border-color:rgba(225,29,72,.18); }
+.ci-stat.tone-bad em { color:#be123c; }
+.ci-stat.tone-info { background:rgba(2,132,199,.1); border-color:rgba(2,132,199,.18); }
+.ci-stat.tone-info em { color:#0369a1; }
+.ci-created-names { color:var(--ci-muted); font-size:.88rem; }
+.ci-errors { margin:1rem 0; padding:.85rem 1rem; border-radius:12px; background:rgba(225,29,72,.05); border:1px solid rgba(225,29,72,.14); }
+.ci-errors h3 { margin:0 0 .5rem; font-size:.9rem; color:#9f1239; }
+.ci-errors ul { margin:0; padding-left:1.1rem; color:#881337; font-size:.84rem; display:grid; gap:.3rem; }
+
+@media (max-width:980px) {
+  .ci-help-grid { grid-template-columns:1fr 1fr; }
+  .ci-map-grid, .ci-defaults { grid-template-columns:1fr; }
+}
+@media (max-width:640px) {
+  .ci-help-grid { grid-template-columns:1fr; }
+}
+</style>
+
+<script>
+(function () {
+  var fileInput = document.getElementById("ci-file");
+  var label = document.querySelector("[data-ci-file-label]");
+  var drop = document.querySelector(".ci-drop");
+  if (fileInput && label) {
+    fileInput.addEventListener("change", function () {
+      var name = fileInput.files && fileInput.files[0] ? fileInput.files[0].name : "";
+      label.textContent = name || "Drop your file here or click to browse";
+    });
+  }
+  if (drop && fileInput) {
+    ["dragenter", "dragover"].forEach(function (evt) {
+      drop.addEventListener(evt, function (e) {
+        e.preventDefault();
+        drop.classList.add("is-drag");
+      });
+    });
+    ["dragleave", "drop"].forEach(function (evt) {
+      drop.addEventListener(evt, function (e) {
+        e.preventDefault();
+        drop.classList.remove("is-drag");
+      });
+    });
+    drop.addEventListener("drop", function (e) {
+      var files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length) {
+        fileInput.files = files;
+        fileInput.dispatchEvent(new Event("change"));
+      }
+    });
+  }
+
+  // Apply server-suggested mapping to selects (avoids custom template filters).
+  var mapForm = document.getElementById("ci-map-form");
+  if (mapForm) {
+    var mapping = {{ mapping_json|default:"{}"|safe }};
+    Object.keys(mapping || {}).forEach(function (key) {
+      var select = mapForm.querySelector('select[name="map_' + key + '"]');
+      if (!select) return;
+      var value = mapping[key];
+      if (value === null || value === undefined || value === "") return;
+      select.value = String(value);
+    });
+
+    mapForm.addEventListener("submit", function (e) {
+      var nameSel = mapForm.querySelector('select[name="map_full_name"]');
+      var phoneSel = mapForm.querySelector('select[name="map_phone"]');
+      if (!nameSel || !nameSel.value || !phoneSel || !phoneSel.value) {
+        e.preventDefault();
+        window.alert("Map both Full name and Phone before importing.");
+        return;
+      }
+      var routerDef = document.getElementById("ci-default-router");
+      var planDef = document.getElementById("ci-default-plan");
+      var mikSel = mapForm.querySelector('select[name="map_mikrotik"]');
+      var planSel = mapForm.querySelector('select[name="map_plan"]');
+      if ((!mikSel || !mikSel.value) && (!routerDef || !routerDef.value)) {
+        e.preventDefault();
+        window.alert("Choose a Default MikroTik, or map a MikroTik column.");
+        return;
+      }
+      if ((!planSel || !planSel.value) && (!planDef || !planDef.value)) {
+        e.preventDefault();
+        window.alert("Choose a Default package, or map a Package column.");
+        return;
+      }
+      var btn = document.getElementById("ci-import-submit");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Importing…";
+      }
+    });
+  }
+})();
+</script>
+{% endblock %}

@@ -16,10 +16,6 @@
       </div>
     </div>
     <div class="packages-hero-actions">
-      <a class="btn btn-ghost btn-sm mikrotik-hero-btn" href="{% url 'core:mikrotik_transfer_clients' %}">
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 8h10M7 12h7M7 16h10M17 8l3 4-3 4"/></svg>
-        <span>Transfer clients</span>
-      </a>
       <button type="button" class="btn btn-ghost btn-sm mikrotik-hero-btn" id="mikrotik-refresh-status" {% if not routers %}disabled{% endif %}>
         <span class="mikrotik-btn-spinner" aria-hidden="true" hidden></span>
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 12a8 8 0 0 1 14.1-5.1M20 12a8 8 0 0 1-14.1 5.1M16 4v4h4M8 20v-4H4"/></svg>

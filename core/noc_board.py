@@ -30,6 +30,7 @@ _PERF_MIN_UPTIME_SEC = 180
 _PERF_IDLE_BPS = 12_000  # ~12 kbps — effectively no useful traffic
 _PERF_UNDERPERFORM_RATIO = 0.15  # peak < 15% of plan → underperforming
 _PERF_FAIR_RATIO = 0.40
+_PERF_UPGRADE_RATIO = 0.85  # peak >= 85% of plan → consider higher package
 _PERF_CLIENT_LIMIT = 80
 _PERF_IMPROVE_LIMIT = 12
 # Sold package Mbps vs real uplink: warn / act thresholds.
@@ -94,18 +95,31 @@ def _empty_board() -> dict[str, Any]:
             "clients_underperforming": 0,
             "clients_idle": 0,
             "clients_non_optimal": 0,
+            "clients_upgrade_candidates": 0,
             "fleet_throughput_mbps": 0.0,
             "performance_score": None,
             "performance_label": "No data",
             "has_usage_samples": False,
+            "mikrotik_drops_24h": 0,
+            "client_drops_24h": 0,
+            "not_surfing_episodes_24h": 0,
+            "clients_unable_to_surf": 0,
         },
         "routers": [],
         "alarms": [],
         "sites": [],
         "timeline": [],
-        "drops": {"ok": False, "events": [], "current_count": 0},
+        "drops": {"ok": False, "events": [], "current_count": 0, "total_count": 0},
+        "client_drops": {"ok": False, "events": [], "current_count": 0, "total_count": 0},
+        "not_surfing_episodes": {
+            "ok": False,
+            "current": 0,
+            "episodes_24h": 0,
+            "clients_affected": 0,
+        },
         "faults": [],
         "non_optimal_clients": [],
+        "upgrade_clients": [],
         "improvements": [],
         "status_catalog": status_catalog(),
     }
@@ -324,10 +338,36 @@ def build_noc_board(organization, *, fault_limit: int = 60) -> dict[str, Any]:
 
     try:
         drops = mikrotik_performance_drops(
-            organization, hours=24, live_routers=live_rows, max_events=24
+            organization, hours=24, live_routers=live_rows, max_events=40
         )
     except Exception:
-        drops = {"ok": False, "events": [], "current_count": 0}
+        drops = {"ok": False, "events": [], "current_count": 0, "total_count": 0}
+
+    try:
+        from billing.usage_samples import (
+            network_performance_drops,
+            pppoe_not_surfing_episode_summary,
+        )
+
+        client_drops = network_performance_drops(
+            organization, hours=24, max_events=40
+        )
+        not_surfing_episodes = pppoe_not_surfing_episode_summary(
+            organization, hours=24
+        )
+    except Exception:
+        client_drops = {
+            "ok": False,
+            "events": [],
+            "current_count": 0,
+            "total_count": 0,
+        }
+        not_surfing_episodes = {
+            "ok": False,
+            "current": 0,
+            "episodes_24h": 0,
+            "clients_affected": 0,
+        }
 
     faults = _open_faults(organization, limit=fault_limit)
     alarms = _build_alarms(routers, drops, faults)
@@ -401,6 +441,9 @@ def build_noc_board(organization, *, fault_limit: int = 60) -> dict[str, Any]:
             "clients_underperforming": performance["summary"]["clients_underperforming"],
             "clients_idle": performance["summary"]["clients_idle"],
             "clients_non_optimal": performance["summary"]["clients_non_optimal"],
+            "clients_upgrade_candidates": performance["summary"][
+                "clients_upgrade_candidates"
+            ],
             "fleet_throughput_mbps": performance["summary"]["fleet_throughput_mbps"],
             "performance_score": performance["summary"]["performance_score"],
             "performance_label": performance["summary"]["performance_label"],
@@ -416,14 +459,33 @@ def build_noc_board(organization, *, fault_limit: int = 60) -> dict[str, Any]:
             "routers_missing_capacity": performance["summary"].get(
                 "routers_missing_capacity", 0
             ),
+            "mikrotik_drops_24h": int(
+                drops.get("total_count")
+                if drops.get("ok")
+                else len(drops.get("events") or [])
+            ),
+            "client_drops_24h": int(
+                client_drops.get("total_count")
+                if client_drops.get("ok")
+                else len(client_drops.get("events") or [])
+            ),
+            "not_surfing_episodes_24h": int(
+                not_surfing_episodes.get("episodes_24h") or 0
+            ),
+            "clients_unable_to_surf": int(
+                not_surfing_episodes.get("current") or 0
+            ),
         },
         "routers": routers,
         "alarms": alarms,
         "sites": sites,
         "timeline": timeline,
         "drops": drops,
+        "client_drops": client_drops,
+        "not_surfing_episodes": not_surfing_episodes,
         "faults": faults,
         "non_optimal_clients": performance["non_optimal_clients"],
+        "upgrade_clients": performance["upgrade_clients"],
         "improvements": performance["improvements"],
         "status_catalog": status_catalog(),
     }
@@ -787,6 +849,7 @@ def _empty_router_performance() -> dict[str, Any]:
         "upload_mbps": 0.0,
         "underperforming_count": 0,
         "idle_count": 0,
+        "upgrade_count": 0,
         "non_optimal_count": 0,
         "avg_attainment_pct": None,
         "sold_download_mbps": 0,
@@ -853,7 +916,7 @@ def _classify_client_quality(
     """
     Return (kind, reason) for a dialed client.
 
-    kind: ok | underperforming | idle | unknown
+    kind: ok | underperforming | idle | upgrade | unknown
     """
     if not session_active:
         return "unknown", "Not dialed on NAS right now"
@@ -876,6 +939,15 @@ def _classify_client_quality(
                 "underperforming",
                 f"Peak download only ~{pct}% of plan — check RF, CPE, or uplink congestion",
             )
+        ceiling = int(plan_bps * _PERF_UPGRADE_RATIO)
+        if peak_down >= ceiling and (
+            uptime_seconds >= _PERF_MIN_UPTIME_SEC or sample_count >= _PERF_MIN_SAMPLES
+        ):
+            pct = _attainment_pct(peak_down, plan_bps) or 0
+            return (
+                "upgrade",
+                f"Peak download ~{pct}% of plan — client is hitting the package ceiling; consider a higher plan",
+            )
     return "ok", "Session carrying traffic within expected range"
 
 
@@ -885,8 +957,8 @@ def _build_performance(
     """
     Score MikroTik client experience from recent usage samples + live cache.
 
-    Uses peak download over the lookback vs package Mbps to flag idle and
-    underperforming dialed clients — the ops board alone cannot see this.
+    Uses peak download over the lookback vs package Mbps to flag idle,
+    underperforming, and plan-ceiling (upgrade) dialed clients.
     """
     empty = {
         "summary": {
@@ -894,6 +966,7 @@ def _build_performance(
             "clients_underperforming": 0,
             "clients_idle": 0,
             "clients_non_optimal": 0,
+            "clients_upgrade_candidates": 0,
             "fleet_throughput_mbps": 0.0,
             "performance_score": None,
             "performance_label": "No data",
@@ -906,6 +979,7 @@ def _build_performance(
         },
         "by_router": {},
         "non_optimal_clients": [],
+        "upgrade_clients": [],
         "improvements": [],
     }
     if not organization:
@@ -1026,9 +1100,11 @@ def _build_performance(
     has_samples = bool(samples) or bool(live.get("ok"))
 
     non_optimal: list[dict[str, Any]] = []
+    upgrade_clients: list[dict[str, Any]] = []
     sessions_active = 0
     underperforming = 0
     idle = 0
+    upgrade_count = 0
     fleet_down = 0
     fleet_up = 0
     scored_router_vals: list[int] = []
@@ -1107,16 +1183,11 @@ def _build_performance(
                 rb["underperforming_count"] += 1
             elif kind == "idle":
                 rb["idle_count"] += 1
+            elif kind == "upgrade":
+                rb["upgrade_count"] += 1
 
-        if kind not in {"underperforming", "idle"}:
+        if kind not in {"underperforming", "idle", "upgrade"}:
             continue
-
-        if kind == "underperforming":
-            underperforming += 1
-            severity = "major"
-        else:
-            idle += 1
-            severity = "minor"
 
         try:
             customer_url = reverse(
@@ -1125,35 +1196,46 @@ def _build_performance(
         except Exception:
             customer_url = ""
 
-        non_optimal.append(
-            {
-                "id": customer.pk,
-                "full_name": (customer.full_name or "").strip()
-                or customer.account_number
-                or f"#{customer.pk}",
-                "account_number": customer.account_number or "",
-                "pppoe_username": (customer.pppoe_username or "").strip(),
-                "url": customer_url,
-                "router_id": router_id,
-                "router_name": router_name,
-                "plan_name": (getattr(plan, "name", None) or "") if plan else "",
-                "plan_download_mbps": plan_mbps or None,
-                "kind": kind,
-                "severity": severity,
-                "reason": reason,
-                "peak_download_mbps": _bps_to_mbps(peak_down),
-                "live_download_mbps": _bps_to_mbps(latest_down),
-                "live_upload_mbps": _bps_to_mbps(latest_up),
-                "attainment_pct": attainment,
-                "uptime_seconds": uptime_seconds,
-                "sample_count": sample_count,
-                "clients_url": (
-                    f"{reverse('core:my_clients')}?tab=pppoe&router={router_id}"
-                    if router_id
-                    else reverse("core:my_clients") + "?tab=pppoe"
-                ),
-            }
-        )
+        client_row = {
+            "id": customer.pk,
+            "full_name": (customer.full_name or "").strip()
+            or customer.account_number
+            or f"#{customer.pk}",
+            "account_number": customer.account_number or "",
+            "pppoe_username": (customer.pppoe_username or "").strip(),
+            "url": customer_url,
+            "router_id": router_id,
+            "router_name": router_name,
+            "plan_name": (getattr(plan, "name", None) or "") if plan else "",
+            "plan_download_mbps": plan_mbps or None,
+            "kind": kind,
+            "reason": reason,
+            "peak_download_mbps": _bps_to_mbps(peak_down),
+            "live_download_mbps": _bps_to_mbps(latest_down),
+            "live_upload_mbps": _bps_to_mbps(latest_up),
+            "attainment_pct": attainment,
+            "uptime_seconds": uptime_seconds,
+            "sample_count": sample_count,
+            "clients_url": (
+                f"{reverse('core:my_clients')}?tab=pppoe&router={router_id}"
+                if router_id
+                else reverse("core:my_clients") + "?tab=pppoe"
+            ),
+        }
+
+        if kind == "upgrade":
+            upgrade_count += 1
+            client_row["severity"] = "info"
+            upgrade_clients.append(client_row)
+            continue
+
+        if kind == "underperforming":
+            underperforming += 1
+            client_row["severity"] = "major"
+        else:
+            idle += 1
+            client_row["severity"] = "minor"
+        non_optimal.append(client_row)
 
     non_optimal.sort(
         key=lambda row: (
@@ -1166,6 +1248,15 @@ def _build_performance(
         )
     )
     non_optimal = non_optimal[:_PERF_CLIENT_LIMIT]
+
+    upgrade_clients.sort(
+        key=lambda row: (
+            -(row.get("attainment_pct") or 0),
+            -(row.get("peak_download_mbps") or 0),
+            (row.get("full_name") or "").lower(),
+        )
+    )
+    upgrade_clients = upgrade_clients[:_PERF_CLIENT_LIMIT]
 
     for rid, rb in by_router.items():
         rb["non_optimal_count"] = int(rb["underperforming_count"]) + int(
@@ -1257,6 +1348,7 @@ def _build_performance(
         routers=routers,
         by_router=by_router,
         non_optimal=non_optimal,
+        upgrade_clients=upgrade_clients,
     )
 
     return {
@@ -1265,6 +1357,7 @@ def _build_performance(
             "clients_underperforming": underperforming,
             "clients_idle": idle,
             "clients_non_optimal": underperforming + idle,
+            "clients_upgrade_candidates": upgrade_count,
             "fleet_throughput_mbps": _bps_to_mbps(fleet_down + fleet_up),
             "performance_score": fleet_score,
             "performance_label": _performance_label(
@@ -1279,6 +1372,7 @@ def _build_performance(
         },
         "by_router": by_router,
         "non_optimal_clients": non_optimal,
+        "upgrade_clients": upgrade_clients,
         "improvements": improvements,
     }
 
@@ -1288,9 +1382,11 @@ def _build_improvements(
     routers: list[dict[str, Any]],
     by_router: dict[int, dict[str, Any]],
     non_optimal: list[dict[str, Any]],
+    upgrade_clients: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Actionable NOC suggestions ranked by customer impact."""
     items: list[dict[str, Any]] = []
+    upgrade_clients = upgrade_clients or []
 
     for row in routers:
         rid = int(row["id"])
@@ -1336,6 +1432,7 @@ def _build_improvements(
 
         under = int(perf.get("underperforming_count") or 0)
         idle_n = int(perf.get("idle_count") or 0)
+        upgrades = int(perf.get("upgrade_count") or 0)
         sold = int(perf.get("sold_download_mbps") or 0)
         capacity = perf.get("uplink_capacity_mbps")
         ratio = perf.get("oversubscription_ratio")
@@ -1384,6 +1481,24 @@ def _build_improvements(
                     "kind": "missing_capacity",
                 }
             )
+        if upgrades >= 2 or (upgrades >= 1 and customers >= 5):
+            items.append(
+                {
+                    "id": f"improve-upgrade-{rid}",
+                    "severity": "info",
+                    "title": f"{upgrades} client(s) ready for a higher plan on {row.get('name')}",
+                    "detail": (
+                        "Dialed sessions are peaking near package Mbps — these clients "
+                        "are likely to feel constrained and may upgrade."
+                    ),
+                    "action": "Offer the next package tier or confirm they want more speed",
+                    "router_id": rid,
+                    "router_name": row.get("name") or "",
+                    "customers": upgrades,
+                    "href": row.get("clients_url") or "",
+                    "kind": "upgrade",
+                }
+            )
         if under >= 2 or (under >= 1 and customers >= 5):
             items.append(
                 {
@@ -1419,6 +1534,35 @@ def _build_improvements(
                     "kind": "idle",
                 }
             )
+
+    # Top individual upgrade candidates when few router-level clusters.
+    for client in upgrade_clients[:6]:
+        rid = client.get("router_id")
+        if rid and any(
+            i.get("kind") == "upgrade" and i.get("router_id") == rid for i in items
+        ):
+            continue
+        plan_label = client.get("plan_name") or (
+            f"{client.get('plan_download_mbps')} Mbps"
+            if client.get("plan_download_mbps")
+            else "current plan"
+        )
+        items.append(
+            {
+                "id": f"improve-upgrade-client-{client['id']}",
+                "severity": "info",
+                "title": f"{client.get('full_name')} may need a plan increase",
+                "detail": client.get("reason") or (
+                    f"Hitting the ceiling on {plan_label}."
+                ),
+                "action": "Suggest the next higher package",
+                "router_id": rid,
+                "router_name": client.get("router_name") or "",
+                "customers": 1,
+                "href": client.get("url") or "",
+                "kind": "upgrade_client",
+            }
+        )
 
     # Top individual underperformers when few router-level clusters.
     for client in non_optimal[:6]:
