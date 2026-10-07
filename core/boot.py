@@ -80,8 +80,9 @@ def _wireguard_sync_interval_sec() -> float:
 
 
 def _subscription_sweep_interval_sec() -> float:
-    # Match deploy/systemd/ispcentric-sweep.timer (3 min) so local runserver
-    # does not leave expired clients surfing for ~5 minutes.
+    # Prefer aligning with deploy/systemd/ispcentric-sweep.timer (5 min).
+    # Local default stays 180s so expired clients are not left surfing long
+    # when the systemd timer is not installed.
     try:
         return max(60.0, float(os.getenv("SUBSCRIPTION_SWEEP_INTERVAL_SEC", "180")))
     except (TypeError, ValueError):
@@ -658,9 +659,9 @@ def _start_usage_sample_loop() -> None:
 def _expiry_watch_interval_sec() -> float:
     """How often to check customers near their access deadline."""
     try:
-        return max(15.0, float(os.getenv("SUBSCRIPTION_EXPIRY_WATCH_INTERVAL_SEC", "60")))
+        return max(15.0, float(os.getenv("SUBSCRIPTION_EXPIRY_WATCH_INTERVAL_SEC", "90")))
     except (TypeError, ValueError):
-        return 60.0
+        return 90.0
 
 
 def _run_subscription_sweep(*, label: str = "sweep") -> None:
@@ -737,7 +738,11 @@ def _run_near_deadline_expiry_sync() -> None:
                 break
         repair_tick = int(cache.get("expiry_watch_repair_tick") or 0) + 1
         cache.set("expiry_watch_repair_tick", repair_tick, 3600)
-        run_fleet_repair = urgent_deadline or (repair_tick % 3 == 0)
+        # Unpaid leaks stay frequent. Paid soft repair (secret/list fix, never
+        # kick) runs less often so surfing CPEs are not hammered by API rewrites.
+        run_unpaid_repair = urgent_deadline or (repair_tick % 3 == 0)
+        run_paid_repair = repair_tick % 5 == 0
+        run_fleet_repair = run_unpaid_repair or run_paid_repair
         synced = 0
         for customer in near:
             try:
@@ -809,7 +814,11 @@ def _run_near_deadline_expiry_sync() -> None:
                 if is_mikrotik_host_cooling_down(api_host):
                     return []
                 try:
-                    return repair_router_access_leaks_on_router(router)
+                    return repair_router_access_leaks_on_router(
+                        router,
+                        repair_paid=run_paid_repair,
+                        repair_unpaid=run_unpaid_repair,
+                    )
                 except Exception:
                     logger.exception(
                         "access repair failed router=%s",

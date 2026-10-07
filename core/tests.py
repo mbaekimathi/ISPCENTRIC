@@ -8111,7 +8111,29 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
             )
         )
 
-    def test_known_profile_change_still_kicks(self):
+    def test_known_profile_change_does_not_kick_on_sweep(self):
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            clear_cpe_renew_clear_pending,
+            _pppoe_customer_needs_session_kick,
+        )
+
+        customer = self._customer()
+        clear_cpe_renew_clear_pending(customer)
+        self.assertFalse(
+            _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile=PPPOE_BLOCKED_PROFILE_NAME,
+                profile="ispcentric-pppoe-5u-10d",
+                disabled=False,
+                internet_allowed=True,
+                session_was_blocked=False,
+                session_active_before=True,
+                allow_paid_kick=False,
+            )
+        )
+
+    def test_known_profile_change_kicks_when_paid_kick_allowed(self):
         from core.mikrotik_connect import (
             PPPOE_BLOCKED_PROFILE_NAME,
             clear_cpe_renew_clear_pending,
@@ -8129,6 +8151,7 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
                 internet_allowed=True,
                 session_was_blocked=False,
                 session_active_before=True,
+                allow_paid_kick=True,
             )
         )
 
@@ -8176,7 +8199,8 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
             )
         )
 
-    def test_stale_active_profile_kicks_even_when_secret_read_flaked(self):
+    def test_stale_active_profile_does_not_kick_on_soft_full_sweep(self):
+        """Speed-stale alone waits for confirm-before-kick repair."""
         from core.mikrotik_connect import (
             clear_cpe_renew_clear_pending,
             _pppoe_customer_needs_session_kick,
@@ -8192,7 +8216,7 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
             "active_names": {"alice"},
             "active_profiles": {"alice": "ispcentric-pppoe-5u-10d"},
         }
-        self.assertTrue(
+        self.assertFalse(
             _pppoe_customer_needs_session_kick(
                 customer,
                 previous_profile="",
@@ -8203,6 +8227,26 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
                 session_active_before=True,
                 sock=object(),
                 live=live,
+            )
+        )
+
+    def test_paid_to_paid_profile_edit_does_not_kick_soft_sweep(self):
+        from core.mikrotik_connect import (
+            clear_cpe_renew_clear_pending,
+            _pppoe_customer_needs_session_kick,
+        )
+
+        customer = self._customer(pk=11)
+        clear_cpe_renew_clear_pending(customer)
+        self.assertFalse(
+            _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile="ispcentric-pppoe-5u-10d",
+                profile="ispcentric-pppoe-20u-10d",
+                disabled=False,
+                internet_allowed=True,
+                session_was_blocked=False,
+                session_active_before=True,
             )
         )
 
@@ -8235,6 +8279,196 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
                 live=live,
             )
         )
+
+
+class PppoeKickCooldownAndConfirmTests(SimpleTestCase):
+    """Paid kick debounce / cooldown; unpaid still kicks immediately."""
+
+    def test_scan_never_queues_paid_for_kick_repair(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import _scan_pppoe_repair_targets_on_socket
+
+        customer = type(
+            "Customer",
+            (),
+            {"pk": 502, "pppoe_username": "alice"},
+        )()
+        with (
+            patch(
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value={},
+            ),
+            patch(
+                "core.mikrotik_connect._ppp_secret_profile_for_customer",
+                return_value="ispcentric-pppoe-5u-10d",
+            ),
+            patch(
+                "core.mikrotik_connect._current_ppp_secret_profile",
+                return_value="ispcentric-pppoe-5u-10d",
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_has_active_session",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_is_blocked",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_profile",
+                return_value="ispcentric-pppoe-5u-10d",
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_session_looks_ghost",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect.cpe_renew_clear_is_pending",
+                return_value=False,
+            ),
+        ):
+            scan = _scan_pppoe_repair_targets_on_socket(
+                object(), paid=[customer], unpaid=[]
+            )
+            self.assertEqual(scan["paid_need_repair"], [])
+            self.assertEqual(scan["paid_pending_clear"], [customer])
+
+    def test_sweep_never_kicks_paid_even_when_session_blocked(self):
+        from core.mikrotik_connect import (
+            clear_cpe_renew_clear_pending,
+            _pppoe_customer_needs_session_kick,
+        )
+
+        customer = type("Customer", (), {"pk": 88})()
+        clear_cpe_renew_clear_pending(customer)
+        self.assertFalse(
+            _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile="ispcentric-pppoe-5u-10d",
+                profile="ispcentric-pppoe-5u-10d",
+                disabled=False,
+                internet_allowed=True,
+                session_was_blocked=True,
+                session_active_before=True,
+                allow_paid_kick=False,
+            )
+        )
+
+    def test_kick_cooldown_skips_second_paid_disconnect(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import (
+            clear_pppoe_kick_cooldown,
+            filter_pppoe_kick_usernames,
+            mark_pppoe_kick_cooldown,
+        )
+
+        clear_pppoe_kick_cooldown("alice")
+        mark_pppoe_kick_cooldown(["alice"])
+        self.assertEqual(
+            filter_pppoe_kick_usernames(["alice"], bypass_cooldown=False),
+            [],
+        )
+        self.assertEqual(
+            filter_pppoe_kick_usernames(["alice"], bypass_cooldown=True),
+            ["alice"],
+        )
+        clear_pppoe_kick_cooldown("alice")
+        self.assertEqual(
+            filter_pppoe_kick_usernames(["alice"], bypass_cooldown=False),
+            ["alice"],
+        )
+
+    def test_unpaid_scan_still_flags_leak_without_paid_debounce(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            _scan_pppoe_repair_targets_on_socket,
+        )
+
+        customer = type(
+            "Customer",
+            (),
+            {"pk": 503, "pppoe_username": "bob"},
+        )()
+        with (
+            patch(
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value={},
+            ),
+            patch(
+                "core.mikrotik_connect._customer_pppoe_secret_disabled",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._ppp_secret_profile_for_customer",
+                return_value=PPPOE_BLOCKED_PROFILE_NAME,
+            ),
+            patch(
+                "core.mikrotik_connect._current_ppp_secret_profile",
+                return_value="ispcentric-pppoe-5u-10d",
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_has_active_session",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_is_blocked",
+                return_value=False,
+            ),
+        ):
+            scan = _scan_pppoe_repair_targets_on_socket(
+                object(), paid=[], unpaid=[customer]
+            )
+            self.assertEqual(scan["unpaid_need_repair"], [customer])
+
+    def test_disconnect_many_marks_cooldown_and_logs_reason(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import (
+            clear_pppoe_kick_cooldown,
+            pppoe_kick_cooldown_active,
+            _disconnect_pppoe_sessions_many,
+        )
+
+        clear_pppoe_kick_cooldown("carol")
+        rows = [{"name": "carol", "address": "10.0.0.5", ".id": "*1"}]
+        with (
+            patch("core.mikrotik_connect._print", return_value=rows),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._kill_firewall_connections_for_addresses"
+            ),
+            patch("core.mikrotik_connect.logger") as mock_logger,
+        ):
+            removed = _disconnect_pppoe_sessions_many(
+                object(),
+                ["carol"],
+                bypass_cooldown=False,
+                reason="blocked_session",
+                host="10.1.1.1",
+            )
+        self.assertEqual(removed, 1)
+        self.assertTrue(pppoe_kick_cooldown_active("carol"))
+        mock_logger.info.assert_called()
+        # Second kick within cooldown is skipped.
+        with (
+            patch("core.mikrotik_connect._print", return_value=rows),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._kill_firewall_connections_for_addresses"
+            ),
+        ):
+            removed2 = _disconnect_pppoe_sessions_many(
+                object(),
+                ["carol"],
+                bypass_cooldown=False,
+                reason="paid_batch",
+            )
+        self.assertEqual(removed2, 0)
+        clear_pppoe_kick_cooldown("carol")
 
 
 class PppoeSpeedStaleSessionTests(SimpleTestCase):
@@ -12333,6 +12567,91 @@ class RouterConnectivityLoopTests(TestCase):
         self.assertEqual(row["failure_class"], "probe_error")
         self.assertNotEqual(row["label"], "Unavailable")
 
+    def test_client_remote_access_row_holds_ready_through_one_setup_blip(self):
+        from django.core.cache import cache
+
+        from core.views import _client_remote_access_row
+
+        cache.clear()
+        ready = {
+            "ok": True,
+            "failure_class": "ok",
+            "hint": "",
+            "error": "",
+            "details": {
+                "layers": {
+                    "nas_ok": True,
+                    "session_active": True,
+                    "ping_ok": True,
+                    "web_ok": True,
+                    "api_ok": False,
+                }
+            },
+        }
+        blocked = {
+            "ok": False,
+            "failure_class": "wan_mgmt_blocked",
+            "hint": "ports closed",
+            "error": "",
+            "details": {
+                "layers": {
+                    "nas_ok": True,
+                    "session_active": True,
+                    "ping_ok": True,
+                    "web_ok": False,
+                    "api_ok": False,
+                }
+            },
+        }
+        with patch(
+            "core.connectivity_verification.evaluate_layered_cpe_access",
+            side_effect=[ready, blocked, blocked],
+        ):
+            first = _client_remote_access_row(self.customer, force=True)
+            second = _client_remote_access_row(self.customer, force=True)
+            third = _client_remote_access_row(self.customer, force=True)
+        self.assertEqual(first["status"], "ready")
+        self.assertEqual(second["status"], "ready")
+        self.assertTrue(second.get("stabilized"))
+        self.assertEqual(third["status"], "blocked")
+        self.assertEqual(third["label"], "Setup")
+
+    def test_probe_customer_cpe_web_light_reuses_cached_8081_without_install(self):
+        from core import mikrotik_connect as mk
+
+        with (
+            patch.object(
+                mk,
+                "resolve_customer_cpe_target",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "address": "10.20.0.50",
+                    "scope": "connuser",
+                    "gateway": "10.20.0.1",
+                    "mode": "pppoe",
+                },
+            ),
+            patch.object(mk, "_preferred_cpe_web_ports", return_value=(80, 8081, 8080)),
+            patch.object(mk, "_try_cached_cpe_web_ports", return_value=8081) as cached,
+            patch.object(mk, "_try_cpe_web_ports") as try_ports,
+            patch.object(mk, "_api_session") as api_session,
+        ):
+            result = mk.probe_customer_cpe_web(
+                "10.9.0.5",
+                "admin",
+                "secret",
+                customer=self.customer,
+                light=True,
+                timeout=4.0,
+            )
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("port"), 8081)
+        cached.assert_called_once()
+        self.assertEqual(cached.call_args.args[3], (80, 8081, 8080))
+        try_ports.assert_not_called()
+        api_session.assert_not_called()
+
     def test_probe_customer_cpe_web_light_skips_auto_enable_and_limits_ports(self):
         from core import mikrotik_connect as mk
 
@@ -12388,7 +12707,9 @@ class RouterConnectivityLoopTests(TestCase):
         self.assertFalse(result.get("ok"))
         prepare.assert_not_called()
         try_ports.assert_called_once()
-        self.assertEqual(try_ports.call_args.kwargs.get("ports"), (80,))
+        # Light installs last-known/:80 then the next preferred port (:8080 here),
+        # not the full multi-port list that thrash-stalls surfing clients.
+        self.assertEqual(try_ports.call_args.kwargs.get("ports"), (80, 8080))
 
     def test_layered_cpe_loop_passes_when_web_ok(self):
         from core.connectivity_verification import run_layered_cpe_access_loop

@@ -3681,6 +3681,24 @@ def _nas_list_probe_lock(nas_host: str) -> threading.Lock:
         return lock
 
 
+def _tcp_connect_ok(host: str, port: int, timeout: float, *, retries: int = 1) -> bool:
+    """
+    Fast TCP open with one retry.
+
+    Deployed WireGuard paths often drop the first SYN under load; a single miss
+    must not flip Remote from Ready → Setup or tear down a working NAT.
+    """
+    attempts = max(1, int(retries) + 1)
+    for attempt in range(attempts):
+        try:
+            with socket.create_connection((host, int(port)), timeout=timeout):
+                return True
+        except (TimeoutError, OSError, TypeError, ValueError):
+            if attempt + 1 >= attempts:
+                return False
+    return False
+
+
 def _try_cached_cpe_web_ports(
     nas_host: str,
     scope: str,
@@ -3714,12 +3732,9 @@ def _try_cached_cpe_web_ports(
         proxy_port = int(entry.get("port") or 0)
         if proxy_port <= 0:
             continue
-        try:
-            with socket.create_connection((dial, proxy_port), timeout=connect_timeout):
-                _touch_cpe_web_proxy_entry(key, entry)
-                return port
-        except (TimeoutError, OSError, TypeError, ValueError):
-            continue
+        if _tcp_connect_ok(dial, proxy_port, connect_timeout, retries=1):
+            _touch_cpe_web_proxy_entry(key, entry)
+            return port
     return None
 
 
@@ -4768,31 +4783,30 @@ def _try_cpe_web_ports(
         if install_error:
             last_error = install_error
             continue
-        try:
-            with socket.create_connection((dial, proxy_port), timeout=connect_timeout):
-                if remember:
-                    cache_key = (dial, f"{scope}|{port}")
-                    previous = _load_cpe_web_proxy_entry(cache_key)
-                    if previous and int(previous.get("port") or 0) != int(proxy_port):
-                        # PPPoE renumber changed the hashed proxy port — drop the
-                        # orphaned NAT that still points at the old CPE IP.
-                        try:
-                            _uninstall_cpe_proxy(nas_sock, int(previous["port"]))
-                        except Exception:
-                            pass
-                    _remember_cpe_web_proxy(
-                        nas_host,
-                        scope,
-                        address,
-                        port,
-                        proxy_port,
-                        source_address,
-                    )
-                    _remember_last_cpe_web_port(nas_host, scope, port)
-                return port, last_error
-        except (TimeoutError, OSError):
-            _uninstall_cpe_proxy(nas_sock, proxy_port)
-            continue
+        if _tcp_connect_ok(dial, proxy_port, connect_timeout, retries=1):
+            if remember:
+                cache_key = (dial, f"{scope}|{port}")
+                previous = _load_cpe_web_proxy_entry(cache_key)
+                if previous and int(previous.get("port") or 0) != int(proxy_port):
+                    # PPPoE renumber changed the hashed proxy port — drop the
+                    # orphaned NAT that still points at the old CPE IP.
+                    try:
+                        _uninstall_cpe_proxy(nas_sock, int(previous["port"]))
+                    except Exception:
+                        pass
+                _remember_cpe_web_proxy(
+                    nas_host,
+                    scope,
+                    address,
+                    port,
+                    proxy_port,
+                    source_address,
+                )
+                _remember_last_cpe_web_port(nas_host, scope, port)
+            return port, last_error
+        # Only tear down after a confirmed miss — one WG timeout is not enough.
+        _uninstall_cpe_proxy(nas_sock, proxy_port)
+        continue
     return None, last_error
 
 
@@ -4828,8 +4842,9 @@ def probe_customer_cpe_web(
     prepared via API/SSH and WebFig is enabled, then ports are probed again.
 
     light=True (Clients list Remote column): never auto-enable CPE services,
-    reuse a cached NAS proxy when possible, and install at most one NAT forward.
-    That avoids firewall thrash that can stall surfing clients on the same NAS.
+    reuse cached NAS proxies across preferred ports, and install at most two
+    NAT forwards (last-known then next common WebFig port). That avoids full
+    multi-port firewall thrash that can stall surfing clients on the same NAS.
 
     Returns keys: ok, session_active, cpe_host, port (int|None), reachable,
     ping_ok, error, hint, gateway, mode, api_ok, www_enabled, steps.
@@ -4916,17 +4931,33 @@ def probe_customer_cpe_web(
     result["mode"] = mode or ("static" if cpe_address else "pppoe")
     steps.append(f"found client IP {address}")
 
-    connect_timeout = max(1.0, min(timeout, 1.8 if light else 2.5))
-    candidate_ports = _preferred_cpe_web_ports(
+    # Hosted/WG paths need a little more headroom than LAN probes.
+    try:
+        from django.conf import settings as dj_settings
+
+        hosted = bool(getattr(dj_settings, "HOSTED", False))
+    except Exception:
+        hosted = False
+    connect_timeout = max(
+        1.2 if light else 1.5,
+        min(timeout, (2.4 if hosted else 2.0) if light else (3.0 if hosted else 2.5)),
+    )
+    preferred_ports = _preferred_cpe_web_ports(
         nas_host, scope, tuple(ports or CPE_WEB_PORTS)
     )
+    # Cache reuse must scan every remembered/preferred port — light mode used to
+    # truncate to :80 only, so a working :8081 proxy looked like "Setup".
+    cache_ports = preferred_ports or (80,)
     if light:
-        # One port only — full multi-port NAT install/remove thrash stalls
-        # forwarding for other surfing clients on the same NAS.
-        candidate_ports = candidate_ports[:1] or (80,)
+        # Install at most two NATs: last-known (or :80) then the next common
+        # WebFig port (:8081). Full multi-port thrash stalls surfing clients.
+        install_ports = tuple(cache_ports[:2]) or (80,)
+    else:
+        install_ports = cache_ports
+    candidate_ports = install_ports
 
     cached_port = _try_cached_cpe_web_ports(
-        nas_host, scope, address, candidate_ports, connect_timeout
+        nas_host, scope, address, cache_ports, connect_timeout
     )
     if cached_port:
         result["ok"] = True
@@ -13733,13 +13764,134 @@ def _pppoe_session_looks_ghost_from_maps(
     return any(arp_complete.get(addr) is False for addr in addrs)
 
 
+# After a paid CPE kick, skip further disconnects so slow redials are not
+# re-classified as "not surfing" and kicked again by the next sweep/repair.
+_PPPOE_KICK_COOLDOWN_SEC = 300
+# First flaky blocked/wrong-profile sighting must be confirmed before kick.
+_PPPOE_PAID_REPAIR_CONFIRM_TTL = 600
+
+
+def _pppoe_kick_cooldown_key(username: str) -> str:
+    return f"pppoe:kick-cooldown:{(username or '').strip().lower()}"
+
+
+def _pppoe_paid_repair_confirm_key(customer_id) -> str:
+    return f"pppoe:paid-repair-confirm:{customer_id}"
+
+
+def pppoe_kick_cooldown_active(username: str) -> bool:
+    """True while this PPPoE username is inside the post-kick cooldown window."""
+    name = (username or "").strip().lower()
+    if not name:
+        return False
+    return bool(_captive_cache_get(_pppoe_kick_cooldown_key(name)))
+
+
+def mark_pppoe_kick_cooldown(
+    usernames: list[str] | set[str] | tuple[str, ...],
+    *,
+    ttl_sec: int | None = None,
+) -> None:
+    """Remember usernames that were just disconnected so repair cannot re-kick."""
+    ttl = int(ttl_sec if ttl_sec is not None else _PPPOE_KICK_COOLDOWN_SEC)
+    if ttl <= 0:
+        return
+    for raw in usernames:
+        name = (raw or "").strip().lower()
+        if not name:
+            continue
+        _captive_cache_set(_pppoe_kick_cooldown_key(name), 1, ttl)
+
+
+def clear_pppoe_kick_cooldown(username: str) -> None:
+    name = (username or "").strip().lower()
+    if not name:
+        return
+    try:
+        from django.core.cache import cache
+
+        cache.delete(_pppoe_kick_cooldown_key(name))
+    except Exception:
+        pass
+
+
+def filter_pppoe_kick_usernames(
+    usernames: list[str] | set[str] | tuple[str, ...],
+    *,
+    bypass_cooldown: bool = False,
+) -> list[str]:
+    """
+    Drop usernames still inside kick cooldown unless ``bypass_cooldown``
+    (unpaid / expiry enforcement).
+    """
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in usernames:
+        name = (raw or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if not bypass_cooldown and pppoe_kick_cooldown_active(name):
+            continue
+        ordered.append(name)
+    return ordered
+
+
+def confirm_paid_pppoe_repair_needed(customer, *, reason: str = "") -> bool:
+    """
+    True only on the second consecutive paid-not-surfing observation.
+
+    One flaky address-list / profile read must not disconnect a surfing CPE.
+    Unpaid callers must not use this — they kick immediately.
+    """
+    customer_id = getattr(customer, "pk", None)
+    if not customer_id:
+        return True
+    key = _pppoe_paid_repair_confirm_key(customer_id)
+    prior = _captive_cache_get(key)
+    if prior:
+        try:
+            from django.core.cache import cache
+
+            cache.delete(key)
+        except Exception:
+            pass
+        return True
+    _captive_cache_set(
+        key,
+        (reason or "needs_repair").strip() or "needs_repair",
+        _PPPOE_PAID_REPAIR_CONFIRM_TTL,
+    )
+    return False
+
+
+def clear_paid_pppoe_repair_confirm(customer) -> None:
+    customer_id = getattr(customer, "pk", None)
+    if not customer_id:
+        return
+    try:
+        from django.core.cache import cache
+
+        cache.delete(_pppoe_paid_repair_confirm_key(customer_id))
+    except Exception:
+        pass
+
+
 def _disconnect_pppoe_sessions(sock: socket.socket, username: str) -> int:
     """Drop active PPP sessions so a password change takes effect immediately."""
     return _disconnect_pppoe_sessions_many(sock, [username])
 
 
 def _disconnect_pppoe_sessions_many(
-    sock: socket.socket, usernames: list[str] | set[str] | tuple[str, ...]
+    sock: socket.socket,
+    usernames: list[str] | set[str] | tuple[str, ...],
+    *,
+    bypass_cooldown: bool = False,
+    reason: str = "",
+    host: str = "",
 ) -> int:
     """
     Drop many PPP sessions in one pass so CPEs redial together.
@@ -13750,17 +13902,23 @@ def _disconnect_pppoe_sessions_many(
     Also kills tracked firewall connections for those session IPs so apps
     cannot keep surfing on established sockets after the secret moves to
     the blocked profile.
+
+    Paid repair / soft-sweep callers leave ``bypass_cooldown=False`` so a
+    just-kicked CPE is not disconnected again before it can redial.
+    Unpaid expiry enforcement passes ``bypass_cooldown=True``.
     """
     needles = {
         (name or "").strip().lower()
-        for name in usernames
-        if (name or "").strip()
+        for name in filter_pppoe_kick_usernames(
+            usernames, bypass_cooldown=bypass_cooldown
+        )
     }
     if not needles:
         return 0
     rows = _print(sock, "/ppp/active", props=".id,name,address")
     session_ips: set[str] = set()
     removed = 0
+    removed_names: list[str] = []
     for row in rows:
         name = (row.get("name") or "").strip().lower()
         if name not in needles:
@@ -13774,8 +13932,20 @@ def _disconnect_pppoe_sessions_many(
         terminal = _remove(sock, "/ppp/active", item_id)
         if terminal.get("_reply") != "!trap":
             removed += 1
+            removed_names.append(name)
     if session_ips:
         _kill_firewall_connections_for_addresses(sock, session_ips)
+    if removed_names:
+        mark_pppoe_kick_cooldown(removed_names)
+        why = (reason or "pppoe_disconnect").strip() or "pppoe_disconnect"
+        label = (host or "").strip()
+        logger.info(
+            "PPPoE kick reason=%s host=%s accounts=%s removed=%s",
+            why,
+            label or "-",
+            ",".join(sorted(set(removed_names))),
+            removed,
+        )
     return removed
 
 
@@ -14368,7 +14538,12 @@ def _block_orphan_pppoe_secrets_on_socket(sock: socket.socket, router) -> list[s
     # Use the shared disconnect path so tracked firewall connections for the
     # orphan session IPs are killed too (plain /ppp/active remove can leave
     # established sockets surfing briefly).
-    kicked = _disconnect_pppoe_sessions_many(sock, orphan_names)
+    kicked = _disconnect_pppoe_sessions_many(
+        sock,
+        orphan_names,
+        bypass_cooldown=True,
+        reason="orphan",
+    )
     if kicked:
         notes.append(f"kicked {kicked} orphan PPPoE session(s)")
     return notes
@@ -14439,14 +14614,13 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
             session_active_before=session_active_before,
             sock=sock,
             live=live,
+            allow_paid_kick=False,
         )
-        # Restore path: clear leftover ispcentric-blocked address-list rows and
-        # kick so the CPE redials onto the paid profile. Without this, a deploy
-        # bulk rewrite leaves some clients "PPPoE active, no surf".
-        if restoring and (needs_kick or session_blocked):
+        # Paid: clear leftover blocked address-list rows without disconnecting.
+        # Unpaid/expired: disconnect so the block takes effect.
+        if restoring and session_blocked:
             clear_usernames.append(username)
-            kick_usernames.append(username)
-        elif needs_kick:
+        if needs_kick:
             kick_usernames.append(username)
         synced += 1
 
@@ -14455,13 +14629,12 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
             sock, clear_usernames, live=live
         )
     if kick_usernames:
-        _disconnect_pppoe_sessions_many(sock, kick_usernames)
-    live_after = _pppoe_live_state_maps(sock)
-    speed_stale_retry = _pppoe_speed_stale_usernames(
-        sock, customers, live=live_after
-    )
-    if speed_stale_retry:
-        _disconnect_pppoe_sessions_many(sock, speed_stale_retry)
+        _disconnect_pppoe_sessions_many(
+            sock,
+            kick_usernames,
+            bypass_cooldown=True,
+            reason="expiry",
+        )
 
     orphan_notes = _block_orphan_pppoe_secrets_on_socket(sock, router)
     if orphan_notes:
@@ -14480,8 +14653,16 @@ def _pppoe_customer_needs_session_kick(
     session_active_before: bool,
     sock: socket.socket | None = None,
     live: dict[str, Any] | None = None,
+    allow_paid_kick: bool = False,
 ) -> bool:
-    """Whether this secret rewrite requires dropping /ppp/active for the CPE."""
+    """
+    Whether this secret rewrite requires dropping /ppp/active for the CPE.
+
+    Sweep / fleet-repair policy (``allow_paid_kick=False``, the default):
+    **never** disconnect a paid in-package client. Only kick when access must
+    stop (expired / unpaid / blocked profile). Payment and explicit restore
+    paths pass ``allow_paid_kick=True`` so a just-paid CPE can redial.
+    """
     previous = (previous_profile or "").strip()
     target = (profile or "").strip()
     restoring_surf = bool(
@@ -14489,17 +14670,8 @@ def _pppoe_customer_needs_session_kick(
         and not disabled
         and target != PPPOE_BLOCKED_PROFILE_NAME
     )
-    username = (getattr(customer, "pppoe_username", None) or "").strip()
-    # Known profile change only. Empty previous_profile means the live dump
-    # missed this secret (common on hosted WireGuard API flakes) — treating
-    # that as a change used to kick every paid CPE on each 30s/120s sweep.
-    # Match ``_sync_organization_pppoe_secrets_on_socket`` which already
-    # requires a non-empty previous profile before kicking.
-    profile_changed = bool(previous and previous != target)
-    # Paid session already up and not address-list blocked: renew Hotspot is
-    # done from the client's POV. Clear pending even when this pass could not
-    # read the secret profile — otherwise stuck pending + empty profile reads
-    # redial-nudge the same surfing CPE forever.
+    # Paid session already up: clear renew pending without ever kicking on
+    # the sweep path.
     if (
         restoring_surf
         and cpe_renew_clear_is_pending(customer)
@@ -14508,35 +14680,42 @@ def _pppoe_customer_needs_session_kick(
         and previous != PPPOE_BLOCKED_PROFILE_NAME
     ):
         clear_cpe_renew_clear_pending(customer)
-    needs_redial_nudge = bool(
-        restoring_surf
-        and cpe_renew_clear_is_pending(customer)
-        and not session_active_before
-    )
+
     stuck_unblocked_session = bool(
         target == PPPOE_BLOCKED_PROFILE_NAME
         and not session_was_blocked
         and session_active_before
     )
-    speed_stale_session = bool(
-        restoring_surf
+    unpaid_must_stop = bool(
+        (not internet_allowed or disabled or target == PPPOE_BLOCKED_PROFILE_NAME)
         and session_active_before
-        and username
-        and sock is not None
-        and _pppoe_active_session_profile_stale(
-            sock,
-            username,
-            expected_profile=target,
-            live=live,
+    )
+
+    if restoring_surf and not allow_paid_kick:
+        _ = (sock, live, session_was_blocked)
+        return False
+
+    hard_profile_change = bool(
+        previous
+        and previous != target
+        and (
+            previous == PPPOE_BLOCKED_PROFILE_NAME
+            or target == PPPOE_BLOCKED_PROFILE_NAME
         )
     )
-    return bool(
-        profile_changed
-        or (internet_allowed and session_was_blocked)
-        or needs_redial_nudge
-        or stuck_unblocked_session
-        or speed_stale_session
+    needs_redial_nudge = bool(
+        restoring_surf
+        and cpe_renew_clear_is_pending(customer)
+        and not session_active_before
     )
+    _ = (sock, live)
+    if allow_paid_kick and restoring_surf:
+        return bool(
+            hard_profile_change
+            or session_was_blocked
+            or needs_redial_nudge
+        )
+    return bool(stuck_unblocked_session or unpaid_must_stop)
 
 
 def _pppoe_batch_classify_customers(customers: list) -> tuple[int, int, bool]:
@@ -14654,11 +14833,12 @@ def _pppoe_batch_write_on_socket(
                 session_active_before=session_active_before,
                 sock=sock,
                 live=live,
+                allow_paid_kick=False,
             )
             if needs_kick:
+                # Sweep batch only disconnects expired/unpaid.
                 kick_usernames.append(username)
-                if profile == PPPOE_BLOCKED_PROFILE_NAME:
-                    block_kick_usernames.append(username)
+                block_kick_usernames.append(username)
             if (
                 not internet_allowed
                 and not disabled
@@ -14706,19 +14886,51 @@ def _pppoe_batch_run_kicks_on_socket(
     *,
     kick_usernames: list[str],
     block_kick_usernames: list[str],
+    host: str = "",
 ) -> tuple[int, list[str]]:
-    """Kick PPPoE sessions and leak/speed retries on an open API session."""
+    """
+    Kick expired/unpaid PPPoE sessions only.
+
+    Paid clients are never disconnected from sweep/batch repair — secrets and
+    address-lists may still be rewritten without a session drop.
+    """
     notes: list[str] = []
     kicked = 0
-    if kick_usernames:
-        kicked = _disconnect_pppoe_sessions_many(sock, kick_usernames)
+    # Only expiry/unpaid usernames — never disconnect paid from kick_usernames.
+    unpaid_kicks: list[str] = []
+    seen: set[str] = set()
+    for raw in block_kick_usernames:
+        name = (raw or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unpaid_kicks.append(name)
+    skipped_paid = [
+        (n or "").strip()
+        for n in kick_usernames
+        if (n or "").strip() and (n or "").strip().lower() not in seen
+    ]
+    if skipped_paid:
+        notes.append(
+            f"skipped paid kick for {len(skipped_paid)} account(s) "
+            "(in-package clients stay dialed)"
+        )
+    if unpaid_kicks:
+        kicked += _disconnect_pppoe_sessions_many(
+            sock,
+            unpaid_kicks,
+            bypass_cooldown=True,
+            reason="expiry",
+            host=host,
+        )
     live_after = _pppoe_live_state_maps(sock)
     leak_retry: list[str] = []
-    if block_kick_usernames:
+    if unpaid_kicks:
         for uname in {
-            (n or "").strip().lower()
-            for n in block_kick_usernames
-            if (n or "").strip()
+            (n or "").strip().lower() for n in unpaid_kicks if (n or "").strip()
         }:
             if not _pppoe_has_active_session(sock, uname, live=live_after):
                 continue
@@ -14726,25 +14938,29 @@ def _pppoe_batch_run_kicks_on_socket(
                 continue
             leak_retry.append(uname)
     if leak_retry:
-        re_kicked = _disconnect_pppoe_sessions_many(sock, leak_retry)
+        re_kicked = _disconnect_pppoe_sessions_many(
+            sock,
+            leak_retry,
+            bypass_cooldown=True,
+            reason="expiry_leak_retry",
+            host=host,
+        )
         kicked += re_kicked
         notes.append(
             f"leak-retry kicked {re_kicked} unpaid "
             f"session(s) still surfing "
             f"({len(leak_retry)} account(s))"
         )
+    # Paid speed-stale: note only — never disconnect from the sweep.
     speed_stale_retry = _pppoe_speed_stale_usernames(
         sock,
         customers,
         live=live_after,
     )
     if speed_stale_retry:
-        re_kicked = _disconnect_pppoe_sessions_many(sock, speed_stale_retry)
-        kicked += re_kicked
         notes.append(
-            f"speed-stale retry kicked {re_kicked} paid "
-            f"session(s) still on old package profile "
-            f"({len(speed_stale_retry)} account(s))"
+            f"speed-stale noted {len(speed_stale_retry)} paid "
+            f"session(s) (no kick — paid clients stay dialed)"
         )
     return kicked, notes
 
@@ -14796,6 +15012,7 @@ def _pppoe_batch_finish_on_router(
                     customers,
                     kick_usernames=kick_usernames,
                     block_kick_usernames=block_kick_usernames,
+                    host=candidate,
                 )
                 notes.extend(kick_notes)
             else:
@@ -14807,6 +15024,7 @@ def _pppoe_batch_finish_on_router(
                         customers,
                         kick_usernames=kick_usernames,
                         block_kick_usernames=block_kick_usernames,
+                        host=candidate,
                     )
                     notes.extend(kick_notes)
         except Exception as exc:  # noqa: BLE001
@@ -15157,8 +15375,13 @@ def _scan_pppoe_repair_targets_on_socket(
         if renew_pending:
             paid_pending_clear.append(customer)
         surfing_ok = bool(active and not blocked_session and not wrong_profile)
+        # Paid soft fix only (secret rewrite / address-list clear). Never put
+        # paid clients on a kick path — sweeps must not drop in-package CPEs.
         if blocked_session or wrong_profile or (renew_pending and not surfing_ok):
-            paid_need_repair.append(customer)
+            if customer not in paid_pending_clear:
+                paid_pending_clear.append(customer)
+        clear_paid_pppoe_repair_confirm(customer)
+        # paid_need_repair stays unused for kicks (legacy callers may still read it).
 
     for customer in unpaid or []:
         username = (customer.pppoe_username or "").strip()
@@ -15275,12 +15498,20 @@ def _repair_unpaid_hotspot_leak_on_socket(
     }
 
 
-def repair_router_access_leaks_on_router(router) -> list[dict[str, Any]]:
+def repair_router_access_leaks_on_router(
+    router,
+    *,
+    repair_paid: bool = True,
+    repair_unpaid: bool = True,
+) -> list[dict[str, Any]]:
     """
     Scan PPPoE + Hotspot access leaks in one API session, then one PPPoE batch.
 
     Replaces three sequential repair passes (paid not surfing, unpaid PPPoE leak,
     unpaid Hotspot leak) for the expiry-watch background loop.
+
+    ``repair_paid`` / ``repair_unpaid`` let expiry-watch run unpaid leak scans
+    more often than paid-not-surfing repairs (which are easier to false-positive).
     """
     from core.models import MikroTikRouter
 
@@ -15294,25 +15525,47 @@ def repair_router_access_leaks_on_router(router) -> list[dict[str, Any]]:
         getattr(router, "account_status", "") == MikroTikRouter.AccountStatus.SUSPENDED
     )
 
-    paid = [
-        customer
-        for customer in _pppoe_customers_for_router(router)
-        if _customer_internet_allowed(customer)
-        and not _customer_pppoe_secret_disabled(customer)
-    ]
-    if not paid:
+    paid: list = []
+    if repair_paid:
+        paid = [
+            customer
+            for customer in _pppoe_customers_for_router(router)
+            if _customer_internet_allowed(customer)
+            and not _customer_pppoe_secret_disabled(customer)
+        ]
+        if not paid:
+            results.append(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "repaired": 0,
+                    "router_id": router_id,
+                    "message": "No paid PPPoE clients on this router.",
+                }
+            )
+    else:
         results.append(
             {
                 "ok": True,
                 "skipped": True,
                 "repaired": 0,
                 "router_id": router_id,
-                "message": "No paid PPPoE clients on this router.",
+                "message": "Paid PPPoE repair skipped this tick.",
             }
         )
 
     unpaid: list = []
-    if suspended:
+    if not repair_unpaid:
+        results.append(
+            {
+                "ok": True,
+                "skipped": True,
+                "repaired": 0,
+                "router_id": router_id,
+                "message": "Unpaid PPPoE leak repair skipped this tick.",
+            }
+        )
+    elif suspended:
         results.append(
             {
                 "ok": True,
@@ -16616,6 +16869,8 @@ def provision_customer_pppoe(
                     and not disabled
                     and profile != PPPOE_BLOCKED_PROFILE_NAME
                 )
+                # Explicit single-customer provision (pay / reconnect) may kick
+                # a paid CPE to redial; fleet sweeps never pass allow_paid_kick.
                 should_kick = _pppoe_customer_needs_session_kick(
                     customer,
                     previous_profile=previous_profile,
@@ -16625,6 +16880,7 @@ def provision_customer_pppoe(
                     session_was_blocked=session_was_blocked,
                     session_active_before=session_active_before,
                     sock=sock,
+                    allow_paid_kick=True,
                 )
                 stuck_unblocked_session = bool(
                     profile == PPPOE_BLOCKED_PROFILE_NAME

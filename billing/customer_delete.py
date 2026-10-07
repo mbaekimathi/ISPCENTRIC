@@ -42,7 +42,9 @@ def clear_customer_live_caches(customer) -> None:
         f"client_cpe_router_data:{org_id}:{customer_id}",
         f"client_cpe_router_data:devices:{org_id}:{customer_id}",
         f"client_cpe_wifi:{org_id}:{customer_id}",
-        f"client_remote_access:{customer_id}:v3",
+        f"client_remote_access:{customer_id}:v4",
+        f"client_remote_access_stable:{customer_id}:v1",
+        f"client_remote_access_pending:{customer_id}:v1",
     ]
     if org_id:
         keys.extend(

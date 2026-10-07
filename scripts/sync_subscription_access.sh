@@ -2,7 +2,8 @@
 # Expire lapsed packages on the NAS (Linux counterpart of
 # scripts/sync_subscription_access.cmd). Hotspot packages are sold by the hour,
 # so this must run on a short interval or a device stays online past the time
-# it paid for. Driven by deploy/systemd/ispcentric-sweep.timer.
+# it paid for. Driven by deploy/systemd/ispcentric-sweep.timer (5 min).
+# Near-deadline cut-off still runs in-process ~every 90s via expiry watch.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

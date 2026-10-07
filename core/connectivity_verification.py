@@ -996,8 +996,9 @@ def evaluate_layered_cpe_access(
     NAS API → session/IP → NAS→CPE ping → web ports via proxy → optional API login.
 
     light=True is for the Clients list Remote column: never enable CPE www/api,
-    prefer cached NAS proxies, and install at most one NAT forward so surfing
-    clients on the same NAS are not disrupted by firewall thrash.
+    prefer cached NAS proxies, and install at most two NAT forwards (last-known
+    web port then :8081) so surfing clients on the same NAS are not disrupted
+    by full multi-port firewall thrash.
 
     failure_class values:
       nas_down | not_eligible | offline | wan_mgmt_blocked | firewall_blocked |

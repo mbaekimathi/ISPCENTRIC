@@ -16869,7 +16869,9 @@ def client_router_login_start(request, customer_id: int):
 
     steps = list(probe.get("steps") or []) + list(login.get("steps") or [])
     # Fresh successful open — drop the list Remote-column cache so operators see Ready.
-    cache.delete(f"client_remote_access:{customer.pk}:v3")
+    cache.delete(f"client_remote_access:{customer.pk}:v4")
+    cache.delete(_client_remote_stable_key(customer.pk))
+    cache.delete(_client_remote_pending_key(customer.pk))
     return JsonResponse(
         {
             **base_meta,
@@ -19318,6 +19320,93 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> dict:
     return {"ok": True, "written": written, "error": ""}
 
 
+# Hold last Ready through brief WG/NAT probe blips so Remote does not flash Setup.
+_CLIENT_REMOTE_STABLE_TTL = 180
+_CLIENT_REMOTE_PENDING_TTL = 120
+_CLIENT_REMOTE_SOFT_FAILURES = 2
+_CLIENT_REMOTE_SOFT_FAILURES_CLASSES = frozenset(
+    {
+        "wan_mgmt_blocked",
+        "proxy_failed",
+        "firewall_blocked",
+        "probe_error",
+    }
+)
+
+
+def _client_remote_stable_key(customer_id: int) -> str:
+    return f"client_remote_access_stable:{int(customer_id)}:v1"
+
+
+def _client_remote_pending_key(customer_id: int) -> str:
+    return f"client_remote_access_pending:{int(customer_id)}:v1"
+
+
+def _stabilize_client_remote_access_row(row: dict) -> dict:
+    """
+    Keep Ready across one soft miss (wrong light port, WG SYN drop, NAT settle).
+
+    Hard offline / NAS-down / password / ineligible clear immediately.
+    """
+    if not isinstance(row, dict):
+        return row
+    try:
+        customer_id = int(row.get("id") or 0)
+    except (TypeError, ValueError):
+        return row
+    if not customer_id:
+        return row
+
+    stable_key = _client_remote_stable_key(customer_id)
+    pending_key = _client_remote_pending_key(customer_id)
+    status = (row.get("status") or "").strip().lower()
+    failure = (row.get("failure_class") or "").strip().lower()
+
+    if status == "ready":
+        cache.set(stable_key, dict(row), _CLIENT_REMOTE_STABLE_TTL)
+        cache.delete(pending_key)
+        return row
+
+    if status == "unavailable" or failure in {
+        "not_eligible",
+        "offline",
+        "nas_down",
+        "bad_credentials",
+    }:
+        cache.delete(stable_key)
+        cache.delete(pending_key)
+        return row
+
+    last_good = cache.get(stable_key)
+    if not isinstance(last_good, dict) or (last_good.get("status") or "") != "ready":
+        return row
+
+    if failure not in _CLIENT_REMOTE_SOFT_FAILURES_CLASSES:
+        cache.delete(stable_key)
+        cache.delete(pending_key)
+        return row
+
+    pending = cache.get(pending_key)
+    count = 1
+    if isinstance(pending, dict):
+        count = int(pending.get("count") or 0) + 1
+    if count < _CLIENT_REMOTE_SOFT_FAILURES:
+        cache.set(pending_key, {"count": count, "failure": failure}, _CLIENT_REMOTE_PENDING_TTL)
+        held = dict(last_good)
+        held["stabilized"] = True
+        held["probe_status"] = status
+        held["probe_failure_class"] = failure
+        held["title"] = (
+            (last_good.get("title") or "Client router web UI is reachable")
+            + " · Last check held — retrying"
+        )
+        return held
+
+    cache.delete(pending_key)
+    cache.delete(stable_key)
+    return row
+
+
 def _client_remote_access_row(
     customer,
     *,
@@ -19331,14 +19420,14 @@ def _client_remote_access_row(
     router should be able to reach the subscriber CPE web UI.
 
     List polls are intentionally non-mutating (light=True): they never enable
-    CPE www/api/ssh and install at most one NAS NAT forward so surfing clients
+    CPE www/api/ssh and install at most two NAS NAT forwards so surfing clients
     on the same NAS are not disrupted.
     """
     from core.connectivity_verification import evaluate_layered_cpe_access
     from core.mikrotik_connect import customer_cpe_access_eligible
 
     customer_id = int(customer.pk)
-    cache_key = f"client_remote_access:{customer_id}:v3"
+    cache_key = f"client_remote_access:{customer_id}:v4"
     if not force:
         cached = cache.get(cache_key)
         if isinstance(cached, dict) and cached.get("id") == customer_id:
@@ -19353,15 +19442,17 @@ def _client_remote_access_row(
             "title": "This client has no CPE to open remotely (Hotspot or incomplete setup)",
             "failure_class": "not_eligible",
         }
+        row = _stabilize_client_remote_access_row(row)
         cache.set(cache_key, row, 120)
         return row
 
     try:
         # Never enable_cpe_web on the list poll — that SSH-mutates the CPE while
         # the customer may be surfing. Force only busts cache and re-probes.
+        # Hosted WG paths need a bit more time than LAN; force uses the longer budget.
         evaluation = evaluate_layered_cpe_access(
             customer,
-            timeout=5.0 if force else 4.0,
+            timeout=6.0 if force else 5.0,
             try_api=False,
             auto_enable=False,
             nas_evaluation=nas_evaluation,
@@ -19376,6 +19467,7 @@ def _client_remote_access_row(
             "title": str(exc) or "Could not check remote access — will retry",
             "failure_class": "probe_error",
         }
+        row = _stabilize_client_remote_access_row(row)
         cache.set(cache_key, row, 20)
         return row
 
@@ -19393,6 +19485,7 @@ def _client_remote_access_row(
             or "Client router web UI is reachable — Open client router should work",
             "failure_class": failure or "ok",
         }
+        row = _stabilize_client_remote_access_row(row)
         cache.set(cache_key, row, 90)
         return row
 
@@ -19423,7 +19516,10 @@ def _client_remote_access_row(
             "title": hint or default_titles.get(failure, default_titles["wan_mgmt_blocked"]),
             "failure_class": failure or "wan_mgmt_blocked",
         }
-        cache.set(cache_key, row, 60)
+        row = _stabilize_client_remote_access_row(row)
+        # Soft holds stay Ready briefly; real Setup must not stick for a full minute
+        # or the column looks permanently misconfigured after a WG blip.
+        cache.set(cache_key, row, 30 if row.get("status") == "ready" else 45)
         return row
 
     if failure == "proxy_failed" or (
@@ -19437,7 +19533,8 @@ def _client_remote_access_row(
             or "PPPoE/session is up but the ISP MikroTik cannot reach CPE management",
             "failure_class": failure or "proxy_failed",
         }
-        cache.set(cache_key, row, 45)
+        row = _stabilize_client_remote_access_row(row)
+        cache.set(cache_key, row, 30 if row.get("status") == "ready" else 45)
         return row
 
     if failure == "nas_down":
@@ -19452,6 +19549,7 @@ def _client_remote_access_row(
             ),
             "failure_class": "nas_down",
         }
+        row = _stabilize_client_remote_access_row(row)
         cache.set(cache_key, row, 25)
         return row
 
@@ -19462,6 +19560,7 @@ def _client_remote_access_row(
         "title": hint or title_offline,
         "failure_class": failure or "offline",
     }
+    row = _stabilize_client_remote_access_row(row)
     cache.set(cache_key, row, 45)
     return row
 
