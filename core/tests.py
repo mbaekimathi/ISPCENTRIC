@@ -10106,6 +10106,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         )
 
     def test_enable_isp_hotspot_publishes_option_114_after_login_html(self):
+        from contextlib import ExitStack
         from unittest.mock import MagicMock
         from types import SimpleNamespace
 
@@ -10138,7 +10139,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 server_attempts_seen.extend(attempts)
             return {"_reply": "!done"}, "*1"
 
-        with (
+        patches = [
             patch(
                 "core.mikrotik_connect._disable_fasttrack_connection_rules",
                 return_value=[],
@@ -10175,8 +10176,8 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 side_effect=fake_add_or_set,
             ),
             patch(
-                "core.mikrotik_connect._clear_captive_dns_hijack",
-                return_value=1,
+                "core.mikrotik_connect._clear_hotspot_captive_dns_hijacks",
+                return_value=2,
             ),
             patch(
                 "core.mikrotik_connect._clear_https_capture_redirect",
@@ -10191,8 +10192,16 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 return_value=["walled garden"],
             ),
             patch(
+                "core.mikrotik_connect._ensure_hotspot_billing_dns_static",
+                return_value=[],
+            ),
+            patch(
                 "core.mikrotik_connect._ensure_hotspot_server_bypass",
                 return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_isp_hotspot_dhcp",
+                return_value=["Hotspot DHCP server on bridge (ispcentric-hs)"],
             ),
             patch(
                 "core.mikrotik_connect._fetch_isp_hotspot_pages",
@@ -10214,7 +10223,10 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 "core.mikrotik_connect._bounce_isp_hotspot_clients",
                 side_effect=track_bounce,
             ),
-        ):
+        ]
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
             notes = _ensure_isp_hotspot_stack(
                 sock,
                 lan_interface="bridge",
@@ -10231,11 +10243,14 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         self.assertTrue(any("option 114" in n for n in notes))
         self.assertTrue(any("Hotspot pay popup" in n for n in notes))
         self.assertTrue(any("pool WAN guard" in n for n in notes))
-        # Dedicated 10.50.50 setup must prefer the identifiable Hotspot pool.
-        self.assertEqual(server_attempts_seen[0].get("address-pool"), ISP_HOTSPOT_POOL)
+        self.assertTrue(any("captive DNS hijack" in n for n in notes))
+        # With Hotspot DHCP live, prefer unpooled Hotspot so option 114 leases work.
+        self.assertNotIn("address-pool", server_attempts_seen[0])
+        self.assertEqual(server_attempts_seen[1].get("address-pool"), ISP_HOTSPOT_POOL)
 
     def test_enable_isp_hotspot_prefers_dedicated_pool_when_lan_has_ipv4(self):
         """Existing LAN IPv4 must not skip 10.50.50 — otherwise is_hotspot_pool_ip fails."""
+        from contextlib import ExitStack
         from unittest.mock import MagicMock
         from types import SimpleNamespace
 
@@ -10261,7 +10276,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         def track_pool(*_a, **kwargs):
             ensured_pools.append(kwargs.get("name") or "")
 
-        with (
+        patches = [
             patch(
                 "core.mikrotik_connect._disable_fasttrack_connection_rules",
                 return_value=[],
@@ -10300,7 +10315,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 side_effect=fake_add_or_set,
             ),
             patch(
-                "core.mikrotik_connect._clear_captive_dns_hijack",
+                "core.mikrotik_connect._clear_hotspot_captive_dns_hijacks",
                 return_value=0,
             ),
             patch(
@@ -10316,8 +10331,16 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 return_value=[],
             ),
             patch(
+                "core.mikrotik_connect._ensure_hotspot_billing_dns_static",
+                return_value=[],
+            ),
+            patch(
                 "core.mikrotik_connect._ensure_hotspot_server_bypass",
                 return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_isp_hotspot_dhcp",
+                return_value=["warning: could not create Hotspot DHCP server"],
             ),
             patch(
                 "core.mikrotik_connect._fetch_isp_hotspot_pages",
@@ -10339,7 +10362,10 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 "core.mikrotik_connect._bounce_isp_hotspot_clients",
                 return_value=[],
             ),
-        ):
+        ]
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
             notes = _ensure_isp_hotspot_stack(
                 sock,
                 lan_interface="bridge",
@@ -10349,8 +10375,62 @@ class IspHotspotInstantPayTests(SimpleTestCase):
 
         self.assertTrue(any("10.50.50.1/24" in a for a in ensured_ips))
         self.assertIn(ISP_HOTSPOT_POOL, ensured_pools)
+        # Without Hotspot DHCP, fall back to Hotspot address-pool assignment.
         self.assertEqual(server_attempts_seen[0].get("address-pool"), ISP_HOTSPOT_POOL)
         self.assertTrue(any("LAN keeps 192.168.88.1" in n for n in notes))
+
+    def test_clear_hotspot_captive_dns_removes_probe_pins_to_gateway(self):
+        """DNS pins to 10.50.50.1 make phones show Connected, no internet."""
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import (
+            ISP_HOTSPOT_ADDRESS,
+            ISP_HOTSPOT_TAG,
+            _clear_hotspot_captive_dns_hijacks,
+        )
+
+        sock = MagicMock()
+        removed: list[str] = []
+
+        def fake_print(sock, path, props=""):
+            if path != "/ip/dns/static":
+                return []
+            return [
+                {
+                    ".id": "*1",
+                    "name": "connectivitycheck.gstatic.com",
+                    "address": ISP_HOTSPOT_ADDRESS,
+                    "comment": "",
+                },
+                {
+                    ".id": "*2",
+                    "name": "captive.apple.com",
+                    "address": "1.1.1.1",
+                    "comment": ISP_HOTSPOT_TAG,
+                },
+                {
+                    ".id": "*3",
+                    "name": "example.org",
+                    "address": ISP_HOTSPOT_ADDRESS,
+                    "comment": "",
+                },
+            ]
+
+        def fake_remove(sock, path, item_id):
+            removed.append(item_id)
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._remove", side_effect=fake_remove),
+            patch("core.mikrotik_connect._command"),
+        ):
+            count = _clear_hotspot_captive_dns_hijacks(
+                sock, hotspot_addresses={ISP_HOTSPOT_ADDRESS}
+            )
+
+        self.assertEqual(count, 2)
+        self.assertEqual(sorted(removed), ["*1", "*2"])
 
     def test_enable_isp_hotspot_aborts_without_absolute_pay_url(self):
         from unittest.mock import MagicMock
@@ -10374,6 +10454,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         self.assertIn("absolute pay URL", str(ctx.exception))
 
     def test_enable_isp_hotspot_aborts_when_login_html_missing(self):
+        from contextlib import ExitStack
         from unittest.mock import MagicMock
         from types import SimpleNamespace
 
@@ -10381,7 +10462,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
 
         sock = MagicMock()
         org = SimpleNamespace(name="Hot ISP", join_code="505050")
-        with (
+        patches = [
             patch(
                 "core.mikrotik_connect._disable_fasttrack_connection_rules",
                 return_value=[],
@@ -10414,7 +10495,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 return_value=({"_reply": "!done"}, "*1"),
             ),
             patch(
-                "core.mikrotik_connect._clear_captive_dns_hijack",
+                "core.mikrotik_connect._clear_hotspot_captive_dns_hijacks",
                 return_value=0,
             ),
             patch(
@@ -10430,14 +10511,29 @@ class IspHotspotInstantPayTests(SimpleTestCase):
                 return_value=[],
             ),
             patch(
+                "core.mikrotik_connect._ensure_hotspot_billing_dns_static",
+                return_value=[],
+            ),
+            patch(
                 "core.mikrotik_connect._ensure_hotspot_server_bypass",
                 return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_isp_hotspot_dhcp",
+                return_value=["Hotspot DHCP server on bridge (ispcentric-hs)"],
             ),
             patch(
                 "core.mikrotik_connect._fetch_isp_hotspot_pages",
                 return_value=["could not write hotspot/login.html"],
             ),
-        ):
+            patch(
+                "core.mikrotik_connect._hotspot_login_file_ok",
+                return_value=False,
+            ),
+        ]
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
             with self.assertRaises(ConnectionError) as ctx:
                 _ensure_isp_hotspot_stack(
                     sock,

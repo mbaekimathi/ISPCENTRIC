@@ -15508,15 +15508,24 @@ def _repair_unpaid_hotspot_leak_on_socket(
         or "killed" in n
         for n in notes
     )
-    if leak_found:
-        notes.extend(_ensure_hotspot_pool_wan_guard(sock, portal_url=portal))
-        notes.extend(
-            _ensure_hotspot_tether_block(
-                sock,
-                enabled=bool(getattr(org, "hotspot_block_tethering", True)),
-            )
+    login_broken = not _hotspot_login_file_ok(sock)
+    # Always heal captive DNS / login.html — blank portal leaves every phone on
+    # "Connected, no internet" even when no orphan leak was found this tick.
+    try:
+        cleared = _clear_hotspot_captive_dns_hijacks(
+            sock, hotspot_addresses={ISP_HOTSPOT_ADDRESS}
         )
-        try:
+        if cleared:
+            notes.append(f"cleared {cleared} captive DNS hijack(s)")
+        if leak_found or login_broken:
+            notes.extend(_ensure_hotspot_pool_wan_guard(sock, portal_url=portal))
+            notes.extend(
+                _ensure_hotspot_tether_block(
+                    sock,
+                    enabled=bool(getattr(org, "hotspot_block_tethering", True)),
+                )
+            )
+        if login_broken or leak_found:
             urls = _hotspot_portal_urls_for_org(org)
             page_notes = _fetch_isp_hotspot_pages(
                 sock,
@@ -15526,6 +15535,16 @@ def _repair_unpaid_hotspot_leak_on_socket(
                 welcome_url=urls.get("welcome_url") or "",
             )
             notes.extend(page_notes[:3])
+            lan = _resolve_lan_interface(
+                sock,
+                getattr(router, "lan_bridge", None) or "bridgeLocal",
+                exclude=getattr(router, "wan_interface", None) or "ether1",
+            )
+            notes.extend(
+                _ensure_isp_hotspot_dhcp(
+                    sock, lan_interface=lan, hotspot_address=ISP_HOTSPOT_ADDRESS
+                )
+            )
             notes.extend(
                 _ensure_captive_portal_dhcp_option(
                     sock,
@@ -15533,12 +15552,15 @@ def _repair_unpaid_hotspot_leak_on_socket(
                     comment=ISP_HOTSPOT_TAG,
                 )
             )
-            # Orphan purge already kills stray WAN sessions; bouncing Wi‑Fi here
-            # drops captive browsers mid-load and causes ERR_CONNECTION_ABORTED.
-        except Exception as exc:  # noqa: BLE001
-            notes.append(
-                f"warning: captive refresh after leak repair failed: {exc}"
-            )
+        if login_broken:
+            # Only bounce when portal was broken — avoids mid-pay disconnects
+            # during routine orphan sweeps.
+            notes.extend(_bounce_isp_hotspot_clients(sock, drop_wifi=True))
+            notes.append("bounced unpaid Wi‑Fi after captive repair")
+    except Exception as exc:  # noqa: BLE001
+        notes.append(
+            f"warning: captive refresh after leak repair failed: {exc}"
+        )
     repaired = sum(
         1
         for n in notes
@@ -15546,11 +15568,15 @@ def _repair_unpaid_hotspot_leak_on_socket(
         or "blocked untagged" in n
         or "purged" in n
         or "killed" in n
+        or "login.html" in n
+        or "captive DNS" in n
+        or "bounced unpaid" in n
     )
     return {
         "ok": True,
         "skipped": repaired == 0
-        and not any("pool WAN guard" in n for n in notes),
+        and not any("pool WAN guard" in n for n in notes)
+        and not login_broken,
         "repaired": repaired,
         "router_id": router_id,
         "host": host,
@@ -17685,6 +17711,154 @@ def _clear_captive_dns_hijack(sock: socket.socket, comment: str) -> int:
     return removed
 
 
+def _clear_hotspot_captive_dns_hijacks(
+    sock: socket.socket,
+    *,
+    hotspot_addresses: set[str] | None = None,
+) -> int:
+    """
+    Remove every static DNS pin that kills the OS Sign-in / pay popup.
+
+    Clears rows tagged by ISP Hotspot, CPE renew, or PPPoE stacks, plus any
+    untagged probe hostname that resolves to a Hotspot gateway IP (manual or
+    leftover configs). Without this, phones report "Connected, no internet"
+    and never open the captive sheet.
+    """
+    wanted = {host.lower() for host in CAPTIVE_PROBE_HOSTS}
+    tags = (ISP_HOTSPOT_TAG, RENEW_HOTSPOT_TAG, PPP_SECRET_TAG)
+    hot_ips = {
+        (ip or "").strip()
+        for ip in (hotspot_addresses or set())
+        if (ip or "").strip()
+    }
+    hot_ips.add(ISP_HOTSPOT_ADDRESS)
+    hot_ips.add(RENEW_HOTSPOT_ADDRESS)
+    removed = 0
+    for row in _print(
+        sock, "/ip/dns/static", props=".id,name,address,comment"
+    ):
+        name = (row.get("name") or "").strip().lower()
+        if name not in wanted:
+            continue
+        comment = row.get("comment") or ""
+        addr = (row.get("address") or "").strip()
+        tagged = any(tag in comment for tag in tags)
+        if not tagged and addr not in hot_ips:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        if _remove(sock, "/ip/dns/static", item_id).get("_reply") != "!trap":
+            removed += 1
+    try:
+        _command(sock, ["/ip/dns/set", "=allow-remote-requests=yes"])
+    except Exception:
+        pass
+    return removed
+
+
+def _ensure_isp_hotspot_dhcp(
+    sock: socket.socket,
+    *,
+    lan_interface: str,
+    hotspot_address: str = ISP_HOTSPOT_ADDRESS,
+) -> list[str]:
+    """
+    DHCP server + network for the Hotspot pool so option 114 reaches phones.
+
+    Hotspot ``address-pool`` alone assigns IPs without DHCP options, so Android
+    11+ / iOS 14+ never see RFC 8910 and stay on "Connected, no internet".
+    A real DHCP lease on ``10.50.50.0/24`` carries the captive-portal URI.
+    """
+    notes: list[str] = []
+    lan = (lan_interface or "").strip()
+    gateway = (hotspot_address or ISP_HOTSPOT_ADDRESS).strip() or ISP_HOTSPOT_ADDRESS
+    if not lan:
+        return notes
+
+    server_name = "ispcentric-hs-dhcp"
+    server_id = ""
+    for row in _print(
+        sock, "/ip/dhcp-server", props=".id,name,interface,comment"
+    ):
+        if (row.get("name") or "").strip() == server_name or ISP_HOTSPOT_TAG in (
+            row.get("comment") or ""
+        ):
+            # Prefer a server already bound to this LAN / our tag.
+            if (row.get("interface") or "").strip() in {"", lan} or ISP_HOTSPOT_TAG in (
+                row.get("comment") or ""
+            ):
+                server_id = (row.get(".id") or "").strip()
+                if (row.get("name") or "").strip() == server_name:
+                    break
+
+    server_attempts = [
+        {
+            "name": server_name,
+            "interface": lan,
+            "address-pool": ISP_HOTSPOT_POOL,
+            "disabled": "no",
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "name": server_name,
+            "interface": lan,
+            "address-pool": ISP_HOTSPOT_POOL,
+            "disabled": "no",
+        },
+    ]
+    terminal, server_id = _add_or_set_attempts(
+        sock, "/ip/dhcp-server", server_id, server_attempts
+    )
+    if terminal.get("_reply") == "!trap":
+        notes.append(
+            "warning: could not create Hotspot DHCP server — "
+            "option 114 may not reach phones"
+        )
+    else:
+        notes.append(f"Hotspot DHCP server on {lan} ({ISP_HOTSPOT_POOL})")
+
+    network_id = ""
+    for row in _print(
+        sock, "/ip/dhcp-server/network", props=".id,address,comment"
+    ):
+        addr = (row.get("address") or "").strip()
+        if addr == ISP_HOTSPOT_POOL_NETWORK or ISP_HOTSPOT_TAG in (
+            row.get("comment") or ""
+        ):
+            network_id = (row.get(".id") or "").strip()
+            if addr == ISP_HOTSPOT_POOL_NETWORK:
+                break
+
+    network_attempts = [
+        {
+            "address": ISP_HOTSPOT_POOL_NETWORK,
+            "gateway": gateway,
+            "dns-server": gateway,
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "address": ISP_HOTSPOT_POOL_NETWORK,
+            "gateway": gateway,
+            "dns-server": gateway,
+        },
+        {
+            "address": ISP_HOTSPOT_POOL_NETWORK,
+            "gateway": gateway,
+        },
+    ]
+    terminal, _ = _add_or_set_attempts(
+        sock, "/ip/dhcp-server/network", network_id, network_attempts
+    )
+    if terminal.get("_reply") == "!trap":
+        notes.append(
+            f"warning: could not publish DHCP network {ISP_HOTSPOT_POOL_NETWORK}"
+        )
+    else:
+        notes.append(f"Hotspot DHCP network {ISP_HOTSPOT_POOL_NETWORK}")
+    return notes
+
+
 def _clear_https_capture_redirect(sock: socket.socket, *, comment: str) -> int:
     """Drop any tagged ``dstnat`` TCP/443 → 80 rule.
 
@@ -18534,6 +18708,7 @@ def repair_hotspot_captive_portal(
                 enabled=True,
                 organization=organization,
                 reauthenticate=reauthenticate,
+                bounce_clients=True,
             )
         except Exception as exc:  # noqa: BLE001
             last = {
@@ -24285,6 +24460,9 @@ def _ensure_isp_hotspot_stack(
     # full-page certificate warning at the exact moment the customer should be
     # getting online. HTTP probe interception is what actually triggers portal
     # detection, so nothing is lost by keeping the login endpoint plain HTTP.
+    #
+    # Never fall back to a profile without http-pap/http-chap — that leaves
+    # clients associated with WAN blocked and no Sign-in / pay popup.
     profile_attempts = [
         {
             "name": ISP_HOTSPOT_PROFILE,
@@ -24309,6 +24487,7 @@ def _ensure_isp_hotspot_stack(
             "hotspot-address": hotspot_address,
             "html-directory": "hotspot",
             "login-by": "mac,http-chap",
+            "open-status-page": "http-login",
             "comment": ISP_HOTSPOT_TAG,
         },
         {
@@ -24316,11 +24495,8 @@ def _ensure_isp_hotspot_stack(
             "hotspot-address": hotspot_address,
             "html-directory": "hotspot",
             "login-by": "http-pap",
-        },
-        {
-            "name": ISP_HOTSPOT_PROFILE,
-            "hotspot-address": hotspot_address,
-            "html-directory": "hotspot",
+            "open-status-page": "http-login",
+            "comment": ISP_HOTSPOT_TAG,
         },
     ]
     terminal, profile_id = _add_or_set_attempts(
@@ -24332,6 +24508,14 @@ def _ensure_isp_hotspot_stack(
         )
     notes.append("Hotspot profile ready")
 
+    # DHCP for 10.50.50 so option 114 reaches phones (Hotspot address-pool alone
+    # assigns IPs without DHCP options → modern OS never opens Sign-in).
+    dhcp_notes = _ensure_isp_hotspot_dhcp(
+        sock, lan_interface=lan, hotspot_address=hotspot_address
+    )
+    notes.extend(dhcp_notes)
+    dhcp_ok = any("Hotspot DHCP server on" in n for n in dhcp_notes)
+
     server_id = ""
     for row in _print(sock, "/ip/hotspot", props=".id,name,interface,comment,disabled"):
         if (row.get("name") or "").strip() == ISP_HOTSPOT_NAME or ISP_HOTSPOT_TAG in (
@@ -24340,9 +24524,8 @@ def _ensure_isp_hotspot_stack(
             server_id = (row.get(".id") or "").strip()
             break
 
-    # Prefer the dedicated 10.50.50 pool so phones get an identifiable Hotspot IP
-    # (middleware → /hotspot/…/pay/). Fall back to existing LAN DHCP only if
-    # RouterOS rejects the dedicated pool binding.
+    # When DHCP is live, prefer Hotspot without address-pool so leases (and
+    # option 114) come from dhcp-server. Fall back to Hotspot pool assignment.
     pooled = {
         "name": ISP_HOTSPOT_NAME,
         "interface": lan,
@@ -24358,12 +24541,20 @@ def _ensure_isp_hotspot_stack(
         "disabled": "no",
         "comment": ISP_HOTSPOT_TAG,
     }
-    server_attempts = [
-        pooled,
-        unpooled,
-        {k: v for k, v in unpooled.items() if k != "comment"},
-        {"name": ISP_HOTSPOT_NAME, "interface": lan, "disabled": "no"},
-    ]
+    if dhcp_ok:
+        server_attempts = [
+            unpooled,
+            pooled,
+            {k: v for k, v in unpooled.items() if k != "comment"},
+            {"name": ISP_HOTSPOT_NAME, "interface": lan, "disabled": "no"},
+        ]
+    else:
+        server_attempts = [
+            pooled,
+            unpooled,
+            {k: v for k, v in unpooled.items() if k != "comment"},
+            {"name": ISP_HOTSPOT_NAME, "interface": lan, "disabled": "no"},
+        ]
     terminal, server_id = _add_or_set_attempts(
         sock, "/ip/hotspot", server_id, server_attempts
     )
@@ -24375,11 +24566,25 @@ def _ensure_isp_hotspot_stack(
             raise ConnectionError(_interface_mismatch_error(sock, message, lan))
         raise ConnectionError(message)
     notes.append(f"Hotspot server on {lan}")
+    if dhcp_ok:
+        notes.append("Hotspot uses DHCP leases so Sign-in (option 114) can open")
 
     garden_url = login_url or pay_url or redirect_url or welcome_url or alogin_url
 
-    if _clear_captive_dns_hijack(sock, ISP_HOTSPOT_TAG):
-        notes.append("captive probe hostnames resolve normally again")
+    # Broken /login.html or DNS pins → "Connected, no internet" with no popup.
+    login_was_broken = not _hotspot_login_file_ok(sock)
+    cleared_dns = _clear_hotspot_captive_dns_hijacks(
+        sock,
+        hotspot_addresses={
+            hotspot_address,
+            lan_ipv4 or "",
+            ISP_HOTSPOT_ADDRESS,
+        },
+    )
+    if cleared_dns:
+        notes.append(
+            f"cleared {cleared_dns} captive DNS hijack(s) — probes resolve normally"
+        )
     if _clear_https_capture_redirect(sock, comment=ISP_HOTSPOT_TAG):
         notes.append("removed HTTPS-to-HTTP capture rule")
     notes.extend(
@@ -24411,9 +24616,10 @@ def _ensure_isp_hotspot_stack(
     if not login_ready:
         raise ConnectionError(
             "ISP Hotspot enabled but hotspot/login.html is missing or empty. "
-            "Phones would show a blank captive page. "
+            "Phones would show Connected, no internet with no pay popup. "
             + "; ".join(page_notes[-4:])
         )
+    notes.append("Hotspot pay popup login.html ready")
 
     # RFC 8910 option 114: Android 11+ / iOS 14+ / Win11 raise the sign-in
     # popup the moment Wi‑Fi associates — do not wait for an HTTP probe.
@@ -24437,10 +24643,13 @@ def _ensure_isp_hotspot_stack(
             enabled=bool(getattr(organization, "hotspot_block_tethering", True)),
         )
     )
-    # Always clear unpaid Hotspot host/cookie leftovers so login.html is served
-    # again. Paid (authorized) sessions are left alone. Optional Wi‑Fi bounce
-    # forces a fresh captive probe when the caller asks for it.
-    notes.extend(_bounce_isp_hotspot_clients(sock, drop_wifi=bounce_clients))
+    # Clear unpaid host/cookie leftovers so login.html is served again.
+    # Bounce Wi‑Fi when the caller asks OR when login.html was missing/broken
+    # so stuck "Connected, no internet" clients re-probe and open Sign-in.
+    should_bounce = bool(bounce_clients or login_was_broken)
+    notes.extend(_bounce_isp_hotspot_clients(sock, drop_wifi=should_bounce))
+    if should_bounce:
+        notes.append("bounced unpaid Wi‑Fi for Sign-in / pay popup")
     return notes
 
 
@@ -24460,6 +24669,7 @@ def _push_hotspot_enabled_on_socket(
     welcome_url: str,
     lan_interface: str | None = None,
     wan_interface: str | None = None,
+    bounce_clients: bool = False,
 ) -> tuple[list[str], int, str]:
     """Full ISP Hotspot push on an existing RouterOS API session."""
     lan = lan_interface or getattr(router, "lan_bridge", None) or "bridgeLocal"
@@ -24476,7 +24686,7 @@ def _push_hotspot_enabled_on_socket(
         pay_url=pay_url,
         welcome_url=welcome_url or redirect_url,
         wifi_ssid=(getattr(router, "wifi_ssid", None) or "").strip(),
-        bounce_clients=False,
+        bounce_clients=bounce_clients,
     )
     notes.extend(
         _ensure_hotspot_management_access(
@@ -24538,8 +24748,15 @@ def apply_hotspot_on_router(
     pay_url: str = "",
     welcome_url: str = "",
     candidate_hosts: list[str] | None = None,
+    bounce_clients: bool = True,
 ) -> dict[str, Any]:
-    """Push or remove ISP Hotspot configuration on one onboarded MikroTik."""
+    """Push or remove ISP Hotspot configuration on one onboarded MikroTik.
+
+    ``bounce_clients`` (default True) drops unpaid Wi‑Fi associations after a
+    successful push so phones re-probe and open Sign-in → pay. Background
+    sweeps that must not interrupt mid-pay can pass ``bounce_clients=False``;
+    a broken login.html still auto-bounces inside the stack.
+    """
     if router is None:
         return {"ok": False, "error": "No router provided."}
 
@@ -24676,6 +24893,7 @@ def apply_hotspot_on_router(
                         welcome_url=welcome_url,
                         lan_interface=lan_interface,
                         wan_interface=wan_interface,
+                        bounce_clients=bounce_clients,
                     )
                 else:
                     notes = _disable_isp_hotspot_stack(sock)
