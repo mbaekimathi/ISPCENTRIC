@@ -667,13 +667,15 @@ class HotspotConnectSpeedTests(TestCase):
         self.assertTrue(data["authorized"])
         self.assertTrue(data["offline"])
 
-    def test_portal_login_url_points_at_reconnect_gateway(self):
+    def test_portal_login_url_points_at_pay_page(self):
         from core.hotspot_portal import hotspot_portal_urls
 
         urls = hotspot_portal_urls(self.org.join_code)
-        self.assertIn("/reconnect/", urls["login_url"])
+        # login.html on the NAS redirects straight to /pay/ (one hop).
+        self.assertIn("/pay/", urls["login_url"])
         self.assertIn("/reconnect/", urls["reconnect_url"])
         self.assertIn("/pay/", urls["pay_url"])
+        self.assertTrue(urls["login_url"].startswith("http://"))
 
     def test_welcome_page_starts_in_loading_state(self):
         url = reverse(

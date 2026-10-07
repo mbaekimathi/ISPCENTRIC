@@ -2652,6 +2652,34 @@ class CaptiveProbeMiddlewareTests(TestCase):
             "connectivitycheck.gstatic.com",
         )
 
+    @override_settings(PUBLIC_BASE_URL="https://billing.example")
+    def test_https_public_base_still_redirects_probes_over_http(self):
+        """Captive sheets stall on HTTPS/HSTS — probe Location must be http://."""
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        from ispcentric.middleware import HotspotCaptiveProbeMiddleware
+
+        cache.clear()
+
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        middleware = HotspotCaptiveProbeMiddleware(get_response)
+        request = RequestFactory().get(
+            "/generate_204",
+            HTTP_HOST="connectivitycheck.gstatic.com",
+            REMOTE_ADDR="10.50.50.21",
+        )
+        response = middleware(request)
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            response.url.startswith("http://billing.example/"),
+            response.url,
+        )
+        self.assertIn(f"/hotspot/{self.org.join_code}/reconnect/", response.url)
+
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
     def test_mobile_oem_probe_hosts_redirect(self):
         from django.core.cache import cache

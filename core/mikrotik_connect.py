@@ -11999,18 +11999,9 @@ def _ensure_pppoe_stack(
 
 def _prefer_http_captive_url(url: str) -> str:
     """Captive WebViews stall on HTTPS/HSTS — prefer http:// for pay popups."""
-    url = (url or "").strip()
-    if not url:
-        return ""
-    parsed = urlparse(url)
-    if (parsed.scheme or "").lower() != "https" or not parsed.hostname:
-        return url
-    netloc = parsed.hostname
-    if parsed.port and parsed.port not in (80, 443):
-        netloc = f"{netloc}:{parsed.port}"
-    return urlunparse(
-        ("http", netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
-    )
+    from core.hotspot_portal import prefer_http_captive_url
+
+    return prefer_http_captive_url(url)
 
 
 def _resolve_absolute_captive_url(url: str = "") -> str:
@@ -18352,13 +18343,16 @@ def _bounce_cpe_wifi_clients(sock: socket.socket) -> list[str]:
     return _bounce_wifi_clients(sock, reason="captive renew popup")
 
 
-def _bounce_isp_hotspot_clients(sock: socket.socket) -> list[str]:
+def _bounce_isp_hotspot_clients(
+    sock: socket.socket, *, drop_wifi: bool = True
+) -> list[str]:
     """
-    Force unpaid Hotspot Wi‑Fi clients to re-probe so the pay page opens.
+    Force unpaid Hotspot clients back onto login.html / the pay page.
 
     Clears leftover Hotspot cookies (cookie login is disabled, but stale cookies
-    still confuse some RouterOS builds), clears unauthorized host/active rows,
-    then drops Wi‑Fi associations **only for unauthorized MACs**.
+    still confuse some RouterOS builds) and unauthorized host/active rows.
+    When ``drop_wifi`` is True, also drops Wi‑Fi associations **only for
+    unauthorized MACs** so the OS re-probes and opens the captive sheet.
 
     Paid (authorized) Hotspot sessions must not be bounced — a prior blanket
     registration-table wipe disconnected every surfing client whenever the
@@ -18393,7 +18387,7 @@ def _bounce_isp_hotspot_clients(sock: socket.socket) -> list[str]:
                 cleared += 1
     if cleared:
         notes.append(f"cleared {cleared} unauthorized Hotspot host(s)")
-    if unauthorized_macs:
+    if drop_wifi and unauthorized_macs:
         notes.extend(
             _bounce_wifi_clients_for_macs(
                 sock,
@@ -19760,6 +19754,22 @@ def resolve_captive_organization(client_ip: str = ""):
         if len(candidates) == 1:
             _captive_cache_set(cache_key, candidates[0].pk, _CAPTIVE_ORG_CACHE_TTL)
             return candidates[0]
+
+    # Masqueraded captive traffic arrives as the router's WireGuard/LAN API
+    # address (10.9.0.x), not the PPPoE pool IP. Map that hop to the router's
+    # org so multi-tenant probes still 302 to /pppoe/<join>/pay/ instead of 404.
+    for router in routers:
+        org = router.organization
+        if org is None:
+            continue
+        for addr in (
+            (router.vpn_address or "").strip(),
+            (router.host or "").strip(),
+            (getattr(router, "api_host", None) or "").strip(),
+        ):
+            if addr and addr == client_ip:
+                _captive_cache_set(cache_key, org.pk, _CAPTIVE_ORG_CACHE_TTL)
+                return org
 
     # Multi-tenant without a session match: do not guess a join_code.
     return None
@@ -24048,8 +24058,10 @@ def _ensure_isp_hotspot_stack(
             enabled=bool(getattr(organization, "hotspot_block_tethering", True)),
         )
     )
-    if bounce_clients:
-        notes.extend(_bounce_isp_hotspot_clients(sock))
+    # Always clear unpaid Hotspot host/cookie leftovers so login.html is served
+    # again. Paid (authorized) sessions are left alone. Optional Wi‑Fi bounce
+    # forces a fresh captive probe when the caller asks for it.
+    notes.extend(_bounce_isp_hotspot_clients(sock, drop_wifi=bounce_clients))
     return notes
 
 

@@ -6,9 +6,15 @@ from django.core.management.commands.runserver import Command as RunserverComman
 
 
 class Command(RunserverCommand):
+    # Bind all interfaces so Hotspot phones / MikroTik can reach the pay page.
+    # Plain ``runserver 8000`` defaults to 127.0.0.1 and silently breaks captive
+    # redirects that advertise this PC's LAN IP.
+    default_addr = "0.0.0.0"
+
     help = (
         "Start the development server with faster reloads "
         "(skips system checks unless --checks is passed). "
+        "Listens on 0.0.0.0 so Hotspot clients can open the captive pay page. "
         "WireGuard peer sync and subscription access sweep start automatically "
         "from AppConfig (same as hosted WSGI / plain runserver)."
     )

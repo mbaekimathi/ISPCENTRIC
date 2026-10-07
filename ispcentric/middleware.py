@@ -75,6 +75,10 @@ class RealClientIpMiddleware:
     it against /ppp/active — and a reverse proxy would otherwise make every
     request look like it came from the proxy itself. Only headers from a
     trusted proxy address are honoured, since X-Forwarded-For is spoofable.
+
+    gunicorn bound to a unix socket often reports REMOTE_ADDR as empty; treat
+    that as a local trusted hop so X-Real-IP / X-Forwarded-For still apply.
+    Without this, multi-tenant captive probes 404 (org cannot be resolved).
     """
 
     def __init__(self, get_response):
@@ -84,9 +88,14 @@ class RealClientIpMiddleware:
         from django.conf import settings
 
         trusted = set(getattr(settings, "TRUSTED_PROXY_IPS", ()) or ())
-        if (request.META.get("REMOTE_ADDR") or "").strip() in trusted:
-            forwarded = (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",")
-            client = forwarded[0].strip() if forwarded else ""
+        remote = (request.META.get("REMOTE_ADDR") or "").strip()
+        # Empty / unix: nginx → gunicorn.sock (common VPS layout).
+        from_trusted_hop = remote in trusted or remote in {"", "unix"}
+        if from_trusted_hop:
+            client = (request.META.get("HTTP_X_REAL_IP") or "").strip()
+            if not client:
+                forwarded = (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",")
+                client = forwarded[0].strip() if forwarded else ""
             if client:
                 request.META["REMOTE_ADDR"] = client
         return self.get_response(request)
@@ -140,17 +149,69 @@ class CaptiveHostRewriteMiddleware:
             from django.conf import settings
 
             try:
-                from core.hotspot_portal import public_base_url
+                from core.hotspot_portal import (
+                    prefer_http_captive_url,
+                    preferred_lan_ipv4,
+                    public_base_url,
+                )
 
-                base = public_base_url(request) or (
-                    getattr(settings, "PUBLIC_BASE_URL", "") or ""
-                ).strip()
+                base = prefer_http_captive_url(
+                    public_base_url(request)
+                    or (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+                )
             except Exception:
                 base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+                preferred_lan_ipv4 = None  # type: ignore[assignment]
             parsed = urlparse(base)
             if parsed.hostname:
                 port = f":{parsed.port}" if parsed.port else ""
                 request.META["HTTP_HOST"] = f"{parsed.hostname}{port}"
+            else:
+                # Never leave a probe/private Host in place — CommonMiddleware
+                # would 400 DisallowedHost before HotspotCaptiveProbeMiddleware.
+                # Hosted: prefer a public ALLOWED_HOSTS entry (phones cannot
+                # reach the VPS LAN IP). Local DEBUG: prefer this machine's LAN.
+                fallback = ""
+                hosted = bool(getattr(settings, "HOSTED", False))
+                if not hosted:
+                    try:
+                        fallback = (
+                            (preferred_lan_ipv4() or "").strip()
+                            if preferred_lan_ipv4
+                            else ""
+                        )
+                    except Exception:
+                        fallback = ""
+                if not fallback:
+                    for candidate in getattr(settings, "ALLOWED_HOSTS", []) or []:
+                        candidate = (candidate or "").strip()
+                        if (
+                            candidate
+                            and candidate != "*"
+                            and not candidate.startswith(".")
+                            and candidate.lower() not in CAPTIVE_PROBE_HOSTS
+                        ):
+                            # Skip private IPs on hosted — same dead-end as above.
+                            if hosted:
+                                try:
+                                    import ipaddress
+
+                                    addr = ipaddress.ip_address(candidate)
+                                    if addr.is_private:
+                                        continue
+                                except ValueError:
+                                    pass
+                            fallback = candidate
+                            break
+                if fallback:
+                    if (
+                        not hosted
+                        and getattr(settings, "DEBUG", False)
+                        and ":" not in fallback
+                    ):
+                        # Local runserver listens on :8000; keep Host consistent.
+                        fallback = f"{fallback}:8000"
+                    request.META["HTTP_HOST"] = fallback
         return self.get_response(request)
 
 
@@ -419,15 +480,19 @@ class HotspotCaptiveProbeMiddleware:
                 ),
                 kwargs={"join_code": org.join_code},
             )
-        try:
-            from core.hotspot_portal import public_base_url
+        from core.hotspot_portal import prefer_http_captive_url, public_base_url
 
-            base = (public_base_url(request) or "").rstrip("/")
+        try:
+            base = prefer_http_captive_url(public_base_url(request) or "").rstrip("/")
         except Exception:
-            base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+            base = prefer_http_captive_url(
+                (getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+            )
         if not base:
-            base = request.build_absolute_uri("/").rstrip("/")
-        target = f"{base}{pay_path}"
+            base = prefer_http_captive_url(
+                request.build_absolute_uri("/")
+            ).rstrip("/")
+        target = prefer_http_captive_url(f"{base}{pay_path}")
         if query:
             target = f"{target}?{query}"
         if prefer_pppoe:

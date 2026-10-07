@@ -20,6 +20,29 @@ def is_loopback_url(url: str) -> bool:
     return host in {"localhost", "127.0.0.1", "::1"}
 
 
+def prefer_http_captive_url(url: str) -> str:
+    """
+    Captive WebViews stall on HTTPS/HSTS — prefer http:// for pay popups.
+
+    Used by MikroTik login.html, probe middleware, and portal URL builders so a
+    https PUBLIC_BASE_URL never ships into an OS captive sheet.
+    """
+    url = (url or "").strip()
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    if (parsed.scheme or "").lower() != "https" or not parsed.hostname:
+        return url
+    netloc = parsed.hostname
+    if parsed.port and parsed.port not in (80, 443):
+        netloc = f"{netloc}:{parsed.port}"
+    from urllib.parse import urlunparse
+
+    return urlunparse(
+        ("http", netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+
 def local_ipv4_addresses() -> set[str]:
     """Every IPv4 address this machine currently answers on."""
     found: set[str] = set()
@@ -398,18 +421,20 @@ def public_absolute_url(path: str, request=None) -> str:
 
 def hotspot_portal_urls(join_code: str, request=None) -> dict[str, str]:
     """Absolute URLs for Hotspot portal pages pushed to MikroTik."""
-    # login.html hits /reconnect/ first so paid MACs skip the pay page.
+    # login.html on the NAS redirects straight to /pay/ (one hop). Probe
+    # middleware and reconnect/ still use /reconnect/ so paid MACs can skip pay.
     reconnect_path = reverse(
         "core:hotspot_reconnect", kwargs={"join_code": join_code}
     )
     captive_login_path = reverse(
         "core:hotspot_captive_login", kwargs={"join_code": join_code}
     )
-    login_path = reconnect_path
+    pay_path = reverse("core:hotspot_pay", kwargs={"join_code": join_code})
+    # login_url tracks the page installed into hotspot/login.html (/pay/).
+    login_path = pay_path
     alogin_path = reverse("core:hotspot_alogin_page", kwargs={"join_code": join_code})
     welcome_path = reverse("core:hotspot_welcome", kwargs={"join_code": join_code})
-    pay_path = reverse("core:hotspot_pay", kwargs={"join_code": join_code})
-    base = public_base_url(request)
+    base = prefer_http_captive_url(public_base_url(request) or "")
     configured = _normalize_configured_base(
         getattr(settings, "PUBLIC_BASE_URL", "") or ""
     )
@@ -420,6 +445,10 @@ def hotspot_portal_urls(join_code: str, request=None) -> dict[str, str]:
         else ""
     )
     effective_reason = unreachable_base_url_reason(base or "")
+
+    def _abs(path: str) -> str:
+        return prefer_http_captive_url(public_absolute_url(path, request))
+
     return {
         "login_path": login_path,
         "captive_login_path": captive_login_path,
@@ -427,19 +456,19 @@ def hotspot_portal_urls(join_code: str, request=None) -> dict[str, str]:
         "alogin_path": alogin_path,
         "welcome_path": welcome_path,
         "pay_path": pay_path,
-        "login_url": public_absolute_url(login_path, request),
-        "captive_login_url": public_absolute_url(captive_login_path, request),
-        "reconnect_url": public_absolute_url(reconnect_path, request),
-        "alogin_url": public_absolute_url(alogin_path, request),
-        "welcome_url": public_absolute_url(welcome_path, request),
-        "pay_url": public_absolute_url(pay_path, request),
+        "login_url": _abs(login_path),
+        "captive_login_url": _abs(captive_login_path),
+        "reconnect_url": _abs(reconnect_path),
+        "alogin_url": _abs(alogin_path),
+        "welcome_url": _abs(welcome_path),
+        "pay_url": _abs(pay_path),
         "base_url": base,
         "base_is_loopback": is_loopback_url(base or ""),
         "base_unreachable_reason": effective_reason or configured_reason,
         "base_auto_selected": bool(
             base
             and configured
-            and base.rstrip("/") != configured.rstrip("/")
+            and prefer_http_captive_url(configured).rstrip("/") != base.rstrip("/")
         )
         or bool(base and not configured),
     }

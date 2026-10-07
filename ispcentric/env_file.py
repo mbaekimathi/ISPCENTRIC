@@ -58,6 +58,14 @@ def load_project_env(base_dir: Path | str, *, override: bool = False) -> bool:
     except OSError:
         pass
 
-    ok = load_dotenv(path, override=override, encoding="utf-8-sig")
+    # interpolate=False: secrets often contain $ / % (e.g. Django SECRET_KEY).
+    # Default dotenv expansion turns $w569 into an empty var and breaks
+    # FIELD_ENCRYPTION_KEY decrypt of enc1: DB fields.
+    ok = load_dotenv(
+        path,
+        override=override,
+        encoding="utf-8-sig",
+        interpolate=False,
+    )
     _LOADED.add(key)
     return bool(ok)

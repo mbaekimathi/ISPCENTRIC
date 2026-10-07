@@ -136,6 +136,9 @@ ALLOWED_HOSTS += [
     "connectivitycheck.platform.hicloud.com",
     "connectivitycheck.platform.hihonorcloud.com",
     "10.10.0.1",
+    # ISP Hotspot gateway (DHCP option 114 / login.html). Keep in sync with
+    # core.mikrotik_connect.ISP_HOTSPOT_ADDRESS.
+    "10.50.50.1",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -519,7 +522,15 @@ if not DEBUG:
     SECURE_CONTENT_TYPE_NOSNIFF = True
     X_FRAME_OPTIONS = "DENY"
     SECURE_SSL_REDIRECT = env_flag("DJANGO_SECURE_SSL_REDIRECT", "false")
-    SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_SECURE_HSTS_SECONDS") or ("31536000" if HOSTED else "0"))
+    # Captive Hotspot/PPPoE needs plain HTTP on :80. A year-long HSTS header from
+    # an admin visit to https:// would force phones onto HTTPS and kill the pay
+    # popup. Default HSTS off when PUBLIC_BASE_URL is http (our production
+    # captive layout); opt in with DJANGO_SECURE_HSTS_SECONDS when the site is
+    # HTTPS-only and captive is not required.
+    _hsts_default = "0"
+    if HOSTED and (PUBLIC_BASE_URL or "").lower().startswith("https://"):
+        _hsts_default = "31536000"
+    SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_SECURE_HSTS_SECONDS") or _hsts_default)
     SECURE_HSTS_INCLUDE_SUBDOMAINS = env_flag(
         "DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS",
         "true" if SECURE_HSTS_SECONDS else "false",
