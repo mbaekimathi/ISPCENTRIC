@@ -302,10 +302,49 @@
         attempts += 1;
         var waitMs = attempts <= 2 ? 350 : attempts <= 5 ? 500 : 700;
 
-        if (activateUrl && activateAttempts < 3 && attempts <= 3) {
+        // Fast path: pay page already authorized — skip extra NAS activate hops.
+        if (attempts === 1) {
+          setStatus(
+            hasPayment
+              ? "Payment confirmed · Checking internet…"
+              : "Checking your connection…"
+          );
+          return checkConnection(false, false)
+            .then(function (data) {
+              if (isSurfing(data) || (data.paid && data.authorized)) {
+                showConnected();
+                return null;
+              }
+              if (!data.paid && !hasPayment) {
+                failClosed();
+                return null;
+              }
+              return continueVerify(waitMs, data);
+            })
+            .catch(function () {
+              return continueVerify(waitMs, null);
+            });
+        }
+
+        return continueVerify(waitMs, null);
+      }
+
+      function continueVerify(waitMs, prior) {
+        var needActivate =
+          activateUrl &&
+          activateAttempts < 3 &&
+          attempts <= 3 &&
+          !(prior && (prior.authorized || prior.surfing));
+
+        if (needActivate) {
           return tryActivate()
-            .then(function () { return delay(waitMs); })
-            .then(verifyLoop);
+            .then(function (ok) {
+              if (ok) {
+                showConnected();
+                return null;
+              }
+              return delay(waitMs).then(verifyLoop);
+            });
         }
 
         setStatus(

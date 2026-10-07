@@ -11,6 +11,7 @@ from core.mikrotik_connect import (
     sweep_log_text,
     sync_hotspot_subscription_batch_on_router,
     sync_pppoe_subscription_batch_on_router,
+    sync_static_subscription_batch_on_router,
 )
 from core.subscription_sync import (
     release_subscription_sweep_lock,
@@ -20,9 +21,9 @@ from core.subscription_sync import (
 
 class Command(BaseCommand):
     help = (
-        "Disable internet for PPPoE and Hotspot clients outside their package "
-        "period, and re-enable it for those inside it. Runs per MikroTik with "
-        "batch session kicks so CPEs redial together."
+        "Disable internet for PPPoE, Hotspot, and Static clients outside their "
+        "package period, and re-enable it for those inside it. Runs per "
+        "MikroTik with batch session kicks so CPEs redial together."
     )
 
     def add_arguments(self, parser):
@@ -161,6 +162,7 @@ class Command(BaseCommand):
             Customer.objects.filter(
                 Q(service_type=Customer.ServiceType.PPPOE) & ~Q(pppoe_username="")
                 | Q(service_type=Customer.ServiceType.HOTSPOT) & ~Q(hotspot_mac="")
+                | Q(service_type=Customer.ServiceType.STATIC) & ~Q(cpe_ip="")
             )
             .select_related("plan", "organization", "router")
             .order_by("organization_id", "id")
@@ -207,14 +209,16 @@ class Command(BaseCommand):
         routers = list(router_qs)
 
         hotspot_by_org: dict[int, list[Customer]] = {}
+        static_by_org: dict[int, list[Customer]] = {}
         expired_hotspot: list[Customer] = []
         for customer in customers:
-            if customer.service_type != Customer.ServiceType.HOTSPOT:
-                continue
             org_pk = customer.organization_id
-            hotspot_by_org.setdefault(org_pk, []).append(customer)
-            if not customer_receives_internet(customer):
-                expired_hotspot.append(customer)
+            if customer.service_type == Customer.ServiceType.HOTSPOT:
+                hotspot_by_org.setdefault(org_pk, []).append(customer)
+                if not customer_receives_internet(customer):
+                    expired_hotspot.append(customer)
+            elif customer.service_type == Customer.ServiceType.STATIC:
+                static_by_org.setdefault(org_pk, []).append(customer)
 
         workers = max(1, min(int(options.get("workers") or 4), 8, max(1, len(routers))))
         errors = 0
@@ -228,6 +232,11 @@ class Command(BaseCommand):
             hs_customers = [
                 c
                 for c in hotspot_by_org.get(router.organization_id, [])
+                if c.router_id in (None, router.pk)
+            ]
+            static_customers = [
+                c
+                for c in static_by_org.get(router.organization_id, [])
                 if c.router_id in (None, router.pk)
             ]
 
@@ -245,6 +254,18 @@ class Command(BaseCommand):
                     reauthenticate_paid=False,
                 )
 
+            static_result = {
+                "ok": True,
+                "allowed": 0,
+                "blocked": 0,
+                "errors": 0,
+                "skipped": True,
+            }
+            if static_customers:
+                static_result = sync_static_subscription_batch_on_router(
+                    router, static_customers
+                )
+
             refresh = refresh_onboarded_router_config(
                 router,
                 reauthenticate=False,
@@ -254,6 +275,7 @@ class Command(BaseCommand):
                 "router": router,
                 "pppoe": pppoe_result,
                 "hotspot": hs_result,
+                "static": static_result,
                 "refresh": refresh,
             }
 
@@ -283,9 +305,14 @@ class Command(BaseCommand):
             name = getattr(router, "name", "") or host
             pppoe = outcome.get("pppoe") or {}
             hotspot = outcome.get("hotspot") or {}
+            static = outcome.get("static") or {}
             refresh = outcome.get("refresh") or {}
 
-            errors += int(pppoe.get("errors") or 0) + int(hotspot.get("errors") or 0)
+            errors += (
+                int(pppoe.get("errors") or 0)
+                + int(hotspot.get("errors") or 0)
+                + int(static.get("errors") or 0)
+            )
 
             if pppoe.get("ok") or pppoe.get("skipped"):
                 kick_n = int(pppoe.get("kick_accounts") or 0)
@@ -313,6 +340,20 @@ class Command(BaseCommand):
                 self._write(
                     self.stderr,
                     f"nas {name}: hotspot {hotspot.get('error') or 'failed'}",
+                    style=self.style.WARNING,
+                )
+
+            if static.get("ok") or static.get("skipped"):
+                if not static.get("skipped"):
+                    self._write(
+                        self.stdout,
+                        f"nas {name}: {static.get('message') or 'static ok'}",
+                    )
+            else:
+                errors += 1
+                self._write(
+                    self.stderr,
+                    f"nas {name}: static {static.get('error') or 'failed'}",
                     style=self.style.WARNING,
                 )
 

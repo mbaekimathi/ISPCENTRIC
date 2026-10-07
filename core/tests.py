@@ -2351,7 +2351,9 @@ class CaptiveProbeMiddlewareTests(TestCase):
         )
         response = middleware(request)
         self.assertEqual(response.status_code, 302)
-        self.assertIn(f"/hotspot/{self.org.join_code}/reconnect/", response.url)
+        # Unsubscribed / unknown clients hit /pay/ first (not /reconnect/).
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
+        self.assertNotIn("/reconnect/", response.url)
 
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
     def test_hotspot_probe_attaches_mac_when_host_known(self):
@@ -2384,9 +2386,70 @@ class CaptiveProbeMiddlewareTests(TestCase):
             response = middleware(request)
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn(f"/hotspot/{self.org.join_code}/reconnect/", response.url)
+        # Unknown MAC still has no package — pay wall first.
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
         mac = parse_qs(urlparse(response.url).query).get("mac", [""])[0]
         self.assertEqual(mac, "AA:BB:CC:DD:EE:20")
+
+    @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
+    def test_hotspot_probe_paid_mac_uses_reconnect(self):
+        """Paid subscribers skip the pay wall via /reconnect/."""
+        from datetime import timedelta
+
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+        from django.utils import timezone
+        from unittest.mock import patch
+
+        from billing.models import BillingPlan, Customer
+        from ispcentric.middleware import HotspotCaptiveProbeMiddleware
+
+        cache.clear()
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Probe Daily",
+            price=50,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            duration=BillingPlan.Duration.DAILY,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=1,
+        )
+        mac = "AA:BB:CC:DD:EE:21"
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Paid Probe",
+            phone="254700000021",
+            account_number="HOT-PROBE-21",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac=mac,
+            status=Customer.Status.ACTIVE,
+            plan=plan,
+            package_start=timezone.now() - timedelta(hours=1),
+            package_end=timezone.now() + timedelta(hours=5),
+        )
+
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        middleware = HotspotCaptiveProbeMiddleware(get_response)
+        request = RequestFactory().get(
+            "/generate_204",
+            HTTP_HOST="connectivitycheck.gstatic.com",
+            REMOTE_ADDR="10.50.50.21",
+        )
+        with patch(
+            "core.mikrotik_connect.resolve_captive_organization",
+            return_value=self.org,
+        ), patch(
+            "core.mikrotik_connect.find_hotspot_mac_for_ip",
+            return_value=mac,
+        ):
+            response = middleware(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/hotspot/{self.org.join_code}/reconnect/", response.url)
 
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
     def test_pppoe_pool_probe_redirects_to_pppoe_pay_page(self):
@@ -2678,7 +2741,7 @@ class CaptiveProbeMiddlewareTests(TestCase):
             response.url.startswith("http://billing.example/"),
             response.url,
         )
-        self.assertIn(f"/hotspot/{self.org.join_code}/reconnect/", response.url)
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
 
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
     def test_mobile_oem_probe_hosts_redirect(self):
@@ -2713,7 +2776,7 @@ class CaptiveProbeMiddlewareTests(TestCase):
                 response = middleware(request)
                 self.assertEqual(response.status_code, 302, msg=host)
                 self.assertIn(
-                    f"/hotspot/{self.org.join_code}/reconnect/",
+                    f"/hotspot/{self.org.join_code}/pay/",
                     response.url,
                     msg=host,
                 )
@@ -2995,14 +3058,16 @@ class HotspotAuthorizeFastPathTests(TestCase):
             order.append(("portal", enabled))
             return {"ok": True, "enabled": enabled}
 
-        def disconnect_side_effect(sock, usernames):
+        def disconnect_side_effect(sock, usernames, **kwargs):
             order.append(("kick", sorted(set(usernames or []))))
             return len(set(usernames or []))
 
         live = {
             "secret_profiles": {username: "ispcentric-pppoe-5u-10d"},
+            "secret_rows": {},
             "active_names": {username},
             "active_addresses": {username: {"10.10.0.55"}},
+            "active_profiles": {},
             "blocked_list_addresses": set(),
             "arp_complete": {"10.10.0.55": True},
         }
@@ -3033,6 +3098,14 @@ class HotspotAuthorizeFastPathTests(TestCase):
             ),
             patch(
                 "core.mikrotik_connect._ensure_pppoe_blocked_profile",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._nas_has_stale_pppoe_secrets",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._block_orphan_pppoe_secrets_on_socket",
                 return_value=[],
             ),
             patch(
@@ -3642,7 +3715,7 @@ class CaptiveGatewayHostTests(TestCase):
             )
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn(f"/hotspot/{self.org.join_code}/reconnect/", response.url)
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
 
     @override_settings(ALLOWED_HOSTS=["192.168.88.254"])
     def test_allowed_private_host_is_left_alone(self):
@@ -8552,6 +8625,14 @@ class PppoeSpeedStaleSessionTests(SimpleTestCase):
                     "blocked_list_addresses": set(),
                     "arp_complete": {},
                 },
+            ),
+            patch(
+                "core.mikrotik_connect._nas_has_stale_pppoe_secrets",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._block_orphan_pppoe_secrets_on_socket",
+                return_value=[],
             ),
         ):
             result = _pppoe_batch_write_on_socket(
@@ -14531,4 +14612,174 @@ class HostedSystemCheckTests(SimpleTestCase):
             WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
         ):
             self.assertEqual(hosted_dashboard_url(), "http://isp.richcom.co.ke")
+
+
+class ExpiredAccessEnforcementHardeningTests(SimpleTestCase):
+    """Fail-closed policy + unpaid/orphan PPPoE cleanup + static WAN block."""
+
+    def test_customer_internet_allowed_fails_closed_on_policy_error(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import _customer_internet_allowed
+
+        customer = type(
+            "Customer",
+            (),
+            {"pk": 9, "status": "active", "service_type": "pppoe"},
+        )()
+        with patch(
+            "billing.services.customer_can_surf_via_pppoe",
+            side_effect=RuntimeError("boom"),
+        ):
+            self.assertFalse(_customer_internet_allowed(customer))
+
+    def test_orphan_blocker_blocks_unpaid_secret_on_wrong_router(self):
+        from unittest.mock import MagicMock, patch
+
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            PPP_SECRET_TAG,
+            _block_orphan_pppoe_secrets_on_socket,
+        )
+
+        unpaid = type(
+            "Customer",
+            (),
+            {
+                "pppoe_username": "wanderer",
+                "pk": 3,
+                "status": "active",
+                "service_type": "pppoe",
+            },
+        )()
+        router = type("Router", (), {"organization_id": 1, "pk": 2})()
+        set_calls = []
+
+        def fake_set(sock, path, item_id, **props):
+            set_calls.append((path, item_id, props))
+            return {"_reply": "!done"}
+
+        with (
+            patch(
+                "core.mikrotik_connect._org_pppoe_customers_by_username",
+                return_value={"wanderer": unpaid},
+            ),
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._print",
+                return_value=[
+                    {
+                        ".id": "*1",
+                        "name": "wanderer",
+                        "profile": "ispcentric-pppoe-5u-10d",
+                        "disabled": "false",
+                        "comment": f"{PPP_SECRET_TAG} ACC-1",
+                    }
+                ],
+            ),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+            patch(
+                "core.mikrotik_connect._disconnect_pppoe_sessions_many",
+                return_value=1,
+            ) as kick,
+        ):
+            notes = _block_orphan_pppoe_secrets_on_socket(MagicMock(), router)
+
+        self.assertTrue(any("unpaid" in note for note in notes))
+        self.assertEqual(set_calls[0][2].get("profile"), PPPOE_BLOCKED_PROFILE_NAME)
+        kick.assert_called_once()
+
+    def test_orphan_blocker_leaves_paid_secret_on_other_router(self):
+        from unittest.mock import MagicMock, patch
+
+        from core.mikrotik_connect import (
+            PPP_SECRET_TAG,
+            _block_orphan_pppoe_secrets_on_socket,
+        )
+
+        paid = type(
+            "Customer",
+            (),
+            {
+                "pppoe_username": "paiduser",
+                "pk": 4,
+                "status": "active",
+                "service_type": "pppoe",
+            },
+        )()
+        router = type("Router", (), {"organization_id": 1, "pk": 2})()
+        with (
+            patch(
+                "core.mikrotik_connect._org_pppoe_customers_by_username",
+                return_value={"paiduser": paid},
+            ),
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._print",
+                return_value=[
+                    {
+                        ".id": "*1",
+                        "name": "paiduser",
+                        "profile": "ispcentric-pppoe-5u-10d",
+                        "disabled": "false",
+                        "comment": f"{PPP_SECRET_TAG} ACC-2",
+                    }
+                ],
+            ),
+            patch("core.mikrotik_connect._set") as set_mock,
+            patch(
+                "core.mikrotik_connect._disconnect_pppoe_sessions_many",
+                return_value=0,
+            ) as kick,
+        ):
+            notes = _block_orphan_pppoe_secrets_on_socket(MagicMock(), router)
+
+        self.assertEqual(notes, [])
+        set_mock.assert_not_called()
+        kick.assert_not_called()
+
+    def test_static_wan_block_adds_address_list_and_kills_connections(self):
+        from unittest.mock import MagicMock, patch
+
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_ADDRESS_LIST,
+            _set_static_client_wan_block,
+        )
+
+        add_calls = []
+
+        def fake_add_or_set(sock, path, item_id, attempts, **kwargs):
+            add_calls.append((path, item_id, attempts))
+            return {"_reply": "!done"}, "*9"
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add_or_set_attempts",
+                side_effect=fake_add_or_set,
+            ),
+            patch(
+                "core.mikrotik_connect._kill_firewall_connections_for_addresses",
+                return_value=2,
+            ) as kill,
+        ):
+            notes = _set_static_client_wan_block(
+                MagicMock(),
+                "10.10.0.50",
+                blocked=True,
+                comment="ispcentric-static-block STA-1",
+            )
+
+        self.assertTrue(any("blocked static WAN" in note for note in notes))
+        self.assertEqual(add_calls[0][0], "/ip/firewall/address-list")
+        self.assertEqual(
+            add_calls[0][2][0]["list"], PPPOE_BLOCKED_ADDRESS_LIST
+        )
+        kill.assert_called_once()
 

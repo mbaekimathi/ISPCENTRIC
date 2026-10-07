@@ -677,7 +677,28 @@ class HotspotConnectSpeedTests(TestCase):
         self.assertIn("/pay/", urls["pay_url"])
         self.assertTrue(urls["login_url"].startswith("http://"))
 
+    def test_welcome_unpaid_redirects_to_pay(self):
+        """Unsubscribed devices must not linger on welcome — pay wall first."""
+        url = reverse(
+            "core:hotspot_welcome", kwargs={"join_code": self.org.join_code}
+        )
+        response = self.client.get(url, HTTP_COOKIE=f"hs_mac={self.mac}")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/pay/", response.url)
+
+    def test_welcome_without_mac_stays_for_alogin(self):
+        """Post-login alogin has no mac — do not bounce paid clients to pay."""
+        url = reverse(
+            "core:hotspot_welcome", kwargs={"join_code": self.org.join_code}
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "data-welcome-loading")
+
     def test_welcome_page_starts_in_loading_state(self):
+        self.customer.package_start = timezone.now() - timedelta(hours=1)
+        self.customer.package_end = timezone.now() + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
         url = reverse(
             "core:hotspot_welcome", kwargs={"join_code": self.org.join_code}
         )
@@ -687,6 +708,7 @@ class HotspotConnectSpeedTests(TestCase):
         self.assertContains(response, "data-welcome-loading")
         self.assertContains(response, "data-welcome-ready")
         self.assertContains(response, "Connecting…")
+        self.assertContains(response, "checkConnection(false, false)")
 
     def test_reconnect_paid_customer_redirects_to_welcome(self):
         self.customer.package_start = timezone.now() - timedelta(hours=1)
@@ -716,13 +738,9 @@ class HotspotConnectSpeedTests(TestCase):
             reverse("core:hotspot_reconnect", kwargs={"join_code": self.org.join_code})
             + "?mac=11:22:33:44:55:66"
         )
-        with patch(
-            "core.mikrotik_connect.defer_hotspot_pay_wall",
-        ) as block_mock:
-            response = self.client.get(url)
+        response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn("/pay/", response.url)
-        block_mock.assert_called_once()
 
     def test_reconnect_linked_mac_without_voucher_redirects_to_pay(self):
         from billing.devices import attach_hotspot_device
@@ -736,13 +754,9 @@ class HotspotConnectSpeedTests(TestCase):
             reverse("core:hotspot_reconnect", kwargs={"join_code": self.org.join_code})
             + f"?mac={sibling_mac}"
         )
-        with patch(
-            "core.mikrotik_connect.defer_hotspot_pay_wall",
-        ) as block_mock:
-            response = self.client.get(url)
+        response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn("/pay/", response.url)
-        block_mock.assert_called_once()
 
     def test_pay_page_shows_reconnect_banner_for_active_package(self):
         self.customer.package_start = timezone.now() - timedelta(hours=1)

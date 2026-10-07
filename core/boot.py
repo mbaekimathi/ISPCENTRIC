@@ -681,9 +681,66 @@ def _run_subscription_sweep(*, label: str = "sweep") -> None:
         logger.exception("subscription %s failed", label)
 
 
+def _run_urgent_expired_blocks_without_fleet_lock() -> None:
+    """
+    When the shared fleet lock is held, still push blocks for clients whose
+    access deadline has already passed. Skips fleet repair and paid refresh.
+    """
+    from django.utils import timezone
+
+    from billing.models import Customer as BillingCustomer
+    from billing.services import (
+        customer_can_surf_via_hotspot,
+        customer_can_surf_via_pppoe,
+        customer_receives_internet,
+        customers_for_subscription_enforcement_watch,
+        subscription_access_deadline,
+    )
+    from core.mikrotik_connect import sync_customer_subscription_access
+
+    now = timezone.now()
+    synced = 0
+    for customer in customers_for_subscription_enforcement_watch(
+        past_seconds=600, future_seconds=0, now=now
+    ):
+        deadline = subscription_access_deadline(customer)
+        if deadline is None or deadline > now:
+            continue
+        service = getattr(customer, "service_type", "")
+        try:
+            if service == BillingCustomer.ServiceType.HOTSPOT:
+                must_block = not customer_can_surf_via_hotspot(customer)
+            elif service == BillingCustomer.ServiceType.PPPOE:
+                must_block = not customer_can_surf_via_pppoe(customer)
+            elif service == BillingCustomer.ServiceType.STATIC:
+                must_block = not customer_receives_internet(customer)
+            else:
+                continue
+            if not must_block:
+                continue
+            result = sync_customer_subscription_access(
+                customer,
+                provision=True,
+                reauthenticate=True,
+            )
+            if result.get("ok") or result.get("allowed") is False:
+                synced += 1
+        except Exception:
+            logger.exception(
+                "urgent expiry block failed for %s",
+                getattr(customer, "account_number", customer.pk),
+            )
+    if synced:
+        logger.info(
+            "urgent expiry blocks synced %s customer(s) while fleet lock busy",
+            synced,
+        )
+
+
 def _run_near_deadline_expiry_sync() -> None:
     """
-    Enforce wall-clock package deadlines and repair PPPoE / Hotspot access leaks.
+    Enforce wall-clock package deadlines and repair PPPoE / Hotspot / Static
+    access leaks.
 
     Syncs customers near the access cut-off (online or offline) and refreshes
     clock-time Hotspot ``limit-uptime`` from remaining wall-clock time so
@@ -695,7 +752,8 @@ def _run_near_deadline_expiry_sync() -> None:
       - paid PPPoE clients dialed without surfing
 
     Shares the fleet sweep lock with ``sync_subscription_access`` / deploy NAS
-    sync so MikroTik rewrites never overlap.
+    sync so MikroTik rewrites never overlap. If the lock is busy, urgent
+    already-expired blocks still run without fleet repair.
     """
     from billing.services import customers_for_subscription_enforcement_watch
     from core.mikrotik_connect import (
@@ -711,6 +769,9 @@ def _run_near_deadline_expiry_sync() -> None:
     watch_interval = int(_expiry_watch_interval_sec())
     # Hold the shared fleet lock for this short watch pass.
     if not try_acquire_expiry_watch_lock(ttl_sec=max(90, watch_interval * 3)):
+        # Fleet writer busy — still cut already-expired clients so a long sweep
+        # cannot leave unpaid sessions surfing until the next free lock.
+        _run_urgent_expired_blocks_without_fleet_lock()
         return
 
     try:
@@ -759,6 +820,10 @@ def _run_near_deadline_expiry_sync() -> None:
                     must_block = not customer_can_surf_via_hotspot(customer)
                 elif service == BillingCustomer.ServiceType.PPPOE:
                     must_block = not customer_can_surf_via_pppoe(customer)
+                elif service == BillingCustomer.ServiceType.STATIC:
+                    from billing.services import customer_receives_internet
+
+                    must_block = not customer_receives_internet(customer)
                 else:
                     must_block = False
                 result = sync_customer_subscription_access(

@@ -11049,6 +11049,7 @@ _ISP_HOTSPOT_POOL_NET = ipaddress.ip_network(ISP_HOTSPOT_POOL_NETWORK)
 # can still allow them while blocking free LAN/DHCP browsing.
 ISP_HOTSPOT_OK_LIST = "ispcentric-hotspot-ok"
 STATIC_CLIENT_DHCP_TAG = "ispcentric-static-client"
+STATIC_CLIENT_BLOCK_TAG = "ispcentric-static-block"
 
 # Short-lived caches for captive-portal critical path (connect → pay redirect).
 # Keys are intentionally narrow so a reconnect after renew still re-resolves.
@@ -13595,7 +13596,13 @@ def _customer_internet_allowed(customer) -> bool:
             return bool(customer_can_surf_via_pppoe(customer))
         return bool(customer_receives_internet(customer))
     except Exception:
-        return getattr(customer, "status", "") == "active"
+        # Fail closed: a policy evaluation error must not restore free surfing
+        # for expired clients whose status row is still "active".
+        logger.exception(
+            "internet policy check failed customer=%s — denying access",
+            getattr(customer, "pk", None),
+        )
+        return False
 
 
 def _customer_package_is_paused(customer) -> bool:
@@ -14486,16 +14493,63 @@ def _billing_pppoe_username_set(router) -> set[str]:
     }
 
 
+def _org_pppoe_customers_by_username(router) -> dict[str, Any]:
+    """All org PPPoE customers keyed by lowercase username (any assigned NAS)."""
+    from billing.models import Customer
+
+    org_id = getattr(router, "organization_id", None)
+    if not org_id:
+        return {}
+    mapping: dict[str, Any] = {}
+    qs = (
+        Customer.objects.filter(
+            organization_id=org_id,
+            service_type=Customer.ServiceType.PPPOE,
+        )
+        .exclude(pppoe_username="")
+        .select_related("plan", "organization")
+        .order_by("id")
+    )
+    for customer in qs.iterator(chunk_size=200):
+        name = (customer.pppoe_username or "").strip().lower()
+        if name and name not in mapping:
+            mapping[name] = customer
+    return mapping
+
+
+def _nas_has_stale_pppoe_secrets(sock: socket.socket, router) -> bool:
+    """True when this NAS has an ispcentric secret that should be WAN-blocked."""
+    org_customers = _org_pppoe_customers_by_username(router)
+    for row in _print(
+        sock, "/ppp/secret", props="name,profile,comment"
+    ):
+        comment = row.get("comment") or ""
+        if PPP_SECRET_TAG not in comment:
+            continue
+        name = (row.get("name") or "").strip()
+        if not name:
+            continue
+        if (row.get("profile") or "").strip() == PPPOE_BLOCKED_PROFILE_NAME:
+            continue
+        customer = org_customers.get(name.lower())
+        if customer is None or not _customer_internet_allowed(customer):
+            return True
+    return False
+
+
 def _block_orphan_pppoe_secrets_on_socket(sock: socket.socket, router) -> list[str]:
     """
-    Block PPPoE secrets on the NAS that are not tied to a billing customer.
+    Block stale PPPoE secrets on this NAS that must not surf.
 
-    Legacy bulk imports left dozens of ispcentric-tagged secrets surfing while
-    only a handful exist in the database.
+    Covers:
+    - true orphans (ispcentric-tagged secret with no billing customer)
+    - unpaid / expired customers whose secret still lives on this NAS even when
+      ``customer.router_id`` points at a different MikroTik
+    Paid customers assigned elsewhere are left alone (multi-NAS failover).
     """
-    billing_users = _billing_pppoe_username_set(router)
+    org_customers = _org_pppoe_customers_by_username(router)
     notes: list[str] = []
-    orphan_names: set[str] = set()
+    kick_names: set[str] = set()
 
     for row in _print(
         sock, "/ppp/secret", props=".id,name,profile,disabled,comment"
@@ -14504,39 +14558,46 @@ def _block_orphan_pppoe_secrets_on_socket(sock: socket.socket, router) -> list[s
         if PPP_SECRET_TAG not in comment:
             continue
         name = (row.get("name") or "").strip()
-        if not name or name in billing_users:
+        if not name:
             continue
-        orphan_names.add(name)
+        customer = org_customers.get(name.lower())
+        if customer is not None and _customer_internet_allowed(customer):
+            # Paid elsewhere — do not tear down a failover secret.
+            continue
         profile = (row.get("profile") or "").strip()
         if profile == PPPOE_BLOCKED_PROFILE_NAME:
+            # Already on the blocked profile; live surfing leaks are handled by
+            # unpaid repair (kick + address-list), not every orphan pass.
             continue
         item_id = (row.get(".id") or "").strip()
         if not item_id:
             continue
+        reason = "orphan" if customer is None else "unpaid"
         terminal = _set(
             sock,
             "/ppp/secret",
             item_id,
             profile=PPPOE_BLOCKED_PROFILE_NAME,
-            comment=f"{PPP_SECRET_TAG} orphan blocked",
+            comment=f"{PPP_SECRET_TAG} {reason} blocked",
         )
         if terminal.get("_reply") != "!trap":
-            notes.append(f"blocked orphan PPPoE {name}")
+            notes.append(f"blocked {reason} PPPoE {name}")
+            kick_names.add(name)
 
-    if not orphan_names:
+    if not kick_names:
         return notes
 
     # Use the shared disconnect path so tracked firewall connections for the
-    # orphan session IPs are killed too (plain /ppp/active remove can leave
+    # session IPs are killed too (plain /ppp/active remove can leave
     # established sockets surfing briefly).
     kicked = _disconnect_pppoe_sessions_many(
         sock,
-        orphan_names,
+        kick_names,
         bypass_cooldown=True,
         reason="orphan",
     )
     if kicked:
-        notes.append(f"kicked {kicked} orphan PPPoE session(s)")
+        notes.append(f"kicked {kicked} stale PPPoE session(s)")
     return notes
 
 
@@ -14860,6 +14921,23 @@ def _pppoe_batch_write_on_socket(
                 "Could not clear blocked list batch on router %s",
                 router_id,
             )
+
+    # Sweep used to skip orphan cleanup (refresh runs with sync_pppoe_secrets=
+    # False). Block unpaid/orphan secrets that still live on this NAS — including
+    # clients assigned to a different router_id — so expiry cannot leave them surfing.
+    try:
+        if not need_block_stack and _nas_has_stale_pppoe_secrets(sock, router):
+            portal_url = _billing_portal_base_url()
+            notes.extend(_ensure_pppoe_expired_access(sock, portal_url=portal_url))
+            notes.extend(_ensure_pppoe_blocked_profile(sock))
+        orphan_notes = _block_orphan_pppoe_secrets_on_socket(sock, router)
+        if orphan_notes:
+            notes.extend(orphan_notes)
+    except Exception:
+        logger.exception(
+            "Could not block stale PPPoE secrets on router %s",
+            router_id,
+        )
 
     return {
         "notes": notes,
@@ -20070,6 +20148,31 @@ def sync_customer_subscription_access(
     provision_result: dict[str, Any] = {"ok": False, "skipped": not provision}
     started = time.perf_counter()
 
+    if service_type == Customer.ServiceType.STATIC:
+        if not provision:
+            return {
+                "ok": True,
+                "allowed": allowed,
+                "portal": portal_result,
+                "provision": provision_result,
+                "message": "Static access check only (provision skipped).",
+                "total_ms": int((time.perf_counter() - started) * 1000),
+            }
+        static_result = sync_static_customer_subscription_access(customer)
+        return {
+            "ok": bool(static_result.get("ok")),
+            "allowed": allowed,
+            "portal": portal_result,
+            "provision": static_result,
+            "message": static_result.get("message")
+            or (
+                "Static internet allowed."
+                if allowed
+                else "Static internet blocked outside subscription period."
+            ),
+            "total_ms": int((time.perf_counter() - started) * 1000),
+        }
+
     # Same-request or near-immediate status polls often re-enter after fulfill
     # already pushed access. Reuse that result for a few seconds.
     # Rate-limit + device cap are part of the key so package speed / max_devices
@@ -21271,6 +21374,262 @@ def _remove_stale_static_client_dhcp_leases(
     return notes
 
 
+def _static_client_block_comment(customer) -> str:
+    account = (getattr(customer, "account_number", "") or "").strip()
+    return f"{STATIC_CLIENT_BLOCK_TAG} {account}".strip()
+
+
+def _set_static_client_wan_block(
+    sock: socket.socket,
+    ip: str,
+    *,
+    blocked: bool,
+    comment: str = "",
+) -> list[str]:
+    """
+    Add or remove ``ip`` on the shared ispcentric-blocked address-list.
+
+    Reuses the PPPoE expired firewall stack so Static clients lose WAN when
+    the prepaid window ends (DHCP pin alone never cut surfing).
+    """
+    notes: list[str] = []
+    ip = (ip or "").strip()
+    if not ip:
+        return notes
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return [f"warning: invalid static IP {ip}"]
+
+    rows = _print(
+        sock,
+        "/ip/firewall/address-list",
+        props=".id,list,address,comment",
+    )
+    matching_ids = [
+        (row.get(".id") or "").strip()
+        for row in rows
+        if (row.get("list") or "").strip() == PPPOE_BLOCKED_ADDRESS_LIST
+        and (row.get("address") or "").strip() == ip
+    ]
+    matching_ids = [item_id for item_id in matching_ids if item_id]
+
+    if not blocked:
+        for item_id in matching_ids:
+            terminal = _remove(sock, "/ip/firewall/address-list", item_id)
+            if terminal.get("_reply") != "!trap":
+                notes.append(f"cleared static WAN block for {ip}")
+        return notes
+
+    if not matching_ids:
+        attempts = [
+            {
+                "list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "address": ip,
+                "comment": comment or STATIC_CLIENT_BLOCK_TAG,
+            },
+            {
+                "list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "address": ip,
+            },
+        ]
+        terminal, _ = _add_or_set_attempts(
+            sock, "/ip/firewall/address-list", "", attempts
+        )
+        if terminal.get("_reply") == "!trap":
+            notes.append(f"warning: could not block static IP {ip}")
+            return notes
+        notes.append(f"blocked static WAN for {ip}")
+    else:
+        notes.append(f"static WAN already blocked for {ip}")
+
+    killed = _kill_firewall_connections_for_addresses(sock, {ip})
+    if killed:
+        notes.append(f"killed {killed} connection(s) for static {ip}")
+    return notes
+
+
+def _static_customers_for_router(router) -> list:
+    """Static clients assigned to this NAS (or unassigned in the same org)."""
+    from billing.models import Customer
+
+    org_id = getattr(router, "organization_id", None)
+    if not org_id:
+        return []
+    qs = (
+        Customer.objects.filter(
+            organization_id=org_id,
+            service_type=Customer.ServiceType.STATIC,
+        )
+        .exclude(cpe_ip="")
+        .select_related("plan", "organization", "router")
+        .order_by("id")
+    )
+    return [
+        customer
+        for customer in qs
+        if customer.router_id in (None, getattr(router, "pk", None))
+    ]
+
+
+def sync_static_subscription_batch_on_router(
+    router,
+    customers: list | None = None,
+) -> dict[str, Any]:
+    """Allow/block Static CPE WAN via the shared ispcentric-blocked address-list."""
+    if router is None:
+        return {"ok": False, "error": "No router provided.", "allowed": 0, "blocked": 0}
+
+    host = (getattr(router, "host", None) or "").strip()
+    api_user = (getattr(router, "username", None) or "").strip()
+    api_password = getattr(router, "password", None) or ""
+    router_id = getattr(router, "pk", None)
+    router_name = getattr(router, "name", "") or host
+    if customers is None:
+        customers = list(_static_customers_for_router(router))
+    else:
+        customers = [c for c in customers if c is not None]
+    if not host or not api_user or not customers:
+        return {
+            "ok": True,
+            "skipped": True,
+            "router_id": router_id,
+            "router_name": router_name,
+            "host": host,
+            "allowed": 0,
+            "blocked": 0,
+            "message": "No static customers on this router.",
+        }
+
+    allowed = blocked = errors = 0
+    notes: list[str] = []
+    last_error = ""
+    for candidate in _router_api_host_candidates(router, discover=False):
+        try:
+            with _api_session(
+                candidate, api_user, api_password, timeout=20.0, reuse=True
+            ) as sock:
+                need_block_stack = False
+                for customer in customers:
+                    if not _customer_internet_allowed(customer):
+                        need_block_stack = True
+                        break
+                if need_block_stack:
+                    portal_url = _billing_portal_base_url()
+                    notes.extend(
+                        _ensure_pppoe_expired_access(sock, portal_url=portal_url)
+                    )
+                for customer in customers:
+                    ip = (getattr(customer, "cpe_ip", "") or "").strip()
+                    if not ip:
+                        errors += 1
+                        continue
+                    internet_allowed = _customer_internet_allowed(customer)
+                    try:
+                        step_notes = _set_static_client_wan_block(
+                            sock,
+                            ip,
+                            blocked=not internet_allowed,
+                            comment=_static_client_block_comment(customer),
+                        )
+                        notes.extend(step_notes)
+                        if internet_allowed:
+                            allowed += 1
+                        else:
+                            blocked += 1
+                    except Exception as exc:  # noqa: BLE001
+                        errors += 1
+                        last_error = str(exc) or "static block failed"
+                        logger.warning(
+                            "static sync failed customer=%s router=%s: %s",
+                            getattr(customer, "pk", None),
+                            router_id,
+                            exc,
+                        )
+                return {
+                    "ok": errors == 0,
+                    "router_id": router_id,
+                    "router_name": router_name,
+                    "host": candidate,
+                    "allowed": allowed,
+                    "blocked": blocked,
+                    "errors": errors,
+                    "notes": notes,
+                    "message": (
+                        f"Static batch on {router_name}: allowed={allowed} "
+                        f"blocked={blocked}"
+                    ),
+                    "error": last_error if errors else "",
+                }
+        except TimeoutError:
+            last_error = f"{candidate}: timed out on API port 8728"
+        except OSError as exc:
+            last_error = f"{candidate}: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{candidate}: {exc}"
+
+    return {
+        "ok": False,
+        "router_id": router_id,
+        "router_name": router_name,
+        "host": host,
+        "allowed": allowed,
+        "blocked": blocked,
+        "errors": max(1, errors),
+        "error": last_error or f"{host}: unreachable",
+        "notes": notes,
+    }
+
+
+def sync_static_customer_subscription_access(
+    customer,
+    *,
+    timeout: float = 12.0,
+) -> dict[str, Any]:
+    """Enforce prepaid allow/block for one Static client on its assigned NAS."""
+    from billing.models import Customer
+    from billing.services import customer_receives_internet
+
+    result: dict[str, Any] = {
+        "ok": False,
+        "skipped": True,
+        "allowed": False,
+        "message": "",
+        "notes": [],
+    }
+    if getattr(customer, "service_type", "") != Customer.ServiceType.STATIC:
+        result["message"] = "Not a static client."
+        return result
+
+    allowed = bool(customer_receives_internet(customer))
+    result["allowed"] = allowed
+    router = getattr(customer, "router", None)
+    ip = (getattr(customer, "cpe_ip", "") or "").strip()
+    if not router:
+        result["message"] = "Assign a MikroTik router before enforcing static access."
+        return result
+    if not ip:
+        result["message"] = "Static client is missing cpe_ip."
+        return result
+
+    batch = sync_static_subscription_batch_on_router(router, [customer])
+    result["ok"] = bool(batch.get("ok"))
+    result["skipped"] = bool(batch.get("skipped"))
+    result["notes"] = list(batch.get("notes") or [])
+    result["message"] = (
+        batch.get("message")
+        or batch.get("error")
+        or (
+            "Static internet allowed."
+            if allowed
+            else "Static internet blocked outside subscription period."
+        )
+    )
+    result["provision"] = batch
+    _ = timeout
+    return result
+
+
 def provision_static_client_dhcp_lease(
     customer,
     *,
@@ -21282,6 +21641,7 @@ def provision_static_client_dhcp_lease(
     Requires service_type=static, an assigned NAS, and both cpe_ip + cpe_mac.
     Converts an existing dynamic lease when present, then writes a static lease
     tagged with the client account number for later updates.
+    Also enforces prepaid WAN allow/block on the shared address-list.
     """
     from billing.models import Customer
 
@@ -21316,6 +21676,7 @@ def provision_static_client_dhcp_lease(
         return result
 
     comment = _static_client_dhcp_comment(customer)
+    internet_allowed = _customer_internet_allowed(customer)
     try:
         with _api_session(
             host,
@@ -21325,12 +21686,26 @@ def provision_static_client_dhcp_lease(
         ) as sock:
             stale = _remove_stale_static_client_dhcp_leases(sock, customer, ip, mac)
             notes = _ensure_static_dhcp_lease(sock, ip, mac, comment=comment)
+            if not internet_allowed:
+                portal_url = _billing_portal_base_url()
+                notes.extend(
+                    _ensure_pppoe_expired_access(sock, portal_url=portal_url)
+                )
+            notes.extend(
+                _set_static_client_wan_block(
+                    sock,
+                    ip,
+                    blocked=not internet_allowed,
+                    comment=_static_client_block_comment(customer),
+                )
+            )
             result["notes"] = [*stale, *notes]
             if any("warning" in note for note in notes):
                 result["message"] = notes[-1]
                 return result
             result["ok"] = True
             result["skipped"] = False
+            result["allowed"] = internet_allowed
             result["message"] = (
                 notes[-1] if notes else f"DHCP reservation {ip} → {mac}"
             )
@@ -23543,6 +23918,10 @@ def _captive_alogin_html(welcome_url: str) -> str:
     welcome_url = (welcome_url or "").strip()
     if not welcome_url:
         return ""
+    # RouterOS substitutes $(mac) so welcome can send unpaid MACs to /pay/.
+    if "mac=" not in welcome_url.lower() and "$(mac)" not in welcome_url.lower():
+        sep = "&" if "?" in welcome_url else "?"
+        welcome_url = f"{welcome_url}{sep}mac=$(mac)"
     return (
         "<!DOCTYPE html>\n"
         "<html>\n"

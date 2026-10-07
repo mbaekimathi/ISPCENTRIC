@@ -475,6 +475,68 @@ class PrepaidAccessPolicyTests(TestCase):
         self.assertIn(active_hs.pk, watch_ids)
         self.assertNotIn(daily_hs.pk, watch_ids)
 
+    def test_enforcement_watch_retries_hard_expired_beyond_near_window(self):
+        from billing.services import customers_for_subscription_enforcement_watch
+
+        now = timezone.localtime()
+        hourly = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly Retry",
+            price="50.00",
+            duration=BillingPlan.Duration.HOURLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        stale = self._pppoe(
+            account_number="PPP-STALE",
+            pppoe_username="stale1",
+            phone="254700000055",
+            plan=hourly,
+            package_start=now - timedelta(hours=5),
+            package_end=now - timedelta(hours=2),
+        )
+        watch_ids = {
+            c.pk
+            for c in customers_for_subscription_enforcement_watch(
+                past_seconds=600, future_seconds=45, now=now
+            )
+        }
+        self.assertIn(stale.pk, watch_ids)
+
+    def test_enforcement_watch_includes_expired_static_clients(self):
+        from billing.services import customers_for_subscription_enforcement_watch
+
+        now = timezone.localtime()
+        hourly = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly Static",
+            price="50.00",
+            duration=BillingPlan.Duration.HOURLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        static = Customer.objects.create(
+            organization=self.org,
+            full_name="Static Client",
+            phone="254700000044",
+            account_number="STA-1",
+            service_type=Customer.ServiceType.STATIC,
+            cpe_ip="10.10.0.50",
+            cpe_mac="AA:BB:CC:DD:00:44",
+            status=Customer.Status.ACTIVE,
+            plan=hourly,
+            package_start=now - timedelta(hours=2),
+            package_end=now - timedelta(minutes=10),
+        )
+        watch_ids = {
+            c.pk
+            for c in customers_for_subscription_enforcement_watch(
+                past_seconds=600, future_seconds=45, now=now
+            )
+        }
+        self.assertIn(static.pk, watch_ids)
+        self.assertFalse(customer_receives_internet(static))
+
 
 class DynamicAccessPolicyTests(TestCase):
     """

@@ -22738,6 +22738,24 @@ def hotspot_welcome(request, join_code: str):
     if hotspot_mac:
         customer = _find_hotspot_customer_for_mac(org, hotspot_mac)
 
+    activation_url = ""
+    stk_id = (request.GET.get("stk") or "").strip()
+    token = (request.GET.get("token") or "").strip()
+
+    # Unsubscribed MAC on welcome → pay first. Do not redirect when MAC is
+    # missing: MikroTik alogin.html lands here without ?mac= after a successful
+    # Hotspot login, and paid clients must stay on the welcome screen.
+    if hotspot_mac and not (stk_id.isdigit() and token):
+        from billing.devices import hotspot_mac_can_surf
+
+        can_surf = bool(
+            customer is not None and hotspot_mac_can_surf(customer, hotspot_mac)
+        )
+        if not can_surf:
+            return _redirect_pay_preserving_query(
+                request, "core:hotspot_pay", join_code
+            )
+
     def _tracked_partner_url(kind: str, destination: str) -> str:
         params = {"kind": kind, "next": destination}
         if hotspot_mac:
@@ -22766,9 +22784,6 @@ def hotspot_welcome(request, join_code: str):
         )
     logo_url = _welcome_inline_image(org.profile_photo) if org.profile_photo else ""
 
-    activation_url = ""
-    stk_id = (request.GET.get("stk") or "").strip()
-    token = (request.GET.get("token") or "").strip()
     if stk_id.isdigit() and token:
         activation_url = (
             reverse(
@@ -23646,10 +23661,11 @@ def hotspot_captive_login(request, join_code: str):
 @require_GET
 def hotspot_reconnect(request, join_code: str):
     """
-    Fast captive gateway for returning Hotspot clients.
+    Fast captive gateway for returning *paid* Hotspot clients.
 
-    MikroTik login.html lands here first. Paid MACs get a quick NAS authorize
-    and redirect to welcome; everyone else goes to pay or pause.
+    Unsubscribed / unpaid MACs go straight to /pay/ (login.html and probe
+    middleware already prefer /pay/ for them). Paid MACs get a quick NAS
+    authorize and redirect to welcome; paused packages go to /pause/.
     """
     org = get_object_or_404(Organization, join_code=join_code)
     hotspot_mac = _resolve_request_hotspot_mac(org, request)
@@ -23689,6 +23705,7 @@ def hotspot_reconnect(request, join_code: str):
             )
         response = redirect(_hotspot_welcome_url(join_code, mac=hotspot_mac))
     else:
+        # No active package / voucher for this MAC — pay wall first.
         response = _redirect_pay_preserving_query(
             request, "core:hotspot_pay", join_code
         )
@@ -24469,13 +24486,18 @@ def hotspot_alogin_page(request, join_code: str):
     from core.hotspot_portal import hotspot_portal_urls
 
     urls = hotspot_portal_urls(org.join_code, request)
+    welcome = urls["welcome_url"] or ""
+    # Keep $(mac) literal for RouterOS substitution after /tool/fetch.
+    if welcome and "mac=" not in welcome.lower():
+        sep = "&" if "?" in welcome else "?"
+        welcome = f"{welcome}{sep}mac=$(mac)"
     return render(
         request,
         "core/hotspot_alogin.html",
         {
             "organization": org,
             "org_name": org.name,
-            "welcome_url": urls["welcome_url"],
+            "welcome_url": welcome,
         },
         content_type="text/html; charset=utf-8",
     )

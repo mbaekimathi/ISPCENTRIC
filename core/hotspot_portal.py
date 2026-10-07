@@ -421,8 +421,9 @@ def public_absolute_url(path: str, request=None) -> str:
 
 def hotspot_portal_urls(join_code: str, request=None) -> dict[str, str]:
     """Absolute URLs for Hotspot portal pages pushed to MikroTik."""
-    # login.html on the NAS redirects straight to /pay/ (one hop). Probe
-    # middleware and reconnect/ still use /reconnect/ so paid MACs can skip pay.
+    # login.html on the NAS redirects straight to /pay/ (one hop) so
+    # unsubscribed devices hit the pay wall first. Probe middleware also
+    # sends unpaid MACs to /pay/; only paid MACs use /reconnect/.
     reconnect_path = reverse(
         "core:hotspot_reconnect", kwargs={"join_code": join_code}
     )

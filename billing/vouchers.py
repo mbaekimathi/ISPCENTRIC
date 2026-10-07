@@ -935,6 +935,17 @@ def _activate_paid_subscription_stk_locked(
                     stk.pk,
                     device_mac,
                 )
+                # Heal primary claim so authorize still sees an allow-list MAC.
+                try:
+                    from billing.devices import ensure_primary_hotspot_voucher_claim
+
+                    ensure_primary_hotspot_voucher_claim(customer)
+                except Exception:
+                    logger.exception(
+                        "STK %s primary voucher claim heal failed mac=%s",
+                        stk.pk,
+                        device_mac,
+                    )
             else:
                 # Ensure CustomerDevice exists before NAS sync so unlimited /
                 # linked-MAC paths see this gadget.

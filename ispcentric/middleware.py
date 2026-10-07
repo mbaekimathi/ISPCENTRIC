@@ -443,10 +443,16 @@ class HotspotCaptiveProbeMiddleware:
             except Exception:
                 pppoe_page = "pay"
 
-        hotspot_page = "pay"
+        # Hotspot probes: unpaid / unknown MAC → /pay/ first (one hop).
+        # Paid MACs that can already surf → /reconnect/ (skip pay → welcome).
+        # Paused packages → /pause/.
+        hotspot_view = "core:hotspot_pay"
         if not prefer_pppoe:
             try:
-                from billing.devices import find_hotspot_customer_for_mac
+                from billing.devices import (
+                    find_hotspot_customer_for_mac,
+                    hotspot_mac_can_surf,
+                )
                 from billing.services import customer_package_is_paused
                 from core.mikrotik_connect import find_hotspot_mac_for_ip
 
@@ -458,9 +464,13 @@ class HotspotCaptiveProbeMiddleware:
                     if hotspot_customer is not None and customer_package_is_paused(
                         hotspot_customer
                     ):
-                        hotspot_page = "pause"
+                        hotspot_view = "core:hotspot_pause"
+                    elif hotspot_customer is not None and hotspot_mac_can_surf(
+                        hotspot_customer, mac
+                    ):
+                        hotspot_view = "core:hotspot_reconnect"
             except Exception:
-                hotspot_page = "pay"
+                hotspot_view = "core:hotspot_pay"
 
         if prefer_pppoe:
             pay_path = reverse(
@@ -473,11 +483,7 @@ class HotspotCaptiveProbeMiddleware:
             )
         else:
             pay_path = reverse(
-                (
-                    "core:hotspot_pause"
-                    if hotspot_page == "pause"
-                    else "core:hotspot_reconnect"
-                ),
+                hotspot_view,
                 kwargs={"join_code": org.join_code},
             )
         from core.hotspot_portal import prefer_http_captive_url, public_base_url

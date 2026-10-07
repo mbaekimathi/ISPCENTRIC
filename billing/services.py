@@ -240,12 +240,14 @@ def customers_near_access_deadline(
             service_type__in={
                 Customer.ServiceType.PPPOE,
                 Customer.ServiceType.HOTSPOT,
+                Customer.ServiceType.STATIC,
             },
         )
         .exclude(package_end=None)
         .filter(
             Q(service_type=Customer.ServiceType.PPPOE, pppoe_username__gt="")
             | Q(service_type=Customer.ServiceType.HOTSPOT, hotspot_mac__gt="")
+            | Q(service_type=Customer.ServiceType.STATIC, cpe_ip__gt="")
         )
         .select_related("plan", "organization", "router")
         .order_by("id")
@@ -274,6 +276,8 @@ def customers_for_subscription_enforcement_watch(
     - active clock-time Hotspot packages, so RouterOS ``limit-uptime`` is
       rewritten from remaining wall-clock time even while the phone is offline
       (RouterOS only burns limit-uptime during sessions)
+    - any still-active prepaid client whose access deadline already passed
+      (catches lock-starved / unreachable-NAS misses beyond the near window)
     """
     from billing.models import Customer
 
@@ -315,6 +319,44 @@ def customers_for_subscription_enforcement_watch(
             continue
         # Refresh while still paid, and also after expiry so a missed
         # near-deadline tick cannot leave a Hotspot MAC enabled offline.
+        if pk is not None:
+            seen.add(int(pk))
+        yield customer
+
+    # Hard-expired prepaid clients outside the near window still need retries
+    # when a prior tick lost the fleet lock or the NAS was unreachable.
+    # Cap at 7 days so ancient closed accounts are left to the full sweep /
+    # orphan NAS pass instead of every 90s watch tick.
+    retry_horizon_sec = max(float(past_seconds), 7 * 86400)
+    expired_qs = (
+        Customer.objects.filter(
+            status=Customer.Status.ACTIVE,
+            package_paused_at__isnull=True,
+            service_type__in={
+                Customer.ServiceType.PPPOE,
+                Customer.ServiceType.HOTSPOT,
+                Customer.ServiceType.STATIC,
+            },
+        )
+        .exclude(package_end=None)
+        .filter(
+            Q(service_type=Customer.ServiceType.PPPOE, pppoe_username__gt="")
+            | Q(service_type=Customer.ServiceType.HOTSPOT, hotspot_mac__gt="")
+            | Q(service_type=Customer.ServiceType.STATIC, cpe_ip__gt="")
+        )
+        .select_related("plan", "organization", "router")
+        .order_by("id")
+    )
+    for customer in expired_qs.iterator(chunk_size=200):
+        pk = getattr(customer, "pk", None)
+        if pk is not None and int(pk) in seen:
+            continue
+        deadline = subscription_access_deadline(customer)
+        if deadline is None or deadline > stamp:
+            continue
+        age = (stamp - deadline).total_seconds()
+        if age > retry_horizon_sec:
+            continue
         if pk is not None:
             seen.add(int(pk))
         yield customer
