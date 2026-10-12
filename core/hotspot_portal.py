@@ -43,6 +43,71 @@ def prefer_http_captive_url(url: str) -> str:
     )
 
 
+def resolve_public_billing_ipv4(url: str = "") -> str:
+    """IPv4 for the billing hostname (PUBLIC_BASE_URL or the given absolute URL)."""
+    candidate = (url or "").strip() or (getattr(settings, "PUBLIC_BASE_URL", "") or "")
+    candidate = prefer_http_captive_url(candidate) or candidate
+    try:
+        host = (urlparse(candidate).hostname or "").strip().lower()
+    except Exception:
+        return ""
+    if not host:
+        return ""
+    try:
+        addr = ipaddress.ip_address(host)
+        return host if addr.version == 4 and not addr.is_loopback else ""
+    except ValueError:
+        pass
+    try:
+        for info in socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM):
+            ip = (info[4][0] or "").strip()
+            if not ip:
+                continue
+            try:
+                addr = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+            if addr.version == 4 and not addr.is_loopback and not addr.is_unspecified:
+                return ip
+    except OSError:
+        return ""
+    return ""
+
+
+def prefer_captive_open_url(url: str) -> str:
+    """
+    URL phones should open for captive pay.
+
+    Always http://. On hosted installs, rewrite the public hostname to its IPv4
+    so Brave/Chrome HTTPS-First does not upgrade to https://domain (which times
+    out when Hotspot has not allowed billing :443 yet). Walled-garden / DNS pin
+    still use the hostname form via prefer_http_captive_url.
+    """
+    from urllib.parse import urlunparse
+
+    url = prefer_http_captive_url(url)
+    if not url or not getattr(settings, "HOSTED", False):
+        return url
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return url
+    try:
+        ipaddress.ip_address(host)
+        return url
+    except ValueError:
+        pass
+    billing_ip = resolve_public_billing_ipv4(url)
+    if not billing_ip:
+        return url
+    netloc = billing_ip
+    if parsed.port and parsed.port not in (80, 443):
+        netloc = f"{billing_ip}:{parsed.port}"
+    return urlunparse(
+        ("http", netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+
 def local_ipv4_addresses() -> set[str]:
     """Every IPv4 address this machine currently answers on."""
     found: set[str] = set()
@@ -457,12 +522,13 @@ def hotspot_portal_urls(join_code: str, request=None) -> dict[str, str]:
         "alogin_path": alogin_path,
         "welcome_path": welcome_path,
         "pay_path": pay_path,
-        "login_url": _abs(login_path),
-        "captive_login_url": _abs(captive_login_path),
-        "reconnect_url": _abs(reconnect_path),
-        "alogin_url": _abs(alogin_path),
-        "welcome_url": _abs(welcome_path),
-        "pay_url": _abs(pay_path),
+        # Open URLs may be http://<ipv4>/… on hosted (HTTPS-First safe).
+        "login_url": prefer_captive_open_url(_abs(login_path)),
+        "captive_login_url": prefer_captive_open_url(_abs(captive_login_path)),
+        "reconnect_url": prefer_captive_open_url(_abs(reconnect_path)),
+        "alogin_url": prefer_captive_open_url(_abs(alogin_path)),
+        "welcome_url": prefer_captive_open_url(_abs(welcome_path)),
+        "pay_url": prefer_captive_open_url(_abs(pay_path)),
         "base_url": base,
         "base_is_loopback": is_loopback_url(base or ""),
         "base_unreachable_reason": effective_reason or configured_reason,

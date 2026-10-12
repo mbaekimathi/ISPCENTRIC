@@ -528,7 +528,11 @@ class HotspotCaptiveProbeMiddleware:
                 hotspot_view,
                 kwargs={"join_code": org.join_code},
             )
-        from core.hotspot_portal import prefer_http_captive_url, public_base_url
+        from core.hotspot_portal import (
+            prefer_captive_open_url,
+            prefer_http_captive_url,
+            public_base_url,
+        )
 
         try:
             base = prefer_http_captive_url(public_base_url(request) or "").rstrip("/")
@@ -540,7 +544,8 @@ class HotspotCaptiveProbeMiddleware:
             base = prefer_http_captive_url(
                 request.build_absolute_uri("/")
             ).rstrip("/")
-        target = prefer_http_captive_url(f"{base}{pay_path}")
+        # Hosted open URL may be http://<billing-ip>/… (avoids HTTPS-First timeout).
+        target = prefer_captive_open_url(f"{base}{pay_path}")
         if query:
             target = f"{target}?{query}"
         if prefer_pppoe:

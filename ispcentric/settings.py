@@ -285,6 +285,21 @@ if not HOSTED:
             ALLOWED_HOSTS.append(_lan)
     except Exception:
         pass
+else:
+    # Captive open URLs may use http://<billing-ipv4>/… so HTTPS-First browsers
+    # do not upgrade the public hostname. Accept that Host and CSRF origin.
+    try:
+        from core.hotspot_portal import resolve_public_billing_ipv4
+
+        _billing_ip = resolve_public_billing_ipv4(PUBLIC_BASE_URL or "")
+        if _billing_ip and _billing_ip not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(_billing_ip)
+        if _billing_ip:
+            _billing_origin = f"http://{_billing_ip}"
+            if _billing_origin not in CSRF_TRUSTED_ORIGINS:
+                CSRF_TRUSTED_ORIGINS.append(_billing_origin)
+    except Exception:
+        pass
 
 # Reverse proxies whose X-Forwarded-For may be trusted (nginx on the same box).
 TRUSTED_PROXY_IPS = [

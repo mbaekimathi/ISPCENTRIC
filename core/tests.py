@@ -10547,6 +10547,23 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         self.assertIn("http://isp.richcom.co.ke/hotspot/534970/pay/", html)
         self.assertNotIn("https://isp.richcom.co.ke/hotspot/534970/pay/", html)
 
+    @override_settings(HOSTED=True, PUBLIC_BASE_URL="http://isp.richcom.co.ke")
+    def test_login_html_uses_billing_ipv4_when_hosted(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import _captive_pay_redirect_html
+
+        with patch(
+            "core.hotspot_portal.resolve_public_billing_ipv4",
+            return_value="178.162.241.99",
+        ):
+            html = _captive_pay_redirect_html(
+                "https://isp.richcom.co.ke/hotspot/534970/pay/"
+            )
+        self.assertIn("http://178.162.241.99/hotspot/534970/pay/", html)
+        self.assertNotIn("https://isp.richcom.co.ke/", html)
+        self.assertNotIn("http://isp.richcom.co.ke/", html)
+
     def test_enable_isp_hotspot_publishes_option_114_after_login_html(self):
         from contextlib import ExitStack
         from unittest.mock import MagicMock

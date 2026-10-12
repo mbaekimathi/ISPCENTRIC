@@ -5005,6 +5005,7 @@ def probe_customer_cpe_web(
             port=nas_port,
             timeout=timeout,
             cool_host=not light,
+            reuse=True,
         ) as nas_sock:
             source_address = _nas_socket_source_address(nas_sock)
             _ensure_hotspot_bypass(nas_sock, source_address)
@@ -12590,6 +12591,8 @@ def _ensure_hotspot_pool_wan_guard(
         },
     ]
     for billing_ip in billing_ips:
+        # Broad accept (any proto/port) so HTTP + HTTPS + QUIC to billing work
+        # after public TLS — Brave/Chrome often open https:// first.
         rules.append(
             {
                 "chain": "forward",
@@ -12599,6 +12602,22 @@ def _ensure_hotspot_pool_wan_guard(
                 "comment": f"{ISP_HOTSPOT_TAG} pool billing",
             }
         )
+        for proto, port, suffix in (
+            ("tcp", "80", "http"),
+            ("tcp", "443", "https"),
+            ("udp", "443", "quic"),
+        ):
+            rules.append(
+                {
+                    "chain": "forward",
+                    "action": "accept",
+                    "protocol": proto,
+                    "dst-port": port,
+                    "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                    "dst-address": billing_ip,
+                    "comment": f"{ISP_HOTSPOT_TAG} pool billing {suffix}",
+                }
+            )
     rules.extend(
         [
             {
@@ -24284,8 +24303,11 @@ def _write_hotspot_html_file(sock: socket.socket, dst_path: str, html: str) -> b
 
 def _captive_pay_redirect_html(pay_url: str) -> str:
     """Hotspot login page that HTTP-redirects every OS to the payment/pause page."""
-    # Captive WebViews stall on HTTPS; always ship http:// into login.html.
-    pay_url = _prefer_http_captive_url(pay_url or "")
+    # Hosted: open via billing IPv4 so HTTPS-First browsers do not upgrade the
+    # public name to :443 (times out until Hotspot allows billing HTTPS).
+    from core.hotspot_portal import prefer_captive_open_url
+
+    pay_url = prefer_captive_open_url(pay_url or "")
     if not pay_url:
         return ""
     # Keep an existing query string (e.g. signed ?t= for PPPoE account auto-fill).
