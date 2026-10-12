@@ -264,6 +264,68 @@ class PrefetchEmployeeMiddleware:
         return self.get_response(request)
 
 
+_CAPTIVE_PORTAL_PATH_RE = re.compile(
+    r"^/(hotspot|pppoe)/[^/]+/"
+    r"(pay|reconnect|pause|voucher|welcome|status)(/|$)",
+    re.IGNORECASE,
+)
+
+
+def is_captive_portal_path(path: str) -> bool:
+    """True for Hotspot/PPPoE captive sheets that must stay on plain HTTP."""
+    return bool(_CAPTIVE_PORTAL_PATH_RE.search((path or "").split("?", 1)[0]))
+
+
+class CaptivePortalHttpMiddleware:
+    """
+    Keep Hotspot/PPPoE pay pages on plain HTTP.
+
+    Phones do not need full internet — only TCP:80 to the billing host through
+    the MikroTik walled garden. HTTPS (browser upgrade, leftover HSTS, or a
+    certbot site-wide redirect) times out in captive mode and leaves devices on
+    "Connected, no internet". Force http:// and strip HSTS on these paths.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        path = request.path or ""
+        if is_captive_portal_path(path) and self._request_is_https(request):
+            from django.http import HttpResponseRedirect
+
+            from core.hotspot_portal import prefer_http_captive_url
+
+            # Avoid build_absolute_uri() — DisallowedHost on probe/foreign Hosts.
+            host = (request.META.get("HTTP_HOST") or "").strip()
+            query = (request.META.get("QUERY_STRING") or "").strip()
+            absolute = prefer_http_captive_url(
+                f"https://{host}{path}" + (f"?{query}" if query else "")
+            )
+            if absolute and absolute.lower().startswith("http://"):
+                return HttpResponseRedirect(absolute)
+
+        response = self.get_response(request)
+        if is_captive_portal_path(path):
+            # Undo any HSTS from an earlier https admin visit / misconfig.
+            if "Strict-Transport-Security" in response:
+                del response["Strict-Transport-Security"]
+            response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response["Pragma"] = "no-cache"
+        return response
+
+    @staticmethod
+    def _request_is_https(request) -> bool:
+        if getattr(request, "is_secure", lambda: False)():
+            return True
+        proto = (
+            request.META.get("HTTP_X_FORWARDED_PROTO")
+            or request.META.get("HTTP_X_FORWARDED_SCHEME")
+            or ""
+        ).split(",")[0].strip().lower()
+        return proto == "https"
+
+
 class HotspotCaptiveProbeMiddleware:
     """
     Turn OS captive-portal probes into the Hotspot or PPPoE payment / pause page.

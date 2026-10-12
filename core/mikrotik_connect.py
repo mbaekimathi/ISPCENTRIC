@@ -15548,6 +15548,25 @@ def _repair_unpaid_hotspot_leak_on_socket(
                     enabled=bool(getattr(org, "hotspot_block_tethering", True)),
                 )
             )
+        lan = _resolve_lan_interface(
+            sock,
+            getattr(router, "lan_bridge", None) or "bridgeLocal",
+            exclude=getattr(router, "wan_interface", None) or "ether1",
+        )
+        # Always keep DHCP + option 114 — Android/iOS that only probe HTTPS never
+        # see an HTTP redirect and stay on "Connected, no internet" without it.
+        notes.extend(
+            _ensure_isp_hotspot_dhcp(
+                sock, lan_interface=lan, hotspot_address=ISP_HOTSPOT_ADDRESS
+            )
+        )
+        notes.extend(
+            _ensure_captive_portal_dhcp_option(
+                sock,
+                _local_hotspot_captive_portal_uri(),
+                comment=ISP_HOTSPOT_TAG,
+            )
+        )
         if login_broken or leak_found:
             urls = _hotspot_portal_urls_for_org(org)
             page_notes = _fetch_isp_hotspot_pages(
@@ -15558,23 +15577,8 @@ def _repair_unpaid_hotspot_leak_on_socket(
                 welcome_url=urls.get("welcome_url") or "",
             )
             notes.extend(page_notes[:3])
-            lan = _resolve_lan_interface(
-                sock,
-                getattr(router, "lan_bridge", None) or "bridgeLocal",
-                exclude=getattr(router, "wan_interface", None) or "ether1",
-            )
-            notes.extend(
-                _ensure_isp_hotspot_dhcp(
-                    sock, lan_interface=lan, hotspot_address=ISP_HOTSPOT_ADDRESS
-                )
-            )
-            notes.extend(
-                _ensure_captive_portal_dhcp_option(
-                    sock,
-                    _local_hotspot_captive_portal_uri(),
-                    comment=ISP_HOTSPOT_TAG,
-                )
-            )
+            if portal:
+                notes.extend(_ensure_hotspot_walled_garden(sock, portal))
         if login_broken:
             # Only bounce when portal was broken — avoids mid-pay disconnects
             # during routine orphan sweeps.
@@ -24233,7 +24237,8 @@ def _write_hotspot_html_file(sock: socket.socket, dst_path: str, html: str) -> b
 
 def _captive_pay_redirect_html(pay_url: str) -> str:
     """Hotspot login page that HTTP-redirects every OS to the payment/pause page."""
-    pay_url = (pay_url or "").strip()
+    # Captive WebViews stall on HTTPS; always ship http:// into login.html.
+    pay_url = _prefer_http_captive_url(pay_url or "")
     if not pay_url:
         return ""
     # Keep an existing query string (e.g. signed ?t= for PPPoE account auto-fill).

@@ -297,6 +297,8 @@ MIDDLEWARE = [
     "ispcentric.middleware.RealClientIpMiddleware",
     "ispcentric.middleware.CaptiveHostRewriteMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    # After SecurityMiddleware so we can undo accidental HTTPS/HSTS on pay sheets.
+    "ispcentric.middleware.CaptivePortalHttpMiddleware",
     "ispcentric.security_headers.SecurityHeadersMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",

@@ -2841,6 +2841,54 @@ class CaptiveProbeMiddlewareTests(TestCase):
         )
         self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
 
+    def test_captive_pay_https_request_forced_to_http(self):
+        """HTTPS pay URLs time out in walled garden — bounce to http://."""
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        from ispcentric.middleware import CaptivePortalHttpMiddleware
+
+        def get_response(_request):
+            response = HttpResponse("pay")
+            response["Strict-Transport-Security"] = "max-age=31536000"
+            return response
+
+        middleware = CaptivePortalHttpMiddleware(get_response)
+        request = RequestFactory().get(
+            f"/hotspot/{self.org.join_code}/pay/",
+            {"mac": "AA:BB:CC:DD:EE:01"},
+            HTTP_HOST="billing.example",
+            HTTP_X_FORWARDED_PROTO="https",
+        )
+        response = middleware(request)
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            response.url.startswith("http://billing.example/"),
+            response.url,
+        )
+        self.assertIn("/pay/", response.url)
+        self.assertIn("mac=", response.url)
+
+    def test_captive_pay_http_strips_hsts(self):
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        from ispcentric.middleware import CaptivePortalHttpMiddleware
+
+        def get_response(_request):
+            response = HttpResponse("pay")
+            response["Strict-Transport-Security"] = "max-age=31536000"
+            return response
+
+        middleware = CaptivePortalHttpMiddleware(get_response)
+        request = RequestFactory().get(
+            f"/hotspot/{self.org.join_code}/pay/",
+            HTTP_HOST="billing.example",
+        )
+        response = middleware(request)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Strict-Transport-Security", response)
+
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
     def test_mobile_oem_probe_hosts_redirect(self):
         from django.core.cache import cache
@@ -10489,6 +10537,15 @@ class IspHotspotInstantPayTests(SimpleTestCase):
             _prefer_http_captive_url("http://billing.example:8000/hotspot/1/pay/"),
             "http://billing.example:8000/hotspot/1/pay/",
         )
+
+    def test_login_html_forces_http_pay_target(self):
+        from core.mikrotik_connect import _captive_pay_redirect_html
+
+        html = _captive_pay_redirect_html(
+            "https://isp.richcom.co.ke/hotspot/534970/pay/"
+        )
+        self.assertIn("http://isp.richcom.co.ke/hotspot/534970/pay/", html)
+        self.assertNotIn("https://isp.richcom.co.ke/hotspot/534970/pay/", html)
 
     def test_enable_isp_hotspot_publishes_option_114_after_login_html(self):
         from contextlib import ExitStack
