@@ -699,6 +699,10 @@
     }
   }
 
+  // Chunk ids so one cold probe pass cannot 504 the reverse proxy and starve
+  // surfing / MikroTik status polls on the same page.
+  var REMOTE_BATCH = 8;
+
   function visibleRemoteIds() {
     var ids = [];
     document.querySelectorAll("[data-client-remote]").forEach(function (el) {
@@ -708,62 +712,102 @@
     return ids;
   }
 
+  function applyRemoteClients(clients) {
+    (clients || []).forEach(function (item) {
+      var id = String(item.id);
+      // Keep prior Ready/Blocked while a deferred "Checking" placeholder lands.
+      if (item.partial || item.failure_class === "budget") {
+        var held = lastById[id];
+        if (held && held.status && held.status !== "offline") {
+          document.querySelectorAll('[data-client-remote="' + item.id + '"]').forEach(function (el) {
+            setRemoteStatus(
+              el,
+              held.status,
+              held.label,
+              (held.title ? held.title + " · " : "") + "Last check kept — retrying"
+            );
+          });
+          return;
+        }
+      }
+      lastById[id] = {
+        status: item.status || "",
+        label: item.label || "",
+        title: item.title || ""
+      };
+      document.querySelectorAll('[data-client-remote="' + item.id + '"]').forEach(function (el) {
+        setRemoteStatus(el, item.status || "", item.label || "", item.title || "");
+      });
+    });
+  }
+
+  function fetchRemoteBatch(ids, force) {
+    var url = remoteUrl + "?ids=" + encodeURIComponent(ids.join(","));
+    if (force) url += "&refresh=1";
+    return fetch(url, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    }).then(function (res) {
+      if (!res.ok) throw new Error("remote-access " + res.status);
+      return res.json();
+    }).then(function (data) {
+      if (!data || !data.ok || !data.clients) throw new Error("remote-access bad payload");
+      applyRemoteClients(data.clients);
+      return data;
+    });
+  }
+
   function refreshRemote(force) {
     if (document.hidden || inFlight) return;
     var ids = visibleRemoteIds();
     if (!ids.length) return;
     inFlight = true;
-    var url = remoteUrl + "?ids=" + encodeURIComponent(ids.join(","));
-    if (force) url += "&refresh=1";
-    fetch(url, {
-      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
-      credentials: "same-origin"
-    })
-      .then(function (res) {
-        if (!res.ok) throw new Error("remote-access " + res.status);
-        return res.json();
-      })
-      .then(function (data) {
-        if (!data || !data.ok || !data.clients) throw new Error("remote-access bad payload");
-        data.clients.forEach(function (item) {
-          var id = String(item.id);
-          lastById[id] = {
-            status: item.status || "",
-            label: item.label || "",
-            title: item.title || ""
-          };
-          document.querySelectorAll('[data-client-remote="' + item.id + '"]').forEach(function (el) {
-            setRemoteStatus(el, item.status || "", item.label || "", item.title || "");
-          });
-        });
-      })
-      .catch(function () {
-        // Never paint every row "Unavailable" on a blip — keep last good status.
-        document.querySelectorAll("[data-client-remote]").forEach(function (el) {
-          var id = el.getAttribute("data-client-remote") || "";
-          var prev = lastById[id];
-          if (prev) {
-            setRemoteStatus(
-              el,
-              prev.status,
-              prev.label,
-              (prev.title ? prev.title + " · " : "") + "Last check kept — retrying"
-            );
-            return;
-          }
-          if (el.classList.contains("is-checking")) {
-            setRemoteStatus(
-              el,
-              "offline",
-              "Retry",
-              "Could not check remote access — will retry"
-            );
-          }
-        });
-      })
-      .finally(function () {
+    var cursor = 0;
+
+    function next() {
+      if (document.hidden || cursor >= ids.length) {
         inFlight = false;
-      });
+        return;
+      }
+      var batch = ids.slice(cursor, cursor + REMOTE_BATCH);
+      cursor += REMOTE_BATCH;
+      fetchRemoteBatch(batch, force)
+        .catch(function () {
+          batch.forEach(function (rawId) {
+            var id = String(rawId);
+            var prev = lastById[id];
+            document.querySelectorAll('[data-client-remote="' + rawId + '"]').forEach(function (el) {
+              if (prev) {
+                setRemoteStatus(
+                  el,
+                  prev.status,
+                  prev.label,
+                  (prev.title ? prev.title + " · " : "") + "Last check kept — retrying"
+                );
+                return;
+              }
+              if (el.classList.contains("is-checking")) {
+                setRemoteStatus(
+                  el,
+                  "offline",
+                  "Retry",
+                  "Could not check remote access — will retry"
+                );
+              }
+            });
+          });
+        })
+        .then(function () {
+          // Small gap between batches so surfing/status can use a free worker.
+          if (cursor < ids.length) {
+            window.setTimeout(next, 250);
+          } else {
+            inFlight = false;
+          }
+        });
+    }
+
+    next();
   }
 
   function startPolling() {
@@ -773,10 +817,11 @@
     timer = setInterval(function () { refreshRemote(false); }, 60000);
   }
 
+  // Start after surfing/status so those badges paint first.
   if (window.requestIdleCallback) {
-    window.requestIdleCallback(startPolling, { timeout: 1800 });
+    window.requestIdleCallback(startPolling, { timeout: 3200 });
   } else {
-    setTimeout(startPolling, 700);
+    setTimeout(startPolling, 1600);
   }
   var lastRemoteForceAt = 0;
   document.addEventListener("visibilitychange", function () {
@@ -931,6 +976,8 @@
     tbody.appendChild(frag);
   }
 
+  var lastSurfById = {};
+
   function refreshSurf(force) {
     var surfBadges = document.querySelectorAll("[data-client-surf], [data-hotspot-surf]");
     var connectionBadges = document.querySelectorAll("[data-hotspot-connected]");
@@ -943,19 +990,19 @@
       headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin"
     })
-      .then(function (res) { return res.json(); })
+      .then(function (res) {
+        if (!res.ok) throw new Error("surfing " + res.status);
+        return res.json();
+      })
       .then(function (data) {
         if (!data || !data.ok || !data.clients) {
-          surfBadges.forEach(function (el) {
-            if (el.classList.contains("is-checking")) applySurfBadge(el, false, "Could not check", "disconnected");
-          });
-          connectionBadges.forEach(function (el) {
-            if (el.classList.contains("is-checking")) applyConnectionBadge(el, false, "Could not check");
-          });
-          return;
+          throw new Error("surfing bad payload");
         }
         var byId = {};
-        data.clients.forEach(function (item) { byId[String(item.id)] = item; });
+        data.clients.forEach(function (item) {
+          byId[String(item.id)] = item;
+          lastSurfById[String(item.id)] = item;
+        });
         surfBadges.forEach(function (el) {
           var id = el.getAttribute("data-client-surf") || el.getAttribute("data-hotspot-surf");
           var item = byId[String(id)];
@@ -1000,11 +1047,39 @@
         reorderHotspotRows(byId);
       })
       .catch(function () {
+        // Keep last good badges on 502/504 — do not flash everyone offline.
         surfBadges.forEach(function (el) {
-          if (el.classList.contains("is-checking")) applySurfBadge(el, false, "Could not check", "disconnected");
+          var id = el.getAttribute("data-client-surf") || el.getAttribute("data-hotspot-surf");
+          var prev = lastSurfById[String(id)];
+          if (prev) {
+            applySurfBadge(
+              el,
+              !!prev.surfing,
+              (prev.reason || prev.label || "Surfing") + " · Last check kept — retrying",
+              prev.state || "",
+              hotspotSurfBadgeLabel(prev)
+            );
+            return;
+          }
+          if (el.classList.contains("is-checking")) {
+            applySurfBadge(el, false, "Could not check", "disconnected");
+          }
         });
         connectionBadges.forEach(function (el) {
-          if (el.classList.contains("is-checking")) applyConnectionBadge(el, false, "Could not check");
+          var prev = lastSurfById[String(el.getAttribute("data-hotspot-connected"))];
+          if (prev) {
+            applyConnectionBadge(
+              el,
+              !!prev.connected,
+              (prev.connection_reason || "Connected") + " · Last check kept — retrying",
+              prev.connected_router_name || "",
+              prev.connected_wifi_ssid || prev.connection_label || ""
+            );
+            return;
+          }
+          if (el.classList.contains("is-checking")) {
+            applyConnectionBadge(el, false, "Could not check");
+          }
         });
       })
       .finally(function () { inFlight = false; });

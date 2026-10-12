@@ -2618,7 +2618,8 @@ class HotspotEnabledForm(forms.ModelForm):
         help_texts = {
             "hotspot_enabled": (
                 "Turn on Hotspot portals and voucher defaults for this organization. "
-                "Saving also pushes Hotspot to this MikroTik."
+                "When off, Hotspot stays disabled until turned back on. "
+                "Saving also pushes or removes Hotspot on this MikroTik."
             ),
         }
         widgets = {
@@ -2676,6 +2677,8 @@ class HotspotSettingsForm(forms.ModelForm):
         help_texts = {
             "hotspot_enabled": (
                 "Turn on Hotspot portals and voucher defaults. "
+                "When off, Hotspot stays disabled until turned back on "
+                "(PPPoE enforcement will not force it on). "
                 "Save & push applies this to the MikroTik."
             ),
             "hotspot_block_tethering": (

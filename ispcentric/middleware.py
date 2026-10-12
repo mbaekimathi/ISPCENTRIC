@@ -446,7 +446,9 @@ class HotspotCaptiveProbeMiddleware:
         # Hotspot probes: unpaid / unknown MAC → /pay/ first (one hop).
         # Paid MACs that can already surf → /reconnect/ (skip pay → welcome).
         # Paused packages → /pause/.
+        # Resolve MAC once — a second NAS walk here was doubling captive latency.
         hotspot_view = "core:hotspot_pay"
+        hotspot_mac = ""
         if not prefer_pppoe:
             try:
                 from billing.devices import (
@@ -456,21 +458,22 @@ class HotspotCaptiveProbeMiddleware:
                 from billing.services import customer_package_is_paused
                 from core.mikrotik_connect import find_hotspot_mac_for_ip
 
-                mac = find_hotspot_mac_for_ip(org, remote) or ""
-                if mac:
+                hotspot_mac = find_hotspot_mac_for_ip(org, remote) or ""
+                if hotspot_mac:
                     hotspot_customer = find_hotspot_customer_for_mac(
-                        org, mac, active_only=True
+                        org, hotspot_mac, active_only=True
                     )
                     if hotspot_customer is not None and customer_package_is_paused(
                         hotspot_customer
                     ):
                         hotspot_view = "core:hotspot_pause"
                     elif hotspot_customer is not None and hotspot_mac_can_surf(
-                        hotspot_customer, mac
+                        hotspot_customer, hotspot_mac
                     ):
                         hotspot_view = "core:hotspot_reconnect"
             except Exception:
                 hotspot_view = "core:hotspot_pay"
+                hotspot_mac = ""
 
         if prefer_pppoe:
             pay_path = reverse(
@@ -530,22 +533,18 @@ class HotspotCaptiveProbeMiddleware:
                 pass
         else:
             # Captive probes often skip RouterOS login.html, so attach MAC from
-            # the Hotspot host table when the client IP is known.
+            # the earlier host-table lookup (do not walk NAS a second time).
             try:
                 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
-                from core.mikrotik_connect import (
-                    find_hotspot_mac_for_ip,
-                    remember_hotspot_mac_for_ip,
-                )
+                from core.mikrotik_connect import remember_hotspot_mac_for_ip
 
-                mac = find_hotspot_mac_for_ip(org, remote)
-                if mac:
-                    remember_hotspot_mac_for_ip(org, remote, mac)
+                if hotspot_mac:
+                    remember_hotspot_mac_for_ip(org, remote, hotspot_mac)
                     parts = urlsplit(target)
                     q = parse_qs(parts.query, keep_blank_values=True)
                     if not q.get("mac"):
-                        q["mac"] = [mac]
+                        q["mac"] = [hotspot_mac]
                         target = urlunsplit(
                             (
                                 parts.scheme,

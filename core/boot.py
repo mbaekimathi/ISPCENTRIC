@@ -80,13 +80,30 @@ def _wireguard_sync_interval_sec() -> float:
 
 
 def _subscription_sweep_interval_sec() -> float:
-    # Prefer aligning with deploy/systemd/ispcentric-sweep.timer (5 min).
-    # Local default stays 180s so expired clients are not left surfing long
-    # when the systemd timer is not installed.
+    # Prefer aligning with deploy/systemd/ispcentric-sweep.timer (15 min).
+    # Full fleet sweeps rewrite NAS state; running them every few minutes was
+    # heavy and could flap paid PPPoE for a few seconds. Near-deadline expiry
+    # watch still cuts unpaid clients within ~90s.
     try:
-        return max(60.0, float(os.getenv("SUBSCRIPTION_SWEEP_INTERVAL_SEC", "180")))
+        return max(60.0, float(os.getenv("SUBSCRIPTION_SWEEP_INTERVAL_SEC", "900")))
     except (TypeError, ValueError):
-        return 180.0
+        return 900.0
+
+
+def _paid_repair_enabled() -> bool:
+    """
+    Soft repair of paid PPPoE (secret/list fix, never kick).
+
+    Default off: frequent paid soft-repair API rewrites were causing brief
+    surfing blips. Enable with SUBSCRIPTION_PAID_REPAIR_ENABLED=true when
+    diagnosing paid-not-surfing leaks.
+    """
+    env = os.getenv("SUBSCRIPTION_PAID_REPAIR_ENABLED", "").strip().lower()
+    if env in {"1", "true", "yes"}:
+        return True
+    if env in {"0", "false", "no"}:
+        return False
+    return False
 
 
 def _subscription_sweep_startup_delay_sec() -> float:
@@ -799,10 +816,10 @@ def _run_near_deadline_expiry_sync() -> None:
                 break
         repair_tick = int(cache.get("expiry_watch_repair_tick") or 0) + 1
         cache.set("expiry_watch_repair_tick", repair_tick, 3600)
-        # Unpaid leaks stay frequent. Paid soft repair (secret/list fix, never
-        # kick) runs less often so surfing CPEs are not hammered by API rewrites.
+        # Unpaid leaks stay frequent. Paid soft repair is off by default —
+        # when enabled it runs rarely so surfing CPEs are not API-hammered.
         run_unpaid_repair = urgent_deadline or (repair_tick % 3 == 0)
-        run_paid_repair = repair_tick % 5 == 0
+        run_paid_repair = _paid_repair_enabled() and (repair_tick % 20 == 0)
         run_fleet_repair = run_unpaid_repair or run_paid_repair
         synced = 0
         for customer in near:

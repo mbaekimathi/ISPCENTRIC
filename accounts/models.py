@@ -80,7 +80,8 @@ class Organization(models.Model):
         default=False,
         help_text=(
             "Allow Hotspot portals and voucher access for this organization. "
-            "Enabled automatically as fallback when PPPoE enforcement is on."
+            "When off, Hotspot stays disabled until turned back on "
+            "(PPPoE enforcement will not force it on)."
         ),
     )
     hotspot_portal_title = models.CharField(

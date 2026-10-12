@@ -11062,6 +11062,8 @@ _CAPTIVE_SESSION_CACHE_TTL = 180
 _CAPTIVE_PPPOE_IP_CACHE_TTL = 60 * 60 * 6
 _CPE_RENEW_CLEAR_PENDING_TTL = 60 * 60 * 12
 _HOTSPOT_AUTHORIZE_PENDING_TTL = 60 * 60 * 6
+# Pay-page open → keep Wi‑Fi bounce / connection races from aborting HTML/CSS.
+_CAPTIVE_PAY_HIT_TTL = 90
 # Drop dead PPP peers so only-one=yes cannot block a paid CPE redial forever.
 # Default 2m (not 30s): aggressive keepalives bounce flaky-but-live CPEs on deploy.
 # Override with settings.PPPOE_KEEPALIVE_TIMEOUT (e.g. "1m" / "30s") after soak.
@@ -12435,6 +12437,7 @@ def _kill_firewall_connections_for_addresses(
     addresses: set[str] | list[str] | tuple[str, ...],
     *,
     preserve_dst: frozenset[str] | set[str] | None = None,
+    require_preserve: bool = False,
 ) -> int:
     """
     Remove tracked connections so blocked clients cannot keep surfing on
@@ -12442,6 +12445,10 @@ def _kill_firewall_connections_for_addresses(
 
     ``preserve_dst`` keeps billing-server sockets alive so captive pay pages
     are not aborted mid-load (ERR_CONNECTION_ABORTED).
+
+    When ``require_preserve`` is True and preserve resolves empty (DNS / base
+    URL miss), skip the kill entirely — better a brief leak than a broken pay
+    sheet.
     """
     targets = {
         (addr or "").strip()
@@ -12455,6 +12462,13 @@ def _kill_firewall_connections_for_addresses(
         for addr in (preserve_dst or ())
         if (addr or "").strip()
     }
+    if require_preserve and not keep_dst:
+        logger.warning(
+            "Skipping connection kill for %s address(es) — billing preserve "
+            "IPs empty (would abort captive pay TCP)",
+            len(targets),
+        )
+        return 0
     removed = 0
     try:
         rows = _print(
@@ -14840,6 +14854,11 @@ def _pppoe_batch_write_on_socket(
                 session_was_blocked = _active_pppoe_session_is_blocked(
                     sock, username, live=live
                 )
+            restoring_surf = bool(
+                internet_allowed
+                and not disabled
+                and profile != PPPOE_BLOCKED_PROFILE_NAME
+            )
             if _ppp_secret_needs_update(
                 live,
                 username=username,
@@ -14848,6 +14867,15 @@ def _pppoe_batch_write_on_socket(
                 comment=comment,
                 password=password,
             ):
+                if restoring_surf:
+                    logger.info(
+                        "PPPoE paid secret rewrite router=%s user=%s "
+                        "profile=%s->%s (soft apply, no kick)",
+                        router_id,
+                        username,
+                        previous_profile or "(none)",
+                        profile,
+                    )
                 _ensure_ppp_secret(
                     sock,
                     username=username,
@@ -14859,11 +14887,6 @@ def _pppoe_batch_write_on_socket(
                     kick=False,
                     live=live,
                 )
-            restoring_surf = bool(
-                internet_allowed
-                and not disabled
-                and profile != PPPOE_BLOCKED_PROFILE_NAME
-            )
             if restoring_surf and session_was_blocked:
                 clear_usernames.append(username)
             if (
@@ -15688,14 +15711,9 @@ def repair_router_access_leaks_on_router(
             )
 
     hotspot_on = bool(getattr(org, "hotspot_enabled", False)) if org else False
-    has_hotspot = False
-    if org and not suspended:
-        from billing.models import Customer
-
-        has_hotspot = hotspot_on or Customer.objects.filter(
-            organization_id=org.pk,
-            service_type=Customer.ServiceType.HOTSPOT,
-        ).exclude(hotspot_mac="").exists()
+    # Leak repair only while Hotspot service is on — never treat leftover
+    # Hotspot customers as a reason to keep touching the NAS after OFF.
+    has_hotspot = bool(hotspot_on)
     if not org or not host or not api_user:
         results.append(
             {
@@ -15723,7 +15741,7 @@ def repair_router_access_leaks_on_router(
                 "skipped": True,
                 "repaired": 0,
                 "router_id": router_id,
-                "message": "No Hotspot clients on this router.",
+                "message": "Hotspot service is off — leak repair skipped.",
             }
         )
 
@@ -17859,6 +17877,109 @@ def _ensure_isp_hotspot_dhcp(
     return notes
 
 
+def _ensure_cpe_renew_dhcp(
+    sock: socket.socket,
+    *,
+    lan_interface: str,
+    hotspot_address: str = RENEW_HOTSPOT_ADDRESS,
+) -> list[str]:
+    """
+    DHCP server + network for the CPE renew pool so option 114 reaches phones.
+
+    Same failure mode as ISP Hotspot: Hotspot ``address-pool`` alone assigns
+    ``192.168.189.x`` without DHCP options, so Android 11+ / iOS 14+ never see
+    RFC 8910 and stay on "Connected, no internet" with no pay popup.
+
+    On a typical home CPE the LAN bridge already has a DHCP server — creating a
+    second one often traps. Callers must still advertise option 114 on existing
+    DHCP networks and prefer an unpooled Hotspot so LAN leases carry Sign-in.
+    """
+    notes: list[str] = []
+    lan = (lan_interface or "").strip()
+    gateway = (hotspot_address or RENEW_HOTSPOT_ADDRESS).strip() or RENEW_HOTSPOT_ADDRESS
+    if not lan:
+        return notes
+
+    server_name = "ispcentric-renew-dhcp"
+    server_id = ""
+    for row in _print(
+        sock, "/ip/dhcp-server", props=".id,name,interface,comment"
+    ):
+        name = (row.get("name") or "").strip()
+        comment = row.get("comment") or ""
+        if name == server_name or RENEW_HOTSPOT_TAG in comment:
+            if (row.get("interface") or "").strip() in {"", lan} or RENEW_HOTSPOT_TAG in comment:
+                server_id = (row.get(".id") or "").strip()
+                if name == server_name:
+                    break
+
+    server_attempts = [
+        {
+            "name": server_name,
+            "interface": lan,
+            "address-pool": RENEW_HOTSPOT_POOL,
+            "disabled": "no",
+            "comment": RENEW_HOTSPOT_TAG,
+        },
+        {
+            "name": server_name,
+            "interface": lan,
+            "address-pool": RENEW_HOTSPOT_POOL,
+            "disabled": "no",
+        },
+    ]
+    terminal, server_id = _add_or_set_attempts(
+        sock, "/ip/dhcp-server", server_id, server_attempts
+    )
+    if terminal.get("_reply") == "!trap":
+        notes.append(
+            "warning: could not create renew DHCP server — "
+            "option 114 will use existing LAN DHCP leases"
+        )
+    else:
+        notes.append(f"renew DHCP server on {lan} ({RENEW_HOTSPOT_POOL})")
+
+    network_id = ""
+    for row in _print(
+        sock, "/ip/dhcp-server/network", props=".id,address,comment"
+    ):
+        addr = (row.get("address") or "").strip()
+        if addr == RENEW_HOTSPOT_POOL_NETWORK or RENEW_HOTSPOT_TAG in (
+            row.get("comment") or ""
+        ):
+            network_id = (row.get(".id") or "").strip()
+            if addr == RENEW_HOTSPOT_POOL_NETWORK:
+                break
+
+    network_attempts = [
+        {
+            "address": RENEW_HOTSPOT_POOL_NETWORK,
+            "gateway": gateway,
+            "dns-server": gateway,
+            "comment": RENEW_HOTSPOT_TAG,
+        },
+        {
+            "address": RENEW_HOTSPOT_POOL_NETWORK,
+            "gateway": gateway,
+            "dns-server": gateway,
+        },
+        {
+            "address": RENEW_HOTSPOT_POOL_NETWORK,
+            "gateway": gateway,
+        },
+    ]
+    terminal, _ = _add_or_set_attempts(
+        sock, "/ip/dhcp-server/network", network_id, network_attempts
+    )
+    if terminal.get("_reply") == "!trap":
+        notes.append(
+            f"warning: could not publish renew DHCP network {RENEW_HOTSPOT_POOL_NETWORK}"
+        )
+    else:
+        notes.append(f"renew DHCP network {RENEW_HOTSPOT_POOL_NETWORK}")
+    return notes
+
+
 def _clear_https_capture_redirect(sock: socket.socket, *, comment: str) -> int:
     """Drop any tagged ``dstnat`` TCP/443 → 80 rule.
 
@@ -18360,12 +18481,15 @@ def _enable_cpe_renew_hotspot(
 
     Order matters for "connect Wi‑Fi → pay page appears immediately":
       1. Absolute pay URL (abort otherwise — never trap phones on 192.168.…)
-      2. Hotspot profile/server without cookie auto-login
-      3. Clear probe DNS hijack + leftover Hotspot sessions
-      4. Walled garden / billing allow
-      5. Install login.html redirect WHILE WAN still works
-      6. Drop non-billing WAN
-      7. DHCP option 114 + bounce Wi‑Fi so phones re-probe now
+      2. Hotspot profile without cookie auto-login
+      3. Renew DHCP (when possible) so option 114 is on the lease — same fix as
+         ISP Hotspot; address-pool alone leaves phones on Connected, no internet
+      4. Prefer unpooled Hotspot so DHCP (renew or existing LAN) owns leases
+      5. Clear probe DNS hijack + leftover Hotspot sessions
+      6. Walled garden / billing allow
+      7. Install login.html redirect WHILE WAN still works
+      8. Drop non-billing WAN
+      9. DHCP option 114 → local gateway /login + bounce Wi‑Fi
     """
     notes: list[str] = []
     portal_url = _resolve_absolute_captive_url(portal_url) or ""
@@ -18449,6 +18573,7 @@ def _enable_cpe_renew_hotspot(
             ]
         )
     terminal: dict[str, str] = {"_reply": "!trap"}
+    bound_hotspot_address = hotspot_address
     for profile_props in profile_attempts:
         if profile_id:
             terminal = _set(sock, "/ip/hotspot/profile", profile_id, **profile_props)
@@ -18457,12 +18582,25 @@ def _enable_cpe_renew_hotspot(
             if terminal.get("_reply") != "!trap":
                 profile_id = (terminal.get("ret") or "").strip() or profile_id
         if terminal.get("_reply") != "!trap":
+            bound_hotspot_address = (
+                (profile_props.get("hotspot-address") or "").strip() or hotspot_address
+            )
             break
     if terminal.get("_reply") == "!trap":
         raise ConnectionError(
             _trap_message(terminal, "Could not create renew hotspot profile on the CPE.")
         )
     notes.append("renew hotspot profile")
+
+    # DHCP for 192.168.189 so option 114 reaches phones (Hotspot address-pool alone
+    # assigns IPs without DHCP options → modern OS never opens Sign-in).
+    dhcp_notes = _ensure_cpe_renew_dhcp(
+        sock, lan_interface=lan, hotspot_address=bound_hotspot_address
+    )
+    notes.extend(dhcp_notes)
+    dhcp_ok = any("renew DHCP server on" in n for n in dhcp_notes)
+    if dhcp_ok:
+        notes.append("renew Hotspot uses DHCP leases so Sign-in (option 114) can open")
 
     server_id = ""
     for row in _print(sock, "/ip/hotspot", props=".id,name,interface,comment,disabled"):
@@ -18472,25 +18610,25 @@ def _enable_cpe_renew_hotspot(
             server_id = (row.get(".id") or "").strip()
             break
 
-    # Prefer the renew pool so phones get 192.168.189.x (identifiable + middleware
-    # safe). Fall back to existing LAN DHCP when the CPE rejects the pool.
-    server_attempts = [
-        {
-            "name": RENEW_HOTSPOT_NAME,
-            "interface": lan,
-            "address-pool": RENEW_HOTSPOT_POOL,
-            "profile": RENEW_HOTSPOT_PROFILE,
-            "disabled": "no",
-            "comment": RENEW_HOTSPOT_TAG,
-        },
-        {
-            "name": RENEW_HOTSPOT_NAME,
-            "interface": lan,
-            "profile": RENEW_HOTSPOT_PROFILE,
-            "disabled": "no",
-            "comment": RENEW_HOTSPOT_TAG,
-        },
-    ]
+    # Prefer unpooled Hotspot so DHCP (renew pool or existing LAN) owns leases and
+    # option 114. Pooled assignment is last resort — it skips DHCP options and
+    # leaves Android/iOS on "Connected, no internet" with no pay popup.
+    pooled = {
+        "name": RENEW_HOTSPOT_NAME,
+        "interface": lan,
+        "address-pool": RENEW_HOTSPOT_POOL,
+        "profile": RENEW_HOTSPOT_PROFILE,
+        "disabled": "no",
+        "comment": RENEW_HOTSPOT_TAG,
+    }
+    unpooled = {
+        "name": RENEW_HOTSPOT_NAME,
+        "interface": lan,
+        "profile": RENEW_HOTSPOT_PROFILE,
+        "disabled": "no",
+        "comment": RENEW_HOTSPOT_TAG,
+    }
+    server_attempts = [unpooled, pooled]
     terminal = {"_reply": "!trap"}
     for server_props in server_attempts:
         if server_id:
@@ -18542,11 +18680,14 @@ def _enable_cpe_renew_hotspot(
 
     notes.extend(_ensure_cpe_wan_block(sock))
 
-    # RFC 8910 option 114: Android 11+ / iOS 14+ / Win11 raise the sign-in
-    # popup the moment Wi‑Fi associates — do not wait for an HTTP probe.
+    # RFC 8910 option 114: use the local gateway /login URL (same as ISP Hotspot)
+    # so the popup opens before WAN auth; login.html there redirects to billing.
+    # A remote billing URL here fails when WAN is already dropped / garden flakes.
     notes.extend(
         _ensure_captive_portal_dhcp_option(
-            sock, portal_url, comment=RENEW_HOTSPOT_TAG
+            sock,
+            _local_hotspot_captive_portal_uri(bound_hotspot_address),
+            comment=RENEW_HOTSPOT_TAG,
         )
     )
     notes.extend(_bounce_cpe_wifi_clients(sock))
@@ -18640,13 +18781,25 @@ def _bounce_isp_hotspot_clients(
     if cleared:
         notes.append(f"cleared {cleared} unauthorized Hotspot host(s)")
     if drop_wifi and unauthorized_macs:
-        notes.extend(
-            _bounce_wifi_clients_for_macs(
-                sock,
-                unauthorized_macs,
-                reason="Hotspot pay popup",
+        # Skip MACs that just opened /pay/ — Wi‑Fi drop mid-load aborts HTML.
+        bounce_macs = {
+            mac
+            for mac in unauthorized_macs
+            if not recent_captive_pay_hit(mac=mac)
+        }
+        deferred = unauthorized_macs - bounce_macs
+        if deferred:
+            notes.append(
+                f"deferred Wi‑Fi bounce for {len(deferred)} captive pay client(s)"
             )
-        )
+        if bounce_macs:
+            notes.extend(
+                _bounce_wifi_clients_for_macs(
+                    sock,
+                    bounce_macs,
+                    reason="Hotspot pay popup",
+                )
+            )
     return notes
 
 
@@ -18699,6 +18852,15 @@ def repair_hotspot_captive_portal(
     Used by the subscription sweep so unpaid Wi‑Fi clients keep getting an
     instant pay popup even if a prior push lost portal files on the NAS.
     """
+    org = organization or getattr(router, "organization", None)
+    if org is not None and not getattr(org, "hotspot_enabled", False):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "hotspot_disabled",
+            "message": "Hotspot service is off — captive repair skipped.",
+            "notes": ["skipped: organization Hotspot service is off"],
+        }
     attempts = int(attempts or _CAPTIVE_REPAIR_ATTEMPTS)
     last: dict[str, Any] = {"ok": False, "skipped": True}
     for attempt in range(1, attempts + 1):
@@ -18706,7 +18868,7 @@ def repair_hotspot_captive_portal(
             last = apply_hotspot_on_router(
                 router,
                 enabled=True,
-                organization=organization,
+                organization=org,
                 reauthenticate=reauthenticate,
                 bounce_clients=True,
             )
@@ -18768,19 +18930,13 @@ def repair_unpaid_hotspot_leaking_on_router(router) -> dict[str, Any]:
         }
 
     hotspot_on = bool(getattr(org, "hotspot_enabled", False))
-    from billing.models import Customer
-
-    has_hotspot = hotspot_on or Customer.objects.filter(
-        organization_id=org.pk,
-        service_type=Customer.ServiceType.HOTSPOT,
-    ).exclude(hotspot_mac="").exists()
-    if not has_hotspot:
+    if not hotspot_on:
         return {
             "ok": True,
             "skipped": True,
             "repaired": 0,
             "router_id": router_id,
-            "message": "No Hotspot clients on this router.",
+            "message": "Hotspot service is off — leak repair skipped.",
         }
 
     last_error = ""
@@ -18848,14 +19004,9 @@ def _refresh_onboarded_router_config_on_socket(
             "secrets_synced": secrets_synced,
             "resolved_lan": resolved_lan,
         }
-        if compulsory and not skip_hotspot and org is not None:
-            if not getattr(org, "hotspot_enabled", False):
-                try:
-                    org.hotspot_enabled = True
-                    org.save(update_fields=["hotspot_enabled"])
-                    notes.append("enabled organization Hotspot fallback")
-                except Exception:
-                    pass
+        # Hotspot fallback only when the org Hotspot toggle is on. Never force
+        # hotspot_enabled=True — that must stay under Hotspot settings.
+        if compulsory and not skip_hotspot and org is not None and hotspot_on:
             urls = _hotspot_portal_urls_for_org(org)
             redirect_url = (getattr(org, "hotspot_redirect_url", "") or "").strip()
             if getattr(org, "hotspot_use_welcome_page", True):
@@ -18908,9 +19059,11 @@ def _refresh_onboarded_router_config_on_socket(
         }
         notes.append(redirect_result.get("message") or "expired-redirect ok")
 
+    # Respect the Hotspot service toggle only — existing Hotspot customers must
+    # not re-provision the stack after the operator turns Hotspot off.
     need_hotspot = (
         not skip_hotspot
-        and (hotspot_on or has_hotspot)
+        and hotspot_on
         and not (compulsory and not skip_pppoe)
     )
     if need_hotspot and org is not None:
@@ -19049,10 +19202,8 @@ def refresh_onboarded_router_config(
         .exclude(pppoe_username="")
         .exists()
     )
-    has_hotspot = hotspot_on or Customer.objects.filter(
-        organization=org,
-        service_type=Customer.ServiceType.HOTSPOT,
-    ).exclude(hotspot_mac="").exists()
+    # Stack enablement follows the org Hotspot toggle, not client inventory.
+    has_hotspot = hotspot_on
 
     router_ok = True
     pppoe_result: dict[str, Any] | None = None
@@ -19166,6 +19317,8 @@ def _disable_cpe_renew_hotspot(sock: socket.socket) -> list[str]:
     removed = 0
     removed += _remove_tagged_rows(sock, "/ip/hotspot", RENEW_HOTSPOT_TAG)
     removed += _remove_tagged_rows(sock, "/ip/hotspot/profile", RENEW_HOTSPOT_TAG)
+    removed += _remove_tagged_rows(sock, "/ip/dhcp-server", RENEW_HOTSPOT_TAG)
+    removed += _remove_tagged_rows(sock, "/ip/dhcp-server/network", RENEW_HOTSPOT_TAG)
     removed += _remove_tagged_rows(sock, "/ip/pool", RENEW_HOTSPOT_TAG)
     removed += _remove_tagged_rows(sock, "/ip/address", RENEW_HOTSPOT_TAG)
     removed += _remove_tagged_rows(sock, "/ip/dns/static", RENEW_HOTSPOT_TAG)
@@ -19810,6 +19963,40 @@ def remember_hotspot_mac_for_ip(organization, client_ip: str, mac_address: str) 
         mac,
         _CAPTIVE_PPPOE_IP_CACHE_TTL,
     )
+
+
+def mark_captive_pay_hit(*, mac: str = "", client_ip: str = "") -> None:
+    """
+    Remember that a phone just opened the Hotspot pay page.
+
+    Leak-repair Wi‑Fi bounces check this so they do not drop the association
+    while the captive sheet is still loading HTML/CSS.
+    """
+    mac_norm = _normalize_hotspot_mac(mac)
+    ip = (client_ip or "").strip()
+    if mac_norm:
+        _captive_cache_set(
+            f"captive:pay-hit:mac:{mac_norm}",
+            1,
+            _CAPTIVE_PAY_HIT_TTL,
+        )
+    if ip:
+        _captive_cache_set(
+            f"captive:pay-hit:ip:{ip}",
+            1,
+            _CAPTIVE_PAY_HIT_TTL,
+        )
+
+
+def recent_captive_pay_hit(*, mac: str = "", client_ip: str = "") -> bool:
+    """True when this MAC/IP opened /pay/ within ``_CAPTIVE_PAY_HIT_TTL``."""
+    mac_norm = _normalize_hotspot_mac(mac)
+    ip = (client_ip or "").strip()
+    if mac_norm and _captive_cache_get(f"captive:pay-hit:mac:{mac_norm}"):
+        return True
+    if ip and _captive_cache_get(f"captive:pay-hit:ip:{ip}"):
+        return True
+    return False
 
 
 def _org_from_cached_pppoe_session(client_ip: str):
@@ -20895,9 +21082,11 @@ def apply_pppoe_enforcement_on_router(
     """
     Push PPPoE pool/server + compulsory firewall policy to one MikroTik.
 
-    When compulsory is True, also provision Hotspot fallback so devices that
-    are not dialed in via PPPoE are redirected to the payment portal instead
-    of being silently dropped.
+    When compulsory is True and the organization Hotspot toggle is on, also
+    provision Hotspot fallback so devices that are not dialed in via PPPoE are
+    redirected to the payment portal instead of being silently dropped.
+    Hotspot is never force-enabled here — turning Hotspot off in settings
+    must stay off until the operator turns it back on.
 
     When compulsory is False, free LAN browsing is allowed again. Hotspot is
     intentionally left as-is so paid Hotspot sessions are not torn down.
@@ -20925,9 +21114,12 @@ def apply_pppoe_enforcement_on_router(
     lan_interface = getattr(router, "lan_bridge", None) or "bridgeLocal"
     wan_interface = getattr(router, "wan_interface", None) or "ether1"
     org = getattr(router, "organization", None)
-    enable_hotspot_fallback = (
-        bool(compulsory) if hotspot_fallback is None else bool(hotspot_fallback)
-    )
+    if hotspot_fallback is None:
+        enable_hotspot_fallback = bool(compulsory) and bool(
+            getattr(org, "hotspot_enabled", False) if org else False
+        )
+    else:
+        enable_hotspot_fallback = bool(hotspot_fallback)
 
     hosts = _router_api_host_candidates(router, candidate_hosts)
 
@@ -20999,15 +21191,7 @@ def apply_pppoe_enforcement_on_router(
 
     hotspot_result: dict[str, Any] | None = None
     if enable_hotspot_fallback and org is not None:
-        # Compulsory mode without Hotspot silently drops free LAN users.
-        # Auto-enable the org flag and push the captive portal as fallback.
-        if not getattr(org, "hotspot_enabled", False):
-            try:
-                org.hotspot_enabled = True
-                org.save(update_fields=["hotspot_enabled"])
-                notes.append("enabled organization Hotspot fallback")
-            except Exception:
-                pass
+        # Compulsory + Hotspot-on: provision captive portal as LAN fallback.
         urls = _hotspot_portal_urls_for_org(org)
         redirect_url = (getattr(org, "hotspot_redirect_url", "") or "").strip()
         if getattr(org, "hotspot_use_welcome_page", True):
@@ -21043,6 +21227,11 @@ def apply_pppoe_enforcement_on_router(
                 hotspot_result.get("error")
                 or "Hotspot fallback could not be provisioned"
             )
+    elif compulsory and org is not None and not getattr(org, "hotspot_enabled", False):
+        notes.append(
+            "Hotspot service is off — non-PPPoE LAN devices are dropped "
+            "(enable Hotspot for a payment-portal fallback)"
+        )
 
     portal_base_is_loopback = False
     try:
@@ -22722,9 +22911,14 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
             sock,
             leak_ips,
             preserve_dst=billing_preserve,
+            require_preserve=True,
         )
         if killed:
             notes.append(f"killed {killed} leaked Hotspot connection(s)")
+        elif not billing_preserve:
+            notes.append(
+                "skipped leak connection kill — billing preserve IPs empty"
+            )
     return notes
 
 
@@ -22770,10 +22964,14 @@ def _purge_hotspot_ok_list_for_mac(
             ) != "!trap":
                 removed += 1
     if ips:
+        # When caller passes a preserve set (pay-wall / orphan scrub), require
+        # billing IPs so we never RST the captive pay TCP by accident.
+        require = preserve_connection_dst is not None
         _kill_firewall_connections_for_addresses(
             sock,
             ips,
             preserve_dst=frozenset(preserve_connection_dst or ()),
+            require_preserve=require,
         )
     return removed
 
@@ -23505,10 +23703,15 @@ def _expire_hotspot_mac_sessions(
             if should_remove and item_id:
                 _remove(sock, path, item_id)
     if disabled and session_ips:
+        # Pay-wall / orphan callers pass preserve_connection_dst (possibly
+        # empty after DNS miss). Requiring a non-empty set avoids aborting
+        # the captive pay page when billing IPs cannot be resolved.
+        require = preserve_connection_dst is not None
         _kill_firewall_connections_for_addresses(
             sock,
             session_ips,
             preserve_dst=frozenset(preserve_connection_dst or ()),
+            require_preserve=require,
         )
     if not disabled:
         return
@@ -23782,6 +23985,18 @@ def authorize_hotspot_customer(
         return {"ok": False, "error": "No customer provided.", "skipped": False}
 
     org = getattr(customer, "organization", None)
+    if org is not None and not getattr(org, "hotspot_enabled", False):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "hotspot_disabled",
+            "message": (
+                "Hotspot service is off for this organization — "
+                "authorization skipped until Hotspot is turned on."
+            ),
+            "users_synced": 0,
+            "notes": ["skipped: organization Hotspot service is off"],
+        }
     target = router or getattr(customer, "router", None)
     if target is None and org is not None:
         target = find_hotspot_router_for_mac(
@@ -24779,6 +24994,21 @@ def apply_hotspot_on_router(
             "router_id": router_id,
             "router_name": router_name,
             "error": "Organization is required to enable Hotspot.",
+        }
+
+    if enabled and org is not None and not getattr(org, "hotspot_enabled", False):
+        return {
+            "ok": True,
+            "skipped": True,
+            "router_id": router_id,
+            "router_name": router_name,
+            "reason": "hotspot_disabled",
+            "message": (
+                f"Hotspot service is off for this organization — "
+                f"not provisioning on {router_name}."
+            ),
+            "users_synced": 0,
+            "notes": ["skipped: organization Hotspot service is off"],
         }
 
     if enabled and not (pay_url or login_url or redirect_url or welcome_url):

@@ -805,6 +805,205 @@ class HotspotConnectSpeedTests(TestCase):
         self.assertIn("retry_after", response.json())
 
 
+class HotspotVirtualConnectPayFlowTests(TestCase):
+    """
+    End-to-end virtual path: captive probe → pay page → STK → authorize.
+
+    No live MikroTik — NAS identity and authorize are mocked.
+    """
+
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-hs-virtual", password="x")
+        self.org = Organization.objects.create(
+            name="Virtual ISP",
+            owner=self.owner,
+            join_code="838383",
+            hotspot_enabled=True,
+            daraja_enabled=True,
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Virtual Daily",
+            price=Decimal("40.00"),
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            duration=BillingPlan.Duration.DAILY,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=1,
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Virtual NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.83.83.1",
+            username="admin",
+            password="secret",
+        )
+        self.mac = "AA:BB:CC:DD:EE:83"
+        self.client_ip = "10.50.50.83"
+
+    def test_connect_probe_pay_page_then_pay_and_authorize(self):
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory, override_settings
+        from urllib.parse import parse_qs, urlparse
+
+        from core.mikrotik_connect import (
+            mark_captive_pay_hit,
+            recent_captive_pay_hit,
+        )
+        from ispcentric.middleware import HotspotCaptiveProbeMiddleware
+
+        cache.clear()
+
+        # 1) Captive probe → /pay/?mac=…
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        middleware = HotspotCaptiveProbeMiddleware(get_response)
+        probe = RequestFactory().get(
+            "/generate_204",
+            HTTP_HOST="connectivitycheck.gstatic.com",
+            REMOTE_ADDR=self.client_ip,
+        )
+        with (
+            override_settings(PUBLIC_BASE_URL="http://billing.example:8000"),
+            patch(
+                "core.mikrotik_connect.resolve_captive_organization",
+                return_value=self.org,
+            ),
+            patch(
+                "core.mikrotik_connect.find_hotspot_mac_for_ip",
+                return_value=self.mac,
+            ) as find_mac,
+        ):
+            probe_response = middleware(probe)
+
+        self.assertEqual(probe_response.status_code, 302)
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", probe_response.url)
+        self.assertEqual(
+            parse_qs(urlparse(probe_response.url).query).get("mac", [""])[0],
+            self.mac,
+        )
+        self.assertEqual(find_mac.call_count, 1)
+
+        # 2) Pay page loads (no live NAS walk) and marks captive hit.
+        pay_url = reverse(
+            "core:hotspot_pay", kwargs={"join_code": self.org.join_code}
+        )
+        wall_calls = []
+
+        def fake_defer(*args, **kwargs):
+            wall_calls.append(kwargs)
+            return None
+
+        with (
+            patch(
+                "core.mikrotik_connect.find_hotspot_router_for_mac",
+                return_value=self.router,
+            ),
+            patch(
+                "core.mikrotik_connect.defer_hotspot_pay_wall",
+                side_effect=fake_defer,
+            ),
+            patch(
+                "core.mikrotik_connect._api_session",
+                side_effect=AssertionError("pay page must not open NAS API"),
+            ),
+        ):
+            pay_response = self.client.get(
+                pay_url,
+                {"mac": self.mac},
+                REMOTE_ADDR=self.client_ip,
+            )
+
+        self.assertEqual(pay_response.status_code, 200)
+        self.assertContains(pay_response, self.org.name)
+        self.assertContains(pay_response, self.plan.name)
+        self.assertTrue(recent_captive_pay_hit(mac=self.mac, client_ip=self.client_ip))
+        self.assertTrue(wall_calls)
+
+        # 3) STK start → status success → authorized (virtual NAS sync).
+        start_url = reverse(
+            "core:hotspot_payment_start",
+            kwargs={"join_code": self.org.join_code},
+        )
+        with (
+            patch(
+                "core.mikrotik_connect.find_hotspot_router_for_mac",
+                return_value=self.router,
+            ),
+            patch("core.views._resolve_request_hotspot_mac", return_value=self.mac),
+            patch(
+                "billing.stk.start_subscription_stk_payment",
+                return_value={
+                    "ok": True,
+                    "stk_id": 8383,
+                    "amount": "40.00",
+                    "message": "STK sent",
+                },
+            ),
+        ):
+            start_response = self.client.post(
+                start_url,
+                {
+                    "plan_id": str(self.plan.pk),
+                    "phone": "0712345838",
+                    "mac": self.mac,
+                },
+            )
+        self.assertEqual(start_response.status_code, 200)
+        start_data = start_response.json()
+        self.assertTrue(start_data["ok"])
+
+        # Pay-start already created the unpaid Hotspot shell — reuse it.
+        customer = Customer.objects.get(
+            organization=self.org,
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac__iexact=self.mac,
+        )
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=customer,
+            plan=self.plan,
+            amount=Decimal("40.00"),
+            phone=customer.phone,
+            account_reference=customer.account_number,
+            status=StkPushRequest.Status.SUCCESS,
+            mpesa_receipt="RCPVIRT1",
+            subscription_applied=False,
+            raw_callback={"hotspot_mac": self.mac},
+        )
+        token = signing.dumps(
+            {"stk": stk.pk, "org": self.org.pk, "mac": self.mac},
+            salt="hotspot-payment-status",
+            compress=True,
+        )
+        status_url = reverse(
+            "core:hotspot_payment_status",
+            kwargs={"join_code": self.org.join_code, "stk_id": stk.pk},
+        )
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": True, "allowed": True},
+        ):
+            status_response = self.client.get(
+                status_url + f"?token={token}&nas=1"
+            )
+        self.assertEqual(status_response.status_code, 200)
+        status_data = status_response.json()
+        self.assertTrue(status_data["ok"])
+        self.assertTrue(status_data["success"])
+        self.assertTrue(status_data["authorized"])
+        self.assertTrue(status_data.get("surfing"))
+        stk.refresh_from_db()
+        self.assertTrue(stk.subscription_applied)
+
+        # Explicit mark still works for bounce-defer guards.
+        mark_captive_pay_hit(mac=self.mac, client_ip=self.client_ip)
+        self.assertTrue(recent_captive_pay_hit(mac=self.mac))
+
+
 class MpesaCallbackReachabilityTests(TestCase):
     def test_localhost_callback_is_not_public(self):
         from core.hotspot_portal import safaricom_can_reach_callback_url

@@ -19450,9 +19450,10 @@ def _client_remote_access_row(
         # Never enable_cpe_web on the list poll — that SSH-mutates the CPE while
         # the customer may be surfing. Force only busts cache and re-probes.
         # Hosted WG paths need a bit more time than LAN; force uses the longer budget.
+        # List polls stay short so a page of clients cannot 504 the gateway.
         evaluation = evaluate_layered_cpe_access(
             customer,
-            timeout=6.0 if force else 5.0,
+            timeout=4.0 if force else 3.5,
             try_api=False,
             auto_enable=False,
             nas_evaluation=nas_evaluation,
@@ -19565,6 +19566,39 @@ def _client_remote_access_row(
     return row
 
 
+# Keep list Remote probes under reverse-proxy budgets (often 60s). Front-end
+# also chunks ids; this is the hard server-side backstop.
+_REMOTE_ACCESS_LIST_CAP = 12
+_REMOTE_ACCESS_DEADLINE_S = 18.0
+_REMOTE_ACCESS_GROUP_TIMEOUT_S = 16.0
+
+
+def _client_remote_access_placeholder(customer_id: int, *, reason: str = "") -> dict:
+    """Cached/stable row, or a short-lived Checking placeholder when budget ends."""
+    cache_key = f"client_remote_access:{int(customer_id)}:v4"
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict) and cached.get("id") == int(customer_id):
+        return cached
+    stable = cache.get(_client_remote_stable_key(customer_id))
+    if isinstance(stable, dict) and (stable.get("status") or "") == "ready":
+        held = dict(stable)
+        held["stabilized"] = True
+        held["title"] = (
+            (stable.get("title") or "Client router web UI is reachable")
+            + " · Last check held — retrying"
+        )
+        return held
+    title = (reason or "Remote check still running — will retry").strip()
+    return {
+        "id": int(customer_id),
+        "status": "offline",
+        "label": "Checking",
+        "title": title,
+        "failure_class": "budget",
+        "partial": True,
+    }
+
+
 @client_workspace_required
 @require_GET
 def clients_remote_access_status(request):
@@ -19575,8 +19609,10 @@ def clients_remote_access_status(request):
     rows; omit ids to probe all eligible PPPoE/static clients (capped).
 
     Probes are light and serialized per NAS so concurrent NAT installs cannot
-    disrupt surfing clients sharing the same MikroTik.
+    disrupt surfing clients sharing the same MikroTik. A hard deadline returns
+    cached/Checking rows instead of holding the gateway until 504.
     """
+    import time
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from django.db import close_old_connections
@@ -19597,8 +19633,8 @@ def clients_remote_access_status(request):
                 customer_ids.append(int(part))
             except (TypeError, ValueError):
                 continue
-        # Cap to keep list probes from melting the NAS with concurrent NAT installs.
-        customer_ids = customer_ids[:40]
+        # Cap per request — UI chunks larger lists so the page stays responsive.
+        customer_ids = customer_ids[:_REMOTE_ACCESS_LIST_CAP]
 
     qs = (
         Customer.objects.filter(organization=org)
@@ -19610,7 +19646,7 @@ def clients_remote_access_status(request):
     else:
         qs = qs.filter(
             service_type__in=[Customer.ServiceType.PPPOE, Customer.ServiceType.STATIC]
-        )[:40]
+        )[:_REMOTE_ACCESS_LIST_CAP]
 
     customers = list(qs)
     if not customers:
@@ -19624,9 +19660,12 @@ def clients_remote_access_status(request):
     from core.connectivity_verification import evaluate_nas_connectivity_cached
 
     hosted = bool(getattr(settings, "HOSTED", False))
-    nas_timeout = 4.0 if hosted else 3.0
+    nas_timeout = 3.0 if hosted else 2.5
+    deadline = time.monotonic() + _REMOTE_ACCESS_DEADLINE_S
     nas_by_router: dict[int, dict] = {}
     for customer in customers:
+        if time.monotonic() >= deadline:
+            break
         router = getattr(customer, "router", None)
         rid = int(getattr(customer, "router_id", 0) or 0)
         if not router or not rid or rid in nas_by_router:
@@ -19653,6 +19692,14 @@ def clients_remote_access_status(request):
         close_old_connections()
         rows: list[dict] = []
         for customer in group:
+            if time.monotonic() >= deadline:
+                rows.append(
+                    _client_remote_access_placeholder(
+                        int(customer.pk),
+                        reason="Remote check budget reached — will retry",
+                    )
+                )
+                continue
             try:
                 rows.append(
                     _client_remote_access_row(
@@ -19681,25 +19728,53 @@ def clients_remote_access_status(request):
     by_pk: dict[int, dict] = {}
     # Different NAS boxes can run in parallel; same NAS stays serial inside
     # _probe_group (+ mikrotik_connect._nas_list_probe_lock).
-    workers = min(3, max(1, len(groups)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_probe_group, group): group for group in groups}
-        for future in as_completed(futures):
+    remaining = deadline - time.monotonic()
+    if remaining > 0.05 and groups:
+        workers = min(3, max(1, len(groups)))
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = {pool.submit(_probe_group, group): group for group in groups}
             try:
-                for row in future.result(timeout=45.0):
-                    by_pk[int(row["id"])] = row
-            except Exception as exc:
-                for customer in futures[future]:
-                    by_pk[int(customer.pk)] = {
-                        "id": int(customer.pk),
-                        "status": "offline",
-                        "label": "Check failed",
-                        "title": str(exc) or "Could not check remote access — will retry",
-                        "failure_class": "probe_error",
-                    }
+                for future in as_completed(futures, timeout=remaining):
+                    group = futures[future]
+                    try:
+                        group_timeout = min(
+                            _REMOTE_ACCESS_GROUP_TIMEOUT_S,
+                            max(0.5, deadline - time.monotonic()),
+                        )
+                        for row in future.result(timeout=group_timeout):
+                            by_pk[int(row["id"])] = row
+                    except Exception as exc:
+                        for customer in group:
+                            cid = int(customer.pk)
+                            if cid in by_pk:
+                                continue
+                            by_pk[cid] = _client_remote_access_placeholder(
+                                cid,
+                                reason=(
+                                    str(exc)
+                                    or "Could not check remote access — will retry"
+                                ),
+                            )
+            except TimeoutError:
+                # Hard deadline — return what we have; unfinished groups get placeholders.
+                pass
+        finally:
+            # Do not wait out leftover NAS probes or the gateway still 504s.
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    for customer in customers:
+        if customer.pk not in by_pk:
+            by_pk[int(customer.pk)] = _client_remote_access_placeholder(
+                int(customer.pk),
+                reason="Remote check deferred — will retry",
+            )
 
     rows = [by_pk[c.pk] for c in customers if c.pk in by_pk]
-    return JsonResponse({"ok": True, "clients": rows})
+    partial = any(
+        row.get("partial") or row.get("failure_class") == "budget" for row in rows
+    )
+    return JsonResponse({"ok": True, "clients": rows, "partial": partial})
 
 
 _SHARED_SURFING_PROBE_TTL = 22  # seconds — dedupe PPPoE + Hotspot dashboard probes
@@ -20968,14 +21043,25 @@ def mikrotik_pppoe_settings(request, router_id: int):
                 else router.name
             )
             if enabled:
-                messages.success(
-                    request,
-                    (
-                        f"Settings saved. Pushing PPPoE enforcement to {target} "
-                        "(firewall only — dialed clients are not kicked). "
-                        "Paid PPPoE keeps surfing; other devices use Hotspot."
-                    ),
-                )
+                if getattr(org, "hotspot_enabled", False):
+                    messages.success(
+                        request,
+                        (
+                            f"Settings saved. Pushing PPPoE enforcement to {target} "
+                            "(firewall only — dialed clients are not kicked). "
+                            "Paid PPPoE keeps surfing; other devices use Hotspot."
+                        ),
+                    )
+                else:
+                    messages.success(
+                        request,
+                        (
+                            f"Settings saved. Pushing PPPoE enforcement to {target} "
+                            "(firewall only — dialed clients are not kicked). "
+                            "Hotspot service is off, so non-PPPoE LAN devices are "
+                            "dropped until you turn Hotspot on."
+                        ),
+                    )
             else:
                 messages.warning(
                     request,
@@ -21192,19 +21278,34 @@ def mikrotik_hotspot_settings(request, router_id: int):
                 router_id=router_pk,
                 job_type="hotspot_push",
             )
-            messages.success(
-                request,
-                (
-                    f"Settings saved. "
-                    f"{'Pushing Hotspot to' if enabled else 'Removing Hotspot from'} "
-                    f"{router.name} in the background."
-                ),
-            )
+            if enabled:
+                messages.success(
+                    request,
+                    (
+                        f"Settings saved. Pushing Hotspot to {router.name} "
+                        "in the background."
+                    ),
+                )
+            else:
+                messages.warning(
+                    request,
+                    (
+                        f"Settings saved. Removing Hotspot from {router.name} "
+                        "in the background. Hotspot stays off until you turn "
+                        "it back on (PPPoE enforcement will not re-enable it)."
+                    ),
+                )
             if enabled and org.pppoe_compulsory:
                 messages.info(
                     request,
                     "PPPoE enforcement stays on: dialed PPPoE clients keep internet; "
                     "other devices must log in via Hotspot.",
+                )
+            elif not enabled and org.pppoe_compulsory:
+                messages.info(
+                    request,
+                    "PPPoE enforcement is still on: dialed PPPoE keeps internet; "
+                    "other LAN devices are dropped until Hotspot is turned back on.",
                 )
             if enabled and urls.get("base_is_loopback"):
                 messages.warning(
@@ -21955,9 +22056,15 @@ def _resolve_request_hotspot_mac(org, request) -> str:
 
     Prefer query/cookie values from RouterOS redirects; fall back to looking the
     client IP up on the organization's Hotspot NAS tables.
+
+    Cached on the request so pay-page + portal context share one NAS lookup.
     """
     if request is None:
         return ""
+    cached = getattr(request, "_resolved_hotspot_mac", None)
+    if isinstance(cached, str):
+        return cached
+    mac = ""
     candidates = [
         request.GET.get("mac") or "",
         request.POST.get("mac") or "",
@@ -21974,16 +22081,23 @@ def _resolve_request_hotspot_mac(org, request) -> str:
                     remember_hotspot_mac_for_ip(org, remote, mac)
                 except Exception:
                     pass
-            return mac
-    remote = (request.META.get("REMOTE_ADDR") or "").strip()
-    if not remote:
-        return ""
-    try:
-        from core.mikrotik_connect import find_hotspot_mac_for_ip
+            break
+    if not mac:
+        remote = (request.META.get("REMOTE_ADDR") or "").strip()
+        if remote:
+            try:
+                from core.mikrotik_connect import find_hotspot_mac_for_ip
 
-        return _normalize_hotspot_mac(find_hotspot_mac_for_ip(org, remote) or "")
+                mac = _normalize_hotspot_mac(
+                    find_hotspot_mac_for_ip(org, remote) or ""
+                )
+            except Exception:
+                mac = ""
+    try:
+        request._resolved_hotspot_mac = mac
     except Exception:
-        return ""
+        pass
+    return mac
 
 
 def _prefetch_daraja_oauth(organization) -> None:
@@ -23770,6 +23884,9 @@ def _hotspot_captive_page(request, join_code: str, *, expected_page: str):
                 pre_mac = _resolve_request_hotspot_mac(org, request) or ""
             except Exception:
                 pre_mac = ""
+        elif not getattr(request, "_resolved_hotspot_mac", None):
+            # Seed request cache so portal context skips a second resolve.
+            request._resolved_hotspot_mac = pre_mac
     pre_customer = (
         _find_hotspot_customer_for_mac(org, pre_mac) if pre_mac else None
     )
@@ -23820,8 +23937,13 @@ def _hotspot_captive_page(request, join_code: str, *, expected_page: str):
             except Exception:
                 logger.exception("Could not record Hotspot portal_hit")
             try:
-                from core.mikrotik_connect import defer_hotspot_pay_wall
+                from core.mikrotik_connect import (
+                    defer_hotspot_pay_wall,
+                    mark_captive_pay_hit,
+                )
 
+                # Keep Wi‑Fi bounce / connection kills from racing the pay sheet.
+                mark_captive_pay_hit(mac=hotspot_mac, client_ip=remote)
                 defer_hotspot_pay_wall(
                     org,
                     hotspot_mac,

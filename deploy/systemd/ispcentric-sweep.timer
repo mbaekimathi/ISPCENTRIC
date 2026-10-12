@@ -1,13 +1,13 @@
 [Unit]
-Description=Run the ISPCENTRIC expiry sweep every 5 minutes
+Description=Run the ISPCENTRIC expiry sweep every 15 minutes
 
 [Timer]
 OnBootSec=3min
-# 5 min from end of last run — reduces paid CPE bounce from overlapping
-# secret rewrites while expiry-watch still cuts unpaid within ~90s.
-OnUnitInactiveSec=5min
+# 15 min from end of last run — full fleet sweeps are heavy; shorter intervals
+# caused brief paid PPPoE blips. Expiry-watch still cuts unpaid within ~90s.
+OnUnitInactiveSec=15min
 # Measured from the end of the last run, so slow runs cannot overlap.
-AccuracySec=15s
+AccuracySec=30s
 Unit=ispcentric-sweep.service
 
 [Install]
