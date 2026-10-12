@@ -278,12 +278,14 @@ def is_captive_portal_path(path: str) -> bool:
 
 class CaptivePortalHttpMiddleware:
     """
-    Keep Hotspot/PPPoE pay pages on plain HTTP.
+    Captive Hotspot/PPPoE pay pages on HTTP and HTTPS.
 
-    Phones do not need full internet — only TCP:80 to the billing host through
-    the MikroTik walled garden. HTTPS (browser upgrade, leftover HSTS, or a
-    certbot site-wide redirect) times out in captive mode and leaves devices on
-    "Connected, no internet". Force http:// and strip HSTS on these paths.
+    MikroTik walled-garden/ip allows the billing host on both :80 and :443.
+    After public TLS is enabled, Chrome/Edge HTTPS-First often upgrades pay
+    URLs to https://. Redirecting those back to http:// fights the browser
+    (upgrade ↔ redirect) or times out when :443 never completes. Serve the
+    page on whichever scheme arrived, and strip HSTS so phones are not
+    permanently pinned to HTTPS after an admin visit.
     """
 
     def __init__(self, get_response):
@@ -291,20 +293,6 @@ class CaptivePortalHttpMiddleware:
 
     def __call__(self, request):
         path = request.path or ""
-        if is_captive_portal_path(path) and self._request_is_https(request):
-            from django.http import HttpResponseRedirect
-
-            from core.hotspot_portal import prefer_http_captive_url
-
-            # Avoid build_absolute_uri() — DisallowedHost on probe/foreign Hosts.
-            host = (request.META.get("HTTP_HOST") or "").strip()
-            query = (request.META.get("QUERY_STRING") or "").strip()
-            absolute = prefer_http_captive_url(
-                f"https://{host}{path}" + (f"?{query}" if query else "")
-            )
-            if absolute and absolute.lower().startswith("http://"):
-                return HttpResponseRedirect(absolute)
-
         response = self.get_response(request)
         if is_captive_portal_path(path):
             # Undo any HSTS from an earlier https admin visit / misconfig.
@@ -313,17 +301,6 @@ class CaptivePortalHttpMiddleware:
             response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response["Pragma"] = "no-cache"
         return response
-
-    @staticmethod
-    def _request_is_https(request) -> bool:
-        if getattr(request, "is_secure", lambda: False)():
-            return True
-        proto = (
-            request.META.get("HTTP_X_FORWARDED_PROTO")
-            or request.META.get("HTTP_X_FORWARDED_SCHEME")
-            or ""
-        ).split(",")[0].strip().lower()
-        return proto == "https"
 
 
 class HotspotCaptiveProbeMiddleware:

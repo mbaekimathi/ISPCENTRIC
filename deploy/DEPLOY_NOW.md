@@ -164,7 +164,7 @@ sudo bash scripts/vps_enable_tls.sh --email you@example.com
 Result:
 
 - `https://isp.richcom.co.ke` — admin, Google OAuth, M-Pesa callbacks
-- `http://isp.richcom.co.ke` — Hotspot/PPPoE captive (and probes on :80)
+- Captive Hotspot/PPPoE pay — both `http://` and `https://` (probes stay on :80)
 
 Keep `PUBLIC_BASE_URL=http://isp.richcom.co.ke`. The script sets CSRF origins to
 both http and https and leaves Secure cookies / HSTS off so captive sessions work.

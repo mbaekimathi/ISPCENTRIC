@@ -2845,8 +2845,8 @@ class CaptiveProbeMiddlewareTests(TestCase):
         )
         self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
 
-    def test_captive_pay_https_request_forced_to_http(self):
-        """HTTPS pay URLs time out in walled garden — bounce to http://."""
+    def test_captive_pay_https_request_served_without_hsts(self):
+        """After public TLS, serve HTTPS pay (no http bounce) and strip HSTS."""
         from django.http import HttpResponse
         from django.test import RequestFactory
 
@@ -2865,13 +2865,9 @@ class CaptiveProbeMiddlewareTests(TestCase):
             HTTP_X_FORWARDED_PROTO="https",
         )
         response = middleware(request)
-        self.assertEqual(response.status_code, 302)
-        self.assertTrue(
-            response.url.startswith("http://billing.example/"),
-            response.url,
-        )
-        self.assertIn("/pay/", response.url)
-        self.assertIn("mac=", response.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"pay")
+        self.assertNotIn("Strict-Transport-Security", response)
 
     def test_captive_pay_http_strips_hsts(self):
         from django.http import HttpResponse

@@ -116,7 +116,7 @@ That installs `deploy/nginx/ispcentric.tls.conf` so:
 | Place | URL |
 |-------|-----|
 | Admin / OAuth / Daraja | `https://isp.richcom.co.ke` |
-| Captive Hotspot/PPPoE | `http://isp.richcom.co.ke/hotspot/…` and `/pppoe/…` |
+| Captive Hotspot/PPPoE | `http://` or `https://` (both served; MikroTik walled garden must allow the billing IP) |
 
 It also sets CSRF trusted origins to both `https://` and `http://`, leaves
 Secure cookies / HSTS / SSL redirect off (captive must stay on plain HTTP), and

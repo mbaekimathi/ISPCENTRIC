@@ -183,6 +183,6 @@ fi
 echo
 echo "Done."
 echo "  Admin / OAuth / callbacks: https://$DOMAIN"
-echo "  Captive Hotspot/PPPoE:     http://$DOMAIN/hotspot/… and /pppoe/…"
-echo "  Keep PUBLIC_BASE_URL=http://$DOMAIN so MikroTik walled-garden stays on :80."
+echo "  Captive Hotspot/PPPoE:     http:// or https://$DOMAIN/hotspot/… (both served)"
+echo "  Keep PUBLIC_BASE_URL=http://$DOMAIN for MikroTik login.html / probes."
 echo "  Renewals: certbot renew (deploy hook already reloads nginx if configured)."
