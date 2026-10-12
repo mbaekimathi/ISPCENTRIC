@@ -66,12 +66,17 @@ def evaluate_nas_connectivity(router, *, timeout: float = 2.5) -> dict:
     gateway still answers.
     """
     from core.mikrotik_connect import (
+        _is_wireguard_tunnel_host,
         _router_api_host_candidates,
         check_mikrotik_reachable,
+        is_mikrotik_host_cooling_down,
+        mark_mikrotik_host_unreachable,
+        mikrotik_login_timeout,
         resolve_nas_api_host,
         sweep_log_text,
         test_mikrotik_api_login,
     )
+    from django.conf import settings as dj_settings
 
     username = (getattr(router, "username", None) or "").strip()
     password = getattr(router, "password", None) or ""
@@ -122,9 +127,18 @@ def evaluate_nas_connectivity(router, *, timeout: float = 2.5) -> dict:
     last_hint = ""
     reachable_without_api = False
 
+    hosted = bool(getattr(dj_settings, "HOSTED", False))
     for host in ordered:
         details["host"] = host
-        probe = check_mikrotik_reachable(host, timeout=timeout)
+        if is_mikrotik_host_cooling_down(host):
+            last_error = f"{host}: cooling down after recent miss"
+            continue
+        # Local WireGuard peers: short timeout — full multi-port + ICMP burns
+        # ~10s per dead 10.9.x and starves the Remote deadline.
+        host_timeout = timeout
+        if not hosted and _is_wireguard_tunnel_host(host):
+            host_timeout = min(float(timeout), 0.7)
+        probe = check_mikrotik_reachable(host, timeout=host_timeout)
         details.update(
             {
                 "probe_online": bool(probe.get("online")),
@@ -138,6 +152,8 @@ def evaluate_nas_connectivity(router, *, timeout: float = 2.5) -> dict:
                 probe.get("error") or f"{host}: unreachable"
             )
             last_hint = _tunnel_unreachable_hint(router)
+            if not hosted and _is_wireguard_tunnel_host(host):
+                mark_mikrotik_host_unreachable(host, ttl=45)
             continue
 
         via = (probe.get("via") or "").strip()
@@ -152,13 +168,39 @@ def evaluate_nas_connectivity(router, *, timeout: float = 2.5) -> dict:
             )
             continue
 
+        login_timeout = max(float(timeout), mikrotik_login_timeout(host, base=timeout))
+        if not hosted and _is_wireguard_tunnel_host(host):
+            login_timeout = min(login_timeout, 1.2)
         login = test_mikrotik_api_login(
             host,
             username,
             password,
-            timeout=timeout,
+            timeout=login_timeout,
             include_wifi=False,
         )
+        # One flaky retry on tunnel/connectivity noise (mirrors status sampler).
+        if not login.get("ok"):
+            err = (login.get("error") or "").strip().lower()
+            flaky = (not err) or any(
+                token in err
+                for token in (
+                    "timed out",
+                    "timeout",
+                    "connection reset",
+                    "connection refused",
+                    "network is unreachable",
+                    "no route",
+                    "temporarily unavailable",
+                )
+            )
+            if flaky:
+                login = test_mikrotik_api_login(
+                    host,
+                    username,
+                    password,
+                    timeout=login_timeout + 1.0,
+                    include_wifi=False,
+                )
         details.update(
             {
                 "identity": (login.get("identity") or login.get("board") or "").strip(),
@@ -196,6 +238,56 @@ def evaluate_nas_connectivity(router, *, timeout: float = 2.5) -> dict:
     }
 
 
+def _preferred_local_nas_dial(router, *candidates: str) -> str:
+    """Pick a dial host for local/dev — never invent a dead WireGuard peer first."""
+    from django.conf import settings
+
+    from core.mikrotik_connect import _is_wireguard_tunnel_host
+
+    hosted = bool(getattr(settings, "HOSTED", False))
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        value = (raw or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    if not ordered:
+        return ""
+    if hosted:
+        return ordered[0]
+    for value in ordered:
+        if not _is_wireguard_tunnel_host(value):
+            return value
+    return ordered[0]
+
+
+def _nas_ok_from_dial(
+    router,
+    *,
+    router_id: int,
+    dial: str,
+    source: str,
+) -> dict:
+    """Build a positive NAS evaluation from a recently proven dial host."""
+    dial = (dial or "").strip()
+    return {
+        "ok": True,
+        "reachable": True,
+        "api_ok": True,
+        "error": "",
+        "hint": "",
+        "details": {
+            "router_id": router_id,
+            "router_name": getattr(router, "name", "") or "",
+            "host": dial,
+            "working_host": dial,
+            source: True,
+        },
+    }
+
+
 def evaluate_nas_connectivity_cached(
     router,
     *,
@@ -206,11 +298,10 @@ def evaluate_nas_connectivity_cached(
     """
     NAS reachability for client-list CPE probes — one result per router per TTL.
 
-    Reuses the MikroTik live dashboard cache when recent so twenty clients on
-    the same NAS do not open twenty competing API sessions (which looked like
-    “NAS down” on the Remote column).
+    Reuses MikroTik status / live / auth-ok caches when recent so twenty clients
+    on the same NAS do not open competing API sessions (which painted false
+    “NAS down” on the Remote column while the MikroTik column stayed Connected).
     """
-    from django.conf import settings
     from django.core.cache import cache
 
     router_id = int(getattr(router, "pk", 0) or 0)
@@ -225,28 +316,82 @@ def evaluate_nas_connectivity_cached(
 
         organization_id = int(org_pk or getattr(router, "organization_id", 0) or 0)
         if organization_id:
+            # Prefer a recently proven NAS dial (LAN) over inventing vpn_address.
+            try:
+                from core.mikrotik_connect import _nas_api_host_cache_key
+
+                proven = (cache.get(_nas_api_host_cache_key(router)) or "").strip()
+            except Exception:
+                proven = ""
+
             live = cache.get(f"mikrotik_live:{organization_id}:{router_id}")
             if isinstance(live, dict) and live.get("ok") and live.get("online"):
-                dial = (
-                    (live.get("dial_host") or "").strip()
-                    or (getattr(router, "vpn_address", None) or "").strip()
-                    or (getattr(router, "host", None) or "").strip()
+                dial = _preferred_local_nas_dial(
+                    router,
+                    proven,
+                    (live.get("dial_host") or "").strip(),
+                    (getattr(router, "host", None) or "").strip(),
+                    (getattr(router, "api_host", None) or "").strip(),
+                    (getattr(router, "vpn_address", None) or "").strip(),
                 )
                 if dial:
-                    result = {
-                        "ok": True,
-                        "reachable": True,
-                        "api_ok": True,
-                        "error": "",
-                        "hint": "",
-                        "details": {
-                            "router_id": router_id,
-                            "router_name": getattr(router, "name", "") or "",
-                            "host": dial,
-                            "working_host": dial,
-                            "from_mikrotik_live_cache": True,
-                        },
-                    }
+                    result = _nas_ok_from_dial(
+                        router,
+                        router_id=router_id,
+                        dial=dial,
+                        source="from_mikrotik_live_cache",
+                    )
+                    cache.set(cache_key, result, 22)
+                    return result
+
+            # Clients-page MikroTik column is Connected — do not fight it with a
+            # short competing login that flips Remote to NAS down.
+            status_rows = cache.get(f"mikrotik_status:{organization_id}")
+            if isinstance(status_rows, list):
+                for row in status_rows:
+                    try:
+                        rid = int(row.get("id") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if rid != router_id:
+                        continue
+                    if (row.get("status") or "").strip().lower() != "connected":
+                        break
+                    dial = _preferred_local_nas_dial(
+                        router,
+                        proven,
+                        (row.get("dial_host") or "").strip(),
+                        (row.get("host") or "").strip(),
+                        (getattr(router, "host", None) or "").strip(),
+                        (getattr(router, "api_host", None) or "").strip(),
+                        (getattr(router, "vpn_address", None) or "").strip(),
+                    )
+                    if dial:
+                        result = _nas_ok_from_dial(
+                            router,
+                            router_id=router_id,
+                            dial=dial,
+                            source="from_mikrotik_status_cache",
+                        )
+                        cache.set(cache_key, result, 22)
+                        return result
+                    break
+
+            if cache.get(f"mikrotik_auth_ok:{organization_id}:{router_id}"):
+                dial = _preferred_local_nas_dial(
+                    router,
+                    proven,
+                    (getattr(router, "host", None) or "").strip(),
+                    (getattr(router, "api_host", None) or "").strip(),
+                    (getattr(router, "vpn_address", None) or "").strip(),
+                )
+                if dial:
+                    result = _nas_ok_from_dial(
+                        router,
+                        router_id=router_id,
+                        dial=dial,
+                        source="from_mikrotik_auth_ok_cache",
+                    )
                     cache.set(cache_key, result, 22)
                     return result
 
@@ -254,7 +399,9 @@ def evaluate_nas_connectivity_cached(
     details = dict(result.get("details") or {})
     details["router_id"] = router_id
     result = {**result, "details": details}
-    ttl = 22 if result.get("api_ok") else 12
+    # Hard negatives must not sticky-poison a whole page of Remotes after one
+    # WireGuard blip — keep the miss short so the next poll can recover.
+    ttl = 22 if result.get("api_ok") else 4
     cache.set(cache_key, result, ttl)
     return result
 
@@ -1234,14 +1381,25 @@ def evaluate_layered_cpe_access(
         }
 
     # Session up but no web port — classify ping vs firewall vs WAN mgmt.
+    # Light list polls only try a couple of ports and must not paint "Setup"
+    # (wan_mgmt_blocked) when the miss may just be WG latency / wrong port.
     if layers["ping_ok"]:
-        failure = "wan_mgmt_blocked"
-        hint = (
-            "ISP can ping the CPE but admin web ports are closed. On consumer routers "
-            "enable Remote/WAN Web Management toward the ISP gateway. On MikroTik CPE "
-            "paste the unlock script from the client detail page."
-        )
-        failing = "web"
+        if light:
+            failure = "probe_error"
+            hint = (
+                probe.get("hint")
+                or "Light remote check could not confirm the CPE web UI — will retry. "
+                "Open client router on the detail page for a full port scan."
+            )
+            failing = "web"
+        else:
+            failure = "wan_mgmt_blocked"
+            hint = (
+                "ISP can ping the CPE but admin web ports are closed. On consumer routers "
+                "enable Remote/WAN Web Management toward the ISP gateway. On MikroTik CPE "
+                "paste the unlock script from the client detail page."
+            )
+            failing = "web"
     else:
         failure = "proxy_failed"
         hint = (

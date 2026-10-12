@@ -97,29 +97,31 @@ The site is registered as `default_server` on purpose. Expired PPPoE clients are
 dst-nat'd to this box with their original `Host` header (`www.msftconnecttest.com`
 and similar), so nginx has to answer for names other than its own.
 
-## 7. TLS (needed for M-Pesa callbacks)
+## 7. TLS (needed for M-Pesa callbacks + admin HTTPS)
 
 Production Daraja rejects a plain-HTTP callback URL. Until TLS is in place,
 payments still confirm through STK Query polling, but callbacks will not arrive.
 
+Use the project script (webroot + dual nginx config). **Do not** run
+`certbot --nginx` — it often adds a site-wide HTTP→HTTPS redirect and breaks
+Hotspot/PPPoE captive sheets.
+
 ```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d isp.richcom.co.ke
+cd /opt/ispcentric
+sudo bash scripts/vps_enable_tls.sh --email you@example.com
 ```
 
-After issuing, update `.env`:
+That installs `deploy/nginx/ispcentric.tls.conf` so:
 
-```
-DJANGO_CSRF_TRUSTED_ORIGINS=https://isp.richcom.co.ke
-DJANGO_SESSION_COOKIE_SECURE=true
-DJANGO_CSRF_COOKIE_SECURE=true
-```
+| Place | URL |
+|-------|-----|
+| Admin / OAuth / Daraja | `https://isp.richcom.co.ke` |
+| Captive Hotspot/PPPoE | `http://isp.richcom.co.ke/hotspot/…` and `/pppoe/…` |
 
-Leave `PUBLIC_BASE_URL` on `http://` if you want captive interception to keep
-working, and keep port 80 answering — an HTTPS-only portal cannot be
-transparently intercepted.
-
-Then `sudo systemctl restart ispcentric`.
+It also sets CSRF trusted origins to both `https://` and `http://`, leaves
+Secure cookies / HSTS / SSL redirect off (captive must stay on plain HTTP), and
+keeps `PUBLIC_BASE_URL=http://…` for MikroTik walled-garden interception.
+Daraja callback URLs are upgraded to `https://` in app code.
 
 ## Router reachability
 

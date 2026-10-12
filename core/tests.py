@@ -1394,7 +1394,7 @@ class RouterDialTargetTests(SimpleTestCase):
         self.assertNotIn("192.168.88.50", hosts)
 
     @override_settings(HOSTED=False, WIREGUARD_SUBNET="10.9.0.0/24")
-    def test_tunnel_saved_host_on_lan_skips_lan_guess(self):
+    def test_tunnel_saved_host_on_lan_keeps_lan_guess_first(self):
         from core.models import MikroTikRouter
 
         hosts = _router_api_host_candidates(
@@ -1402,8 +1402,10 @@ class RouterDialTargetTests(SimpleTestCase):
             discover=False,
         )
 
-        self.assertEqual(hosts, ["10.9.0.8"])
-        self.assertNotIn("192.168.88.1", hosts)
+        # Local/dev must try 192.168.88.1 before burning the Remote budget on
+        # an unreachable WireGuard peer (Windows often has no wg0).
+        self.assertEqual(hosts[0], "192.168.88.1")
+        self.assertIn("10.9.0.8", hosts)
 
     @override_settings(HOSTED=False, WIREGUARD_SUBNET="10.9.0.0/24")
     def test_local_prefers_lan_host_over_unreachable_vpn(self):
@@ -1425,7 +1427,7 @@ class RouterDialTargetTests(SimpleTestCase):
             self.assertEqual(router.api_host, "192.168.10.2")
 
     @override_settings(HOSTED=False, WIREGUARD_SUBNET="10.9.0.0/24")
-    def test_local_off_lan_prefers_tunnel_for_api_host(self):
+    def test_local_off_lan_still_prefers_lan_for_api_host(self):
         from core.models import MikroTikRouter
 
         router = MikroTikRouter(
@@ -1438,10 +1440,11 @@ class RouterDialTargetTests(SimpleTestCase):
             "core.mikrotik_connect.operator_on_router_lan",
             return_value=False,
         ):
-            self.assertEqual(router.api_host, "10.9.0.28")
+            # Local primary dial stays on LAN; tunnel remains a probe candidate.
+            self.assertEqual(router.api_host, "192.168.10.2")
 
     @override_settings(HOSTED=False, WIREGUARD_SUBNET="10.9.0.0/24")
-    def test_probe_plan_off_lan_uses_tunnel_only(self):
+    def test_probe_plan_off_lan_prefers_tunnel_then_lan_fallback(self):
         from core.models import MikroTikRouter
         from core.mikrotik_status_samples import build_router_probe_plan
 
@@ -1463,9 +1466,10 @@ class RouterDialTargetTests(SimpleTestCase):
         ):
             candidates, hosts, _tunnel, off_lan = build_router_probe_plan([router])
         self.assertTrue(off_lan[3])
-        self.assertEqual(candidates[3], ["10.9.0.33"])
-        self.assertEqual(hosts, ["10.9.0.33"])
-        self.assertNotIn("192.168.10.2", hosts)
+        self.assertEqual(candidates[3][0], "10.9.0.33")
+        self.assertIn("192.168.10.2", candidates[3])
+        self.assertIn("10.9.0.33", hosts)
+        self.assertIn("192.168.10.2", hosts)
 
     @override_settings(HOSTED=True, WIREGUARD_SUBNET="10.9.0.0/24")
     def test_hosted_api_host_prefers_vpn(self):
@@ -13097,6 +13101,45 @@ class RouterConnectivityLoopTests(TestCase):
             "10.9.0.5",
         )
 
+    def test_nas_connectivity_cached_reuses_mikrotik_status_connected(self):
+        from django.core.cache import cache
+
+        from core.connectivity_verification import evaluate_nas_connectivity_cached
+
+        cache.clear()
+        self.router.host = "192.168.88.1"
+        self.router.vpn_address = "10.9.0.5"
+        self.router.save(update_fields=["host", "vpn_address"])
+        cache.set(
+            f"mikrotik_status:{self.org.pk}",
+            [
+                {
+                    "id": self.router.pk,
+                    "host": self.router.host,
+                    "status": "connected",
+                    "online": True,
+                }
+            ],
+            60,
+        )
+        with patch(
+            "core.connectivity_verification.evaluate_nas_connectivity",
+        ) as live_probe:
+            result = evaluate_nas_connectivity_cached(
+                self.router,
+                org_pk=self.org.pk,
+            )
+        live_probe.assert_not_called()
+        self.assertTrue(result.get("api_ok"))
+        # Local/dev must reuse LAN, not invent the unreachable WireGuard peer.
+        self.assertEqual(
+            (result.get("details") or {}).get("working_host"),
+            "192.168.88.1",
+        )
+        self.assertTrue(
+            (result.get("details") or {}).get("from_mikrotik_status_cache")
+        )
+
     def test_layered_cpe_classifies_wan_mgmt_blocked(self):
         from core.connectivity_verification import evaluate_layered_cpe_access
 
@@ -13125,6 +13168,36 @@ class RouterConnectivityLoopTests(TestCase):
         self.assertTrue(result["details"]["layers"]["ping_ok"])
         self.assertFalse(result["details"]["layers"]["web_ok"])
         probe.assert_called_once()
+
+    def test_layered_cpe_light_web_miss_is_probe_error_not_setup(self):
+        from core.connectivity_verification import evaluate_layered_cpe_access
+
+        with (
+            patch(
+                "core.connectivity_verification.evaluate_nas_connectivity",
+                return_value={"ok": True, "api_ok": True, "details": {}},
+            ),
+            patch(
+                "core.mikrotik_connect.probe_customer_cpe_web",
+                return_value={
+                    "ok": False,
+                    "session_active": True,
+                    "cpe_host": "10.20.0.50",
+                    "port": None,
+                    "ping_ok": True,
+                    "error": "light miss",
+                    "hint": "",
+                    "steps": [],
+                    "light": True,
+                },
+            ),
+        ):
+            result = evaluate_layered_cpe_access(
+                self.customer, try_api=False, light=True
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failure_class"], "probe_error")
+        self.assertNotEqual(result["failure_class"], "wan_mgmt_blocked")
 
     def test_layered_cpe_light_never_enables_cpe_web(self):
         from core.connectivity_verification import evaluate_layered_cpe_access
@@ -13262,6 +13335,86 @@ class RouterConnectivityLoopTests(TestCase):
         self.assertTrue(second.get("stabilized"))
         self.assertEqual(third["status"], "blocked")
         self.assertEqual(third["label"], "Setup")
+
+    def test_client_remote_access_row_holds_ready_through_one_nas_down_blip(self):
+        from django.core.cache import cache
+
+        from core.views import _client_remote_access_row
+
+        cache.clear()
+        ready = {
+            "ok": True,
+            "failure_class": "ok",
+            "hint": "",
+            "error": "",
+            "details": {
+                "layers": {
+                    "nas_ok": True,
+                    "session_active": True,
+                    "ping_ok": True,
+                    "web_ok": True,
+                    "api_ok": False,
+                }
+            },
+        }
+        nas_down = {
+            "ok": False,
+            "failure_class": "nas_down",
+            "hint": "NAS unreachable",
+            "error": "NAS unreachable",
+            "details": {
+                "layers": {
+                    "nas_ok": False,
+                    "session_active": False,
+                    "ping_ok": False,
+                    "web_ok": False,
+                    "api_ok": False,
+                }
+            },
+        }
+        with patch(
+            "core.connectivity_verification.evaluate_layered_cpe_access",
+            side_effect=[ready, nas_down, nas_down],
+        ):
+            first = _client_remote_access_row(self.customer, force=True)
+            second = _client_remote_access_row(self.customer, force=True)
+            third = _client_remote_access_row(self.customer, force=True)
+        self.assertEqual(first["status"], "ready")
+        self.assertEqual(second["status"], "ready")
+        self.assertTrue(second.get("stabilized"))
+        self.assertEqual(third["status"], "offline")
+        self.assertEqual(third["label"], "NAS down")
+
+    def test_client_remote_access_row_light_probe_error_shows_checking(self):
+        from django.core.cache import cache
+
+        from core.views import _client_remote_access_row
+
+        cache.clear()
+        with patch(
+            "core.connectivity_verification.evaluate_layered_cpe_access",
+            return_value={
+                "ok": False,
+                "failure_class": "probe_error",
+                "hint": "will retry",
+                "error": "light miss",
+                "details": {
+                    "layers": {
+                        "nas_ok": True,
+                        "session_active": True,
+                        "ping_ok": True,
+                        "web_ok": False,
+                        "api_ok": False,
+                    },
+                    "light": True,
+                },
+            },
+        ):
+            row = _client_remote_access_row(self.customer, force=True)
+        self.assertEqual(row["status"], "offline")
+        self.assertEqual(row["label"], "Checking")
+        self.assertEqual(row["failure_class"], "probe_error")
+        self.assertNotEqual(row["label"], "Setup")
 
     def test_clients_remote_access_caps_ids_and_returns_partial_on_budget(self):
         from django.core.cache import cache

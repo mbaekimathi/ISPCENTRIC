@@ -299,8 +299,10 @@ class MikroTikRouter(models.Model):
         """Address the billing server dials for RouterOS API access.
 
         ``host`` is the on-site LAN gateway; ``vpn_address`` is the WireGuard
-        tunnel. Hosted servers prefer the tunnel. A local billing PC prefers LAN
-        while plugged into the site, otherwise the tunnel address.
+        tunnel. Hosted servers prefer the tunnel. A local billing PC prefers
+        LAN (probe lists still try the tunnel) — Windows/dev boxes usually
+        cannot dial 10.9.x without wg0, so returning the tunnel here made
+        Remote/status paint NAS down while 192.168.x still answered.
         """
         host = (self.host or "").strip()
         tunnel = (self.vpn_address or "").strip()
@@ -309,11 +311,11 @@ class MikroTikRouter(models.Model):
 
             if bool(getattr(settings, "HOSTED", False)):
                 return tunnel or host
-            if tunnel:
-                from core.mikrotik_connect import operator_on_router_lan
+            from core.mikrotik_connect import _is_wireguard_tunnel_host
 
-                if not operator_on_router_lan(self):
-                    return tunnel or host
+            if host and not _is_wireguard_tunnel_host(host):
+                return host
+            return tunnel or host
         except Exception:
             return host or tunnel
         return host or tunnel

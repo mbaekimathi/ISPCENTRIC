@@ -154,21 +154,17 @@ Open `http://isp.richcom.co.ke` — log in, open MikroTik detail — status shou
 
 ## TLS (after HTTP works)
 
-```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d isp.richcom.co.ke
-```
-
-Then edit `/opt/ispcentric/.env`:
-
-```
-DJANGO_CSRF_TRUSTED_ORIGINS=https://isp.richcom.co.ke
-DJANGO_SESSION_COOKIE_SECURE=true
-DJANGO_CSRF_COOKIE_SECURE=true
-```
-
-Keep `PUBLIC_BASE_URL=http://isp.richcom.co.ke` for captive Hotspot interception.
+Do **not** use `certbot --nginx` (site-wide HTTPS redirect breaks captive pay).
 
 ```bash
-sudo systemctl restart ispcentric
+cd /opt/ispcentric
+sudo bash scripts/vps_enable_tls.sh --email you@example.com
 ```
+
+Result:
+
+- `https://isp.richcom.co.ke` — admin, Google OAuth, M-Pesa callbacks
+- `http://isp.richcom.co.ke` — Hotspot/PPPoE captive (and probes on :80)
+
+Keep `PUBLIC_BASE_URL=http://isp.richcom.co.ke`. The script sets CSRF origins to
+both http and https and leaves Secure cookies / HSTS off so captive sessions work.

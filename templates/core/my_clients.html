@@ -680,21 +680,27 @@
     );
     var state = (status || "").toLowerCase();
     var textEl = el.querySelector(".mikrotik-link-label");
+    var text = (label || "").trim();
     if (state === "ready") {
       el.classList.add("is-connected");
-      if (textEl) textEl.textContent = label || "Ready";
+      if (textEl) textEl.textContent = text || "Ready";
       el.title = title || "Client router web UI is reachable — Open client router should work";
     } else if (state === "blocked") {
       el.classList.add("is-limited");
-      if (textEl) textEl.textContent = label || "Blocked";
+      if (textEl) textEl.textContent = text || "Blocked";
       el.title = title || "Client is online but remote management is blocked from the ISP side";
     } else if (state === "unavailable") {
       el.classList.add("is-unavailable");
-      if (textEl) textEl.textContent = label || "N/A";
+      if (textEl) textEl.textContent = text || "N/A";
       el.title = title || "This client has no CPE to open remotely";
+    } else if (/^checking$/i.test(text) || /^retry$/i.test(text)) {
+      // In-progress / soft miss — not a hard Offline/NAS-down failure.
+      el.classList.add("is-checking");
+      if (textEl) textEl.textContent = text || "Checking";
+      el.title = title || "Checking remote access — will retry";
     } else {
       el.classList.add("is-disconnected");
-      if (textEl) textEl.textContent = label || "Offline";
+      if (textEl) textEl.textContent = text || "Offline";
       el.title = title || "Client router is offline or unreachable for remote access";
     }
   }

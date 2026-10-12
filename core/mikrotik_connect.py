@@ -2168,7 +2168,9 @@ def _api_pool_enabled() -> bool:
         return False
     if raw in {"1", "true", "yes"}:
         return True
-    return bool(getattr(settings, "HOSTED", False))
+    # Pool locally too — Remote + surfing + status were opening competing
+    # logins that looked like NAS down on a single slow MikroTik.
+    return True
 
 
 def _api_pool_ttl_sec() -> float:
@@ -2260,6 +2262,7 @@ def _api_session(
     port: int = 8728,
     timeout: float = 5.0,
     reuse: bool = False,
+    cool_host: bool = True,
 ) -> Iterator[socket.socket]:
     dial = dial_host(host)
     pool_key = _api_pool_key(dial, username, port)
@@ -2290,11 +2293,22 @@ def _api_session(
         yield sock
         keep_in_pool = use_pool
     except TimeoutError:
-        mark_mikrotik_host_unreachable(host, ttl=45)
+        # Light CPE list probes must not quarantine the ISP NAS for surfing /
+        # MikroTik status — a slow CPE TCP check is not "NAS dead".
+        # Local LAN hosts also need a second chance; only cool WG peers hard.
+        if cool_host:
+            if _is_wireguard_tunnel_host(host) or getattr(settings, "HOSTED", False):
+                mark_mikrotik_host_unreachable(host, ttl=45)
+            else:
+                mark_mikrotik_host_unreachable(host, ttl=12)
         _api_pool_discard(pool_key)
         raise
     except OSError:
-        mark_mikrotik_host_unreachable(host, ttl=45)
+        if cool_host:
+            if _is_wireguard_tunnel_host(host) or getattr(settings, "HOSTED", False):
+                mark_mikrotik_host_unreachable(host, ttl=45)
+            else:
+                mark_mikrotik_host_unreachable(host, ttl=12)
         _api_pool_discard(pool_key)
         raise
     except ConnectionError:
@@ -4753,6 +4767,7 @@ def _try_cpe_web_ports(
     ports: tuple[int, ...],
     connect_timeout: float,
     remember: bool = True,
+    uninstall_on_miss: bool = True,
 ) -> tuple[int | None, str]:
     """
     Return (first open CPE web port, last install error).
@@ -4804,8 +4819,10 @@ def _try_cpe_web_ports(
                 )
                 _remember_last_cpe_web_port(nas_host, scope, port)
             return port, last_error
-        # Only tear down after a confirmed miss — one WG timeout is not enough.
-        _uninstall_cpe_proxy(nas_sock, proxy_port)
+        # List Remote polls leave the forward on a single WG miss so Open
+        # client router can reuse it; full probes still clean up.
+        if uninstall_on_miss:
+            _uninstall_cpe_proxy(nas_sock, proxy_port)
         continue
     return None, last_error
 
@@ -4940,7 +4957,7 @@ def probe_customer_cpe_web(
         hosted = False
     connect_timeout = max(
         1.2 if light else 1.5,
-        min(timeout, (2.4 if hosted else 2.0) if light else (3.0 if hosted else 2.5)),
+        min(timeout, (3.0 if hosted else 2.2) if light else (3.0 if hosted else 2.5)),
     )
     preferred_ports = _preferred_cpe_web_ports(
         nas_host, scope, tuple(ports or CPE_WEB_PORTS)
@@ -4949,9 +4966,22 @@ def probe_customer_cpe_web(
     # truncate to :80 only, so a working :8081 proxy looked like "Setup".
     cache_ports = preferred_ports or (80,)
     if light:
-        # Install at most two NATs: last-known (or :80) then the next common
-        # WebFig port (:8081). Full multi-port thrash stalls surfing clients.
-        install_ports = tuple(cache_ports[:2]) or (80,)
+        # Always cover last-known + :80 + :8081 (deduped, max 3) so a stale
+        # last-known port cannot burn the only two slots and miss WebFig.
+        light_ports: list[int] = []
+        seen_light: set[int] = set()
+        for port in (*cache_ports[:1], 80, 8081, *cache_ports[1:]):
+            try:
+                port = int(port)
+            except (TypeError, ValueError):
+                continue
+            if port <= 0 or port in seen_light:
+                continue
+            seen_light.add(port)
+            light_ports.append(port)
+            if len(light_ports) >= 3:
+                break
+        install_ports = tuple(light_ports) or (80, 8081)
     else:
         install_ports = cache_ports
     candidate_ports = install_ports
@@ -4974,6 +5004,7 @@ def probe_customer_cpe_web(
             nas_password,
             port=nas_port,
             timeout=timeout,
+            cool_host=not light,
         ) as nas_sock:
             source_address = _nas_socket_source_address(nas_sock)
             _ensure_hotspot_bypass(nas_sock, source_address)
@@ -4992,6 +5023,7 @@ def probe_customer_cpe_web(
                 source_address=source_address,
                 ports=port_list,
                 connect_timeout=connect_timeout,
+                uninstall_on_miss=not light,
             )
             if install_error:
                 result["error"] = install_error
@@ -16626,19 +16658,17 @@ def _router_uses_dedicated_tunnel(router) -> bool:
     """
     True when this router should only be reached via its tunnel address.
 
-    Skips LAN guesses (192.168.88.1) and neighbour scans that would hit a
-    different on-site MikroTik when a remote peer is saved as 10.9.0.x.
-
-    On a LAN/dev billing PC, a saved vpn_address alone is not enough — the
-    WireGuard peer is often unreachable here, so keep using the LAN host.
+    Hosted servers skip LAN guesses (192.168.88.1) that would hit unrelated
+    datacentre hosts. A local/dev billing PC never treats a router as
+    tunnel-only — WireGuard peers are often unreachable here, so LAN host
+    and 192.168.88.1 must stay in the candidate list.
     """
-    host = (getattr(router, "host", None) or "").strip()
     if on_router_lan():
-        # Local: only treat as tunnel-only when the primary host is the tunnel.
-        return _is_wireguard_tunnel_host(host)
+        return False
     tunnel = (getattr(router, "vpn_address", None) or "").strip()
     if tunnel:
         return True
+    host = (getattr(router, "host", None) or "").strip()
     return _is_wireguard_tunnel_host(host)
 
 
@@ -16656,15 +16686,17 @@ def _router_api_host_candidates(
         if dedicated_tunnel
         else (["192.168.88.1"] if on_router_lan() else [])
     )
-    # Hosted: tunnel first. LAN/dev: LAN host first so a reserved vpn_address
-    # does not make every status/live poll time out on an unreachable peer.
-    # When the saved host itself is only a tunnel peer (common after hosted
-    # onboard), prefer discovered LAN candidates before burning timeouts on
-    # 10.9.0.x that this PC cannot route.
+    # Hosted: tunnel first. LAN/dev: non-WG / LAN guesses before tunnel peers
+    # so a Windows PC without wg0 does not burn the Remote budget on 10.9.x.
     if on_router_lan() and _is_wireguard_tunnel_host(host):
-        ordered = [*(candidate_hosts or []), host, tunnel, *lan_only]
+        ordered = [
+            *(candidate_hosts or []),
+            *lan_only,
+            host,
+            tunnel,
+        ]
     elif on_router_lan():
-        ordered = [host, tunnel, *lan_only, *(candidate_hosts or [])]
+        ordered = [host, *lan_only, *(candidate_hosts or []), tunnel]
     else:
         ordered = [tunnel, host, *lan_only, *(candidate_hosts or [])]
     hosts: list[str] = []
@@ -16728,38 +16760,53 @@ def resolve_nas_api_host(router, *, timeout: float = 1.5) -> str:
 
         cached = cache.get(_nas_api_host_cache_key(router))
         if cached:
-            return str(cached).strip()
+            cached_host = str(cached).strip()
+            # Do not reuse a cooling / dead tunnel peer as "proven".
+            if cached_host and not is_mikrotik_host_cooling_down(cached_host):
+                return cached_host
     except Exception:
         pass
 
     candidates = _router_api_host_candidates(router, discover=False)
-    connect_timeout = max(0.35, min(float(timeout or 1.5), 1.5))
+    hosted = bool(getattr(settings, "HOSTED", False))
     for host in candidates:
         if is_mikrotik_host_cooling_down(host):
             continue
         target = dial_host(host)
         if not target:
             continue
+        # Local WG peers that are not routed should fail fast so LAN dials
+        # still fit inside the Remote 18s budget.
+        if not hosted and _is_wireguard_tunnel_host(host):
+            connect_timeout = 0.55
+        else:
+            connect_timeout = max(0.45, min(float(timeout or 1.5), 2.2))
         try:
             with socket.create_connection((target, 8728), timeout=connect_timeout):
                 try:
                     from django.core.cache import cache
 
                     ttl = 90
-                    if getattr(settings, "HOSTED", False) and _is_wireguard_tunnel_host(
-                        host
-                    ):
+                    if hosted and _is_wireguard_tunnel_host(host):
                         ttl = 180
                     cache.set(_nas_api_host_cache_key(router), host, ttl)
                 except Exception:
                     pass
                 return host
         except OSError:
+            if not hosted and _is_wireguard_tunnel_host(host):
+                mark_mikrotik_host_unreachable(host, ttl=45)
             continue
     fallback = (
         (getattr(router, "api_host", None) or getattr(router, "host", None) or "")
         .strip()
     )
+    # Never hand back a cooling host as if it were usable.
+    if fallback and is_mikrotik_host_cooling_down(fallback):
+        for host in candidates:
+            if host and not is_mikrotik_host_cooling_down(host):
+                return host
+        return ""
     return fallback
 
 

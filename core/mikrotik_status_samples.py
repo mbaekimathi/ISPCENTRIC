@@ -855,14 +855,24 @@ def build_router_probe_plan(
         discover = billing_on_lan and operator_reaches_lan
         candidates = _router_api_host_candidates(router, discover=discover)
         if off_lan_tunnel_by_router[router.id]:
-            tunnel_only = [
+            # Prefer tunnel first when this PC is off the router /24, but keep
+            # LAN candidates as fallback — local Windows often has no wg0, and
+            # tunnel-only plans made Remote/status stuck on NAS down forever.
+            tunnel_first = [
                 host
                 for host in candidates
                 if host == tunnel or _is_wireguard_tunnel_host(host)
             ]
-            if tunnel and tunnel not in tunnel_only:
-                tunnel_only.insert(0, tunnel)
-            candidates = tunnel_only or ([tunnel] if tunnel else candidates)
+            lan_fallback = [
+                host
+                for host in candidates
+                if host not in tunnel_first
+            ]
+            if tunnel and tunnel not in tunnel_first:
+                tunnel_first.insert(0, tunnel)
+            candidates = (tunnel_first + lan_fallback) or (
+                [tunnel] if tunnel else candidates
+            )
         elif billing_on_lan and operator_reaches_lan:
             discovered = discover_local_mikrotik_host(
                 tunnel_address=tunnel,

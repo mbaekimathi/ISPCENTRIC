@@ -19330,6 +19330,8 @@ _CLIENT_REMOTE_SOFT_FAILURES_CLASSES = frozenset(
         "proxy_failed",
         "firewall_blocked",
         "probe_error",
+        # Transient API/WG blips — MikroTik column often still Connected.
+        "nas_down",
     }
 )
 
@@ -19344,9 +19346,10 @@ def _client_remote_pending_key(customer_id: int) -> str:
 
 def _stabilize_client_remote_access_row(row: dict) -> dict:
     """
-    Keep Ready across one soft miss (wrong light port, WG SYN drop, NAT settle).
+    Keep Ready across one soft miss (wrong light port, WG SYN drop, NAT settle,
+    or a brief NAS API timeout while the MikroTik column is still Connected).
 
-    Hard offline / NAS-down / password / ineligible clear immediately.
+    Hard offline / password / ineligible clear immediately.
     """
     if not isinstance(row, dict):
         return row
@@ -19370,7 +19373,6 @@ def _stabilize_client_remote_access_row(row: dict) -> dict:
     if status == "unavailable" or failure in {
         "not_eligible",
         "offline",
-        "nas_down",
         "bad_credentials",
     }:
         cache.delete(stable_key)
@@ -19538,6 +19540,20 @@ def _client_remote_access_row(
         cache.set(cache_key, row, 30 if row.get("status") == "ready" else 45)
         return row
 
+    if failure == "probe_error":
+        # Light inconclusive miss — keep Checking (not Setup/Offline) so the
+        # column does not look permanently misconfigured while polls retry.
+        row = {
+            "id": customer_id,
+            "status": "offline",
+            "label": "Checking",
+            "title": hint or "Could not confirm remote access — will retry",
+            "failure_class": "probe_error",
+        }
+        row = _stabilize_client_remote_access_row(row)
+        cache.set(cache_key, row, 20 if row.get("status") == "ready" else 25)
+        return row
+
     if failure == "nas_down":
         row = {
             "id": customer_id,
@@ -19551,7 +19567,8 @@ def _client_remote_access_row(
             "failure_class": "nas_down",
         }
         row = _stabilize_client_remote_access_row(row)
-        cache.set(cache_key, row, 25)
+        # Soft hold may keep Ready; otherwise cache briefly so a blip recovers.
+        cache.set(cache_key, row, 20 if row.get("status") == "ready" else 8)
         return row
 
     row = {
@@ -19660,7 +19677,9 @@ def clients_remote_access_status(request):
     from core.connectivity_verification import evaluate_nas_connectivity_cached
 
     hosted = bool(getattr(settings, "HOSTED", False))
-    nas_timeout = 3.0 if hosted else 2.5
+    # Local LAN logins need a bit more headroom; dead WG peers now fail fast
+    # in evaluate_nas_connectivity so this does not re-introduce 504s.
+    nas_timeout = 3.0 if hosted else 3.5
     deadline = time.monotonic() + _REMOTE_ACCESS_DEADLINE_S
     nas_by_router: dict[int, dict] = {}
     for customer in customers:
