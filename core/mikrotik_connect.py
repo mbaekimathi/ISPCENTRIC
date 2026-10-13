@@ -2297,18 +2297,21 @@ def _api_session(
         # MikroTik status — a slow CPE TCP check is not "NAS dead".
         # Local LAN hosts also need a second chance; only cool WG peers hard.
         if cool_host:
+            # Short cool-downs: long enough to stop a poll stampede, short
+            # enough that a flaky WireGuard peer recovers without minutes of
+            # "Cannot access this MikroTik" toast spam.
             if _is_wireguard_tunnel_host(host) or getattr(settings, "HOSTED", False):
-                mark_mikrotik_host_unreachable(host, ttl=45)
+                mark_mikrotik_host_unreachable(host, ttl=25)
             else:
-                mark_mikrotik_host_unreachable(host, ttl=12)
+                mark_mikrotik_host_unreachable(host, ttl=10)
         _api_pool_discard(pool_key)
         raise
     except OSError:
         if cool_host:
             if _is_wireguard_tunnel_host(host) or getattr(settings, "HOSTED", False):
-                mark_mikrotik_host_unreachable(host, ttl=45)
+                mark_mikrotik_host_unreachable(host, ttl=25)
             else:
-                mark_mikrotik_host_unreachable(host, ttl=12)
+                mark_mikrotik_host_unreachable(host, ttl=10)
         _api_pool_discard(pool_key)
         raise
     except ConnectionError:
@@ -8235,13 +8238,20 @@ def fetch_mikrotik_live_snapshot_for_router(
             "error": "Missing router credentials.",
         }
 
-    dial_first = dial_host(ordered[0]) or ordered[0]
-    if is_mikrotik_host_cooling_down(dial_first):
+    # Skip hosts still in the short post-miss cooldown; try the next
+    # candidate (LAN vs tunnel) instead of failing the whole live poll.
+    ready = [
+        host
+        for host in ordered
+        if not is_mikrotik_host_cooling_down(dial_host(host) or host)
+    ]
+    if not ready:
         return {
             "ok": False,
             "online": False,
-            "error": "Router recently unreachable — cooling down.",
+            "error": "Management path is soft — retrying shortly.",
             "cooling_down": True,
+            "soft_outage": True,
         }
 
     last_snap: dict[str, Any] = {
@@ -8249,7 +8259,7 @@ def fetch_mikrotik_live_snapshot_for_router(
         "online": False,
         "error": "Could not reach the MikroTik API on any saved address.",
     }
-    for host in ordered:
+    for host in ready:
         snap = fetch_mikrotik_live_snapshot(
             host,
             username,
@@ -8865,8 +8875,9 @@ def fetch_router_bulk_live_usage(
             "ok": False,
             "pppoe": {},
             "hotspot": {},
-            "error": "Router recently unreachable — cooling down.",
+            "error": "Management path is soft — retrying shortly.",
             "cooling_down": True,
+            "soft_outage": True,
         }
     try:
         with _api_session(
@@ -9768,8 +9779,9 @@ def fetch_active_pppoe_usernames(
             "ok": False,
             "usernames": [],
             "blocked": [],
-            "error": "Router recently unreachable — cooling down.",
+            "error": "Management path is soft — retrying shortly.",
             "cooling_down": True,
+            "soft_outage": True,
         }
     try:
         with _api_session(
@@ -9860,8 +9872,9 @@ def fetch_hotspot_client_macs(
             "connected_macs": [],
             "active_uptime_by_mac": {},
             "wifi_ssid": "",
-            "error": "Router recently unreachable — cooling down.",
+            "error": "Management path is soft — retrying shortly.",
             "cooling_down": True,
+            "soft_outage": True,
         }
 
     def _mac(value: str) -> str:
@@ -16396,7 +16409,7 @@ def is_mikrotik_host_cooling_down(host: str) -> bool:
         return False
 
 
-def mark_mikrotik_host_unreachable(host: str, *, ttl: int = 90) -> None:
+def mark_mikrotik_host_unreachable(host: str, *, ttl: int = 45) -> None:
     """Skip repeated dials to a dead MikroTik for a short window."""
     host = (host or "").strip()
     if not host:
@@ -16404,7 +16417,7 @@ def mark_mikrotik_host_unreachable(host: str, *, ttl: int = 90) -> None:
     try:
         from django.core.cache import cache
 
-        cache.set(_mikrotik_dead_host_key(host), 1, max(30, int(ttl or 90)))
+        cache.set(_mikrotik_dead_host_key(host), 1, max(8, int(ttl or 45)))
     except Exception:
         pass
 
@@ -18350,7 +18363,8 @@ def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
         if _delete_hotspot_file(sock, dst):
             notes.append(f"removed {dst}")
 
-    pay_html = _captive_pay_redirect_html(portal_url)
+    # CPE renew is the PPPoE expired path — open via billing IPv4 when hosted.
+    pay_html = _captive_pay_redirect_html(portal_url, via_billing_ip=True)
     wrote_login = False
     if pay_html:
         for dst in (
@@ -19951,12 +19965,17 @@ def _format_hotspot_mac(mac_address: str) -> str:
     return ":".join(compact[index : index + 2] for index in range(0, 12, 2))
 
 
-def find_hotspot_mac_for_ip(organization, client_ip: str) -> str:
+def find_hotspot_mac_for_ip(
+    organization, client_ip: str, *, live_walk: bool = True
+) -> str:
     """
     Resolve a client MAC from the IP Django sees on a Hotspot request.
 
     Captive probes sometimes land on the pay page without RouterOS ``mac=``
     substitution. Look up the same IP in Hotspot host/active, DHCP leases, and ARP.
+
+    ``live_walk=False`` returns only a cached hit — use this while rendering
+    ``/pay/`` so offline NAS dials cannot blank the captive sheet.
     """
     client_ip = (client_ip or "").strip()
     if not client_ip:
@@ -19969,6 +19988,8 @@ def find_hotspot_mac_for_ip(organization, client_ip: str) -> str:
         return cached
     if cached == "":
         # Recent miss — avoid serial NAS walks on probe bursts.
+        return ""
+    if not live_walk:
         return ""
 
     from core.models import MikroTikRouter
@@ -24440,13 +24461,19 @@ def _write_hotspot_html_file(sock: socket.socket, dst_path: str, html: str) -> b
     return _hotspot_login_file_ok(sock, dst_path)
 
 
-def _captive_pay_redirect_html(pay_url: str) -> str:
-    """Hotspot login page that HTTP-redirects every OS to the payment/pause page."""
-    # Hosted: open via billing IPv4 so HTTPS-First browsers do not upgrade the
-    # public name to :443 (times out until Hotspot allows billing HTTPS).
-    from core.hotspot_portal import prefer_captive_open_url
+def _captive_pay_redirect_html(pay_url: str, *, via_billing_ip: bool = False) -> str:
+    """Hotspot login page that HTTP-redirects every OS to the payment/pause page.
 
-    pay_url = prefer_captive_open_url(pay_url or "")
+    ``via_billing_ip`` is for PPPoE CPE renew only. ISP Hotspot login.html must
+    keep the public hostname so MikroTik HTTP walled-garden ``dst-host`` rules
+    match; bare IPv4 URLs time out when ``walled-garden/ip`` is missing.
+    """
+    from core.hotspot_portal import prefer_captive_open_url, prefer_hotspot_open_url
+
+    if via_billing_ip:
+        pay_url = prefer_captive_open_url(pay_url or "")
+    else:
+        pay_url = prefer_hotspot_open_url(pay_url or "")
     if not pay_url:
         return ""
     # Keep an existing query string (e.g. signed ?t= for PPPoE account auto-fill).
@@ -31028,10 +31055,11 @@ def read_mikrotik_ports_and_uplink(
     if is_mikrotik_host_cooling_down(host):
         cooling = {
             "ok": False,
-            "error": "Router recently unreachable — cooling down.",
+            "error": "Management path is soft — retrying shortly.",
             "ports": [],
             "suggested_wan": "",
             "cooling_down": True,
+            "soft_outage": True,
         }
         return (
             cooling,

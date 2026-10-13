@@ -530,6 +530,7 @@ class HotspotCaptiveProbeMiddleware:
             )
         from core.hotspot_portal import (
             prefer_captive_open_url,
+            prefer_hotspot_open_url,
             prefer_http_captive_url,
             public_base_url,
         )
@@ -544,8 +545,10 @@ class HotspotCaptiveProbeMiddleware:
             base = prefer_http_captive_url(
                 request.build_absolute_uri("/")
             ).rstrip("/")
-        # Hosted open URL may be http://<billing-ip>/… (avoids HTTPS-First timeout).
-        target = prefer_captive_open_url(f"{base}{pay_path}")
+        # Hotspot: keep hostname (walled-garden dst-host). PPPoE renew may use
+        # billing IPv4 so HTTPS-First does not race the expired allow rule.
+        open_url = prefer_captive_open_url if prefer_pppoe else prefer_hotspot_open_url
+        target = open_url(f"{base}{pay_path}")
         if query:
             target = f"{target}?{query}"
         if prefer_pppoe:

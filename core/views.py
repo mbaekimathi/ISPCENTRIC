@@ -137,6 +137,7 @@ from core.mikrotik_connect import (
     apply_pppoe_enforcement_for_organization,
     apply_hotspot_on_router,
     check_mikrotik_reachable,
+    clear_mikrotik_host_cooldown,
     clear_mikrotik_uplink_multi,
     customer_cpe_web_proxy,
     customer_cpe_access_eligible,
@@ -13983,6 +13984,15 @@ def mikrotik_live(request, router_id: int):
     from core.mikrotik_connect import is_off_lan_tunnel_managed, resolve_router_management_mode
     from core.wireguard import server_on_tunnel
 
+    # Manual refresh / Try again clears the short cool-down so a soft tunnel
+    # miss does not block the next intentional dial.
+    if force:
+        for candidate in _router_api_host_candidates(router, discover=False):
+            clear_mikrotik_host_cooldown(dial_host(candidate) or candidate)
+        clear_mikrotik_host_cooldown(router.host or "")
+        clear_mikrotik_host_cooldown(router.api_host or "")
+        clear_mikrotik_host_cooldown(router.vpn_address or "")
+
     if is_off_lan_tunnel_managed(router) and not server_on_tunnel():
         if resolve_router_management_mode(router) == "remote_only":
             snapshot = _apply_remote_live_fallback(
@@ -14004,6 +14014,34 @@ def mikrotik_live(request, router_id: int):
         discover=False,
     )
     dial = (snapshot.get("dial_host") or router.api_host or router.host or "").strip()
+    if not snapshot.get("ok") and (
+        snapshot.get("cooling_down") or snapshot.get("soft_outage")
+    ):
+        # Hold the last good live frame instead of flashing the page offline —
+        # cool-down is a management-path pause, not a client disconnect.
+        prior = _cached_mikrotik_live_snapshot(org.pk, router.pk)
+        if prior and prior.get("ok") and prior.get("online"):
+            soft = dict(prior)
+            soft["soft_outage"] = True
+            soft["cooling_down"] = True
+            soft["stale_live"] = True
+            soft["deferred_reason"] = (
+                "Tunnel soft — showing last known live data "
+                "(subscribers stay online)"
+            )
+            from core.mikrotik_auto_restore import get_auto_restore_record
+
+            soft["auto_restore"] = get_auto_restore_record(router.pk)
+            soft["router_id"] = router.pk
+            soft["host"] = router.host
+            soft["api_host"] = (
+                soft.get("api_host")
+                or dial
+                or (router.api_host or router.host or "")
+            ).strip()
+            # Brief cache so the next poll can recover without toast spam.
+            cache.set(cache_key, soft, 8)
+            return JsonResponse(_strip_remote_only_live_flags(soft))
     if not snapshot.get("ok"):
         snapshot = _apply_remote_live_fallback(router, org, snapshot)
     snapshot["router_id"] = router.pk
@@ -20066,10 +20104,10 @@ def _probe_mikrotik_router_combined(router) -> dict:
         stale = _load_router_surf_probe_snapshot(router_id)
         if stale:
             stale = dict(stale)
-            stale["error"] = "Router recently unreachable — showing last known sessions"
+            stale["error"] = "Management path soft — showing last known sessions"
             stale["stale"] = True
             return stale
-        empty["error"] = "Router recently unreachable"
+        empty["error"] = "Management path is soft — retrying shortly"
         return empty
     pppoe = fetch_active_pppoe_usernames(
         api_host, router.username, router.password, timeout=4.0
@@ -22164,14 +22202,16 @@ def _normalize_hotspot_mac(value: str) -> str:
     return ":".join(compact[index : index + 2] for index in range(0, 12, 2)).upper()
 
 
-def _resolve_request_hotspot_mac(org, request) -> str:
+def _resolve_request_hotspot_mac(org, request, *, live_nas: bool = False) -> str:
     """
     Best-effort device MAC for captive Hotspot payment.
 
-    Prefer query/cookie values from RouterOS redirects; fall back to looking the
-    client IP up on the organization's Hotspot NAS tables.
+    Prefer query/cookie values from RouterOS redirects; fall back to a cached
+    IP→MAC hint. Live NAS walks are off by default — captive mini-browsers
+    time out on a blank screen when every /pay/ open dials offline routers.
+    Probe middleware may still pass ``live_nas=True`` when attaching mac=.
 
-    Cached on the request so pay-page + portal context share one NAS lookup.
+    Cached on the request so pay-page + portal context share one lookup.
     """
     if request is None:
         return ""
@@ -22203,7 +22243,7 @@ def _resolve_request_hotspot_mac(org, request) -> str:
                 from core.mikrotik_connect import find_hotspot_mac_for_ip
 
                 mac = _normalize_hotspot_mac(
-                    find_hotspot_mac_for_ip(org, remote) or ""
+                    find_hotspot_mac_for_ip(org, remote, live_walk=live_nas) or ""
                 )
             except Exception:
                 mac = ""
@@ -24109,14 +24149,6 @@ def _hotspot_captive_page(request, join_code: str, *, expected_page: str):
     _prefetch_daraja_oauth(org)
     response = render(request, "core/hotspot_pay.html", context)
     response = _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")
-    token = (context.get("pppoe_customer_token") or context.get("customer_token") or "").strip()
-    account = (
-        context.get("pppoe_account_number") or context.get("account_number") or ""
-    ).strip()
-    if token:
-        response = _set_pppoe_account_cookie(response, token)
-    if account and context.get("portal_mode") == "pppoe":
-        response = _set_pppoe_account_hint_cookie(response, account)
     return response
 
 

@@ -76,12 +76,12 @@ def resolve_public_billing_ipv4(url: str = "") -> str:
 
 def prefer_captive_open_url(url: str) -> str:
     """
-    URL phones should open for captive pay.
+    URL phones should open for captive pay (PPPoE renew / CPE paths).
 
     Always http://. On hosted installs, rewrite the public hostname to its IPv4
-    so Brave/Chrome HTTPS-First does not upgrade to https://domain (which times
-    out when Hotspot has not allowed billing :443 yet). Walled-garden / DNS pin
-    still use the hostname form via prefer_http_captive_url.
+    so Brave/Chrome HTTPS-First does not upgrade to https://domain before the
+    expired-client → billing allow hits. Hotspot ISP portals must NOT use this
+    — see prefer_hotspot_open_url.
     """
     from urllib.parse import urlunparse
 
@@ -106,6 +106,23 @@ def prefer_captive_open_url(url: str) -> str:
     return urlunparse(
         ("http", netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
     )
+
+
+def prefer_hotspot_open_url(url: str) -> str:
+    """
+    URL Hotspot clients should open for pay / reconnect / welcome.
+
+    Keep the public hostname on http://. Rewriting to a bare billing IPv4
+    bypasses MikroTik HTTP walled-garden ``dst-host`` rules; phones then need
+    ``/ip/hotspot/walled-garden/ip`` accept entries. When those IP rules are
+    missing (offline NAS, failed push), the captive sheet shows
+    ERR_CONNECTION_TIMED_OUT on http://<ip>/hotspot/…/pay/.
+
+    Hostname + http works with dst-host allow; HTTPS-First upgrades are served
+    by CaptivePortalHttpMiddleware once :443 is in walled-garden/ip (installed
+    alongside the hostname rule).
+    """
+    return prefer_http_captive_url(url)
 
 
 def local_ipv4_addresses() -> set[str]:
@@ -513,7 +530,7 @@ def hotspot_portal_urls(join_code: str, request=None) -> dict[str, str]:
     effective_reason = unreachable_base_url_reason(base or "")
 
     def _abs(path: str) -> str:
-        return prefer_http_captive_url(public_absolute_url(path, request))
+        return prefer_hotspot_open_url(public_absolute_url(path, request))
 
     return {
         "login_path": login_path,
@@ -522,13 +539,13 @@ def hotspot_portal_urls(join_code: str, request=None) -> dict[str, str]:
         "alogin_path": alogin_path,
         "welcome_path": welcome_path,
         "pay_path": pay_path,
-        # Open URLs may be http://<ipv4>/… on hosted (HTTPS-First safe).
-        "login_url": prefer_captive_open_url(_abs(login_path)),
-        "captive_login_url": prefer_captive_open_url(_abs(captive_login_path)),
-        "reconnect_url": prefer_captive_open_url(_abs(reconnect_path)),
-        "alogin_url": prefer_captive_open_url(_abs(alogin_path)),
-        "welcome_url": prefer_captive_open_url(_abs(welcome_path)),
-        "pay_url": prefer_captive_open_url(_abs(pay_path)),
+        # Hotspot open URLs stay http://<hostname>/… (not bare IPv4).
+        "login_url": _abs(login_path),
+        "captive_login_url": _abs(captive_login_path),
+        "reconnect_url": _abs(reconnect_path),
+        "alogin_url": _abs(alogin_path),
+        "welcome_url": _abs(welcome_path),
+        "pay_url": _abs(pay_path),
         "base_url": base,
         "base_is_loopback": is_loopback_url(base or ""),
         "base_unreachable_reason": effective_reason or configured_reason,

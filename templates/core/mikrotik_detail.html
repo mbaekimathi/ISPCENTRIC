@@ -700,9 +700,70 @@
     }
   }
 
+  function isSoftOutage(data) {
+    if (!data) return false;
+    if (data.soft_outage || data.cooling_down || data.stale_live) return true;
+    var err = ((data.error || "") + " " + (data.deferred_reason || "")).toLowerCase();
+    return (
+      err.indexOf("cooling down") >= 0
+      || err.indexOf("management path is soft") >= 0
+      || err.indexOf("tunnel soft") >= 0
+      || err.indexOf("recently unreachable") >= 0
+    );
+  }
+
+  function showSoftHold(data) {
+    var hold = null;
+    if (data && data.ok && data.online) {
+      hold = data;
+    } else {
+      hold = lastGoodLive || loadPersistedLive() || initialLive;
+    }
+    if (hold && hold.ok && hold.online) {
+      var soft = cloneLiveData(hold) || hold;
+      soft.soft_outage = true;
+      soft.cooling_down = true;
+      soft.stale_live = true;
+      soft.deferred_reason =
+        (data && data.deferred_reason)
+        || "Tunnel soft — showing last known live data (subscribers stay online)";
+      // Keep the page looking online; do not fire the offline toast.
+      wasOnline = true;
+      showLiveLayout();
+      liveRoot.classList.add("is-online");
+      liveRoot.classList.remove("is-offline");
+      clearLiveLoading();
+      setRemoteBanner(false);
+      setRemoteControls(true);
+      setHero(true, { label: "Connected" });
+      setText('[data-live="status"]', "Online");
+      setText('[data-live="status-hint"]', "Tunnel soft · last known");
+      if (subEl) subEl.textContent = soft.deferred_reason;
+      if (stampEl) stampEl.textContent = "Held " + stampNow();
+      // Quiet one-liner toast at most once per soft stretch.
+      if (noticeShownFor !== "soft-outage") {
+        showLiveToast(
+          "Management path is soft — subscribers stay online. Retrying shortly.",
+          {
+            title: "Tunnel soft",
+            type: "info",
+            soft: true,
+            sticky: false,
+          }
+        );
+        noticeShownFor = "soft-outage";
+      }
+      return true;
+    }
+    return false;
+  }
+
   function deferLiveConnectionLoss(data) {
     if (data && data.remote_management_only) {
       renderLive(data);
+      return true;
+    }
+    if (isSoftOutage(data) && showSoftHold(data)) {
       return true;
     }
     return false;
@@ -794,6 +855,15 @@
     if (low.indexOf("login") >= 0 || low.indexOf("invalid user") >= 0 || low.indexOf("password") >= 0 || low.indexOf("cannot log in") >= 0) {
       return "Login failed. The saved username or password may be incorrect — update credentials from the sidebar.";
     }
+    if (
+      (data && (data.cooling_down || data.soft_outage || data.stale_live))
+      || low.indexOf("cooling down") >= 0
+      || low.indexOf("management path is soft") >= 0
+      || low.indexOf("tunnel soft") >= 0
+      || low.indexOf("recently unreachable") >= 0
+    ) {
+      return "Management path is soft — subscribers stay online. Retrying shortly.";
+    }
     if (low.indexOf("timed out") >= 0) {
       return "The router did not respond in time. Check that it is powered on and on the same network as this PC.";
     }
@@ -820,6 +890,7 @@
   function showLiveToast(reason, options) {
     var opts = options || {};
     var rb = opts.wanRollback;
+    var soft = !!opts.soft;
     if (rb && rb.rollback_script && rb.old_wan && rb.new_wan) {
       reason =
         "Lost contact after switching Internet to " +
@@ -835,6 +906,7 @@
     }
     lastReason = reason || "Live access is unavailable right now.";
     if (noticeShownFor === lastReason && liveToastDismiss) return;
+    if (soft && noticeShownFor === "soft-outage" && liveToastDismiss) return;
     var actions = [];
     if (rb && rb.rollback_script && rb.old_wan) {
       actions.push({
@@ -846,7 +918,7 @@
       });
     }
     var detailReconnectEl = document.getElementById("mikrotik-detail-reconnect");
-    if (detailReconnectEl && !detailReconnectEl.disabled) {
+    if (!soft && detailReconnectEl && !detailReconnectEl.disabled) {
       actions.push({
         label: "Reconnect",
         onClick: function () {
@@ -862,7 +934,7 @@
       });
     }
     actions.push({
-      label: "Try again",
+      label: soft ? "Refresh" : "Try again",
       onClick: function () {
         loadLive(true);
       },
@@ -870,15 +942,15 @@
     if (typeof window.showToast === "function") {
       closeLiveToast();
       var result = window.showToast({
-        type: opts.type || "warning",
-        title: opts.title || "Cannot access this MikroTik",
+        type: opts.type || (soft ? "info" : "warning"),
+        title: opts.title || (soft ? "Tunnel soft" : "Cannot access this MikroTik"),
         text: lastReason,
-        ms: opts.sticky ? 0 : 9000,
+        ms: opts.sticky ? 0 : (soft ? 4500 : 9000),
         actions: actions,
       });
       liveToastDismiss = result && result.dismiss;
     }
-    noticeShownFor = lastReason;
+    noticeShownFor = soft ? "soft-outage" : lastReason;
   }
 
   function closeLiveToast() {
@@ -918,9 +990,25 @@
   function renderLive(data) {
     if (data && data.auto_restore) applyAutoRestoreBadge(data.auto_restore);
     clearLiveLoading();
-    if (!data || !data.ok || !data.online) {
+    if (data && data.ok && data.online && isSoftOutage(data)) {
+      // Backend returned last-known live with soft flags — keep UI online.
+      showSoftHold(data);
+      // Still paint metrics from the held snapshot.
+    } else if (!data || !data.ok || !data.online) {
       if (deferLiveConnectionLoss(data)) return;
       var reason = friendlyReason(data || {});
+      // Soft misses must not clear the notice gate or flip to hard offline.
+      if (isSoftOutage(data || {})) {
+        if (showSoftHold(data || {})) return;
+        showBlocked(reason, false, data);
+        if (blockedTitle) blockedTitle.textContent = "Tunnel soft";
+        if (blockedText) {
+          blockedText.textContent =
+            "Management path is soft. Subscribers stay online — retrying shortly.";
+        }
+        if (subEl) subEl.textContent = reason;
+        return;
+      }
       // After a healthy session, always reopen the notice on the next outage.
       if (wasOnline === true) noticeShownFor = "";
       wasOnline = false;
@@ -931,8 +1019,10 @@
     }
     var remoteOnly = !isHostedDashboard && !!(data && data.remote_management_only);
     wasOnline = true;
-    noticeShownFor = "";
-    closeLiveToast();
+    if (!isSoftOutage(data)) {
+      noticeShownFor = "";
+      closeLiveToast();
+    }
     showLiveLayout();
     liveRoot.classList.add("is-online");
     liveRoot.classList.remove("is-offline");
@@ -944,7 +1034,9 @@
       '[data-live="status-hint"]',
       remoteOnly
         ? "Manage on hosted dashboard"
-        : (data.management_deferred ? "Tunnel-managed" : "API connected")
+        : (isSoftOutage(data)
+            ? "Tunnel soft · last known"
+            : (data.management_deferred ? "Tunnel-managed" : "API connected"))
     );
     setText('[data-live="wan-download"]', data.wan_download_label || "—");
     setText(
@@ -999,9 +1091,14 @@
     );
     setBar('[data-live-bar="cpu"]', data.cpu_load);
     setBar('[data-live-bar="memory"]', data.memory_used_pct);
-    if (subEl) subEl.textContent = data.deferred_reason || "Live · auto-refresh";
-    if (stampEl) stampEl.textContent = "Updated " + stampNow();
-    if (!remoteOnly) persistLastGoodLive(data);
+    if (subEl) {
+      subEl.textContent = data.deferred_reason
+        || (isSoftOutage(data) ? "Tunnel soft — subscribers stay online" : "Live · auto-refresh");
+    }
+    if (stampEl) {
+      stampEl.textContent = (isSoftOutage(data) ? "Held " : "Updated ") + stampNow();
+    }
+    if (!remoteOnly && !isSoftOutage(data)) persistLastGoodLive(data);
   }
 
   function loadLive(force) {

@@ -5056,7 +5056,12 @@ class PortalBaseUrlReachabilityTests(SimpleTestCase):
         HOSTED=True,
         DEBUG=False,
     )
-    def test_hosted_pay_url_uses_billing_ipv4_when_resolved(self):
+    def test_hosted_hotspot_pay_url_keeps_hostname_not_bare_ipv4(self):
+        """
+        Bare billing IPv4 in login.html bypasses HTTP walled-garden dst-host
+        and times out when walled-garden/ip is missing. Hotspot must keep the
+        public hostname; PPPoE renew still may use prefer_captive_open_url.
+        """
         from core.hotspot_portal import hotspot_portal_urls
 
         with patch(
@@ -5066,8 +5071,9 @@ class PortalBaseUrlReachabilityTests(SimpleTestCase):
             urls = hotspot_portal_urls("606060")
         self.assertEqual(
             urls["pay_url"],
-            "http://178.162.241.99/hotspot/606060/pay/",
+            "http://isp.richcom.co.ke/hotspot/606060/pay/",
         )
+        self.assertNotIn("178.162.241.99", urls["pay_url"])
 
     @override_settings(PUBLIC_BASE_URL="http://192.168.1.135:8000", HOSTED=False, DEBUG=True)
     def test_usable_local_public_base_url_is_kept(self):
@@ -10616,7 +10622,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         self.assertNotIn("https://isp.richcom.co.ke/hotspot/534970/pay/", html)
 
     @override_settings(HOSTED=True, PUBLIC_BASE_URL="http://isp.richcom.co.ke")
-    def test_login_html_uses_billing_ipv4_when_hosted(self):
+    def test_isp_hotspot_login_html_keeps_hostname(self):
         from unittest.mock import patch
 
         from core.mikrotik_connect import _captive_pay_redirect_html
@@ -10628,9 +10634,26 @@ class IspHotspotInstantPayTests(SimpleTestCase):
             html = _captive_pay_redirect_html(
                 "https://isp.richcom.co.ke/hotspot/534970/pay/"
             )
-        self.assertIn("http://178.162.241.99/hotspot/534970/pay/", html)
+        self.assertIn("http://isp.richcom.co.ke/hotspot/534970/pay/", html)
+        self.assertNotIn("178.162.241.99", html)
         self.assertNotIn("https://isp.richcom.co.ke/", html)
-        self.assertNotIn("http://isp.richcom.co.ke/", html)
+
+    @override_settings(HOSTED=True, PUBLIC_BASE_URL="http://isp.richcom.co.ke")
+    def test_pppoe_cpe_login_html_may_use_billing_ipv4(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import _captive_pay_redirect_html
+
+        with patch(
+            "core.hotspot_portal.resolve_public_billing_ipv4",
+            return_value="178.162.241.99",
+        ):
+            html = _captive_pay_redirect_html(
+                "https://isp.richcom.co.ke/pppoe/534970/pay/",
+                via_billing_ip=True,
+            )
+        self.assertIn("http://178.162.241.99/pppoe/534970/pay/", html)
+        self.assertNotIn("isp.richcom.co.ke", html)
 
     def test_hotspot_server_bypass_resolves_domain_public_base(self):
         """Domain PUBLIC_BASE_URL must still install billing IP bypass + garden."""
@@ -11184,7 +11207,12 @@ class IspHotspotInstantPayTests(SimpleTestCase):
             host="192.168.88.1",
             username="admin",
             password="x",
-            organization=SimpleNamespace(pk=9, join_code="505050", name="ISP"),
+            organization=SimpleNamespace(
+                pk=9,
+                join_code="505050",
+                name="ISP",
+                hotspot_enabled=True,
+            ),
             account_status="active",
             lan_bridge="bridge",
             wan_interface="ether1",
@@ -14299,6 +14327,41 @@ class MikroTikStatusOfflineTests(TestCase):
         self.assertEqual(snap.get("dial_host"), "10.9.0.12")
         self.assertIn("192.168.88.1", calls)
         self.assertIn("10.9.0.12", calls)
+
+    def test_live_snapshot_skips_cooling_host_and_marks_soft_outage(self):
+        from core.mikrotik_connect import (
+            clear_mikrotik_host_cooldown,
+            fetch_mikrotik_live_snapshot_for_router,
+            mark_mikrotik_host_unreachable,
+        )
+
+        self.router.host = "10.9.0.12"
+        self.router.vpn_address = "10.9.0.12"
+        self.router.save(update_fields=["host", "vpn_address", "updated_at"])
+        clear_mikrotik_host_cooldown("10.9.0.12")
+        mark_mikrotik_host_unreachable("10.9.0.12", ttl=30)
+
+        with (
+            patch(
+                "core.mikrotik_connect.resolve_nas_api_host",
+                return_value="10.9.0.12",
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.9.0.12"],
+            ),
+            patch(
+                "core.mikrotik_connect.fetch_mikrotik_live_snapshot",
+            ) as snap_fn,
+        ):
+            snap = fetch_mikrotik_live_snapshot_for_router(self.router)
+
+        snap_fn.assert_not_called()
+        self.assertFalse(snap.get("ok"))
+        self.assertTrue(snap.get("cooling_down"))
+        self.assertTrue(snap.get("soft_outage"))
+        self.assertIn("soft", (snap.get("error") or "").lower())
+        clear_mikrotik_host_cooldown("10.9.0.12")
 
     def test_speed_byte_delta_uses_previous_sample(self):
         from django.core.cache import cache
