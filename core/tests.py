@@ -12150,22 +12150,27 @@ class AccessFlowCorrectionLoopTests(TestCase):
             ),
             patch("core.mikrotik_connect._first_forward_drop_id", return_value="*drop"),
             patch(
-                "core.mikrotik_connect._billing_portal_base_url",
-                return_value="http://billing.example:8000",
-            ),
-            patch(
-                "core.mikrotik_connect._portal_target_ipv4",
-                return_value="203.0.113.10",
+                "core.mikrotik_connect._portal_billing_ipv4s",
+                return_value=frozenset({"203.0.113.10"}),
             ),
         ):
             notes = _ensure_hotspot_pool_wan_guard(MagicMock())
 
         self.assertTrue(any("pool WAN guard" in n for n in notes))
+        self.assertTrue(any("203.0.113.10" in n for n in notes))
         actions = {(r.get("action"), r.get("protocol"), r.get("dst-port")) for r in adds}
         self.assertIn(("accept", None, None), actions)
         self.assertTrue(
             any(
                 r.get("src-address-list") == ISP_HOTSPOT_OK_LIST
+                and r.get("action") == "accept"
+                for r in adds
+            )
+        )
+        self.assertTrue(
+            any(
+                r.get("src-address") == ISP_HOTSPOT_POOL_NETWORK
+                and r.get("dst-address") == "203.0.113.10"
                 and r.get("action") == "accept"
                 for r in adds
             )
@@ -12187,6 +12192,59 @@ class AccessFlowCorrectionLoopTests(TestCase):
                 for r in adds
             )
         )
+
+    def test_hotspot_pool_wan_guard_skips_drop_without_billing_ip(self):
+        """Empty billing allow + pool drop = pay page ERR_CONNECTION_TIMED_OUT."""
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import _ensure_hotspot_pool_wan_guard
+
+        adds: list[dict] = []
+
+        def fake_add_filter(sock, rule, place_before=""):
+            adds.append(dict(rule))
+            return {"_reply": "!done", "ret": f"*r{len(adds)}"}
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._add_filter_rule",
+                side_effect=fake_add_filter,
+            ),
+            patch("core.mikrotik_connect._first_forward_drop_id", return_value="*drop"),
+            patch(
+                "core.mikrotik_connect._portal_billing_ipv4s",
+                return_value=frozenset(),
+            ),
+        ):
+            notes = _ensure_hotspot_pool_wan_guard(MagicMock())
+
+        self.assertTrue(any("no billing IPv4" in n for n in notes))
+        self.assertFalse(any(r.get("action") == "reject" for r in adds))
+        self.assertFalse(any(r.get("action") == "drop" for r in adds))
+        self.assertTrue(any(r.get("action") == "accept" for r in adds))
+
+    @override_settings(
+        PUBLIC_BASE_URL="http://isp.richcom.co.ke",
+        WIREGUARD_ENDPOINT="178.162.241.99:51820",
+        HOSTED=True,
+    )
+    def test_portal_billing_ipv4s_includes_wireguard_endpoint_public_ip(self):
+        from core.mikrotik_connect import _portal_billing_ipv4s
+
+        with patch(
+            "core.mikrotik_connect._portal_target_ipv4s",
+            return_value=[],
+        ), patch(
+            "core.hotspot_portal.resolve_public_billing_ipv4",
+            return_value="",
+        ), patch(
+            "core.hotspot_portal.public_base_url",
+            return_value="http://isp.richcom.co.ke",
+        ):
+            ips = _portal_billing_ipv4s("http://isp.richcom.co.ke/hotspot/1/pay/")
+        self.assertIn("178.162.241.99", ips)
 
     def test_kill_firewall_connections_for_blocked_ips(self):
         from unittest.mock import MagicMock

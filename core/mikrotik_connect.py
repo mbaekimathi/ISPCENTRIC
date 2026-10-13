@@ -12263,9 +12263,73 @@ def _portal_target_ipv4(portal_url: str) -> str:
 def _portal_billing_ipv4s(
     portal_url: str = "", *, organization=None
 ) -> frozenset[str]:
-    """Billing-server IPv4 set — keep pay-page TCP alive while blocking WAN."""
-    portal = _billing_portal_base_url(portal_url, organization=organization)
-    return frozenset(_portal_target_ipv4s(portal))
+    """
+    Billing-server IPv4 set unpaid Hotspot clients must reach for the pay page.
+
+    Aggregates every known public address (portal URL, PUBLIC_BASE_URL, DNS A
+    records, WIREGUARD_ENDPOINT host). Prefer public IPv4s — WireGuard tunnel
+    addresses are unreachable from Wi‑Fi phones and must not be the only allow.
+    """
+    found: set[str] = set()
+    candidates: list[str] = [
+        (portal_url or "").strip(),
+        _billing_portal_base_url(portal_url, organization=organization),
+        (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip(),
+    ]
+    try:
+        from core.hotspot_portal import (
+            prefer_http_captive_url,
+            public_base_url,
+            resolve_public_billing_ipv4,
+        )
+
+        candidates.append((public_base_url() or "").strip())
+        for raw in list(candidates):
+            url = prefer_http_captive_url(raw) or raw
+            if not url:
+                continue
+            ip = (resolve_public_billing_ipv4(url) or "").strip()
+            if ip:
+                found.add(ip)
+    except Exception:
+        pass
+
+    for raw in candidates:
+        found.update(_portal_target_ipv4s(raw or ""))
+
+    # VPS public IP is often stored as WIREGUARD_ENDPOINT=178.x.x.x:51820 even
+    # when PUBLIC_BASE_URL is a hostname — keep pay reachable if DNS fails.
+    try:
+        endpoint = (getattr(settings, "WIREGUARD_ENDPOINT", "") or "").strip()
+        host = endpoint.split(":", 1)[0].strip()
+        if host:
+            addr = ipaddress.ip_address(host)
+            if (
+                addr.version == 4
+                and not addr.is_loopback
+                and not addr.is_unspecified
+                and not addr.is_link_local
+            ):
+                found.add(host)
+    except ValueError:
+        pass
+
+    usable: set[str] = set()
+    private: set[str] = set()
+    for ip in found:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if addr.version != 4 or addr.is_loopback or addr.is_unspecified:
+            continue
+        if addr.is_private or addr.is_link_local:
+            private.add(ip)
+        else:
+            usable.add(ip)
+    # Phones on customer Hotspot need the public VPS address. Fall back to
+    # private only for single-site lab installs with no public IP.
+    return frozenset(usable or private)
 
 
 def _portal_http_port(portal_url: str) -> str:
@@ -12629,7 +12693,7 @@ def _ensure_hotspot_pool_wan_guard(
             place_before = (row.get(".id") or "").strip() or place_before
             break
 
-    billing_ips = _portal_target_ipv4s(_billing_portal_base_url(portal_url) or "")
+    billing_ips = sorted(_portal_billing_ipv4s(portal_url))
 
     rules: list[dict[str, str]] = [
         {
@@ -12668,35 +12732,46 @@ def _ensure_hotspot_pool_wan_guard(
                     "comment": f"{ISP_HOTSPOT_TAG} pool billing {suffix}",
                 }
             )
-    rules.extend(
-        [
-            {
-                "chain": "forward",
-                "action": "reject",
-                "reject-with": "tcp-reset",
-                "protocol": "tcp",
-                "src-address": ISP_HOTSPOT_POOL_NETWORK,
-                "out-interface-list": "WAN",
-                "comment": f"{ISP_HOTSPOT_TAG} pool wan reject",
-            },
-            {
-                "chain": "forward",
-                "action": "drop",
-                "protocol": "udp",
-                "dst-port": "443",
-                "src-address": ISP_HOTSPOT_POOL_NETWORK,
-                "out-interface-list": "WAN",
-                "comment": f"{ISP_HOTSPOT_TAG} pool wan quic",
-            },
-            {
-                "chain": "forward",
-                "action": "drop",
-                "src-address": ISP_HOTSPOT_POOL_NETWORK,
-                "out-interface-list": "WAN",
-                "comment": f"{ISP_HOTSPOT_TAG} pool wan drop",
-            },
-        ]
-    )
+    # CRITICAL: never install pool WAN reject/drop without billing allows.
+    # That is the "pay page works on open internet, ERR_CONNECTION_TIMED_OUT
+    # on Hotspot" failure — unpaid 10.50.50 clients are blackholed to the VPS.
+    if not billing_ips:
+        notes.append(
+            "warning: no billing IPv4 resolved — installed paid-pool accept only; "
+            "skipped pool WAN drop so the Hotspot pay page is not timed out. "
+            "Set PUBLIC_BASE_URL / WIREGUARD_ENDPOINT to the VPS public IP, then "
+            "push Hotspot again."
+        )
+    else:
+        rules.extend(
+            [
+                {
+                    "chain": "forward",
+                    "action": "reject",
+                    "reject-with": "tcp-reset",
+                    "protocol": "tcp",
+                    "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                    "out-interface-list": "WAN",
+                    "comment": f"{ISP_HOTSPOT_TAG} pool wan reject",
+                },
+                {
+                    "chain": "forward",
+                    "action": "drop",
+                    "protocol": "udp",
+                    "dst-port": "443",
+                    "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                    "out-interface-list": "WAN",
+                    "comment": f"{ISP_HOTSPOT_TAG} pool wan quic",
+                },
+                {
+                    "chain": "forward",
+                    "action": "drop",
+                    "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                    "out-interface-list": "WAN",
+                    "comment": f"{ISP_HOTSPOT_TAG} pool wan drop",
+                },
+            ]
+        )
     added = 0
     for rule in rules:
         terminal = _add_filter_rule(sock, rule, place_before=place_before)
@@ -12705,9 +12780,12 @@ def _ensure_hotspot_pool_wan_guard(
         if terminal.get("_reply") != "!trap":
             added += 1
     if added:
+        billing_note = (
+            f"; billing {', '.join(billing_ips)}" if billing_ips else "; no billing drop"
+        )
         notes.append(
             f"Hotspot pool WAN guard ({ISP_HOTSPOT_POOL_NETWORK}; "
-            f"{added} rule(s); paid via {ISP_HOTSPOT_OK_LIST})"
+            f"{added} rule(s); paid via {ISP_HOTSPOT_OK_LIST}{billing_note})"
         )
     else:
         notes.append("warning: Hotspot pool WAN guard not installed")
@@ -21824,20 +21902,24 @@ def _ensure_hotspot_walled_garden(sock: socket.socket, redirect_url: str) -> lis
     This is the "little internet" unpaid phones need: only the billing host
     (and later Safaricom for STK), not the open web. Without walled-garden/ip
     for the VPS address, login.html redirects to a URL that times out and the
-    captive sheet stays white.
+    captive sheet stays white — while the same URL loads fine on open internet.
     """
     notes: list[str] = []
-    host = ""
-    try:
-        from urllib.parse import urlparse
-        import ipaddress
-
-        parsed = urlparse((redirect_url or "").strip())
-        host = (parsed.hostname or "").strip().lower()
-    except Exception:
-        host = ""
-    if not host or host in {"localhost", "127.0.0.1", "::1"}:
-        return notes
+    hosts: set[str] = set()
+    for candidate in (
+        (redirect_url or "").strip(),
+        (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip(),
+    ):
+        try:
+            parsed = urlparse(candidate)
+            host = (parsed.hostname or "").strip().lower()
+        except Exception:
+            host = ""
+        if host and host not in {"localhost", "127.0.0.1", "::1"}:
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                hosts.add(host)
 
     existing = {
         ((row.get("dst-host") or "").strip().lower(), (row.get("comment") or "")): (
@@ -21845,48 +21927,46 @@ def _ensure_hotspot_walled_garden(sock: socket.socket, redirect_url: str) -> lis
         ).strip()
         for row in _print(sock, "/ip/hotspot/walled-garden", props=".id,dst-host,action,comment")
     }
-    for dst_host in {host, f"*.{host}"}:
-        key = (dst_host.lower(), ISP_HOTSPOT_TAG)
-        item_id = existing.get(key) or existing.get((dst_host.lower(), ""))
-        attempts = [
-            {
-                "dst-host": dst_host,
-                "action": "allow",
-                "comment": ISP_HOTSPOT_TAG,
-            },
-            {
-                "dst-host": dst_host,
-                "action": "allow",
-            },
-        ]
-        terminal, _ = _add_or_set_attempts(
-            sock,
-            "/ip/hotspot/walled-garden",
-            item_id,
-            attempts,
-            required=("dst-host",),
-        )
-        if terminal.get("_reply") != "!trap":
-            notes.append(f"walled garden {dst_host}")
+    for host in sorted(hosts):
+        for dst_host in {host, f"*.{host}"}:
+            key = (dst_host.lower(), ISP_HOTSPOT_TAG)
+            item_id = existing.get(key) or existing.get((dst_host.lower(), ""))
+            attempts = [
+                {
+                    "dst-host": dst_host,
+                    "action": "allow",
+                    "comment": ISP_HOTSPOT_TAG,
+                },
+                {
+                    "dst-host": dst_host,
+                    "action": "allow",
+                },
+            ]
+            terminal, _ = _add_or_set_attempts(
+                sock,
+                "/ip/hotspot/walled-garden",
+                item_id,
+                attempts,
+                required=("dst-host",),
+            )
+            if terminal.get("_reply") != "!trap":
+                notes.append(f"walled garden {dst_host}")
 
     # Always install IP accepts — hostname allow alone does not open TCP to a
     # remote VPS on many RouterOS builds (phones then get ERR_CONNECTION_TIMED_OUT).
-    try:
-        import ipaddress
-
-        ipaddress.ip_address(host)
-        billing_ips = [host]
-    except Exception:
-        billing_ips = _portal_target_ipv4s((redirect_url or "").strip())
+    # Use the aggregated billing set so bare-IP login.html (legacy) and hostname
+    # URLs both work after a Hotspot push.
+    billing_ips = sorted(_portal_billing_ipv4s(redirect_url))
+    label = next(iter(sorted(hosts)), "") or "billing"
     if billing_ips:
         for billing_ip in billing_ips:
             notes.extend(
-                _ensure_walled_garden_ip_accept(sock, billing_ip, label=host)
+                _ensure_walled_garden_ip_accept(sock, billing_ip, label=label or billing_ip)
             )
     else:
         notes.append(
-            f"warning: could not resolve billing IP for {host} — "
-            "Hotspot pay page may be blocked"
+            "warning: could not resolve billing IP for Hotspot walled garden — "
+            "pay page may time out until PUBLIC_BASE_URL / WIREGUARD_ENDPOINT is set"
         )
     return notes
 
@@ -22498,10 +22578,16 @@ def _ensure_hotspot_server_bypass(sock: socket.socket, portal_url: str) -> list[
     """
     notes: list[str] = []
     notes.extend(_remove_lan_wide_hotspot_bypasses(sock))
-    # PUBLIC_BASE_URL is usually http://isp.richcom.co.ke — resolve A records.
-    # _routable_ipv4_from_url only works for IP-literal URLs and previously
-    # skipped Daraja garden + billing allowlist on hosted domain deploys.
-    server_ip = _portal_target_ipv4(portal_url) or _routable_ipv4_from_url(portal_url)
+    # PUBLIC_BASE_URL is usually http://isp.richcom.co.ke — resolve A records
+    # plus WIREGUARD_ENDPOINT so hosted domain deploys still get an IP allow.
+    billing_ips = sorted(_portal_billing_ipv4s(portal_url))
+    server_ip = (
+        billing_ips[0]
+        if billing_ips
+        else (
+            _portal_target_ipv4(portal_url) or _routable_ipv4_from_url(portal_url)
+        )
+    )
     if not server_ip:
         notes.extend(_ensure_daraja_walled_garden(sock))
         notes.append(
@@ -22556,7 +22642,11 @@ def _ensure_hotspot_server_bypass(sock: socket.socket, portal_url: str) -> list[
         notes.append(f"Hotspot bypass for billing server {server_ip}")
 
     notes.extend(_ensure_daraja_walled_garden(sock))
-    notes.extend(_ensure_hotspot_server_allowlist(sock, server_ip))
+    for billing_ip in billing_ips or [server_ip]:
+        notes.extend(_ensure_hotspot_server_allowlist(sock, billing_ip))
+        notes.extend(
+            _ensure_walled_garden_ip_accept(sock, billing_ip, label=billing_ip)
+        )
 
     if mac:
         notes.extend(_ensure_static_dhcp_lease(sock, server_ip, mac))
