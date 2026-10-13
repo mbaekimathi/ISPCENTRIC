@@ -21601,8 +21601,77 @@ def _ensure_hotspot_billing_dns_static(
     return notes
 
 
+def _ensure_walled_garden_ip_accept(
+    sock: socket.socket, billing_ip: str, *, label: str = ""
+) -> list[str]:
+    """Allow one billing IPv4 in Hotspot walled-garden/ip (all ports)."""
+    notes: list[str] = []
+    billing_ip = (billing_ip or "").strip()
+    if not billing_ip:
+        return notes
+    label = (label or billing_ip).strip()
+    existing_ip = {
+        ((row.get("dst-address") or "").strip(), (row.get("comment") or "")): (
+            row.get(".id") or ""
+        ).strip()
+        for row in _print(
+            sock,
+            "/ip/hotspot/walled-garden/ip",
+            props=".id,dst-address,action,comment,dst-port,protocol",
+        )
+    }
+    # Broad accept first (HTTP+HTTPS). Then port-specific fallbacks for older ROS.
+    for dst, port, proto, tag_suffix in (
+        (billing_ip, "", "", ""),
+        (f"{billing_ip}/32", "", "", ""),
+        (billing_ip, "80", "tcp", " http"),
+        (billing_ip, "443", "tcp", " https"),
+    ):
+        comment = f"{ISP_HOTSPOT_TAG}{tag_suffix}"
+        item_id = existing_ip.get((dst, comment)) or existing_ip.get((dst, ISP_HOTSPOT_TAG))
+        if not item_id and not tag_suffix:
+            item_id = existing_ip.get((dst, "")) or ""
+        attempts: list[dict[str, str]] = []
+        base = {
+            "dst-address": dst,
+            "action": "accept",
+            "comment": comment,
+        }
+        if port and proto:
+            attempts.append({**base, "protocol": proto, "dst-port": port})
+            attempts.append(
+                {
+                    "dst-address": dst,
+                    "action": "accept",
+                    "protocol": proto,
+                    "dst-port": port,
+                }
+            )
+        else:
+            attempts.append(base)
+            attempts.append({"dst-address": dst, "action": "accept"})
+        terminal, _ = _add_or_set_attempts(
+            sock,
+            "/ip/hotspot/walled-garden/ip",
+            item_id,
+            attempts,
+            required=("dst-address",),
+        )
+        if terminal.get("_reply") != "!trap":
+            notes.append(f"walled garden ip {dst}{tag_suffix} ({label})")
+            break
+    return notes
+
+
 def _ensure_hotspot_walled_garden(sock: socket.socket, redirect_url: str) -> list[str]:
-    """Allow the payment/welcome host before Hotspot auth (DNS + HTTP/IP)."""
+    """
+    Allow the payment/welcome host before Hotspot auth (DNS + HTTP/IP).
+
+    This is the "little internet" unpaid phones need: only the billing host
+    (and later Safaricom for STK), not the open web. Without walled-garden/ip
+    for the VPS address, login.html redirects to a URL that times out and the
+    captive sheet stays white.
+    """
     notes: list[str] = []
     host = ""
     try:
@@ -21646,96 +21715,25 @@ def _ensure_hotspot_walled_garden(sock: socket.socket, redirect_url: str) -> lis
         if terminal.get("_reply") != "!trap":
             notes.append(f"walled garden {dst_host}")
 
-    # IP URLs need walled-garden/ip (Host-header matching alone is unreliable).
+    # Always install IP accepts — hostname allow alone does not open TCP to a
+    # remote VPS on many RouterOS builds (phones then get ERR_CONNECTION_TIMED_OUT).
     try:
         import ipaddress
 
         ipaddress.ip_address(host)
-        is_ip = True
+        billing_ips = [host]
     except Exception:
-        is_ip = False
-    if is_ip:
-        existing_ip = {
-            ((row.get("dst-address") or "").strip(), (row.get("comment") or "")): (
-                row.get(".id") or ""
-            ).strip()
-            for row in _print(
-                sock,
-                "/ip/hotspot/walled-garden/ip",
-                props=".id,dst-address,action,comment",
-            )
-        }
-        item_id = existing_ip.get((host, ISP_HOTSPOT_TAG)) or existing_ip.get((host, ""))
-        attempts = [
-            {
-                "dst-address": host,
-                "action": "accept",
-                "comment": ISP_HOTSPOT_TAG,
-            },
-            {
-                "dst-address": f"{host}/32",
-                "action": "accept",
-                "comment": ISP_HOTSPOT_TAG,
-            },
-            {
-                "dst-address": host,
-                "action": "accept",
-            },
-        ]
-        terminal, _ = _add_or_set_attempts(
-            sock,
-            "/ip/hotspot/walled-garden/ip",
-            item_id,
-            attempts,
-            required=("dst-address",),
-        )
-        if terminal.get("_reply") != "!trap":
-            notes.append(f"walled garden ip {host}")
-    elif host:
-        # Hostname billing (VPS): TCP dials the resolved IPv4 — dst-host alone
-        # is not enough on many RouterOS builds for remote billing servers.
         billing_ips = _portal_target_ipv4s((redirect_url or "").strip())
-        if billing_ips:
-            existing_ip = {
-                ((row.get("dst-address") or "").strip(), (row.get("comment") or "")): (
-                    row.get(".id") or ""
-                ).strip()
-                for row in _print(
-                    sock,
-                    "/ip/hotspot/walled-garden/ip",
-                    props=".id,dst-address,action,comment",
-                )
-            }
-            for billing_ip in billing_ips:
-                for dst in (billing_ip, f"{billing_ip}/32"):
-                    item_id = existing_ip.get((dst, ISP_HOTSPOT_TAG)) or existing_ip.get(
-                        (dst, "")
-                    )
-                    attempts = [
-                        {
-                            "dst-address": dst,
-                            "action": "accept",
-                            "comment": ISP_HOTSPOT_TAG,
-                        },
-                        {
-                            "dst-address": dst,
-                            "action": "accept",
-                        },
-                    ]
-                    terminal, _ = _add_or_set_attempts(
-                        sock,
-                        "/ip/hotspot/walled-garden/ip",
-                        item_id,
-                        attempts,
-                        required=("dst-address",),
-                    )
-                    if terminal.get("_reply") != "!trap":
-                        notes.append(f"walled garden ip {dst} ({host})")
-        else:
-            notes.append(
-                f"warning: could not resolve billing IP for {host} — "
-                "Hotspot pay page may be blocked"
+    if billing_ips:
+        for billing_ip in billing_ips:
+            notes.extend(
+                _ensure_walled_garden_ip_accept(sock, billing_ip, label=host)
             )
+    else:
+        notes.append(
+            f"warning: could not resolve billing IP for {host} — "
+            "Hotspot pay page may be blocked"
+        )
     return notes
 
 
@@ -22346,8 +22344,16 @@ def _ensure_hotspot_server_bypass(sock: socket.socket, portal_url: str) -> list[
     """
     notes: list[str] = []
     notes.extend(_remove_lan_wide_hotspot_bypasses(sock))
-    server_ip = _routable_ipv4_from_url(portal_url)
+    # PUBLIC_BASE_URL is usually http://isp.richcom.co.ke — resolve A records.
+    # _routable_ipv4_from_url only works for IP-literal URLs and previously
+    # skipped Daraja garden + billing allowlist on hosted domain deploys.
+    server_ip = _portal_target_ipv4(portal_url) or _routable_ipv4_from_url(portal_url)
     if not server_ip:
+        notes.extend(_ensure_daraja_walled_garden(sock))
+        notes.append(
+            "warning: could not resolve billing server IP for Hotspot bypass — "
+            "pay page may time out until DNS/walled-garden is fixed"
+        )
         return notes
 
     mac = _arp_mac_for_ip(sock, server_ip)

@@ -10564,6 +10564,51 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         self.assertNotIn("https://isp.richcom.co.ke/", html)
         self.assertNotIn("http://isp.richcom.co.ke/", html)
 
+    def test_hotspot_server_bypass_resolves_domain_public_base(self):
+        """Domain PUBLIC_BASE_URL must still install billing IP bypass + garden."""
+        from unittest.mock import MagicMock, patch
+
+        from core.mikrotik_connect import _ensure_hotspot_server_bypass
+
+        sock = MagicMock()
+        with (
+            patch(
+                "core.mikrotik_connect._remove_lan_wide_hotspot_bypasses",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._portal_target_ipv4",
+                return_value="178.162.241.99",
+            ),
+            patch(
+                "core.mikrotik_connect._routable_ipv4_from_url",
+                return_value="",
+            ),
+            patch("core.mikrotik_connect._arp_mac_for_ip", return_value=""),
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add_or_set_attempts",
+                return_value=({"_reply": "!done"}, "*1"),
+            ) as add_set,
+            patch(
+                "core.mikrotik_connect._ensure_daraja_walled_garden",
+                return_value=["walled garden api.safaricom.co.ke"],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_server_allowlist",
+                return_value=["firewall allowlist for billing server 178.162.241.99"],
+            ),
+        ):
+            notes = _ensure_hotspot_server_bypass(
+                sock, "http://isp.richcom.co.ke/hotspot/1/pay/"
+            )
+        self.assertTrue(
+            any("Hotspot bypass for billing server 178.162.241.99" in n for n in notes),
+            notes,
+        )
+        self.assertTrue(any("safaricom" in n for n in notes), notes)
+        self.assertTrue(add_set.called)
+
     def test_enable_isp_hotspot_publishes_option_114_after_login_html(self):
         from contextlib import ExitStack
         from unittest.mock import MagicMock
