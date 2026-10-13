@@ -3826,45 +3826,53 @@ def _mikrotik_web_login(
     """
     Sign in to RouterOS WebFig.
 
-    Returns (ok, cookies, basic_header). basic_header is set when HTTP Basic
-    is what actually unlocked the UI (common on ROS www).
+    Returns (ok, cookies, basic_header). basic_header is always returned when
+    a password was supplied so the browser proxy can still send HTTP Basic even
+    if cookie / form login detection failed (common on some ROS www builds).
     """
     username = (username or "").strip() or "admin"
     password = password or ""
     jar: dict[str, str] = {}
-    basic = _cpe_basic_auth_header(username, password)
+    basic = _cpe_basic_auth_header(username, password) if password or username else ""
 
-    status, raw, new_cookies, _location = _cpe_web_http_request(
-        proxy,
-        "/",
-        cpe_port=cpe_port,
-        cookies=jar,
-        timeout=timeout,
-        extra_headers={"Authorization": basic},
-    )
-    jar.update(new_cookies)
-    text = raw.decode("utf-8", errors="replace")
-    if status == 200 and raw and not _html_looks_like_login_page(text):
-        if _html_looks_like_admin_ui(text) or len(raw) > 400:
+    def _unlocked(status_code: int, body: bytes) -> bool:
+        if status_code != 200 or not body:
+            return False
+        text = body.decode("utf-8", errors="replace")
+        if _html_looks_like_login_page(text):
+            return False
+        return _html_looks_like_admin_ui(text) or len(body) > 400
+
+    if basic:
+        status, raw, new_cookies, _location = _cpe_web_http_request(
+            proxy,
+            "/",
+            cpe_port=cpe_port,
+            cookies=jar,
+            timeout=timeout,
+            extra_headers={"Authorization": basic},
+        )
+        jar.update(new_cookies)
+        if _unlocked(status, raw):
             return True, jar, basic
 
-    for method, path, body in (
-        (
-            "POST",
-            "/login",
-            urlencode({"name": username, "password": password}).encode("ascii"),
-        ),
-        (
-            "POST",
-            "/login",
-            urlencode({"username": username, "password": password}).encode("ascii"),
-        ),
-        (
-            "GET",
-            f"/login?name={quote(username)}&password={quote(password)}",
-            None,
-        ),
-    ):
+    form_bodies = (
+        urlencode({"name": username, "password": password}).encode("utf-8"),
+        urlencode({"username": username, "password": password}).encode("utf-8"),
+        urlencode({"user": username, "password": password}).encode("utf-8"),
+    )
+    get_paths = (
+        f"/login?name={quote(username)}&password={quote(password)}",
+        f"/login?username={quote(username)}&password={quote(password)}",
+        f"/login?user={quote(username)}&password={quote(password)}",
+    )
+    attempts: list[tuple[str, str, bytes | None]] = [
+        ("POST", "/login", body) for body in form_bodies
+    ]
+    attempts.extend(("GET", path, None) for path in get_paths)
+
+    auth_headers = {"Authorization": basic} if basic else None
+    for method, path, body in attempts:
         status, raw, new_cookies, location = _cpe_web_http_request(
             proxy,
             path,
@@ -3873,7 +3881,7 @@ def _mikrotik_web_login(
             body=body,
             cookies=jar,
             timeout=timeout,
-            extra_headers={"Authorization": basic},
+            extra_headers=auth_headers,
         )
         jar.update(new_cookies)
         loc = (location or "").lower()
@@ -3885,17 +3893,16 @@ def _mikrotik_web_login(
             cpe_port=cpe_port,
             cookies=jar,
             timeout=timeout,
-            extra_headers={"Authorization": basic},
+            extra_headers=auth_headers,
         )
         jar.update(check_cookies)
-        check_text = check_raw.decode("utf-8", errors="replace")
-        if check_status == 200 and check_raw and not _html_looks_like_login_page(check_text):
+        if _unlocked(check_status, check_raw):
             return True, jar, basic
-        if status in {200, 302, 303} and jar and not _html_looks_like_login_page(
-            raw.decode("utf-8", errors="replace")
-        ):
+        if status in {200, 302, 303} and jar and _unlocked(status, raw):
             return True, jar, basic
-    return False, jar, ""
+    # Keep Basic for the proxy even when form/cookie detection failed — many
+    # RouterOS www builds accept Authorization on subsequent page loads.
+    return False, jar, basic
 
 
 def _ensure_cpe_web_support_user(
@@ -4246,10 +4253,34 @@ def login_customer_cpe_web_session(
         result["error"] = str(exc) or "Could not sign in to the client router."
         return result
 
+    # Always attach Basic for the known password so the reverse proxy can still
+    # authenticate page loads when cookie/form login detection failed.
+    if not (result.get("basic_header") or "").strip():
+        known_user = (result.get("cpe_username") or cpe_username or "").strip() or "admin"
+        known_pass = (
+            (result.get("cpe_password") or "").strip()
+            or (cpe_password or "").strip()
+            or (default_cpe_password or "").strip()
+        )
+        if known_pass:
+            result["basic_header"] = _cpe_basic_auth_header(known_user, known_pass)
+            if not (result.get("cpe_password") or "").strip():
+                result["cpe_password"] = known_pass
+            if not (result.get("cpe_username") or "").strip():
+                result["cpe_username"] = known_user
+
     if not result["error"]:
+        tried = bool(
+            (cpe_password or "").strip() or (default_cpe_password or "").strip()
+        )
         result["error"] = (
             "Opened the router UI but could not sign in automatically. "
-            "Use the saved admin password, or save it on the client."
+            + (
+                "Confirm the admin password above matches this client router, "
+                "then Save & connect."
+                if tried
+                else "Use the saved admin password, or save it on the client."
+            )
         )
     return result
 
@@ -9568,6 +9599,17 @@ def customer_cpe_default_credentials(customer) -> tuple[str, str]:
     return user, password
 
 
+def resolve_customer_cpe_credentials(customer) -> tuple[str, str, str, str]:
+    """Prefer the client row, else the MikroTik 'Client router password' defaults.
+
+    Returns (username, password, default_username, default_password).
+    """
+    default_user, default_pass = customer_cpe_default_credentials(customer)
+    user = (getattr(customer, "cpe_username", None) or "").strip() or default_user or "admin"
+    password = (getattr(customer, "cpe_password", None) or "").strip() or default_pass
+    return user, password, default_user, default_pass
+
+
 def access_customer_cpe_wifi(
     nas_host: str,
     nas_username: str,
@@ -11861,16 +11903,10 @@ def _ensure_pppoe_stack(
 
     forward_rules: list[dict[str, str]] = []
     if billing_ip:
-        # Expired clients must still reach the pay page and STK APIs.
-        forward_rules.append(
-            {
-                "chain": "forward",
-                "action": "accept",
-                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
-                "dst-address": billing_ip,
-                "comment": f"{PPP_SECRET_TAG} blocked to billing",
-            }
-        )
+        # Expired clients must still reach the pay page (HTTP + HTTPS after TLS).
+        # Broad accept first, then explicit 80/443 so HTTPS-First browsers work
+        # when the Location is http(s)://billing-ip/pppoe/…/pay/.
+        forward_rules.extend(_pppoe_blocked_billing_allow_rules(billing_ip))
     forward_rules.extend(
         [
             # Silent DROP makes HTTPS captive probes wait for the OS TCP timeout
@@ -11879,6 +11915,7 @@ def _ensure_pppoe_stack(
             # in milliseconds so Windows/Android/iOS open the pay page promptly.
             # Plain HTTP never hits this rule: dstnat rewrites it to the billing
             # host first, so it leaves via LAN rather than WAN.
+            # Exception: TCP to the billing IP is accepted above (pay page / TLS).
             {
                 "chain": "forward",
                 "action": "reject",
@@ -12821,31 +12858,7 @@ def _ensure_pppoe_expired_access(
         attempt_notes.extend(_ensure_pppoe_client_dns_accept(sock))
         attempt_notes.extend(_ensure_pppoe_expired_redirect(sock, billing_ip, portal))
         attempt_notes.extend(_ensure_pppoe_fast_captive_reject(sock))
-
-        has_billing_allow = any(
-            PPP_SECRET_TAG in (row.get("comment") or "")
-            and "blocked to billing" in (row.get("comment") or "")
-            for row in _print(sock, "/ip/firewall/filter", props=".id,comment")
-        )
-        if not has_billing_allow:
-            place_before = _first_forward_drop_id(sock)
-            terminal = _add_filter_rule(
-                sock,
-                {
-                    "chain": "forward",
-                    "action": "accept",
-                    "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
-                    "dst-address": billing_ip,
-                    "comment": f"{PPP_SECRET_TAG} blocked to billing",
-                },
-                place_before=place_before,
-            )
-            if terminal.get("_reply") != "!trap":
-                attempt_notes.append(f"blocked clients allowed to billing {billing_ip}")
-            else:
-                attempt_notes.append(
-                    "warning: could not allow blocked clients to billing host"
-                )
+        attempt_notes.extend(_ensure_pppoe_blocked_billing_allow(sock, billing_ip))
 
         notes.extend(attempt_notes)
         if _pppoe_expired_http_redirect_ok(sock, billing_ip):
@@ -18411,7 +18424,7 @@ def _ensure_cpe_portal_access(sock: socket.socket, portal_url: str) -> list[str]
         notes.append("warning: portal URL has no host — CPE pay redirect skipped")
         return notes
 
-    # Walled garden: unauthenticated Hotspot clients may fetch the pay page.
+    # Walled garden: unauthenticated renew-Hotspot clients may fetch the pay page.
     _remove_tagged_rows(sock, "/ip/hotspot/walled-garden", RENEW_HOTSPOT_TAG)
     try:
         _remove_tagged_rows(sock, "/ip/hotspot/walled-garden/ip", RENEW_HOTSPOT_TAG)
@@ -18432,44 +18445,84 @@ def _ensure_cpe_portal_access(sock: socket.socket, portal_url: str) -> list[str]
     else:
         notes.append(f"walled garden {host}")
 
-    billing_ip = _portal_target_ipv4(portal)
-    if billing_ip:
-        terminal = _add(
-            sock,
-            "/ip/hotspot/walled-garden/ip",
-            **{
-                "dst-address": billing_ip,
-                "action": "accept",
-                "comment": RENEW_HOTSPOT_TAG,
-            },
-        )
-        if terminal.get("_reply") != "!trap":
-            notes.append(f"walled garden ip {billing_ip}")
+    billing_ips = _portal_target_ipv4s(portal)
+    if not billing_ips:
+        # Hostname may already be an IP literal.
+        try:
+            import ipaddress
 
-        # Accept billing traffic above the renew WAN drop.
-        _remove_tagged_rows(sock, "/ip/firewall/filter", f"{RENEW_HOTSPOT_TAG}-allow")
-        place_before = ""
-        for row in _print(sock, "/ip/firewall/filter", props=".id,chain,action,comment"):
-            comment = row.get("comment") or ""
-            if f"{RENEW_HOTSPOT_TAG}-block" in comment and (
-                row.get("chain") or ""
-            ).strip() == "forward":
-                place_before = (row.get(".id") or "").strip()
-                break
-        allow_props = {
-            "chain": "forward",
-            "action": "accept",
-            "dst-address": billing_ip,
-            "comment": f"{RENEW_HOTSPOT_TAG}-allow",
-        }
-        if place_before:
-            terminal = _add_filter_rule(sock, allow_props, place_before=place_before)
-        else:
-            terminal = _add(sock, "/ip/firewall/filter", **allow_props)
-        if terminal.get("_reply") == "!trap":
-            notes.append(f"warning: could not allow CPE forward to billing {billing_ip}")
-        else:
-            notes.append(f"CPE forward allow to billing {billing_ip}")
+            ipaddress.ip_address(host)
+            billing_ips = [host]
+        except Exception:
+            billing_ips = []
+
+    if billing_ips:
+        for billing_ip in billing_ips:
+            notes.extend(
+                _ensure_walled_garden_ip_accept(
+                    sock,
+                    billing_ip,
+                    label=host,
+                    comment_tag=RENEW_HOTSPOT_TAG,
+                )
+            )
+
+            # Accept billing traffic above the renew WAN drop (HTTP + HTTPS).
+            _remove_tagged_rows(sock, "/ip/firewall/filter", f"{RENEW_HOTSPOT_TAG}-allow")
+            place_before = ""
+            for row in _print(
+                sock, "/ip/firewall/filter", props=".id,chain,action,comment"
+            ):
+                comment = row.get("comment") or ""
+                if f"{RENEW_HOTSPOT_TAG}-block" in comment and (
+                    row.get("chain") or ""
+                ).strip() == "forward":
+                    place_before = (row.get(".id") or "").strip()
+                    break
+            allow_rules = [
+                {
+                    "chain": "forward",
+                    "action": "accept",
+                    "dst-address": billing_ip,
+                    "comment": f"{RENEW_HOTSPOT_TAG}-allow",
+                },
+                {
+                    "chain": "forward",
+                    "action": "accept",
+                    "protocol": "tcp",
+                    "dst-port": "80",
+                    "dst-address": billing_ip,
+                    "comment": f"{RENEW_HOTSPOT_TAG}-allow-http",
+                },
+                {
+                    "chain": "forward",
+                    "action": "accept",
+                    "protocol": "tcp",
+                    "dst-port": "443",
+                    "dst-address": billing_ip,
+                    "comment": f"{RENEW_HOTSPOT_TAG}-allow-https",
+                },
+            ]
+            for allow_props in allow_rules:
+                _remove_tagged_rows(
+                    sock, "/ip/firewall/filter", allow_props["comment"]
+                )
+                if place_before:
+                    terminal = _add_filter_rule(
+                        sock, allow_props, place_before=place_before
+                    )
+                else:
+                    terminal = _add(sock, "/ip/firewall/filter", **allow_props)
+                if terminal.get("_reply") == "!trap":
+                    notes.append(
+                        f"warning: could not allow CPE forward to billing "
+                        f"{billing_ip} ({allow_props['comment']})"
+                    )
+                else:
+                    notes.append(
+                        f"CPE forward allow to billing {billing_ip} "
+                        f"({allow_props['comment'].split('-')[-1]})"
+                    )
     else:
         notes.append(
             f"warning: could not resolve billing IP for {host} — "
@@ -19462,10 +19515,16 @@ def apply_cpe_renew_portal(
 
     cpe_host = (session.get("address") or "").strip()
     last_error = ""
+    cpe_user, cpe_pass, default_user, default_pass = resolve_customer_cpe_credentials(
+        customer
+    )
     for user, password in _cpe_credential_candidates(
-        cpe_username=getattr(customer, "cpe_username", "") or "admin",
-        cpe_password=getattr(customer, "cpe_password", "") or "",
+        cpe_username=cpe_user,
+        cpe_password=cpe_pass,
         pppoe_password=getattr(customer, "pppoe_password", "") or "",
+        default_cpe_username=default_user,
+        default_cpe_password=default_pass,
+        known_password_only=bool((getattr(customer, "cpe_password", None) or "").strip()),
     ):
         try:
             with _cpe_api_session(
@@ -20496,8 +20555,11 @@ def _pppoe_pay_portal_url(
             return ""
         url = f"{base.rstrip('/')}{path}"
 
-    # Captive WebViews stall on HTTPS/HSTS; prefer http:// for the CPE popup.
-    url = _prefer_http_captive_url(url)
+    # Hosted: open via billing IPv4 so HTTPS-First does not upgrade the public
+    # name before the expired-client → billing firewall allow is hit.
+    from core.hotspot_portal import prefer_captive_open_url
+
+    url = prefer_captive_open_url(url)
 
     if customer is not None and getattr(customer, "pk", None) and getattr(organization, "pk", None):
         token = signing.dumps(
@@ -20529,7 +20591,7 @@ def _pppoe_pay_portal_url(
                 parsed.fragment,
             )
         )
-    return url
+    return prefer_captive_open_url(url)
 
 
 def sync_customer_subscription_access(
@@ -21602,11 +21664,16 @@ def _ensure_hotspot_billing_dns_static(
 
 
 def _ensure_walled_garden_ip_accept(
-    sock: socket.socket, billing_ip: str, *, label: str = ""
+    sock: socket.socket,
+    billing_ip: str,
+    *,
+    label: str = "",
+    comment_tag: str = ISP_HOTSPOT_TAG,
 ) -> list[str]:
     """Allow one billing IPv4 in Hotspot walled-garden/ip (all ports)."""
     notes: list[str] = []
     billing_ip = (billing_ip or "").strip()
+    tag = (comment_tag or ISP_HOTSPOT_TAG).strip() or ISP_HOTSPOT_TAG
     if not billing_ip:
         return notes
     label = (label or billing_ip).strip()
@@ -21627,8 +21694,8 @@ def _ensure_walled_garden_ip_accept(
         (billing_ip, "80", "tcp", " http"),
         (billing_ip, "443", "tcp", " https"),
     ):
-        comment = f"{ISP_HOTSPOT_TAG}{tag_suffix}"
-        item_id = existing_ip.get((dst, comment)) or existing_ip.get((dst, ISP_HOTSPOT_TAG))
+        comment = f"{tag}{tag_suffix}"
+        item_id = existing_ip.get((dst, comment)) or existing_ip.get((dst, tag))
         if not item_id and not tag_suffix:
             item_id = existing_ip.get((dst, "")) or ""
         attempts: list[dict[str, str]] = []
@@ -21660,6 +21727,72 @@ def _ensure_walled_garden_ip_accept(
         if terminal.get("_reply") != "!trap":
             notes.append(f"walled garden ip {dst}{tag_suffix} ({label})")
             break
+    return notes
+
+
+def _pppoe_blocked_billing_allow_rules(billing_ip: str) -> list[dict[str, str]]:
+    """Firewall accepts so expired PPPoE clients can open HTTP/HTTPS pay on the VPS."""
+    billing_ip = (billing_ip or "").strip()
+    if not billing_ip:
+        return []
+    rules: list[dict[str, str]] = [
+        {
+            "chain": "forward",
+            "action": "accept",
+            "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+            "dst-address": billing_ip,
+            "comment": f"{PPP_SECRET_TAG} blocked to billing",
+        }
+    ]
+    for proto, port, suffix in (
+        ("tcp", "80", "http"),
+        ("tcp", "443", "https"),
+        ("udp", "443", "quic"),
+    ):
+        rules.append(
+            {
+                "chain": "forward",
+                "action": "accept",
+                "protocol": proto,
+                "dst-port": port,
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "dst-address": billing_ip,
+                "comment": f"{PPP_SECRET_TAG} blocked to billing {suffix}",
+            }
+        )
+    return rules
+
+
+def _ensure_pppoe_blocked_billing_allow(
+    sock: socket.socket, billing_ip: str
+) -> list[str]:
+    """Install/refresh expired-client → billing allow rules (HTTP + HTTPS + QUIC)."""
+    notes: list[str] = []
+    billing_ip = (billing_ip or "").strip()
+    if not billing_ip:
+        return notes
+
+    existing_comments = {
+        (row.get("comment") or "").strip()
+        for row in _print(sock, "/ip/firewall/filter", props=".id,comment")
+        if PPP_SECRET_TAG in (row.get("comment") or "")
+        and "blocked to billing" in (row.get("comment") or "")
+    }
+    place_before = _first_forward_drop_id(sock)
+    for rule in _pppoe_blocked_billing_allow_rules(billing_ip):
+        comment = rule["comment"]
+        if comment in existing_comments:
+            continue
+        terminal = _add_filter_rule(sock, rule, place_before=place_before)
+        if terminal.get("_reply") != "!trap":
+            notes.append(comment.replace(f"{PPP_SECRET_TAG} ", "", 1))
+            existing_comments.add(comment)
+        else:
+            notes.append(f"warning: could not add {comment}")
+    if not notes:
+        notes.append(f"blocked clients already allowed to billing {billing_ip}")
+    elif any("blocked to billing" in n and "warning" not in n for n in notes):
+        notes.insert(0, f"blocked clients allowed to billing {billing_ip}")
     return notes
 
 

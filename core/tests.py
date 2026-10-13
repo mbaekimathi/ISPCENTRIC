@@ -5039,12 +5039,35 @@ class PortalBaseUrlReachabilityTests(SimpleTestCase):
         from core.hotspot_portal import hotspot_portal_urls, public_base_url
 
         self.assertEqual(public_base_url(), "http://isp.richcom.co.ke")
-        urls = hotspot_portal_urls("606060")
+        # No resolved billing IP → open URL stays on the public hostname.
+        with patch(
+            "core.hotspot_portal.resolve_public_billing_ipv4",
+            return_value="",
+        ):
+            urls = hotspot_portal_urls("606060")
         self.assertEqual(
             urls["pay_url"],
             "http://isp.richcom.co.ke/hotspot/606060/pay/",
         )
         self.assertFalse(urls["base_auto_selected"])
+
+    @override_settings(
+        PUBLIC_BASE_URL="http://isp.richcom.co.ke",
+        HOSTED=True,
+        DEBUG=False,
+    )
+    def test_hosted_pay_url_uses_billing_ipv4_when_resolved(self):
+        from core.hotspot_portal import hotspot_portal_urls
+
+        with patch(
+            "core.hotspot_portal.resolve_public_billing_ipv4",
+            return_value="178.162.241.99",
+        ):
+            urls = hotspot_portal_urls("606060")
+        self.assertEqual(
+            urls["pay_url"],
+            "http://178.162.241.99/hotspot/606060/pay/",
+        )
 
     @override_settings(PUBLIC_BASE_URL="http://192.168.1.135:8000", HOSTED=False, DEBUG=True)
     def test_usable_local_public_base_url_is_kept(self):
@@ -5069,9 +5092,33 @@ class PppoePayPortalUrlTests(SimpleTestCase):
         from core.mikrotik_connect import _pppoe_pay_portal_url
 
         org = type("Org", (), {"join_code": "121212", "pk": 1})()
-        url = _pppoe_pay_portal_url(org)
+        with patch(
+            "core.hotspot_portal.resolve_public_billing_ipv4",
+            return_value="",
+        ):
+            url = _pppoe_pay_portal_url(org)
         self.assertTrue(url.startswith("http://isp.richcom.co.ke/pppoe/121212/pay/"))
         self.assertFalse(url.startswith("/pppoe/"))
+
+    @override_settings(
+        PUBLIC_BASE_URL="http://isp.richcom.co.ke",
+        HOSTED=True,
+        DEBUG=False,
+    )
+    def test_pppoe_pay_url_uses_billing_ipv4_when_hosted(self):
+        from core.mikrotik_connect import _pppoe_pay_portal_url
+
+        org = type("Org", (), {"join_code": "121212", "pk": 1})()
+        with patch(
+            "core.hotspot_portal.resolve_public_billing_ipv4",
+            return_value="178.162.241.99",
+        ):
+            url = _pppoe_pay_portal_url(org)
+        self.assertTrue(
+            url.startswith("http://178.162.241.99/pppoe/121212/pay/"),
+            msg=url,
+        )
+        self.assertNotIn("isp.richcom.co.ke", url)
 
     @override_settings(PUBLIC_BASE_URL="auto", HOSTED=False, DEBUG=True)
     def test_auto_public_base_builds_absolute_lan_pay_url(self):
@@ -5105,7 +5152,11 @@ class PppoePayPortalUrlTests(SimpleTestCase):
 
         self.assertEqual(_billing_portal_base_url(), "http://isp.richcom.co.ke")
         org = type("Org", (), {"join_code": "565656", "pk": 3})()
-        url = _pppoe_pay_portal_url(org)
+        with patch(
+            "core.hotspot_portal.resolve_public_billing_ipv4",
+            return_value="",
+        ):
+            url = _pppoe_pay_portal_url(org)
         self.assertTrue(url.startswith("http://isp.richcom.co.ke/pppoe/565656/pay/"))
         self.assertNotIn("192.168.", url)
 
@@ -5131,18 +5182,31 @@ class PppoePayPortalUrlTests(SimpleTestCase):
 
         sock = MagicMock()
         added: list[tuple[str, dict]] = []
+        filter_adds: list[dict] = []
 
         def fake_add(s, path, **props):
             added.append((path, props))
             return {"_reply": "!done", "ret": f"*{len(added)}"}
+
+        def fake_add_filter(s, props, place_before=""):
+            filter_adds.append(dict(props))
+            return {"_reply": "!done", "ret": f"*f{len(filter_adds)}"}
 
         with (
             patch("core.mikrotik_connect._print", return_value=[]),
             patch("core.mikrotik_connect._remove_tagged_rows", return_value=0),
             patch("core.mikrotik_connect._add", side_effect=fake_add),
             patch(
-                "core.mikrotik_connect._portal_target_ipv4",
-                return_value="41.90.1.2",
+                "core.mikrotik_connect._add_filter_rule",
+                side_effect=fake_add_filter,
+            ),
+            patch(
+                "core.mikrotik_connect._portal_target_ipv4s",
+                return_value=["41.90.1.2"],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_walled_garden_ip_accept",
+                return_value=["walled garden ip 41.90.1.2 (isp.richcom.co.ke)"],
             ),
             patch(
                 "core.mikrotik_connect._billing_portal_base_url",
@@ -5161,9 +5225,13 @@ class PppoePayPortalUrlTests(SimpleTestCase):
         ]
         self.assertTrue(garden)
         self.assertEqual(garden[0].get("dst-host"), "isp.richcom.co.ke")
-        self.assertTrue(allow)
-        self.assertEqual(allow[0].get("dst-address"), "41.90.1.2")
-        self.assertEqual(allow[0].get("comment"), f"{RENEW_HOTSPOT_TAG}-allow")
+        self.assertTrue(allow or filter_adds)
+        allow_rows = allow or filter_adds
+        self.assertEqual(allow_rows[0].get("dst-address"), "41.90.1.2")
+        self.assertEqual(allow_rows[0].get("comment"), f"{RENEW_HOTSPOT_TAG}-allow")
+        comments = {r.get("comment") for r in allow_rows}
+        self.assertIn(f"{RENEW_HOTSPOT_TAG}-allow-http", comments)
+        self.assertIn(f"{RENEW_HOTSPOT_TAG}-allow-https", comments)
         self.assertTrue(any("walled garden" in n for n in notes))
         self.assertTrue(any("forward allow" in n for n in notes))
 
@@ -10608,6 +10676,19 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         )
         self.assertTrue(any("safaricom" in n for n in notes), notes)
         self.assertTrue(add_set.called)
+
+    def test_pppoe_blocked_billing_allow_covers_http_and_https(self):
+        from core.mikrotik_connect import (
+            PPP_SECRET_TAG,
+            _pppoe_blocked_billing_allow_rules,
+        )
+
+        rules = _pppoe_blocked_billing_allow_rules("178.162.241.99")
+        comments = {r["comment"] for r in rules}
+        self.assertIn(f"{PPP_SECRET_TAG} blocked to billing", comments)
+        self.assertIn(f"{PPP_SECRET_TAG} blocked to billing http", comments)
+        self.assertIn(f"{PPP_SECRET_TAG} blocked to billing https", comments)
+        self.assertIn(f"{PPP_SECRET_TAG} blocked to billing quic", comments)
 
     def test_enable_isp_hotspot_publishes_option_114_after_login_html(self):
         from contextlib import ExitStack
