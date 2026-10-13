@@ -922,6 +922,8 @@ class ClientRouterProxyTests(TestCase):
 
     def test_start_failed_auto_login_still_offers_password_form(self):
         """Wrong/missing CPE password must surface Save & connect, not hide it."""
+        from django.core.cache import cache
+
         self.customer.cpe_password = "wrong-pass"
         self.customer.save(update_fields=["cpe_password"])
         with patch(
@@ -948,6 +950,14 @@ class ClientRouterProxyTests(TestCase):
         self.assertTrue(payload["needs_password"])
         self.assertEqual(payload["failure_class"], "needs_password")
         self.assertTrue(payload["guidance"])
+        self.assertTrue(payload.get("tried_password"))
+        self.assertTrue(payload.get("has_password"))
+        # Known password is still injected as HTTP Basic for the proxy tab.
+        token = payload["proxy_url"].rstrip("/").rsplit("/", 1)[-1]
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        basic = cache.get("cpe-web-basic:" + digest)
+        self.assertIsNotNone(basic)
+        self.assertTrue((basic.get("header") or "").startswith("Basic "))
 
     def test_preflight_blocked_still_offers_password_when_one_is_saved(self):
         self.customer.cpe_password = "saved-secret"
@@ -1089,6 +1099,50 @@ class CpeWebAutoLoginTests(TestCase):
             pairs.index(("admin", "nas-default")),
             pairs.index(("admin", "pppoe-secret")),
         )
+
+    def test_resolve_customer_cpe_credentials_prefers_client_then_nas(self):
+        owner = User.objects.create_user("cpe-creds-owner", password="x")
+        org = Organization.objects.create(
+            name="CPE Creds Org",
+            owner=owner,
+            join_code="555111",
+        )
+        nas = MikroTikRouter.objects.create(
+            organization=org,
+            name="NAS",
+            host="10.0.0.1",
+            username="admin",
+            password="nas",
+            default_cpe_username="cpeadmin",
+            default_cpe_password="fleet-default",
+        )
+        bare = Customer(
+            organization=org,
+            router=nas,
+            full_name="Bare CPE",
+            cpe_username="",
+            cpe_password="",
+        )
+        user, password, default_user, default_pass = (
+            mikrotik_connect.resolve_customer_cpe_credentials(bare)
+        )
+        self.assertEqual(user, "cpeadmin")
+        self.assertEqual(password, "fleet-default")
+        self.assertEqual(default_user, "cpeadmin")
+        self.assertEqual(default_pass, "fleet-default")
+
+        overridden = Customer(
+            organization=org,
+            router=nas,
+            full_name="House CPE",
+            cpe_username="root",
+            cpe_password="house-secret",
+        )
+        user, password, _, _ = mikrotik_connect.resolve_customer_cpe_credentials(
+            overridden
+        )
+        self.assertEqual(user, "root")
+        self.assertEqual(password, "house-secret")
 
     def test_known_password_skips_guesses(self):
         pairs = mikrotik_connect._cpe_credential_candidates(

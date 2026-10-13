@@ -61,13 +61,13 @@ class MikroTikRouter(models.Model):
         max_length=64,
         blank=True,
         default="admin",
-        help_text="Pre-filled on new PPPoE clients linked to this MikroTik.",
+        help_text="Default for remote client-router access and new PPPoE clients on this MikroTik.",
     )
     default_cpe_password = EncryptedCharField(
         "Default client router password",
         max_length=512,
         blank=True,
-        help_text="Pre-filled on new PPPoE clients; used for remote CPE access from ISPCENTRIC.",
+        help_text="Default for remote client-router access (Open client router, Wi‑Fi settings) and new PPPoE clients.",
     )
     internet_provider = models.CharField(
         "Internet company",

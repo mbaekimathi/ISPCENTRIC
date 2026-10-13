@@ -720,7 +720,8 @@ class CustomerDetailsEditForm(forms.ModelForm):
             self.fields["cpe_username"].required = False
             self.fields["cpe_password"].required = False
             self.fields["cpe_password"].help_text = (
-                "For remote router access — leave blank to keep the saved password."
+                "Defaults from the MikroTik Client router password when empty. "
+                "Leave blank on save to keep the current value."
             )
         if is_pppoe and "pppoe_password" in self.fields:
             self.fields["pppoe_password"].required = False
@@ -741,11 +742,14 @@ class CustomerDetailsEditForm(forms.ModelForm):
     def _prefill_edit_credentials(self):
         if self.is_bound or not (self.instance and self.instance.pk):
             return
+        from core.mikrotik_connect import resolve_customer_cpe_credentials
+
+        cpe_user, cpe_pass, _, _ = resolve_customer_cpe_credentials(self.instance)
         values = {
             "pppoe_username": (self.instance.pppoe_username or "").strip(),
             "pppoe_password": self.instance.pppoe_password or "",
-            "cpe_username": (self.instance.cpe_username or "").strip() or "admin",
-            "cpe_password": self.instance.cpe_password or "",
+            "cpe_username": cpe_user,
+            "cpe_password": cpe_pass,
         }
         for name, value in values.items():
             if name not in self.fields:

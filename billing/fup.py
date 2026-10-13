@@ -25,6 +25,18 @@ def plan_fup_enabled(plan) -> bool:
     return limit > 0 and int(getattr(plan, "fup_period_value", 0) or 0) >= 1
 
 
+def customer_fup_enforcement_enabled(customer) -> bool:
+    """Client-level switch: False means exempt from package FUP effects."""
+    return bool(getattr(customer, "fup_enabled", True))
+
+
+def customer_fup_is_active(customer, plan=None) -> bool:
+    """True when package FUP is configured and this client has enforcement on."""
+    if not customer_fup_enforcement_enabled(customer):
+        return False
+    return plan_fup_enabled(plan or getattr(customer, "plan", None))
+
+
 def plan_fup_limit_bytes(plan) -> int:
     if not plan_fup_enabled(plan):
         return 0
@@ -46,6 +58,8 @@ def customer_fup_usage_snapshot(customer, plan=None) -> dict[str, Any]:
     plan = plan or getattr(customer, "plan", None)
     empty = {
         "enabled": False,
+        "client_enabled": bool(getattr(customer, "fup_enabled", True)),
+        "plan_enabled": False,
         "percent": 0.0,
         "bytes_used": 0,
         "bytes_limit": 0,
@@ -55,7 +69,9 @@ def customer_fup_usage_snapshot(customer, plan=None) -> dict[str, Any]:
         "period_label": "",
         "status_label": "",
     }
-    if not plan_fup_enabled(plan):
+    plan_on = plan_fup_enabled(plan)
+    empty["plan_enabled"] = plan_on
+    if not plan_on:
         return empty
 
     limit = plan_fup_limit_bytes(plan)
@@ -63,7 +79,8 @@ def customer_fup_usage_snapshot(customer, plan=None) -> dict[str, Any]:
     window_start = _as_aware(getattr(customer, "fup_window_start", None))
     now = _now()
     used = int(getattr(customer, "fup_bytes_used", 0) or 0)
-    restricted = bool(getattr(customer, "fup_restricted", False))
+    client_on = customer_fup_enforcement_enabled(customer)
+    restricted = bool(getattr(customer, "fup_restricted", False)) and client_on
 
     # Expired windows display as a fresh period until enforcement resets them.
     if window_start and period and window_start + period <= now:
@@ -73,7 +90,7 @@ def customer_fup_usage_snapshot(customer, plan=None) -> dict[str, Any]:
     percent = 0.0
     if limit > 0:
         percent = round(min(100.0, (float(used) / float(limit)) * 100.0), 1)
-        if used >= limit:
+        if used >= limit and client_on:
             percent = 100.0
             restricted = True
 
@@ -99,7 +116,9 @@ def customer_fup_usage_snapshot(customer, plan=None) -> dict[str, Any]:
     singular, plural = unit_labels.get(unit, ("period", "periods"))
     period_label = singular if value == 1 else f"{value} {plural}"
 
-    if restricted:
+    if not client_on:
+        status_label = "Exempt"
+    elif restricted:
         status_label = "Disconnected" if action == "disconnect" else "Throttled"
     elif percent >= 90:
         status_label = "Near limit"
@@ -111,7 +130,9 @@ def customer_fup_usage_snapshot(customer, plan=None) -> dict[str, Any]:
         status_label = "Unused"
 
     return {
-        "enabled": True,
+        "enabled": client_on,
+        "client_enabled": client_on,
+        "plan_enabled": True,
         "percent": percent,
         "bytes_used": used,
         "bytes_limit": limit,
@@ -150,6 +171,7 @@ def organization_fup_attention_clients(
     qs = (
         Customer.objects.filter(
             organization=organization,
+            fup_enabled=True,
             plan__fup_enabled=True,
             plan__fup_data_limit_gb__gt=0,
         )
@@ -162,6 +184,7 @@ def organization_fup_attention_clients(
             "phone",
             "service_type",
             "status",
+            "fup_enabled",
             "fup_window_start",
             "fup_bytes_used",
             "fup_restricted",
@@ -290,7 +313,7 @@ def ensure_fup_window(customer, plan=None, *, now: datetime | None = None) -> bo
     Returns True when the window was created or advanced (restriction cleared).
     """
     plan = plan or getattr(customer, "plan", None)
-    if not plan_fup_enabled(plan):
+    if not customer_fup_is_active(customer, plan):
         return False
 
     stamp = _as_aware(now) or _now()
@@ -321,7 +344,7 @@ def ensure_fup_window(customer, plan=None, *, now: datetime | None = None) -> bo
 def customer_fup_blocks_internet(customer, plan=None) -> bool:
     """True when FUP disconnect should block surfing until the window resets."""
     plan = plan or getattr(customer, "plan", None)
-    if not plan_fup_enabled(plan):
+    if not customer_fup_is_active(customer, plan):
         return False
     if (getattr(plan, "fup_action", "") or "").strip().lower() != "disconnect":
         return False
@@ -334,7 +357,7 @@ def customer_fup_throttle_speeds(customer, plan=None) -> tuple[int, int] | None:
     Return (upload_mbps, download_mbps) when FUP throttle is active, else None.
     """
     plan = plan or getattr(customer, "plan", None)
-    if not plan_fup_enabled(plan):
+    if not customer_fup_is_active(customer, plan):
         return None
     if (getattr(plan, "fup_action", "") or "").strip().lower() != "throttle":
         return None
@@ -396,7 +419,7 @@ def _compute_bytes_used_since(customer, since: datetime) -> int:
 def refresh_customer_fup_usage(customer, plan=None, *, save: bool = True) -> int:
     """Recompute ``fup_bytes_used`` from samples in the current window."""
     plan = plan or getattr(customer, "plan", None)
-    if not plan_fup_enabled(plan):
+    if not customer_fup_is_active(customer, plan):
         return int(getattr(customer, "fup_bytes_used", 0) or 0)
     ensure_fup_window(customer, plan)
     window_start = _as_aware(getattr(customer, "fup_window_start", None))
@@ -409,6 +432,87 @@ def refresh_customer_fup_usage(customer, plan=None, *, save: bool = True) -> int
     return used
 
 
+def set_customer_fup_enabled(
+    customer,
+    enabled: bool,
+    *,
+    sync_access: bool = True,
+) -> dict[str, Any]:
+    """
+    Turn per-client FUP enforcement on or off.
+
+    Disabling clears an active restriction and restores normal package access.
+    Enabling re-evaluates the current window (may throttle/disconnect immediately
+    if the client is already over the package data cap).
+    """
+    plan = getattr(customer, "plan", None)
+    want = bool(enabled)
+    was = bool(getattr(customer, "fup_enabled", True))
+    if want == was:
+        snap = customer_fup_usage_snapshot(customer, plan)
+        return {
+            "ok": True,
+            "changed": False,
+            "fup_enabled": want,
+            "restricted": bool(snap.get("restricted")),
+            "plan_enabled": bool(snap.get("plan_enabled")),
+            "status_label": snap.get("status_label") or "",
+            "message": (
+                "Fair usage policy is already enabled for this client."
+                if want
+                else "Fair usage policy is already disabled for this client."
+            ),
+        }
+
+    customer.fup_enabled = want
+    update_fields = ["fup_enabled"]
+    cleared_restriction = False
+    if not want and getattr(customer, "fup_restricted", False):
+        customer.fup_restricted = False
+        customer.fup_restricted_at = None
+        update_fields.extend(["fup_restricted", "fup_restricted_at"])
+        cleared_restriction = True
+    if getattr(customer, "pk", None):
+        customer.save(update_fields=update_fields)
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "changed": True,
+        "fup_enabled": want,
+        "restricted": False,
+        "plan_enabled": plan_fup_enabled(plan),
+        "action": (getattr(plan, "fup_action", "") or "").strip().lower() if plan else "",
+    }
+
+    if want:
+        evaluated = evaluate_customer_fup(
+            customer, plan=plan, recompute_usage=False, sync_access=sync_access
+        )
+        result["restricted"] = bool(evaluated.get("restricted"))
+        result["action"] = evaluated.get("action") or result["action"]
+        result["status_label"] = customer_fup_usage_snapshot(customer, plan).get(
+            "status_label"
+        ) or ""
+        result["message"] = (
+            "Fair usage policy enabled for this client."
+            + (
+                " They are already over the package data cap — applying the "
+                "package FUP action now."
+                if result["restricted"]
+                else ""
+            )
+        )
+    else:
+        if cleared_restriction and sync_access:
+            _schedule_fup_access_sync(customer)
+        result["status_label"] = "Exempt" if plan_fup_enabled(plan) else ""
+        result["message"] = (
+            "Fair usage policy disabled for this client. They will not be "
+            "throttled or disconnected when they hit the package data cap."
+        )
+    return result
+
+
 def apply_fup_byte_delta(customer, delta_bytes: int, plan=None) -> dict[str, Any]:
     """
     Add a traffic delta to the current FUP window and enforce the limit.
@@ -418,7 +522,7 @@ def apply_fup_byte_delta(customer, delta_bytes: int, plan=None) -> dict[str, Any
     from billing.models import Customer
 
     plan = plan or getattr(customer, "plan", None)
-    if not plan_fup_enabled(plan) or not getattr(customer, "pk", None):
+    if not customer_fup_is_active(customer, plan) or not getattr(customer, "pk", None):
         return {"ok": True, "skipped": True, "changed": False}
 
     ensure_fup_window(customer, plan)
@@ -446,13 +550,25 @@ def evaluate_customer_fup(
     new profile/rate-limit to the NAS in a background thread.
     """
     plan = plan or getattr(customer, "plan", None)
-    if not plan_fup_enabled(plan):
+    if not plan_fup_enabled(plan) or not customer_fup_enforcement_enabled(customer):
         changed = False
-        if getattr(customer, "fup_restricted", False) or getattr(
-            customer, "fup_bytes_used", 0
-        ):
-            reset_customer_fup_window(customer, save=True)
+        # Package FUP off: fully reset counters. Client-only off: clear the
+        # live restriction so surfing resumes, but keep byte totals for when
+        # staff re-enable enforcement.
+        if not plan_fup_enabled(plan):
+            if getattr(customer, "fup_restricted", False) or getattr(
+                customer, "fup_bytes_used", 0
+            ):
+                reset_customer_fup_window(customer, save=True)
+                changed = True
+        elif getattr(customer, "fup_restricted", False):
+            customer.fup_restricted = False
+            customer.fup_restricted_at = None
+            if getattr(customer, "pk", None):
+                customer.save(update_fields=["fup_restricted", "fup_restricted_at"])
             changed = True
+            if sync_access:
+                _schedule_fup_access_sync(customer)
         return {
             "ok": True,
             "enabled": False,

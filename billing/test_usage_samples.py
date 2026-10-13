@@ -338,7 +338,11 @@ class UsageTrendPayloadTests(TestCase):
         kinds = {ev["kind"] for ev in access["events"]}
         self.assertIn("subscription_started", kinds)
         self.assertIn("subscription_ended", kinds)
-        self.assertIn("early_offline", kinds)
+        self.assertTrue({"dropped", "early_offline"} & kinds)
+        drop_ev = next(
+            ev for ev in access["events"] if ev["kind"] in ("dropped", "early_offline")
+        )
+        self.assertIn("PPPoE", drop_ev.get("detail") or "")
         self.assertTrue(access["alert"])
         self.assertIn(2, payload["series"]["surf_state"])  # surfing while active
         self.assertEqual(payload["summary"]["access_state"], "disconnected")
@@ -639,6 +643,17 @@ class ClientSessionBreakdownTests(TestCase):
         self.assertIn("Dropped", labels)
         self.assertIn("Reconnected", labels)
         self.assertEqual(payload["events"][-1]["label"], "Reconnected")
+        self.assertTrue(
+            any("PPPoE · break1" in (event.get("detail") or "") for event in payload["events"])
+        )
+
+        from billing.usage_samples import build_client_access_timeline
+
+        access = build_client_access_timeline(self.customer, hours=2)
+        access_labels = [event["label"] for event in access["events"]]
+        self.assertIn("Connected", access_labels)
+        self.assertIn("Dropped", access_labels)
+        self.assertIn("Reconnected", access_labels)
 
     def test_hotspot_connected_then_surfing_events(self):
         now = timezone.now()
@@ -680,6 +695,23 @@ class ClientSessionBreakdownTests(TestCase):
         self.assertIn("Started surfing", labels)
         self.assertIn("Surfing ended", labels)
         self.assertIn("Disconnected", labels)
+        self.assertTrue(
+            any("AA:BB:CC:DD:EE:99" in (event.get("detail") or "") for event in payload["events"])
+        )
+
+        from billing.usage_samples import build_client_access_timeline
+
+        access = build_client_access_timeline(hotspot, hours=1)
+        access_kinds = {event["kind"] for event in access["events"]}
+        self.assertIn("connected", access_kinds)
+        self.assertIn("disconnected", access_kinds)
+        self.assertTrue(
+            any(
+                "AA:BB:CC:DD:EE:99" in (event.get("detail") or "")
+                for event in access["events"]
+                if event.get("kind") in ("connected", "disconnected")
+            )
+        )
 
 
 class NetworkPerformanceTrendTests(TestCase):

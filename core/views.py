@@ -142,6 +142,7 @@ from core.mikrotik_connect import (
     customer_cpe_access_eligible,
     customer_cpe_access_mode,
     customer_cpe_default_credentials,
+    resolve_customer_cpe_credentials,
     customer_cpe_proxy_scope,
     invalidate_customer_cpe_web_proxy,
     dial_host,
@@ -950,10 +951,7 @@ def _finalize_uplink_apply_result(router: MikroTikRouter, result: dict) -> dict:
 
 def _resolve_customer_cpe_probe_credentials(customer) -> tuple[str, str, str, str]:
     """Resolve CPE login for automated probe/fetch (client row, then NAS default)."""
-    default_user, default_pass = customer_cpe_default_credentials(customer)
-    user = (customer.cpe_username or "").strip() or default_user or "admin"
-    password = (customer.cpe_password or "").strip() or default_pass
-    return user, password, default_user, default_pass
+    return resolve_customer_cpe_credentials(customer)
 
 
 def _cpe_router_failure_class(probe: dict | None = None, *, nas_ok: bool = True) -> str:
@@ -1786,6 +1784,14 @@ def apply_client_shared_forms(ctx: dict, customer, org) -> dict:
     """Attach shared client edit forms used by sidebar modals."""
     ctx["details_form"] = CustomerDetailsEditForm(
         instance=customer, organization=org
+    )
+    cpe_user, cpe_pass, _, default_pass = resolve_customer_cpe_credentials(customer)
+    saved_pass = (customer.cpe_password or "").strip()
+    ctx.setdefault("cpe_username", cpe_user)
+    ctx.setdefault("cpe_password", cpe_pass)
+    ctx.setdefault(
+        "uses_nas_default_password",
+        bool(default_pass) and not bool(saved_pass),
     )
     ctx.setdefault("open_client_modal", "")
     return ctx
@@ -16076,6 +16082,57 @@ def client_detail(request, customer_id: int):
             messages.success(request, msg)
             return redirect("core:client_detail", customer_id=customer.pk)
 
+        if action == "set_client_fup":
+            from billing.fup import (
+                customer_fup_usage_snapshot,
+                plan_fup_enabled,
+                set_customer_fup_enabled,
+            )
+
+            raw = (request.POST.get("fup_enabled") or "").strip().lower()
+            want_enabled = raw in {"1", "true", "on", "yes", "enabled"}
+            plan = getattr(customer, "plan", None)
+            if not plan_fup_enabled(plan):
+                err = (
+                    "This client's package has no fair usage policy configured. "
+                    "Enable FUP on the package first."
+                )
+                if is_ajax:
+                    return JsonResponse({"ok": False, "error": err}, status=400)
+                messages.error(request, err)
+                return redirect(
+                    f"{reverse('core:client_detail', kwargs={'customer_id': customer.pk})}#router"
+                )
+
+            result = set_customer_fup_enabled(
+                customer, want_enabled, sync_access=True
+            )
+            customer.refresh_from_db()
+            snap = customer_fup_usage_snapshot(customer, plan)
+            msg = result.get("message") or (
+                "Fair usage policy updated for this client."
+            )
+            if is_ajax:
+                return JsonResponse(
+                    {
+                        "ok": True,
+                        "message": msg,
+                        "fup_enabled": bool(customer.fup_enabled),
+                        "fup_restricted": bool(snap.get("restricted")),
+                        "fup_status_label": snap.get("status_label") or "",
+                        "fup_percent": float(snap.get("percent") or 0),
+                        "fup_limit_label": snap.get("limit_label") or "",
+                        "fup_period_label": snap.get("period_label") or "",
+                        "fup_action": snap.get("action") or "",
+                        "plan_fup_enabled": True,
+                        "syncing": bool(result.get("changed")),
+                    }
+                )
+            messages.success(request, msg)
+            return redirect(
+                f"{reverse('core:client_detail', kwargs={'customer_id': customer.pk})}#router"
+            )
+
         if action == "end_subscription":
             try:
                 end_customer_subscription(customer)
@@ -16146,11 +16203,16 @@ def client_detail(request, customer_id: int):
     payment_count = Payment.objects.filter(invoice__customer=customer).count()
     voucher_count = AccessVoucher.objects.filter(customer=customer).count()
 
-    default_cpe_user, default_cpe_pass = customer_cpe_default_credentials(customer)
-    saved_cpe_user = (customer.cpe_username or "").strip()
+    cpe_username, cpe_password, default_cpe_user, default_cpe_pass = (
+        resolve_customer_cpe_credentials(customer)
+    )
     saved_cpe_pass = (customer.cpe_password or "").strip()
-    cpe_username = saved_cpe_user or default_cpe_user or "admin"
-    cpe_password = saved_cpe_pass or default_cpe_pass
+    uses_nas_default_password = bool(default_cpe_pass) and not bool(saved_cpe_pass)
+
+    from billing.fup import customer_fup_usage_snapshot, plan_fup_enabled
+
+    plan_fup_configured = plan_fup_enabled(getattr(customer, "plan", None))
+    client_fup = customer_fup_usage_snapshot(customer, getattr(customer, "plan", None))
 
     ctx = client_page_context(
         request,
@@ -16170,6 +16232,10 @@ def client_detail(request, customer_id: int):
         wifi_password_display=wifi_password_display,
         cpe_username=cpe_username,
         cpe_password=cpe_password,
+        uses_nas_default_password=uses_nas_default_password,
+        plan_fup_configured=plan_fup_configured,
+        client_fup=client_fup,
+        client_fup_enabled=bool(getattr(customer, "fup_enabled", True)),
         recharge_form=recharge_form,
         details_form=details_form,
         package_duration=getattr(customer.plan, "duration", "") or "",
@@ -16534,13 +16600,13 @@ def _client_cpe_access_context(
     nas_url = (
         reverse("core:mikrotik_detail", kwargs={"router_id": nas.pk}) if nas else ""
     )
-    default_cpe_user, default_cpe_pass = customer_cpe_default_credentials(customer)
+    cpe_username, cpe_password, default_cpe_user, default_cpe_pass = (
+        resolve_customer_cpe_credentials(customer)
+    )
     saved_cpe_user = (customer.cpe_username or "").strip()
     saved_cpe_pass = (customer.cpe_password or "").strip()
     # Prefer credentials saved on the client; otherwise prefill the MikroTik NAS
     # defaults so staff can edit and connect without retyping the fleet password.
-    cpe_username = saved_cpe_user or default_cpe_user or "admin"
-    cpe_password = saved_cpe_pass or default_cpe_pass
     uses_nas_default = (not saved_cpe_pass and bool(default_cpe_pass)) or (
         not saved_cpe_user and bool(default_cpe_user)
     )
@@ -16645,9 +16711,11 @@ def client_router_login_start(request, customer_id: int):
     via_tunnel = _router_uses_tunnel(nas)
     access_mode = customer_cpe_access_mode(customer)
     nas_url = reverse("core:mikrotik_detail", kwargs={"router_id": nas.pk})
-    default_cpe_user, default_cpe_pass = customer_cpe_default_credentials(customer)
-    # After a POST, prefer the just-saved values; otherwise fall back to NAS defaults.
-    cpe_user = (customer.cpe_username or "").strip() or default_cpe_user or "admin"
+    # Prefer posted/saved client credentials; otherwise the MikroTik
+    # "Client router password" defaults from NAS setup.
+    cpe_user, probe_password, default_cpe_user, default_cpe_pass = (
+        resolve_customer_cpe_credentials(customer)
+    )
     cpe_pass = (customer.cpe_password or "").strip()
     if request.method == "POST":
         posted_user = (request.POST.get("cpe_username") or "").strip()
@@ -16656,9 +16724,9 @@ def client_router_login_start(request, customer_id: int):
             cpe_user = posted_user
         if posted_pass:
             cpe_pass = posted_pass
-    # When the client row has no admin password, fall back to the NAS default
-    # so online sessions can still open the router without a manual re-entry.
-    probe_password = cpe_pass or default_cpe_pass
+            probe_password = posted_pass
+        elif not cpe_pass and default_cpe_pass:
+            probe_password = default_cpe_pass
     base_meta = {
         "nas_name": nas.name or "",
         "nas_dial": _router_api_host(nas),
@@ -16813,7 +16881,18 @@ def client_router_login_start(request, customer_id: int):
     if cookies:
         cache.set(cookie_key, cookies, _CPE_PROXY_ABS_AGE)
         cache.set(f"cpe-web-customer:{org.pk}:{customer.pk}", cookies, _CPE_PROXY_ABS_AGE)
+    working_user = (login.get("cpe_username") or "").strip() or cpe_user
+    working_pass = login.get("cpe_password")
+    if working_pass is None or working_pass == "":
+        working_pass = probe_password
+    authenticated = bool(login.get("authenticated"))
     basic_header = (login.get("basic_header") or "").strip()
+    # Even when cookie/form login detection fails, keep HTTP Basic on the proxy
+    # so Open-in-new-tab can still authenticate with the known admin password.
+    if not basic_header and probe_password:
+        from core.mikrotik_connect import _cpe_basic_auth_header
+
+        basic_header = _cpe_basic_auth_header(working_user or "admin", probe_password)
     if basic_header:
         cache.set(
             "cpe-web-basic:" + token_hash,
@@ -16822,9 +16901,6 @@ def client_router_login_start(request, customer_id: int):
         )
     cache.set("cpe-web-activity:" + token_hash, time.time(), _CPE_PROXY_ABS_AGE)
 
-    working_user = (login.get("cpe_username") or "").strip()
-    working_pass = login.get("cpe_password")
-    authenticated = bool(login.get("authenticated"))
     # Persist credentials the operator entered, or a working NAS-default that
     # signed in — so the next open uses the fast known-password path.
     password_from_operator = request.method == "POST" and (
@@ -16859,13 +16935,26 @@ def client_router_login_start(request, customer_id: int):
     # Web UI is reachable but auto-sign-in failed — always offer Save & connect
     # so a wrong/outdated saved (or NAS-default) password can be corrected.
     needs_password = not authenticated
+    had_password = bool((probe_password or "").strip())
     if needs_password and not login_error:
         login_error = (
-            "Could not sign in automatically. Enter the client router admin password."
+            "Could not sign in automatically. Confirm the admin password above "
+            "matches this client router, then Save & connect."
+            if had_password
+            else "Could not sign in automatically. Enter the client router admin password."
         )
     guidance = []
     if needs_password:
-        guidance = _cpe_router_guidance(failure_class="needs_password")
+        guidance = (
+            [
+                "Confirm the username/password above match this client router "
+                "(not the PPPoE password).",
+                "Save & connect — the password is stored on this client for next time.",
+                "Then use Open in a new tab; HTTP Basic is sent automatically when known.",
+            ]
+            if had_password
+            else _cpe_router_guidance(failure_class="needs_password")
+        )
 
     steps = list(probe.get("steps") or []) + list(login.get("steps") or [])
     # Fresh successful open — drop the list Remote-column cache so operators see Ready.
@@ -16891,9 +16980,12 @@ def client_router_login_start(request, customer_id: int):
             "cpe_username": working_user
             or (customer.cpe_username or "").strip()
             or "admin",
-            "has_password": bool((customer.cpe_password or working_pass or "").strip()),
+            "has_password": bool(
+                (customer.cpe_password or working_pass or probe_password or "").strip()
+            ),
             "needs_password": needs_password,
             "login_error": login_error,
+            "tried_password": had_password if needs_password else False,
         }
     )
 
@@ -17878,15 +17970,18 @@ def client_usage(request, customer_id: int):
 
         # Optional short CPE enrichment — never block the account page / live session.
         want_cpe = (request.GET.get("cpe") or "").strip() in {"1", "true", "yes"}
-        if want_cpe and payload.get("session_active") and (customer.cpe_password or customer.pppoe_password):
+        cpe_user, cpe_pass, _, _ = resolve_customer_cpe_credentials(customer)
+        if want_cpe and payload.get("session_active") and (
+            cpe_pass or customer.pppoe_password
+        ):
             try:
                 cpe = fetch_customer_cpe_live_usage(
                     router.host,
                     router.username,
                     router.password or "",
                     pppoe_username=customer.pppoe_username,
-                    cpe_username=customer.cpe_username or "admin",
-                    cpe_password=customer.cpe_password or "",
+                    cpe_username=cpe_user,
+                    cpe_password=cpe_pass,
                     pppoe_password=customer.pppoe_password or "",
                     timeout=6.0,
                 )

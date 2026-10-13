@@ -31,7 +31,7 @@ _ORG_LIVE_SESSION_DROP_CONFIRMATIONS = 2
 _ORG_LIVE_SESSION_DROP_TTL = 90
 _ORG_DEVICE_TOUCH_TTL = 60  # throttle CustomerDevice last_seen updates
 _CLIENT_TREND_TTL = 20  # short cache for per-client chart payloads
-_CLIENT_TREND_CACHE_VERSION = "v7"  # bump when payload shape changes
+_CLIENT_TREND_CACHE_VERSION = "v8"  # bump when payload shape changes
 _CLIENT_TREND_MAX_POINTS = 48  # hard cap on chart buckets
 _CLIENT_SAMPLE_CAP = 8000  # max rows scanned per client trend request
 _ORG_SAMPLE_ROW_SOFT_CAP = 8000  # target rows after fair per-client downsample
@@ -434,14 +434,14 @@ def record_customer_usage_sample(
     _invalidate_client_usage_trend_cache(customer.pk)
     if fup_delta > 0 or getattr(customer, "fup_restricted", False):
         try:
-            from billing.fup import apply_fup_byte_delta, plan_fup_enabled
+            from billing.fup import apply_fup_byte_delta, customer_fup_is_active
 
             plan = getattr(customer, "plan", None)
             if plan is None and getattr(customer, "plan_id", None):
                 from billing.models import BillingPlan
 
                 plan = BillingPlan.objects.filter(pk=customer.plan_id).first()
-            if plan_fup_enabled(plan):
+            if customer_fup_is_active(customer, plan):
                 apply_fup_byte_delta(customer, fup_delta, plan=plan)
         except Exception:
             logger.exception(
@@ -1799,6 +1799,34 @@ def _access_state_labels(state: str) -> tuple[str, str]:
     return mapping.get(state, ("—", "Current connection"))
 
 
+def _client_session_device_label(customer: Customer) -> str:
+    """Human label for Access Story / connection breakdown rows."""
+    service = (getattr(customer, "service_type", "") or "").strip()
+    if service == Customer.ServiceType.HOTSPOT:
+        from billing.devices import customer_account_devices, normalize_device_mac
+
+        try:
+            devices = customer_account_devices(customer)
+        except Exception:
+            devices = []
+        if len(devices) == 1:
+            row = devices[0]
+            mac = (row.get("mac") or "").strip()
+            label = (row.get("label") or "Device").strip() or "Device"
+            return f"{label} ({mac})" if mac else label
+        if len(devices) > 1:
+            return f"{len(devices)} Hotspot gadgets"
+        mac = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
+        if mac:
+            return f"Hotspot device ({mac})"
+        return "Hotspot device"
+    username = (getattr(customer, "pppoe_username", "") or "").strip()
+    if username:
+        return f"PPPoE · {username}"
+    name = (getattr(customer, "full_name", "") or "").strip()
+    return name or "PPPoE device"
+
+
 def _surf_state_value(state: str | None) -> int | None:
     if state == "surfing":
         return _SURF_STATE_SURFING
@@ -1894,6 +1922,7 @@ def build_client_session_breakdown(
     events: list[dict[str, Any]] = []
     prev_state: str | None = None
     had_disconnect = False
+    device = _client_session_device_label(customer)
 
     def _append(kind: str, label: str, detail: str, stamp, *, tone: str) -> None:
         events.append(
@@ -1901,6 +1930,7 @@ def build_client_session_breakdown(
                 "kind": kind,
                 "label": label,
                 "detail": detail,
+                "device": device,
                 "at": timezone.localtime(stamp).isoformat(),
                 "at_label": _access_stamp_label(stamp, window_hours),
                 "tone": tone,
@@ -1935,7 +1965,7 @@ def build_client_session_breakdown(
                 _append(
                     "reconnected",
                     "Reconnected",
-                    "Device joined the network again",
+                    f"{device} joined the network again",
                     stamp,
                     tone="reconnected",
                 )
@@ -1943,7 +1973,7 @@ def build_client_session_breakdown(
                 _append(
                     "connected",
                     "Connected",
-                    "Device joined the network",
+                    f"{device} joined the network",
                     stamp,
                     tone="connected",
                 )
@@ -1952,7 +1982,7 @@ def build_client_session_breakdown(
                 _append(
                     "reconnected",
                     "Reconnected",
-                    "Back online and started surfing",
+                    f"{device} back online and started surfing",
                     stamp,
                     tone="reconnected",
                 )
@@ -1960,7 +1990,7 @@ def build_client_session_breakdown(
                 _append(
                     "connected",
                     "Connected",
-                    "Device connected and started surfing",
+                    f"{device} connected and started surfing",
                     stamp,
                     tone="connected",
                 )
@@ -1968,7 +1998,7 @@ def build_client_session_breakdown(
             _append(
                 "started_surfing",
                 "Started surfing",
-                "Internet access became active",
+                f"{device} — internet access became active",
                 stamp,
                 tone="surfing",
             )
@@ -1976,7 +2006,7 @@ def build_client_session_breakdown(
             _append(
                 "surfing_ended",
                 "Surfing ended",
-                "Still connected, but internet stopped",
+                f"{device} still connected, but internet stopped",
                 stamp,
                 tone="blocked",
             )
@@ -1984,7 +2014,7 @@ def build_client_session_breakdown(
             _append(
                 "dropped",
                 "Dropped",
-                "Session ended — device left the network",
+                f"{device} left the network",
                 stamp,
                 tone="dropped",
             )
@@ -1993,7 +2023,7 @@ def build_client_session_breakdown(
             _append(
                 "disconnected",
                 "Disconnected",
-                "Device left the network",
+                f"{device} left the network",
                 stamp,
                 tone="dropped",
             )
@@ -2020,6 +2050,16 @@ def build_client_session_breakdown(
     }
 
 
+_ACCESS_SESSION_EVENT_KINDS = frozenset(
+    {
+        "connected",
+        "reconnected",
+        "dropped",
+        "disconnected",
+    }
+)
+
+
 def build_client_access_timeline(
     customer: Customer,
     *,
@@ -2033,8 +2073,8 @@ def build_client_access_timeline(
     Payment / subscription / block timeline for support on the usage page.
 
     Reconstructs surfing vs blocked across *every* prepaid window created by
-    successful payments (including expire → pay again). Flags when the client
-    dropped while a package was still active.
+    successful payments (including expire → pay again). Includes Hotspot/PPPoE
+    device connect, drop, and reconnect events from usage samples.
     """
     from billing.services import (
         customer_package_is_paused,
@@ -2222,12 +2262,53 @@ def build_client_access_timeline(
                 early_offline = stamp
             prev_active = active
 
-    if early_offline is not None:
+    device_label = _client_session_device_label(customer)
+    session_drop_stamp = None
+    session_payload = build_client_session_breakdown(
+        customer,
+        since=since,
+        until=now,
+    )
+    for sev in session_payload.get("events") or []:
+        kind = sev.get("kind") or ""
+        if kind not in _ACCESS_SESSION_EVENT_KINDS:
+            continue
+        try:
+            stamp = datetime.fromisoformat(sev["at"])
+        except Exception:
+            continue
+        if timezone.is_naive(stamp):
+            stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+        before_end = bool(
+            any(win.get("deadline") and stamp < win["deadline"] for win in windows)
+            or (deadline and stamp < deadline)
+        )
+        if kind in ("dropped", "disconnected") and before_end and session_drop_stamp is None:
+            session_drop_stamp = stamp
+        events.append(
+            {
+                "kind": kind,
+                "label": sev.get("label") or kind.title(),
+                "detail": sev.get("detail") or "",
+                "device": sev.get("device") or device_label,
+                "at": timezone.localtime(stamp).isoformat(),
+                "at_label": _access_stamp_label(stamp, hours),
+                "in_window": since <= stamp <= now,
+                "tone": sev.get("tone") or kind,
+                "before_subscription_end": bool(
+                    before_end and kind in ("dropped", "disconnected")
+                ),
+            }
+        )
+
+    # Fallback when sample list was passed but session breakdown found no drop.
+    if early_offline is not None and session_drop_stamp is None:
         events.append(
             {
                 "kind": "early_offline",
                 "label": "Went offline early",
-                "detail": "Dropped while package was still active",
+                "detail": f"{device_label} dropped while package was still active",
+                "device": device_label,
                 "at": timezone.localtime(early_offline).isoformat(),
                 "at_label": _access_stamp_label(early_offline, hours),
                 "in_window": True,
@@ -2240,7 +2321,8 @@ def build_client_access_timeline(
             {
                 "kind": "blocked_connected",
                 "label": "Blocked while online",
-                "detail": "Connected, but billing blocked internet",
+                "detail": f"{device_label} connected, but billing blocked internet",
+                "device": device_label,
                 "at": timezone.localtime(blocked_while_connected).isoformat(),
                 "at_label": _access_stamp_label(blocked_while_connected, hours),
                 "in_window": True,
@@ -2273,12 +2355,16 @@ def build_client_access_timeline(
         if samples
         else "waiting"
     )
+    # Prefer live session breakdown when samples were not passed (billing-only view).
+    if not samples and session_payload.get("current_state"):
+        current_state = session_payload.get("current_state") or current_state
     status, status_hint = _access_state_labels(current_state)
 
     alert = ""
-    if early_offline is not None:
+    drop_stamp = session_drop_stamp or early_offline
+    if drop_stamp is not None:
         alert = (
-            f"Client went offline at {_access_stamp_label(early_offline, hours)} "
+            f"{device_label} dropped at {_access_stamp_label(drop_stamp, hours)} "
             "while the package was still active."
         )
     elif paused and paused_at and (
@@ -2291,7 +2377,7 @@ def build_client_access_timeline(
         )
     elif blocked_while_connected is not None and not expired and not paused:
         alert = (
-            "Client stayed connected while surfing was blocked — check router "
+            f"{device_label} stayed connected while surfing was blocked — check router "
             "profile sync."
         )
 
@@ -2656,6 +2742,10 @@ def usage_trend_payload(
         "subscription_ended": [],
         "early_offline": [],
         "blocked_connected": [],
+        "connected": [],
+        "reconnected": [],
+        "dropped": [],
+        "disconnected": [],
     }
     fmt = _chart_label_format(hours)
     online_bucket_count = 0
@@ -4318,6 +4408,7 @@ def count_fup_hits_by_router(organization) -> dict[str, Any]:
     rows = (
         Customer.objects.filter(
             organization=organization,
+            fup_enabled=True,
             fup_restricted=True,
             plan__fup_enabled=True,
         )
@@ -4492,6 +4583,7 @@ def workspace_fup_hits_trend(
     restricted_rows = list(
         Customer.objects.filter(
             organization=organization,
+            fup_enabled=True,
             fup_restricted=True,
             plan__fup_enabled=True,
             router_id__isnull=False,

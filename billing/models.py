@@ -589,6 +589,14 @@ class Customer(models.Model):
             "(package renewal or manual reset). Historical samples are kept."
         ),
     )
+    fup_enabled = models.BooleanField(
+        "FUP enforcement enabled",
+        default=True,
+        help_text=(
+            "When disabled, this client is exempt from the package fair-usage "
+            "policy (no throttle or disconnect even after the data cap)."
+        ),
+    )
     fup_window_start = models.DateTimeField(
         "FUP window start",
         null=True,

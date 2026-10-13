@@ -120,14 +120,15 @@
         <strong data-sub-end>{% if customer.package_end %}{% if package_uses_clock_time %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
       </div>
       {% if can_access_wifi %}
-        <div class="account-session-row"><span>Router admin</span><strong data-client-cpe-user>{{ customer.cpe_username|default:"admin" }}</strong></div>
+        <div class="account-session-row"><span>Router admin</span><strong data-client-cpe-user>{{ cpe_username|default:"admin" }}</strong></div>
         <div class="account-session-row">
           <span>Router password</span>
           <strong class="mikrotik-secret" data-client-cpe-secret>
-            {% if customer.cpe_password %}
+            {% if cpe_password %}
               <span class="mikrotik-secret-mask" data-secret-mask>•</span>
-              <span class="mikrotik-secret-value" data-secret-value data-client-cpe-password hidden>{{ customer.cpe_password }}</span>
+              <span class="mikrotik-secret-value" data-secret-value data-client-cpe-password hidden>{{ cpe_password }}</span>
               <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show router password">Show</button>
+              {% if uses_nas_default_password %}<span class="client-simple-hint">NAS default</span>{% endif %}
             {% else %}
               —
             {% endif %}
@@ -416,7 +417,7 @@
       <button type="button" class="client-cmd-tab{% if default_client_tab == 'overview' %} is-active{% endif %}" data-client-tab="overview" aria-selected="{% if default_client_tab == 'overview' %}true{% else %}false{% endif %}">Overview</button>
       <button type="button" class="client-cmd-tab" data-client-tab="connection" aria-selected="false">Connection</button>
       <button type="button" class="client-cmd-tab" data-client-tab="live" aria-selected="false">Live</button>
-      {% if can_access_wifi and customer.router %}
+      {% if can_access_wifi and customer.router or plan_fup_configured %}
         <button type="button" class="client-cmd-tab" data-client-tab="router" aria-selected="false">CPE</button>
       {% endif %}
     </nav>
@@ -591,15 +592,16 @@
             </div>
           {% endif %}
           {% if can_access_wifi %}
-            <div><dt>Router admin</dt><dd data-client-cpe-user>{{ customer.cpe_username|default:"admin" }}</dd></div>
+            <div><dt>Router admin</dt><dd data-client-cpe-user>{{ cpe_username|default:"admin" }}</dd></div>
             <div>
               <dt>Router password</dt>
               <dd>
                 <span class="mikrotik-secret" data-client-cpe-secret>
-                  {% if customer.cpe_password %}
+                  {% if cpe_password %}
                     <span class="mikrotik-secret-mask" data-secret-mask>•</span>
-                    <span class="mikrotik-secret-value" data-secret-value data-client-cpe-password hidden>{{ customer.cpe_password }}</span>
+                    <span class="mikrotik-secret-value" data-secret-value data-client-cpe-password hidden>{{ cpe_password }}</span>
                     <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show router password">Show</button>
+                    {% if uses_nas_default_password %}<span class="client-simple-hint">NAS default</span>{% endif %}
                   {% else %}
                     —
                   {% endif %}
@@ -717,25 +719,99 @@
         {% endif %}
       </div>
 
-      {% if can_access_wifi and customer.router %}
+      {% if can_access_wifi and customer.router or plan_fup_configured %}
       <div
         class="client-cmd-panel"
         data-client-panel="router"
         id="client-router-data"
-        data-router-data-url="{% url 'core:client_cpe_router_data' customer.id %}"
+        {% if can_access_wifi and customer.router %}data-router-data-url="{% url 'core:client_cpe_router_data' customer.id %}"{% endif %}
         hidden
       >
         <header class="client-cmd-panel-head">
           <div>
             <h3>Client router (CPE)</h3>
-            <p data-router-data-status>Checking…</p>
+            <p data-router-data-status>{% if can_access_wifi and customer.router %}Checking…{% else %}Router metrics need CPE access. Fair usage controls are below.{% endif %}</p>
           </div>
           <div class="client-cmd-panel-tools">
-            <span data-router-data-stamp>—</span>
-            <button type="button" class="btn btn-ghost btn-sm" data-router-data-refresh>Refresh</button>
+            {% if can_access_wifi and customer.router %}
+              <span data-router-data-stamp>—</span>
+              <button type="button" class="btn btn-ghost btn-sm" data-router-data-refresh>Refresh</button>
+            {% endif %}
           </div>
         </header>
 
+          <section
+            class="client-fup-card{% if not plan_fup_configured %} is-unavailable{% elif not client_fup_enabled %} is-exempt{% elif client_fup.restricted %} is-restricted{% endif %}"
+            data-client-fup
+            data-plan-fup="{% if plan_fup_configured %}1{% else %}0{% endif %}"
+            data-fup-enabled="{% if client_fup_enabled %}1{% else %}0{% endif %}"
+          >
+            <div class="client-fup-card-copy">
+              <p class="client-fup-kicker">Fair usage policy</p>
+              <h4 class="client-fup-title">
+                {% if plan_fup_configured %}
+                  {% if client_fup.limit_label %}{{ client_fup.limit_label }}{% else %}Package data cap{% endif %}
+                  {% if client_fup.period_label %} <span>/ {{ client_fup.period_label }}</span>{% endif %}
+                {% else %}
+                  Not configured on this package
+                {% endif %}
+              </h4>
+              <p class="client-fup-hint" data-client-fup-hint>
+                {% if not plan_fup_configured %}
+                  Enable FUP on the billing package to cap data and throttle or disconnect this client.
+                {% elif not client_fup_enabled %}
+                  Disabled for this client — they stay on full package speed even after the data cap.
+                {% elif client_fup.restricted %}
+                  Cap reached —
+                  {% if client_fup.action == "disconnect" %}disconnected until the FUP period resets.
+                  {% else %}throttled to package FUP speeds until the period resets.{% endif %}
+                {% else %}
+                  When enabled, hitting the package cap will
+                  {% if client_fup.action == "disconnect" %}disconnect{% else %}throttle{% endif %}
+                  this client until the FUP period resets.
+                {% endif %}
+              </p>
+              {% if plan_fup_configured %}
+                <dl class="client-fup-meta">
+                  <div>
+                    <dt>Status</dt>
+                    <dd data-client-fup-status>{{ client_fup.status_label|default:"—" }}</dd>
+                  </div>
+                  <div>
+                    <dt>Used</dt>
+                    <dd data-client-fup-percent>{{ client_fup.percent|floatformat:0 }}%</dd>
+                  </div>
+                  <div>
+                    <dt>Action</dt>
+                    <dd data-client-fup-action>{% if client_fup.action == "disconnect" %}Disconnect{% elif client_fup.action == "throttle" %}Throttle{% else %}—{% endif %}</dd>
+                  </div>
+                </dl>
+              {% endif %}
+            </div>
+            {% if plan_fup_configured %}
+              <form
+                method="post"
+                action="{% url 'core:client_detail' customer.id %}"
+                class="client-fup-form"
+                data-client-fup-form
+                data-no-page-loader="1"
+              >
+                {% csrf_token %}
+                <input type="hidden" name="action" value="set_client_fup">
+                <input type="hidden" name="fup_enabled" value="{% if client_fup_enabled %}0{% else %}1{% endif %}" data-client-fup-value>
+                <button
+                  type="submit"
+                  class="client-cmd-btn client-fup-toggle{% if client_fup_enabled %} is-on{% else %} is-off{% endif %}"
+                  data-client-fup-btn
+                  aria-pressed="{% if client_fup_enabled %}true{% else %}false{% endif %}"
+                >
+                  <span data-client-fup-label>{% if client_fup_enabled %}Enabled{% else %}Disabled{% endif %}</span>
+                </button>
+              </form>
+            {% endif %}
+          </section>
+
+          {% if can_access_wifi and customer.router %}
           <form class="client-router-password-form" data-router-password-form hidden>
             {% csrf_token %}
             <input type="hidden" name="action" value="update_router_password">
@@ -784,6 +860,7 @@
               </table>
             </div>
           </div>
+          {% endif %}
       </div>
       {% endif %}
 
@@ -2866,6 +2943,110 @@
       } else {
         window.prompt("Copy voucher:", text);
       }
+    });
+  });
+})();
+</script>
+
+<script>
+(function () {
+  function toast(message, kind) {
+    if (typeof window.showToast === "function") {
+      window.showToast(message, kind || "info");
+      return;
+    }
+    if (message) window.alert(message);
+  }
+
+  function paintFupCard(card, data) {
+    if (!card || !data) return;
+    var enabled = !!data.fup_enabled;
+    card.setAttribute("data-fup-enabled", enabled ? "1" : "0");
+    card.classList.toggle("is-exempt", !enabled);
+    card.classList.toggle("is-restricted", !!data.fup_restricted);
+    var valueInput = card.querySelector("[data-client-fup-value]");
+    var btn = card.querySelector("[data-client-fup-btn]");
+    var label = card.querySelector("[data-client-fup-label]");
+    var hint = card.querySelector("[data-client-fup-hint]");
+    var status = card.querySelector("[data-client-fup-status]");
+    var percent = card.querySelector("[data-client-fup-percent]");
+    if (valueInput) valueInput.value = enabled ? "0" : "1";
+    if (btn) {
+      btn.classList.toggle("is-on", enabled);
+      btn.classList.toggle("is-off", !enabled);
+      btn.setAttribute("aria-pressed", enabled ? "true" : "false");
+      btn.disabled = false;
+    }
+    if (label) label.textContent = enabled ? "Enabled" : "Disabled";
+    if (status) status.textContent = data.fup_status_label || (enabled ? "OK" : "Exempt");
+    if (percent && typeof data.fup_percent !== "undefined") {
+      percent.textContent = Math.round(Number(data.fup_percent) || 0) + "%";
+    }
+    if (hint) {
+      var action = (data.fup_action || "").toLowerCase();
+      if (!enabled) {
+        hint.textContent =
+          "Disabled for this client — they stay on full package speed even after the data cap.";
+      } else if (data.fup_restricted) {
+        hint.textContent =
+          action === "disconnect"
+            ? "Cap reached — disconnected until the FUP period resets."
+            : "Cap reached — throttled to package FUP speeds until the period resets.";
+      } else {
+        hint.textContent =
+          "When enabled, hitting the package cap will " +
+          (action === "disconnect" ? "disconnect" : "throttle") +
+          " this client until the FUP period resets.";
+      }
+    }
+  }
+
+  document.querySelectorAll("[data-client-fup-form]").forEach(function (form) {
+    var card = form.closest("[data-client-fup]");
+    var btn = form.querySelector("[data-client-fup-btn]");
+    var label = form.querySelector("[data-client-fup-label]");
+    var valueInput = form.querySelector("[data-client-fup-value]");
+    var inFlight = false;
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      if (inFlight || !btn || !valueInput) return;
+      var enabling = valueInput.value === "1";
+      inFlight = true;
+      btn.disabled = true;
+      if (label) label.textContent = enabling ? "Enabling…" : "Disabling…";
+      fetch(form.getAttribute("action") || window.location.pathname, {
+        method: "POST",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin",
+        body: new FormData(form),
+      })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            return { ok: res.ok, data: data };
+          });
+        })
+        .then(function (result) {
+          if (!result.ok || !result.data || !result.data.ok) {
+            toast(
+              (result.data && (result.data.error || result.data.message)) ||
+                "Could not update fair usage policy.",
+              "error"
+            );
+            if (label) label.textContent = enabling ? "Disabled" : "Enabled";
+            btn.disabled = false;
+            return;
+          }
+          paintFupCard(card, result.data);
+          toast(result.data.message || "Fair usage policy updated.", "info");
+        })
+        .catch(function () {
+          toast("Network error while updating fair usage policy.", "error");
+          if (label) label.textContent = enabling ? "Disabled" : "Enabled";
+          btn.disabled = false;
+        })
+        .finally(function () {
+          inFlight = false;
+        });
     });
   });
 })();

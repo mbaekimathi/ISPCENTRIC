@@ -336,11 +336,14 @@
             Access story
           </p>
           <h2>What happened</h2>
-          <p class="clients-usage-section-meta">Paid → started → surfing or blocked → package ended.</p>
+          <p class="clients-usage-section-meta">Paid → started → device connects, drops, reconnects → package ended.</p>
         </div>
         <ul class="client-usage-access-legend" aria-label="Event colors">
           <li><span class="is-payment"></span>Paid</li>
           <li><span class="is-start"></span>Started</li>
+          <li><span class="is-connected"></span>Connected</li>
+          <li><span class="is-dropped"></span>Dropped</li>
+          <li><span class="is-reconnected"></span>Reconnected</li>
           <li><span class="is-end"></span>Ended</li>
           <li><span class="is-blocked"></span>Blocked</li>
         </ul>
@@ -374,7 +377,7 @@
             {% if ev.detail %}<span class="client-usage-timeline-detail">{{ ev.detail }}</span>{% endif %}
           </li>
         {% empty %}
-          <li class="client-usage-timeline-empty" data-access-empty>No payment or package events in this range yet.</li>
+          <li class="client-usage-timeline-empty" data-access-empty>No payment, package, or connection events in this range yet.</li>
         {% endfor %}
       </ol>
     </section>
@@ -455,7 +458,13 @@
     for (var i = 0; i < len; i++) {
       if (eventAt[i] === "payment") { radius.push(6); colors.push("#4f8cff"); }
       else if (eventAt[i] === "subscription_started") { radius.push(6); colors.push("#2ecc71"); }
-      else if (eventAt[i] === "blocked" || eventAt[i] === "blocked_connected" || eventAt[i] === "early_offline") {
+      else if (eventAt[i] === "connected" || eventAt[i] === "reconnected") {
+        radius.push(6); colors.push("#0ea5e9");
+      }
+      else if (eventAt[i] === "dropped" || eventAt[i] === "disconnected" || eventAt[i] === "early_offline") {
+        radius.push(6); colors.push("#e8a317");
+      }
+      else if (eventAt[i] === "blocked" || eventAt[i] === "blocked_connected") {
         radius.push(6); colors.push("#e74c3c");
       }
       else if (eventAt[i] === "subscription_ended") { radius.push(6); colors.push("#9b59b6"); }
@@ -493,7 +502,7 @@
     var events = access.events || [];
     if (!events.length) {
       accessTimeline.innerHTML =
-        '<li class="client-usage-timeline-empty" data-access-empty>No payment or package events in this range yet.</li>';
+        '<li class="client-usage-timeline-empty" data-access-empty>No payment, package, or connection events in this range yet.</li>';
       return;
     }
     accessTimeline.innerHTML = events.map(function (ev) {

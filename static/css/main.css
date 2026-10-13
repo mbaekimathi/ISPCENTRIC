@@ -9435,6 +9435,117 @@ button.clients-list-table-action {
   opacity: 0.65;
 }
 
+.client-fup-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem 1.1rem;
+  margin: 0 0 1rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--border, rgba(15, 23, 42, 0.12));
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.client-fup-card.is-exempt {
+  border-color: rgba(217, 119, 6, 0.35);
+  background: rgba(217, 119, 6, 0.08);
+}
+
+.client-fup-card.is-restricted {
+  border-color: rgba(220, 38, 38, 0.35);
+  background: rgba(220, 38, 38, 0.07);
+}
+
+.client-fup-card.is-unavailable {
+  opacity: 0.78;
+}
+
+.client-fup-kicker {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #64748b);
+}
+
+.client-fup-title {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.client-fup-title span {
+  font-weight: 560;
+  color: var(--muted, #64748b);
+}
+
+.client-fup-hint {
+  margin: 0;
+  max-width: 42rem;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--muted, #64748b);
+}
+
+.client-fup-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  margin: 0.7rem 0 0;
+}
+
+.client-fup-meta > div {
+  min-width: 4.5rem;
+}
+
+.client-fup-meta dt {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted, #64748b);
+}
+
+.client-fup-meta dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.client-fup-form {
+  margin: 0;
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.client-fup-toggle.is-on {
+  background: rgba(22, 163, 74, 0.14);
+  border-color: rgba(22, 163, 74, 0.35);
+  color: #15803d;
+}
+
+.client-fup-toggle.is-off {
+  background: rgba(100, 116, 139, 0.12);
+  border-color: rgba(100, 116, 139, 0.28);
+}
+
+[data-theme="light"] .client-fup-card {
+  background: rgba(248, 250, 252, 0.95);
+}
+
+[data-theme="dark"] .client-fup-card {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+[data-theme="dark"] .client-fup-toggle.is-on {
+  color: #86efac;
+}
+
 .client-router-password-form {
   margin: 0 0 1rem;
   padding: 0.9rem 1rem;
@@ -30583,6 +30694,9 @@ a.mikrotik-router-clients:hover {
 
 .client-usage-access-legend .is-payment { background: #4f8cff; color: #4f8cff; }
 .client-usage-access-legend .is-start { background: #2ecc71; color: #2ecc71; }
+.client-usage-access-legend .is-connected,
+.client-usage-access-legend .is-reconnected { background: #0ea5e9; color: #0ea5e9; }
+.client-usage-access-legend .is-dropped { background: #e8a317; color: #e8a317; }
 .client-usage-access-legend .is-end { background: #9b59b6; color: #9b59b6; }
 .client-usage-access-legend .is-blocked { background: #e74c3c; color: #e74c3c; }
 
@@ -30706,6 +30820,9 @@ a.mikrotik-router-clients:hover {
 
 .client-usage-timeline-item.is-start .client-usage-timeline-dot { color: #2ecc71; }
 .client-usage-timeline-item.is-payment .client-usage-timeline-dot { color: #4f8cff; }
+.client-usage-timeline-item.is-connected .client-usage-timeline-dot,
+.client-usage-timeline-item.is-reconnected .client-usage-timeline-dot { color: #0ea5e9; }
+.client-usage-timeline-item.is-dropped .client-usage-timeline-dot { color: #e8a317; }
 .client-usage-timeline-item.is-blocked .client-usage-timeline-dot,
 .client-usage-timeline-item.is-warn .client-usage-timeline-dot { color: #e74c3c; }
 .client-usage-timeline-item.is-end .client-usage-timeline-dot { color: #9b59b6; }
@@ -30746,6 +30863,9 @@ a.mikrotik-router-clients:hover {
 
 .client-usage-timeline-item.is-start .client-usage-timeline-badge { color: #1f8a5b; }
 .client-usage-timeline-item.is-payment .client-usage-timeline-badge { color: #2563eb; }
+.client-usage-timeline-item.is-connected .client-usage-timeline-badge,
+.client-usage-timeline-item.is-reconnected .client-usage-timeline-badge { color: #0284c7; }
+.client-usage-timeline-item.is-dropped .client-usage-timeline-badge { color: #b45309; }
 .client-usage-timeline-item.is-blocked .client-usage-timeline-badge,
 .client-usage-timeline-item.is-warn .client-usage-timeline-badge { color: #c0392b; }
 .client-usage-timeline-item.is-end .client-usage-timeline-badge { color: #7c3aed; }

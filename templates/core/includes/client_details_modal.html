@@ -5,8 +5,8 @@
   id="client-details-modal"
   data-edit-pppoe-user="{{ customer.pppoe_username|default:'' }}"
   data-edit-pppoe-pass="{{ customer.pppoe_password|default:'' }}"
-  data-edit-cpe-user="{{ customer.cpe_username|default:'admin' }}"
-  data-edit-cpe-pass="{{ customer.cpe_password|default:'' }}"
+  data-edit-cpe-user="{{ cpe_username|default:customer.cpe_username|default:'admin' }}"
+  data-edit-cpe-pass="{{ cpe_password|default:customer.cpe_password|default:'' }}"
 
   {% if open_client_modal != "client-details-modal" %}hidden{% endif %}
 

@@ -393,6 +393,11 @@
     }
     if (errorBox) errorBox.hidden = !needPass;
     if (needPass) {
+      var formPass = passwordForm
+        && passwordForm.querySelector("input[name=cpe_password]");
+      var formHasPass = !!(formPass && String(formPass.value || "").trim())
+        || !!data.tried_password
+        || !!data.has_password;
       if (errorTitle) errorTitle.textContent = "Sign-in required";
       if (errorPath) {
         errorPath.textContent = data.cpe_host
@@ -401,12 +406,18 @@
       }
       if (errorBanner) {
         errorBanner.textContent = data.login_error
-          || "Could not sign in. Edit username/password, then Save & connect.";
+          || (formHasPass
+            ? "Could not sign in with the password above. Confirm it, then Save & connect."
+            : "Could not sign in. Enter username/password, then Save & connect.");
       }
-      fillGuidance(data.guidance || [
-        "Confirm the username and password for this client router.",
-        "Save & connect, then retry if the session still fails."
-      ]);
+      fillGuidance(data.guidance || (formHasPass ? [
+        "Confirm the username/password above match this client router (not the PPPoE password).",
+        "Save & connect — it is stored on this client for next time.",
+        "Then use Open in a new tab if the router UI is still on the login page."
+      ] : [
+        "Enter the client router admin password above (not the PPPoE password).",
+        "Save & connect — it will be stored on this client for next time."
+      ]));
       if (errorActions) errorActions.hidden = false;
       if (fixNasBtn) fixNasBtn.hidden = true;
       if (errorDetail) errorDetail.textContent = "";
@@ -531,22 +542,22 @@
       });
   }
 
+  function credentialsBodyFromForm() {
+    if (!passwordForm) return null;
+    var passInput = passwordForm.querySelector("input[name=cpe_password]");
+    var userInput = passwordForm.querySelector("input[name=cpe_username]");
+    var passValue = passInput ? String(passInput.value || "").trim() : "";
+    if (!passValue) return null;
+    if (userInput) {
+      userInput.value = String(userInput.value || "").trim() || "admin";
+    }
+    return new FormData(passwordForm);
+  }
+
   root.querySelectorAll("[data-router-retry]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       routerStarted = true;
-      var body = null;
-      if (passwordForm) {
-        var passInput = passwordForm.querySelector("input[name=cpe_password]");
-        var userInput = passwordForm.querySelector("input[name=cpe_username]");
-        var passValue = passInput ? String(passInput.value || "").trim() : "";
-        if (passValue) {
-          if (userInput) {
-            userInput.value = String(userInput.value || "").trim() || "admin";
-          }
-          body = new FormData(passwordForm);
-        }
-      }
-      connect(body, true);
+      connect(credentialsBodyFromForm(), true);
     });
   });
   if (passwordForm) {
@@ -572,7 +583,9 @@
 
   if (!routerStarted) {
     routerStarted = true;
-    connect();
+    // Prefill from MikroTik "Client router password" / saved client password —
+    // always POST it so auto-login uses exactly what the form shows.
+    connect(credentialsBodyFromForm());
   }
 })();
 </script>

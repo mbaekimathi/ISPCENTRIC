@@ -10,10 +10,12 @@ from accounts.models import Organization
 from billing.fup import (
     apply_fup_byte_delta,
     customer_fup_blocks_internet,
+    customer_fup_is_active,
     customer_fup_throttle_speeds,
     evaluate_customer_fup,
     plan_fup_limit_bytes,
     reset_customer_fup_window,
+    set_customer_fup_enabled,
 )
 from billing.models import BillingPlan, Customer
 from billing.services import customer_receives_internet
@@ -249,3 +251,77 @@ class CustomerFupEnforcementTests(TestCase):
         self.assertTrue(result["restricted"])
         self.assertFalse(result["changed"])
         notify.assert_not_called()
+
+    def test_client_fup_disable_exempts_from_throttle_and_disconnect(self):
+        reset_customer_fup_window(self.customer, at=timezone.localtime())
+        limit = plan_fup_limit_bytes(self.plan)
+        with patch("billing.fup._schedule_fup_access_sync") as sync:
+            apply_fup_byte_delta(self.customer, limit)
+            self.customer.refresh_from_db()
+            self.assertTrue(self.customer.fup_restricted)
+            self.assertEqual(customer_fup_throttle_speeds(self.customer), (1, 1))
+
+            result = set_customer_fup_enabled(self.customer, False, sync_access=True)
+            self.customer.refresh_from_db()
+            self.assertTrue(result["changed"])
+            self.assertFalse(self.customer.fup_enabled)
+            self.assertFalse(self.customer.fup_restricted)
+            self.assertFalse(customer_fup_is_active(self.customer))
+            self.assertIsNone(customer_fup_throttle_speeds(self.customer))
+            self.assertFalse(customer_fup_blocks_internet(self.customer))
+            self.assertTrue(customer_receives_internet(self.customer))
+            # Bytes stay so re-enable can re-apply the package action.
+            self.assertGreaterEqual(self.customer.fup_bytes_used, limit)
+            sync.assert_called()
+
+            # Further deltas are ignored while disabled.
+            skipped = apply_fup_byte_delta(self.customer, limit)
+            self.assertTrue(skipped.get("skipped"))
+            self.customer.refresh_from_db()
+            self.assertFalse(self.customer.fup_restricted)
+
+    def test_client_fup_reenable_applies_package_action(self):
+        reset_customer_fup_window(self.customer, at=timezone.localtime())
+        limit = plan_fup_limit_bytes(self.plan)
+        self.customer.fup_bytes_used = limit
+        self.customer.fup_enabled = False
+        self.customer.fup_restricted = False
+        self.customer.save(
+            update_fields=["fup_bytes_used", "fup_enabled", "fup_restricted"]
+        )
+        with patch("billing.fup._schedule_fup_access_sync"):
+            result = set_customer_fup_enabled(self.customer, True, sync_access=True)
+        self.customer.refresh_from_db()
+        self.assertTrue(result["fup_enabled"])
+        self.assertTrue(result["restricted"])
+        self.assertTrue(self.customer.fup_restricted)
+        self.assertEqual(customer_fup_throttle_speeds(self.customer), (1, 1))
+
+        self.plan.fup_action = BillingPlan.FupAction.DISCONNECT
+        self.plan.save(update_fields=["fup_action"])
+        self.customer.plan.refresh_from_db()
+        self.assertTrue(customer_fup_blocks_internet(self.customer, plan=self.plan))
+        self.assertFalse(customer_receives_internet(self.customer))
+
+    def test_client_detail_set_client_fup_endpoint(self):
+        self.client.force_login(self.owner)
+        url = reverse("core:client_detail", kwargs={"customer_id": self.customer.pk})
+        with patch("billing.fup._schedule_fup_access_sync"):
+            res = self.client.post(
+                url,
+                {"action": "set_client_fup", "fup_enabled": "0"},
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+        self.assertEqual(res.status_code, 200)
+        payload = res.json()
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["fup_enabled"])
+        self.customer.refresh_from_db()
+        self.assertFalse(self.customer.fup_enabled)
+
+        page = self.client.get(url)
+        self.assertEqual(page.status_code, 200)
+        html = page.content.decode()
+        self.assertIn("Fair usage policy", html)
+        self.assertIn("data-client-fup", html)
+        self.assertIn("Disabled", html)

@@ -326,10 +326,12 @@ def evaluate_nas_connectivity_cached(
 
             live = cache.get(f"mikrotik_live:{organization_id}:{router_id}")
             if isinstance(live, dict) and live.get("ok") and live.get("online"):
-                dial = _preferred_local_nas_dial(
+                # Trust the live snapshot's dial_host even when it is a tunnel
+                # peer — that address already answered API on the detail page.
+                live_dial = (live.get("dial_host") or "").strip()
+                dial = live_dial or _preferred_local_nas_dial(
                     router,
                     proven,
-                    (live.get("dial_host") or "").strip(),
                     (getattr(router, "host", None) or "").strip(),
                     (getattr(router, "api_host", None) or "").strip(),
                     (getattr(router, "vpn_address", None) or "").strip(),
@@ -541,14 +543,17 @@ def evaluate_cpe_connectivity(customer, *, timeout: float = 6.0, deep: bool = Fa
             "details": details,
         }
 
+    from core.mikrotik_connect import resolve_customer_cpe_credentials
+
+    cpe_user, cpe_pass, _, _ = resolve_customer_cpe_credentials(customer)
     prep = prepare_customer_cpe_access(
         host,
         router.username,
         router.password or "",
         pppoe_username=pppoe_username,
         customer=customer,
-        cpe_username=getattr(customer, "cpe_username", "") or "",
-        cpe_password=getattr(customer, "cpe_password", "") or "",
+        cpe_username=cpe_user,
+        cpe_password=cpe_pass,
         pppoe_password=getattr(customer, "pppoe_password", "") or "",
         timeout=timeout,
         auto_enable=True,
@@ -759,18 +764,22 @@ def run_cpe_connectivity_loop(
             break
 
         if repair and attempt < loops and customer.router and evaluation.get("session_active"):
-            from core.mikrotik_connect import prepare_customer_cpe_access
+            from core.mikrotik_connect import (
+                prepare_customer_cpe_access,
+                resolve_customer_cpe_credentials,
+            )
 
             router = customer.router
             host = (router.api_host or router.host or "").strip()
+            cpe_user, cpe_pass, _, _ = resolve_customer_cpe_credentials(customer)
             prep = prepare_customer_cpe_access(
                 host,
                 router.username,
                 router.password or "",
                 pppoe_username=customer.pppoe_username,
                 customer=customer,
-                cpe_username=getattr(customer, "cpe_username", "") or "",
-                cpe_password=getattr(customer, "cpe_password", "") or "",
+                cpe_username=cpe_user,
+                cpe_password=cpe_pass,
                 pppoe_password=getattr(customer, "pppoe_password", "") or "",
                 auto_enable=True,
             )
@@ -1228,13 +1237,16 @@ def evaluate_layered_cpe_access(
         (nas.get("details") or {}).get("working_host")
         or (router.api_host or router.host or "")
     ).strip()
+    from core.mikrotik_connect import resolve_customer_cpe_credentials
+
+    cpe_user, cpe_pass, _, _ = resolve_customer_cpe_credentials(customer)
     probe = probe_customer_cpe_web(
         nas_host,
         router.username,
         router.password or "",
         customer=customer,
-        cpe_username=getattr(customer, "cpe_username", "") or "",
-        cpe_password=getattr(customer, "cpe_password", "") or "",
+        cpe_username=cpe_user,
+        cpe_password=cpe_pass,
         pppoe_password=getattr(customer, "pppoe_password", "") or "",
         timeout=timeout,
         auto_enable_www=bool(enable_cpe_web or (auto_enable and try_api)),
@@ -1324,8 +1336,8 @@ def evaluate_layered_cpe_access(
                 router.username,
                 router.password or "",
                 customer=customer,
-                cpe_username=getattr(customer, "cpe_username", "") or "",
-                cpe_password=getattr(customer, "cpe_password", "") or "",
+                cpe_username=cpe_user,
+                cpe_password=cpe_pass,
                 pppoe_password=getattr(customer, "pppoe_password", "") or "",
                 timeout=timeout,
                 auto_enable=auto_enable,
