@@ -473,7 +473,7 @@ class Customer(models.Model):
         blank=True,
         default="",
         db_index=True,
-        help_text="Digits-only phone key used to enforce one account per number.",
+        help_text="Digits-only phone key. Unique per organization and service type.",
     )
     email = models.EmailField(blank=True)
     address = models.CharField(
@@ -674,9 +674,9 @@ class Customer(models.Model):
                 name="bill_cust_org_hotspot_mac_uniq",
             ),
             models.UniqueConstraint(
-                fields=["organization", "phone_normalized"],
+                fields=["organization", "service_type", "phone_normalized"],
                 condition=models.Q(phone_normalized__gt=""),
-                name="bill_cust_org_phone_uniq",
+                name="bill_cust_org_svc_phone_uniq",
             ),
         ]
 
@@ -693,13 +693,15 @@ class Customer(models.Model):
             if self.organization_id:
                 dup = type(self).objects.filter(
                     organization_id=self.organization_id,
+                    service_type=self.service_type,
                     phone_normalized=key,
                 )
                 if self.pk:
                     dup = dup.exclude(pk=self.pk)
                 if dup.exists():
                     raise IntegrityError(
-                        "A client with this phone number already exists in this organization."
+                        "A client with this phone number already exists "
+                        "for this service in this organization."
                     )
         else:
             # Never store "" when a unique (org, phone_normalized) index exists.

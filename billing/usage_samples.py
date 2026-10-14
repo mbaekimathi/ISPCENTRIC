@@ -24,7 +24,7 @@ _SAMPLE_MIN_INTERVAL = 25  # seconds between persisted samples per client
 _OFFLINE_SAMPLE_MIN_INTERVAL = 300  # avoid flooding zeros when clients are offline
 _ORG_SAMPLE_TTL = 60  # seconds between org-wide MikroTik sweeps
 _ORG_PAYLOAD_TTL = 20  # seconds for aggregated chart payloads
-_ORG_PAYLOAD_CACHE_VERSION = "v11"  # bump when payload shape / sampling changes
+_ORG_PAYLOAD_CACHE_VERSION = "v12"  # bump when payload shape / sampling changes
 _ORG_LIVE_USAGE_TTL = 120  # NAS presence snapshot after each org sweep
 # Hold last-known-active across one empty/flaky NAS poll (concurrent sweep / API load).
 _ORG_LIVE_SESSION_DROP_CONFIRMATIONS = 2
@@ -978,44 +978,23 @@ def apply_live_usage_overlay(
         online = int(summary.get("clients_online") or 0)
         summary["clients_offline"] = max(0, clients_total - online)
 
-    # Keep ranked chart device counts and offline set aligned with live chips.
+    # Live chips stay on the summary/table. Insight charts keep the filtered window.
     top_chart = payload.get("top_chart")
     if isinstance(top_chart, dict) and top_users:
-        ranked = top_users[:40]
+        ranked = [u for u in top_users[:40] if isinstance(u, dict)]
         top_chart["devices_connected"] = [
-            int(u.get("devices_connected") or u.get("gadgets_connected") or 0)
+            int(
+                u.get("period_devices")
+                if u.get("period_devices") is not None
+                else (u.get("devices_connected") or u.get("gadgets_connected") or 0)
+            )
             for u in ranked
-            if isinstance(u, dict)
         ]
-    offline_users = [
-        u
-        for u in top_users
-        if isinstance(u, dict)
-        and not u.get("latest_active")
-        and not u.get("live_active")
-    ]
-    offline_users.sort(
-        key=lambda u: (
-            float(u.get("online_ratio") or 0),
-            -int(u.get("downtime_count") or 0),
-            (u.get("full_name") or "").casefold(),
-        )
-    )
-    offline_users = offline_users[:40]
-    if not offline_users and top_users:
-        offline_users = sorted(
-            [u for u in top_users if isinstance(u, dict)],
-            key=lambda u: (
-                float(u.get("online_ratio") or 0),
-                -int(u.get("downtime_count") or 0),
-                (u.get("full_name") or "").casefold(),
-            ),
-        )[:40]
-    payload["offline_chart"] = {
-        "labels": [u.get("full_name") or "Client" for u in offline_users],
-        "online_ratio": [float(u.get("online_ratio") or 0) for u in offline_users],
-        "downtime_count": [int(u.get("downtime_count") or 0) for u in offline_users],
-    }
+        top_chart["labels"] = [u.get("full_name") or "Client" for u in ranked]
+        top_chart["data_used_mb"] = [
+            round(int(u.get("data_used_bytes") or 0) / (1024 * 1024), 3) for u in ranked
+        ]
+        top_chart["online_ratio"] = [float(u.get("online_ratio") or 0) for u in ranked]
     fup_users = sorted(
         [u for u in top_users if isinstance(u, dict) and u.get("fup_enabled")],
         key=lambda u: (
@@ -3302,6 +3281,68 @@ def _usage_level_label(
     return "Idle"
 
 
+def _prime_counters_before_window(
+    *,
+    customer_ids: list[int],
+    since,
+    tracking_since_by_cid: dict[int, datetime | None],
+    previous_total: dict[int, int],
+    previous_bi: dict[int, int],
+    previous_bo: dict[int, int],
+    previous_at: dict[int, Any],
+) -> None:
+    """Baseline each client from the last sample before the filtered window.
+
+    In-window growth is then counted from that counter. Samples that only exist
+    inside the window still establish their own baseline (delta 0 on first sight).
+    A baseline from before a usage reset is ignored.
+    """
+    if not customer_ids or since is None:
+        return
+    from django.db.models import Max, Q
+
+    latest_rows = list(
+        CustomerUsageSample.objects.filter(
+            customer_id__in=customer_ids,
+            sampled_at__lt=since,
+        )
+        .exclude(session_active=False, bytes_in=0, bytes_out=0)
+        .values("customer_id")
+        .annotate(latest=Max("sampled_at"))
+    )
+    stamps: dict[int, Any] = {}
+    for row in latest_rows:
+        cid = int(row["customer_id"])
+        stamp = row.get("latest")
+        if stamp is None:
+            continue
+        tracking_since = tracking_since_by_cid.get(cid)
+        if tracking_since is not None and stamp < tracking_since:
+            continue
+        stamps[cid] = stamp
+    if not stamps:
+        return
+
+    ids = list(stamps.keys())
+    for offset in range(0, len(ids), 400):
+        chunk = ids[offset : offset + 400]
+        query = Q()
+        for cid in chunk:
+            query |= Q(customer_id=cid, sampled_at=stamps[cid])
+        for row in CustomerUsageSample.objects.filter(query).values(
+            "customer_id", "sampled_at", "bytes_in", "bytes_out"
+        ):
+            cid = int(row["customer_id"])
+            if stamps.get(cid) != row["sampled_at"]:
+                continue
+            bi = int(row["bytes_in"] or 0)
+            bo = int(row["bytes_out"] or 0)
+            previous_total[cid] = bi + bo
+            previous_bi[cid] = bi
+            previous_bo[cid] = bo
+            previous_at[cid] = row["sampled_at"]
+
+
 def _usage_router_cache_key(*, router_id: int | None = None, unassigned_only: bool = False) -> str:
     if unassigned_only:
         return "none"
@@ -3400,6 +3441,15 @@ def _build_org_usage_payload(
     meaningful_samples = 0
     peak_down = 0
     peak_up = 0
+    _prime_counters_before_window(
+        customer_ids=customer_ids,
+        since=since,
+        tracking_since_by_cid=tracking_since_by_cid,
+        previous_total=previous_total,
+        previous_bi=previous_bi,
+        previous_bo=previous_bo,
+        previous_at=previous_at,
+    )
 
     for row in samples:
         cid = int(row["customer_id"])
@@ -3525,6 +3575,7 @@ def _build_org_usage_payload(
     # The usage list chip means "connected now", so always use a short last_seen
     # window — never the selected month/year range (that inflated counts).
     gadget_counts: dict[int, int] = {}
+    period_device_counts: dict[int, int] = {}
     linked_counts: dict[int, int] = {}
     if customers:
         from django.db.models import Count
@@ -3538,6 +3589,14 @@ def _build_org_usage_payload(
         )
         for row in gadget_qs.values("customer_id").annotate(n=Count("id")):
             gadget_counts[int(row["customer_id"])] = int(row["n"] or 0)
+        period_dev_qs = CustomerDevice.objects.filter(
+            organization=organization,
+            customer_id__in=customers.keys(),
+            last_seen_at__gte=since,
+            last_seen_at__lt=until,
+        )
+        for row in period_dev_qs.values("customer_id").annotate(n=Count("id")):
+            period_device_counts[int(row["customer_id"])] = int(row["n"] or 0)
         for row in (
             CustomerDevice.objects.filter(
                 organization=organization,
@@ -3630,6 +3689,22 @@ def _build_org_usage_payload(
                 linked = 1
         prime_at = item.get("prime_at")
         lowest_at = item.get("lowest_at")
+        is_pppoe = service == Customer.ServiceType.PPPOE or (
+            not service and customer.service_type == Customer.ServiceType.PPPOE
+        )
+        window_devices = int(period_device_counts.get(customer.pk, 0) or 0)
+        if is_pppoe:
+            period_devices = 1 if int(item.get("online_samples") or 0) > 0 else 0
+        else:
+            period_devices = window_devices
+            if period_devices <= 0 and int(item.get("online_samples") or 0) > 0:
+                period_devices = 1
+        period_level = _usage_level_label(
+            data_used_bytes=item["data_used_bytes"],
+            peak_download_bps=item["peak_download_bps"],
+            peak_upload_bps=item["peak_upload_bps"],
+            latest_active=item["latest_active"],
+        )
         fup = customer_fup_usage_snapshot(customer, getattr(customer, "plan", None))
         top_users.append(
             {
@@ -3672,12 +3747,10 @@ def _build_org_usage_payload(
                 "online_ratio": round((item["online_samples"] / sample_count) * 100, 1),
                 "sample_count": item["sample_count"],
                 "latest_active": item["latest_active"],
-                "usage_level": _usage_level_label(
-                    data_used_bytes=item["data_used_bytes"],
-                    peak_download_bps=item["peak_download_bps"],
-                    peak_upload_bps=item["peak_upload_bps"],
-                    latest_active=item["latest_active"],
-                ),
+                "usage_level": period_level,
+                "period_usage_level": period_level,
+                "period_latest_active": bool(item["latest_active"]),
+                "period_devices": period_devices,
                 "prime_at_label": (
                     timezone.localtime(prime_at).strftime(label_fmt) if prime_at else ""
                 ),
@@ -3755,29 +3828,16 @@ def _build_org_usage_payload(
     )
     gadgets_online = sum(gadget_by_cid.values())
     clients_offline = max(0, clients_total - online_now)
-    # Offline / low-uptime set for the Offline clients chart (worst first).
+    # Lowest uptime inside the filtered window (not who is offline this minute).
     offline_ranked = sorted(
-        [
-            u
-            for u in top_users
-            if not u.get("latest_active") and not u.get("live_active")
-        ],
+        top_users,
         key=lambda u: (
             float(u.get("online_ratio") or 0),
             -int(u.get("downtime_count") or 0),
+            0 if not u.get("period_latest_active") else 1,
             (u.get("full_name") or "").casefold(),
         ),
     )[:40]
-    if not offline_ranked:
-        # Fall back to lowest online-ratio clients when everyone is currently online.
-        offline_ranked = sorted(
-            top_users,
-            key=lambda u: (
-                float(u.get("online_ratio") or 0),
-                -int(u.get("downtime_count") or 0),
-                (u.get("full_name") or "").casefold(),
-            ),
-        )[: min(40, len(top_users))]
 
     fup_users = sorted(
         [u for u in top_users if u.get("fup_enabled")],
@@ -3855,8 +3915,7 @@ def _build_org_usage_payload(
                 int(u.get("live_download_bps") or 0) for u in top_users[:40]
             ],
             "devices_connected": [
-                int(u.get("devices_connected") or u.get("gadgets_connected") or 0)
-                for u in top_users[:40]
+                int(u.get("period_devices") or 0) for u in top_users[:40]
             ],
         },
         "offline_chart": {
@@ -3871,10 +3930,10 @@ def _build_org_usage_payload(
         "level_chart": {
             "labels": ["High", "Medium", "Low", "Idle"],
             "counts": [
-                sum(1 for u in top_users if (u.get("usage_level") or "Idle") == "High"),
-                sum(1 for u in top_users if (u.get("usage_level") or "Idle") == "Medium"),
-                sum(1 for u in top_users if (u.get("usage_level") or "Idle") == "Low"),
-                sum(1 for u in top_users if (u.get("usage_level") or "Idle") == "Idle"),
+                sum(1 for u in top_users if (u.get("period_usage_level") or "Idle") == "High"),
+                sum(1 for u in top_users if (u.get("period_usage_level") or "Idle") == "Medium"),
+                sum(1 for u in top_users if (u.get("period_usage_level") or "Idle") == "Low"),
+                sum(1 for u in top_users if (u.get("period_usage_level") or "Idle") == "Idle"),
             ],
         },
         "summary": {

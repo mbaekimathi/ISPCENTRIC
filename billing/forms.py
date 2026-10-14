@@ -503,6 +503,7 @@ class PppoeClientRegisterForm(forms.ModelForm):
             self.organization,
             phone,
             exclude_pk=getattr(self.instance, "pk", None),
+            service_type=Customer.ServiceType.PPPOE,
         ):
             self.add_error("phone", PHONE_ALREADY_REGISTERED)
         plan = cleaned.get("plan")
@@ -1066,7 +1067,9 @@ class SalesClientRegisterForm(forms.ModelForm):
             )
         phone = cleaned.get("phone") or ""
         org = cleaned.get("organization")
-        if phone and org and customer_phone_is_taken(org, phone):
+        if phone and org and customer_phone_is_taken(
+            org, phone, service_type=Customer.ServiceType.PPPOE
+        ):
             self.add_error("phone", PHONE_ALREADY_REGISTERED)
         return cleaned
 

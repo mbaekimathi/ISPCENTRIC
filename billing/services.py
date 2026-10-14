@@ -988,27 +988,46 @@ def normalize_customer_phone_key(phone: str) -> str:
     return "".join(ch for ch in raw if ch.isdigit())
 
 
-def find_customer_by_phone(organization, phone: str, *, exclude_pk=None):
-    """Return the first customer in this org whose phone normalizes to the same key."""
+def find_customer_by_phone(
+    organization, phone: str, *, exclude_pk=None, service_type=None
+):
+    """Return the first customer in this org whose phone normalizes to the same key.
+
+    ``service_type`` keeps PPPoE, Hotspot, and Static as separate accounts that
+    may share a phone number.
+    """
     key = normalize_customer_phone_key(phone)
     if not key or organization is None:
         return None
     org_id = getattr(organization, "pk", organization)
-    qs = Customer.objects.filter(organization_id=org_id).exclude(phone="").order_by("id")
+    qs = (
+        Customer.objects.filter(organization_id=org_id, phone_normalized=key)
+        .exclude(phone="")
+        .order_by("id")
+    )
+    if service_type:
+        qs = qs.filter(service_type=service_type)
     if exclude_pk:
         qs = qs.exclude(pk=exclude_pk)
-    for row in qs.iterator():
-        if normalize_customer_phone_key(row.phone) == key:
-            return row
-    return None
+    return qs.first()
 
 
-def customer_phone_is_taken(organization, phone: str, *, exclude_pk=None) -> bool:
-    return find_customer_by_phone(organization, phone, exclude_pk=exclude_pk) is not None
+def customer_phone_is_taken(
+    organization, phone: str, *, exclude_pk=None, service_type=None
+) -> bool:
+    return (
+        find_customer_by_phone(
+            organization,
+            phone,
+            exclude_pk=exclude_pk,
+            service_type=service_type,
+        )
+        is not None
+    )
 
 
 PHONE_ALREADY_REGISTERED = (
-    "That phone number is already registered to another account."
+    "That phone number is already registered for this service."
 )
 
 

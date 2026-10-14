@@ -2100,6 +2100,96 @@ class UsageAccuracyHardeningTests(TestCase):
             "2026-10-01 00:00",
         )
 
+    def test_filtered_window_insights_ignore_live_presence(self):
+        """Month/period insights use in-window growth, not who is online now."""
+        from django.core.cache import cache
+
+        from billing.usage_samples import _org_live_usage_cache_key, org_usage_payload
+
+        now = timezone.now()
+        since = now - timezone.timedelta(days=10)
+        until = now
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=since - timezone.timedelta(hours=3),
+            session_active=True,
+            bytes_in=1_000,
+            bytes_out=0,
+            download_bps=100,
+            upload_bps=50,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=since + timezone.timedelta(hours=2),
+            session_active=True,
+            bytes_in=4_000,
+            bytes_out=0,
+            download_bps=200,
+            upload_bps=50,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=since + timezone.timedelta(days=2),
+            session_active=False,
+            bytes_in=4_500,
+            bytes_out=0,
+            download_bps=0,
+            upload_bps=0,
+        )
+        idle = Customer.objects.create(
+            organization=self.org,
+            full_name="Idle In Window",
+            phone="0700003003",
+            account_number="PPP-ACC-IDLE",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="acc-idle",
+        )
+        cache.set(
+            _org_live_usage_cache_key(self.org.pk),
+            {
+                "ok": True,
+                "at": now.isoformat(),
+                "pppoe": {
+                    idle.pk: {
+                        "session_active": True,
+                        "download_bps": 8_000_000,
+                        "upload_bps": 1_000_000,
+                    }
+                },
+                "hotspot": {},
+            },
+            60,
+        )
+        payload = org_usage_payload(
+            self.org,
+            since=since,
+            until=until,
+            range_label="Custom window",
+            relative=False,
+            service="pppoe",
+            top_n=0,
+            use_cache=False,
+            auto_widen=False,
+        )
+        heavy = next(u for u in payload["top_users"] if u["customer_id"] == self.customer.pk)
+        quiet = next(u for u in payload["top_users"] if u["customer_id"] == idle.pk)
+        # 4500 - 1000 from the pre-window baseline; not the raw session total.
+        self.assertEqual(heavy["data_used_bytes"], 3_500)
+        self.assertEqual(heavy["period_usage_level"], "Low")
+        self.assertEqual(heavy["period_devices"], 1)
+        self.assertEqual(quiet["data_used_bytes"], 0)
+        self.assertEqual(quiet["period_usage_level"], "Idle")
+        self.assertEqual(quiet["period_devices"], 0)
+        self.assertFalse(quiet["period_latest_active"])
+        # Live session can change the status chip without rewriting the window mix.
+        self.assertEqual(quiet["usage_level"], "High")
+        self.assertEqual(payload["level_chart"]["counts"][3], 1)
+        self.assertEqual(payload["summary"]["data_used_bytes"], 3_500)
+        self.assertEqual(payload["offline_chart"]["labels"][0], "Idle In Window")
+
     def test_samples_export_matches_trend_total(self):
         from billing.usage_samples import client_usage_samples_export
 

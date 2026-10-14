@@ -1468,6 +1468,52 @@ class CustomerPhoneUniquenessTests(TestCase):
                 hotspot_mac="AA:BB:CC:DD:EE:02",
             )
 
+    def test_same_phone_can_be_hotspot_and_pppoe(self):
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot Client",
+            phone="254700000013",
+            account_number="HOT-SHARE",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:13",
+        )
+        pppoe = Customer.objects.create(
+            organization=self.org,
+            full_name="PPPoE Client",
+            phone="0700000013",
+            account_number="PPP-SHARE",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="SHAREUSER",
+            pppoe_password="secret",
+        )
+        self.assertEqual(pppoe.phone_normalized, "254700000013")
+
+    def test_pppoe_register_form_allows_phone_used_by_hotspot(self):
+        from billing.forms import PppoeClientRegisterForm
+
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot Existing",
+            phone="254710000014",
+            account_number="HOT-EXIST",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:14",
+        )
+        form = PppoeClientRegisterForm(
+            {
+                "full_name": "New PPPoE",
+                "phone": "0710000014",
+                "pppoe_username": "NEWPPPOE",
+                "pppoe_password": "secret",
+                "router": "",
+                "activate_account": "1",
+                "activation_date": "2026-09-04",
+            },
+            organization=self.org,
+        )
+        form.is_valid()
+        self.assertNotIn("phone", form.errors)
+
     def test_pppoe_register_form_rejects_duplicate_phone(self):
         from billing.forms import PppoeClientRegisterForm
 

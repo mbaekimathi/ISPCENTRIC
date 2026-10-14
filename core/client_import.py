@@ -601,11 +601,13 @@ def run_client_import(
             errors.append({"row": index, "error": "Missing phone number.", "name": full_name})
             continue
 
-        if customer_phone_is_taken(org, phone):
+        if customer_phone_is_taken(
+            org, phone, service_type=Customer.ServiceType.PPPOE
+        ):
             errors.append(
                 {
                     "row": index,
-                    "error": "Phone already registered for this ISP.",
+                    "error": "Phone already registered as a PPPoE client for this ISP.",
                     "name": full_name,
                     "phone": phone,
                 }

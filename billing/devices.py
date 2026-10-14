@@ -821,6 +821,7 @@ def maybe_set_customer_phone(customer, phone: str) -> bool:
     clash = (
         Customer.objects.filter(
             organization_id=customer.organization_id,
+            service_type=customer.service_type,
             phone_normalized=key,
         )
         .exclude(pk=customer.pk)
@@ -1182,12 +1183,14 @@ def resolve_or_create_hotspot_customer(
         phone_to_store = format_customer_phone_display(phone) if phone else ""
         key = normalize_customer_phone_key(phone) if phone else ""
         if key and Customer.objects.filter(
-            organization=org, phone_normalized=key
+            organization=org,
+            service_type=Customer.ServiceType.HOTSPOT,
+            phone_normalized=key,
         ).exists():
-            # Phone already belongs to another account (often PPPoE). Do not
-            # create a blank-phone Hotspot twin when a Hotspot owner exists —
-            # that path is handled above. Otherwise leave phone empty so STK
-            # can still proceed, then backfill if the clash clears.
+            # A Hotspot account already owns this number (the lookup above
+            # should have returned it). Leave the phone blank so this MAC can
+            # still start STK. A PPPoE or Static client with the same number
+            # is a different account and does not block storing the phone.
             phone_to_store = ""
 
         import secrets

@@ -350,7 +350,7 @@
           <p class="clients-usage-section-meta">
             Highest data users, online ratio, offline clients, usage mix, and devices for
             {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %}
-            · live today by default (switch tabs to refresh today). Use the filter above for another window.
+            · {{ range_label|default:"this window" }}.
           </p>
         </div>
       </header>
@@ -360,7 +360,7 @@
           <header>
             <p class="ax-chart-kicker">Distribution</p>
             <h3>Usage mix</h3>
-            <p>Clients by usage level in this window.</p>
+            <p>Clients by data and peak rate in {{ range_label|default:"this window" }}.</p>
           </header>
           <div class="client-usage-chart-wrap">
             <canvas id="chart-levels" height="240"></canvas>
@@ -373,9 +373,9 @@
             <h3>{% if active_tab == 'hotspot' %}Gadgets{% else %}Devices{% endif %} by client</h3>
             <p>
               {% if active_tab == 'hotspot' %}
-                Connected Hotspot gadgets per account (live when available).
+                Hotspot gadgets seen in {{ range_label|default:"this window" }}.
               {% else %}
-                Dialed CPE per PPPoE client (0 or 1).
+                Dialed CPE in {{ range_label|default:"this window" }} (1 if the client was online).
               {% endif %}
             </p>
           </header>
@@ -388,7 +388,7 @@
           <header>
             <p class="ax-chart-kicker">Top volume</p>
             <h3>Highest data users</h3>
-            <p>Top 12 clients by period data used — for capacity and plan decisions.</p>
+            <p>Top 12 clients by data used in {{ range_label|default:"this window" }}.</p>
           </header>
           <div class="client-usage-chart-wrap is-compact-rank">
             <canvas id="chart-top" height="240"></canvas>
@@ -399,7 +399,7 @@
           <header>
             <p class="ax-chart-kicker">Presence</p>
             <h3>Online ratio by client</h3>
-            <p>Same ranked set — who stayed online through the window.</p>
+            <p>Same ranked set — share of samples online in {{ range_label|default:"this window" }}.</p>
           </header>
           <div class="client-usage-chart-wrap is-compact-rank">
             <canvas id="chart-uptime" height="240"></canvas>
@@ -410,7 +410,7 @@
           <header>
             <p class="ax-chart-kicker">Risk</p>
             <h3>Offline clients</h3>
-            <p>Clients offline now (or lowest window uptime) — downtimes and online %.</p>
+            <p>Lowest uptime in {{ range_label|default:"this window" }} — online % and downtimes.</p>
           </header>
           <div class="client-usage-chart-wrap is-compact-rank">
             <canvas id="chart-offline" height="240"></canvas>
@@ -1112,12 +1112,27 @@
     return users;
   }
 
+  function periodLevel(user) {
+    var level = (user && (user.period_usage_level || user.usage_level)) || "Idle";
+    if (level !== "High" && level !== "Medium" && level !== "Low" && level !== "Idle") {
+      return "Idle";
+    }
+    return level;
+  }
+
+  function periodDevices(user) {
+    if (user && user.period_devices != null && user.period_devices !== "") {
+      return Number(user.period_devices) || 0;
+    }
+    return Number(
+      user && (user.devices_connected != null ? user.devices_connected : user.gadgets_connected)
+    ) || 0;
+  }
+
   function buildLevelChart(users) {
     var counts = { High: 0, Medium: 0, Low: 0, Idle: 0 };
     (users || []).forEach(function (u) {
-      var level = u.usage_level || "Idle";
-      if (!counts[level]) level = "Idle";
-      counts[level] += 1;
+      counts[periodLevel(u)] += 1;
     });
     return {
       labels: ["High", "Medium", "Low", "Idle"],
@@ -1147,25 +1162,18 @@
   }
 
   function buildOfflineChart(users) {
-    var list = (users || []).filter(function (u) {
-      return !(u && (u.access_state === "surfing" || u.live_active || u.latest_active));
-    });
-    list.sort(function (a, b) {
+    var list = (users || []).slice().sort(function (a, b) {
       var ar = Number(a && a.online_ratio) || 0;
       var br = Number(b && b.online_ratio) || 0;
       if (ar !== br) return ar - br;
       var ad = Number(a && a.downtime_count) || 0;
       var bd = Number(b && b.downtime_count) || 0;
       if (ad !== bd) return bd - ad;
+      var aa = a && a.period_latest_active ? 1 : 0;
+      var ba = b && b.period_latest_active ? 1 : 0;
+      if (aa !== ba) return aa - ba;
       return String((a && a.full_name) || "").localeCompare(String((b && b.full_name) || ""));
     });
-    if (!list.length) {
-      list = (users || []).slice().sort(function (a, b) {
-        var ar = Number(a && a.online_ratio) || 0;
-        var br = Number(b && b.online_ratio) || 0;
-        return ar - br;
-      });
-    }
     list = list.slice(0, 12);
     return {
       labels: list.map(function (u) { return u.full_name || "Client"; }),
@@ -1467,12 +1475,12 @@
     }
     if (charts.devices) {
       var deviceUsers = (users || []).slice().sort(function (a, b) {
-        var ag = Number(a && (a.devices_connected != null ? a.devices_connected : a.gadgets_connected)) || 0;
-        var bg = Number(b && (b.devices_connected != null ? b.devices_connected : b.gadgets_connected)) || 0;
+        var ag = periodDevices(a);
+        var bg = periodDevices(b);
         if (ag !== bg) return bg - ag;
         return userBytes(b) - userBytes(a);
       }).filter(function (u) {
-        return Number(u.devices_connected != null ? u.devices_connected : u.gadgets_connected) > 0;
+        return periodDevices(u) > 0;
       }).slice(0, 15);
       if (!deviceUsers.length) {
         deviceUsers = (users || []).slice(0, 8);
@@ -1482,7 +1490,7 @@
         datasets: [{
           label: devicesLabel,
           data: deviceUsers.map(function (u) {
-            return Number(u.devices_connected != null ? u.devices_connected : u.gadgets_connected) || 0;
+            return periodDevices(u);
           }),
           backgroundColor: "rgba(14,165,233,0.55)",
           borderRadius: 4

@@ -263,6 +263,7 @@ def _enrich_with_customers(organization, leads: list[dict]) -> None:
         "phone",
         "phone_normalized",
         "hotspot_mac",
+        "service_type",
         "status",
         "account_number",
         "sales_ticket_number",
@@ -288,8 +289,15 @@ def _enrich_with_customers(organization, leads: list[dict]) -> None:
         phone_key = (customer.phone_normalized or "").strip() or _normalize_phone(
             customer.phone or ""
         )
-        if phone_key and phone_key not in by_phone:
-            by_phone[phone_key] = customer
+        if phone_key:
+            current = by_phone.get(phone_key)
+            # Portal clicks are Hotspot traffic. Prefer that account when the
+            # same phone is also registered as PPPoE or Static.
+            if current is None or (
+                getattr(customer, "service_type", "") == "hotspot"
+                and getattr(current, "service_type", "") != "hotspot"
+            ):
+                by_phone[phone_key] = customer
 
     for row in leads:
         customer = None
