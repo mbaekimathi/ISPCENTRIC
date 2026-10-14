@@ -9299,8 +9299,16 @@ class HotspotIntermittentDropTests(SimpleTestCase):
                 return_value="http://billing.example",
             ),
             patch(
+                "core.mikrotik_connect._hotspot_login_file_ok",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_hotspot_captive_dns_hijacks",
+                return_value=0,
+            ),
+            patch(
                 "core.mikrotik_connect._ensure_hotspot_pool_wan_guard",
-                side_effect=AssertionError("must not rewrite firewall without leak"),
+                return_value=["Hotspot pool WAN guard"],
             ),
             patch(
                 "core.mikrotik_connect._ensure_hotspot_tether_block",
@@ -9314,6 +9322,9 @@ class HotspotIntermittentDropTests(SimpleTestCase):
             result = repair_unpaid_hotspot_leaking_on_router(router)
 
         self.assertEqual(bounce_calls, [])
+        self.assertTrue(
+            any("pool WAN guard" in n for n in (result.get("notes") or []))
+        )
         self.assertEqual(result.get("repaired"), 0)
 
     def test_hotspot_speed_profile_disables_session_timeout_ceiling(self):
@@ -12153,6 +12164,10 @@ class AccessFlowCorrectionLoopTests(TestCase):
                 "core.mikrotik_connect._portal_billing_ipv4s",
                 return_value=frozenset({"203.0.113.10"}),
             ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_pool_dns_redirect",
+                return_value=["Hotspot DNS redirected to 10.50.50.1"],
+            ),
         ):
             notes = _ensure_hotspot_pool_wan_guard(MagicMock())
 
@@ -12192,9 +12207,32 @@ class AccessFlowCorrectionLoopTests(TestCase):
                 for r in adds
             )
         )
+        self.assertFalse(
+            any(r.get("dst-port") == "53" for r in adds),
+            "DNS must be redirected to the gateway, not accepted to the internet",
+        )
+        billing_accepts = [
+            r
+            for r in adds
+            if r.get("action") == "accept" and r.get("dst-address") == "203.0.113.10"
+        ]
+        self.assertEqual(
+            {(r.get("protocol"), r.get("dst-port")) for r in billing_accepts},
+            {("tcp", "80"), ("tcp", "443"), ("udp", "443")},
+        )
+        reject_idx = next(
+            i for i, rule in enumerate(adds) if rule.get("action") == "reject"
+        )
+        http_idx = next(
+            i
+            for i, rule in enumerate(adds)
+            if rule.get("dst-port") == "80" and rule.get("action") == "accept"
+        )
+        self.assertLess(http_idx, reject_idx)
+        self.assertTrue(any("DNS redirected" in n for n in notes))
 
-    def test_hotspot_pool_wan_guard_skips_drop_without_billing_ip(self):
-        """Empty billing allow + pool drop = pay page ERR_CONNECTION_TIMED_OUT."""
+    def test_hotspot_pool_wan_guard_still_drops_without_billing_ip(self):
+        """Unknown billing IP must not leave unpaid clients on the LAN→WAN accept."""
         from unittest.mock import MagicMock
 
         from core.mikrotik_connect import _ensure_hotspot_pool_wan_guard
@@ -12217,13 +12255,89 @@ class AccessFlowCorrectionLoopTests(TestCase):
                 "core.mikrotik_connect._portal_billing_ipv4s",
                 return_value=frozenset(),
             ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_pool_dns_redirect",
+                return_value=[],
+            ),
         ):
             notes = _ensure_hotspot_pool_wan_guard(MagicMock())
 
         self.assertTrue(any("no billing IPv4" in n for n in notes))
-        self.assertFalse(any(r.get("action") == "reject" for r in adds))
-        self.assertFalse(any(r.get("action") == "drop" for r in adds))
-        self.assertTrue(any(r.get("action") == "accept" for r in adds))
+        self.assertTrue(any(r.get("action") == "reject" for r in adds))
+        self.assertTrue(any(r.get("action") == "drop" for r in adds))
+        self.assertFalse(
+            any("pool billing" in (r.get("comment") or "") for r in adds)
+        )
+
+    def test_hotspot_pool_dns_redirects_to_gateway(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import (
+            ISP_HOTSPOT_ADDRESS,
+            ISP_HOTSPOT_POOL_NETWORK,
+            _ensure_hotspot_pool_dns_redirect,
+        )
+
+        added: list[dict] = []
+
+        def fake_add(sock, path, **props):
+            added.append({"path": path, **props})
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+        ):
+            notes = _ensure_hotspot_pool_dns_redirect(MagicMock())
+
+        self.assertTrue(any("DNS redirected" in n for n in notes))
+        self.assertEqual(
+            [(row.get("protocol"), row.get("dst-port")) for row in added],
+            [("udp", "53"), ("tcp", "53")],
+        )
+        self.assertTrue(
+            all(
+                row.get("action") == "redirect"
+                and row.get("src-address") == ISP_HOTSPOT_POOL_NETWORK
+                and row.get("dst-address") == f"!{ISP_HOTSPOT_ADDRESS}"
+                for row in added
+            )
+        )
+
+    def test_hotspot_pool_wan_guard_does_not_append_when_place_before_fails(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import _ensure_hotspot_pool_wan_guard
+
+        calls: list[str] = []
+
+        def fake_add_filter(sock, rule, place_before=""):
+            calls.append(place_before)
+            return {"_reply": "!trap"}
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._add_filter_rule",
+                side_effect=fake_add_filter,
+            ),
+            patch("core.mikrotik_connect._first_forward_drop_id", return_value="*lan"),
+            patch(
+                "core.mikrotik_connect._portal_billing_ipv4s",
+                return_value=frozenset({"203.0.113.10"}),
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_pool_dns_redirect",
+                return_value=[],
+            ),
+        ):
+            notes = _ensure_hotspot_pool_wan_guard(MagicMock())
+
+        self.assertTrue(calls)
+        self.assertTrue(all(place == "*lan" for place in calls))
+        self.assertTrue(any("could not be placed" in n for n in notes))
 
     @override_settings(
         PUBLIC_BASE_URL="http://isp.richcom.co.ke",
@@ -15759,6 +15873,64 @@ class ExpiredAccessEnforcementHardeningTests(SimpleTestCase):
         self.assertEqual(notes, [])
         set_mock.assert_not_called()
         kick.assert_not_called()
+
+    def test_orphan_blocker_removes_paid_secret_bound_to_another_router(self):
+        from unittest.mock import MagicMock, patch
+
+        from core.mikrotik_connect import (
+            PPP_SECRET_TAG,
+            _block_orphan_pppoe_secrets_on_socket,
+        )
+
+        paid = type(
+            "Customer",
+            (),
+            {
+                "pppoe_username": "paiduser",
+                "pk": 4,
+                "router_id": 9,
+                "status": "active",
+                "service_type": "pppoe",
+            },
+        )()
+        router = type("Router", (), {"organization_id": 1, "pk": 2})()
+        with (
+            patch(
+                "core.mikrotik_connect._org_pppoe_customers_by_username",
+                return_value={"paiduser": paid},
+            ),
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._print",
+                return_value=[
+                    {
+                        ".id": "*1",
+                        "name": "paiduser",
+                        "profile": "ispcentric-pppoe-5u-10d",
+                        "disabled": "false",
+                        "comment": f"{PPP_SECRET_TAG} ACC-2",
+                    }
+                ],
+            ),
+            patch(
+                "core.mikrotik_connect._remove",
+                return_value={"_reply": "!done"},
+            ) as remove_mock,
+            patch("core.mikrotik_connect._set") as set_mock,
+            patch(
+                "core.mikrotik_connect._disconnect_pppoe_sessions_many",
+                return_value=1,
+            ) as kick,
+        ):
+            notes = _block_orphan_pppoe_secrets_on_socket(MagicMock(), router)
+
+        self.assertTrue(any("another router" in note for note in notes))
+        remove_mock.assert_called_once()
+        set_mock.assert_not_called()
+        kick.assert_called_once()
 
     def test_static_wan_block_adds_address_list_and_kills_connections(self):
         from unittest.mock import MagicMock, patch

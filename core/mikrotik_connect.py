@@ -12640,18 +12640,87 @@ def _kill_firewall_connections_for_addresses(
     return removed
 
 
+def _ensure_hotspot_pool_dns_redirect(sock: socket.socket) -> list[str]:
+    """
+    Send unpaid Hotspot DNS to the router resolver.
+
+    A forward accept for port 53 lets phones ask 8.8.8.8 and skip the static
+    pin that lines the pay hostname up with the billing firewall allow. Redirect
+    keeps every lookup on the gateway, where that pin is installed.
+    """
+    notes: list[str] = []
+    stale_ids: list[str] = []
+    for row in _print(sock, "/ip/firewall/nat", props=".id,comment,chain"):
+        comment = row.get("comment") or ""
+        if ISP_HOTSPOT_TAG not in comment or "pool dns" not in comment:
+            continue
+        if (row.get("chain") or "").strip() != "dstnat":
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if item_id:
+            stale_ids.append(item_id)
+    for item_id in stale_ids:
+        _remove(sock, "/ip/firewall/nat", item_id)
+
+    gateway = ISP_HOTSPOT_ADDRESS
+    added = 0
+    for protocol in ("udp", "tcp"):
+        attempts = [
+            {
+                "chain": "dstnat",
+                "action": "redirect",
+                "protocol": protocol,
+                "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                "dst-address": f"!{gateway}",
+                "dst-port": "53",
+                "to-ports": "53",
+                "comment": f"{ISP_HOTSPOT_TAG} pool dns redirect",
+            },
+            {
+                "chain": "dstnat",
+                "action": "redirect",
+                "protocol": protocol,
+                "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                "dst-port": "53",
+                "to-ports": "53",
+                "comment": f"{ISP_HOTSPOT_TAG} pool dns redirect",
+            },
+        ]
+        terminal = {"_reply": "!trap"}
+        for props in attempts:
+            terminal = _add(sock, "/ip/firewall/nat", **props)
+            if terminal.get("_reply") != "!trap":
+                added += 1
+                break
+        if terminal.get("_reply") == "!trap":
+            notes.append(
+                f"warning: could not redirect Hotspot {protocol}/53 to {gateway}"
+            )
+    if added:
+        notes.append(
+            f"Hotspot DNS redirected to {gateway} "
+            f"({added} rule(s); pay hostname uses the router pin)"
+        )
+    return notes
+
+
 def _ensure_hotspot_pool_wan_guard(
     sock: socket.socket,
     *,
     portal_url: str = "",
 ) -> list[str]:
     """
-    Hard-stop unpaid Hotspot-pool clients from WAN surfing.
+    Partial WAN for unpaid Hotspot-pool clients: pay page only, no browsing.
 
     MikroTik Hotspot dynamic firewall sometimes lets QUIC/HTTPS app sockets
     limp along for unauthorized hosts. Mirror the PPPoE blocked model for the
-    dedicated 10.50.50.0/24 pool: paid MACs stay on ``ispcentric-hotspot-ok``;
-    everyone else in the pool is RST/dropped to WAN (billing host still allowed).
+    dedicated 10.50.50.0/24 pool:
+
+    * paid MACs on ``ispcentric-hotspot-ok`` keep full WAN
+    * everyone else resolves DNS on the hotspot gateway (pay-host pin) and may
+      open TCP 80, TCP 443, and UDP 443 to the billing server
+    * every other WAN destination is RST/dropped, including when the billing
+      address is unknown — that must not fall open to the LAN→WAN accept
     """
     notes: list[str] = []
     # Refresh tagged rules so portal IP / order stay correct after PUBLIC_BASE_URL changes.
@@ -12660,7 +12729,11 @@ def _ensure_hotspot_pool_wan_guard(
         comment = row.get("comment") or ""
         if ISP_HOTSPOT_TAG not in comment:
             continue
-        if "pool wan" not in comment and "pool billing" not in comment:
+        if (
+            "pool wan" not in comment
+            and "pool billing" not in comment
+            and "pool dns" not in comment
+        ):
             continue
         if (row.get("chain") or "").strip() != "forward":
             continue
@@ -12693,6 +12766,7 @@ def _ensure_hotspot_pool_wan_guard(
             place_before = (row.get(".id") or "").strip() or place_before
             break
 
+    notes.extend(_ensure_hotspot_pool_dns_redirect(sock))
     billing_ips = sorted(_portal_billing_ipv4s(portal_url))
 
     rules: list[dict[str, str]] = [
@@ -12705,17 +12779,7 @@ def _ensure_hotspot_pool_wan_guard(
         },
     ]
     for billing_ip in billing_ips:
-        # Broad accept (any proto/port) so HTTP + HTTPS + QUIC to billing work
-        # after public TLS — Brave/Chrome often open https:// first.
-        rules.append(
-            {
-                "chain": "forward",
-                "action": "accept",
-                "src-address": ISP_HOTSPOT_POOL_NETWORK,
-                "dst-address": billing_ip,
-                "comment": f"{ISP_HOTSPOT_TAG} pool billing",
-            }
-        )
+        # Pay page only. A protocol-less accept would open every port on the VPS.
         for proto, port, suffix in (
             ("tcp", "80", "http"),
             ("tcp", "443", "https"),
@@ -12732,56 +12796,68 @@ def _ensure_hotspot_pool_wan_guard(
                     "comment": f"{ISP_HOTSPOT_TAG} pool billing {suffix}",
                 }
             )
-    # CRITICAL: never install pool WAN reject/drop without billing allows.
-    # That is the "pay page works on open internet, ERR_CONNECTION_TIMED_OUT
-    # on Hotspot" failure — unpaid 10.50.50 clients are blackholed to the VPS.
     if not billing_ips:
         notes.append(
-            "warning: no billing IPv4 resolved — installed paid-pool accept only; "
-            "skipped pool WAN drop so the Hotspot pay page is not timed out. "
-            "Set PUBLIC_BASE_URL / WIREGUARD_ENDPOINT to the VPS public IP, then "
-            "push Hotspot again."
+            "warning: no billing IPv4 resolved — unpaid clients stay blocked from "
+            "WAN, and the pay page cannot load until PUBLIC_BASE_URL or "
+            "WIREGUARD_ENDPOINT is a public IPv4. Push Hotspot again after that."
         )
-    else:
-        rules.extend(
-            [
-                {
-                    "chain": "forward",
-                    "action": "reject",
-                    "reject-with": "tcp-reset",
-                    "protocol": "tcp",
-                    "src-address": ISP_HOTSPOT_POOL_NETWORK,
-                    "out-interface-list": "WAN",
-                    "comment": f"{ISP_HOTSPOT_TAG} pool wan reject",
-                },
-                {
-                    "chain": "forward",
-                    "action": "drop",
-                    "protocol": "udp",
-                    "dst-port": "443",
-                    "src-address": ISP_HOTSPOT_POOL_NETWORK,
-                    "out-interface-list": "WAN",
-                    "comment": f"{ISP_HOTSPOT_TAG} pool wan quic",
-                },
-                {
-                    "chain": "forward",
-                    "action": "drop",
-                    "src-address": ISP_HOTSPOT_POOL_NETWORK,
-                    "out-interface-list": "WAN",
-                    "comment": f"{ISP_HOTSPOT_TAG} pool wan drop",
-                },
-            ]
-        )
+    # Always drop the rest of the pool. Skipping this when DNS fails is what
+    # let unpaid clients ride the LAN→WAN accept.
+    rules.extend(
+        [
+            {
+                "chain": "forward",
+                "action": "reject",
+                "reject-with": "tcp-reset",
+                "protocol": "tcp",
+                "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                "out-interface-list": "WAN",
+                "comment": f"{ISP_HOTSPOT_TAG} pool wan reject",
+            },
+            {
+                "chain": "forward",
+                "action": "drop",
+                "protocol": "udp",
+                "dst-port": "443",
+                "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                "out-interface-list": "WAN",
+                "comment": f"{ISP_HOTSPOT_TAG} pool wan quic",
+            },
+            {
+                "chain": "forward",
+                "action": "drop",
+                "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                "out-interface-list": "WAN",
+                "comment": f"{ISP_HOTSPOT_TAG} pool wan drop",
+            },
+        ]
+    )
     added = 0
+    failed: list[str] = []
     for rule in rules:
-        terminal = _add_filter_rule(sock, rule, place_before=place_before)
-        if terminal.get("_reply") == "!trap" and place_before:
+        comment = rule.get("comment") or "rule"
+        if place_before:
+            terminal = _add_filter_rule(sock, rule, place_before=place_before)
+        else:
+            # No earlier forward accept/drop to hide behind.
             terminal = _add_filter_rule(sock, rule)
-        if terminal.get("_reply") != "!trap":
-            added += 1
+        if terminal.get("_reply") == "!trap":
+            failed.append(comment)
+            continue
+        added += 1
+    if failed:
+        notes.append(
+            "warning: Hotspot pool WAN guard could not be placed before the "
+            "LAN accept ("
+            + ", ".join(failed)
+            + "). Rules were not appended below it."
+        )
     if added:
         billing_note = (
-            f"; billing {', '.join(billing_ips)}" if billing_ips else "; no billing drop"
+            f"; billing {', '.join(billing_ips)}"
+            if billing_ips
+            else "; WAN dropped, pay host missing"
         )
         notes.append(
             f"Hotspot pool WAN guard ({ISP_HOTSPOT_POOL_NETWORK}; "
@@ -14706,6 +14782,21 @@ def _nas_has_stale_pppoe_secrets(sock: socket.socket, router) -> bool:
     return False
 
 
+def _claim_unassigned_pppoe_router(customer, router_pk) -> None:
+    """Pin an unassigned PPPoE client to the NAS that currently has the session."""
+    if customer is None or not router_pk:
+        return
+    if getattr(customer, "router_id", None) not in (None, ""):
+        return
+    manager = getattr(type(customer), "objects", None)
+    pk = getattr(customer, "pk", None)
+    if manager is None or not pk:
+        return
+    updated = manager.filter(pk=pk, router_id__isnull=True).update(router_id=router_pk)
+    if updated:
+        customer.router_id = router_pk
+
+
 def _block_orphan_pppoe_secrets_on_socket(sock: socket.socket, router) -> list[str]:
     """
     Block stale PPPoE secrets on this NAS that must not surf.
@@ -14714,11 +14805,13 @@ def _block_orphan_pppoe_secrets_on_socket(sock: socket.socket, router) -> list[s
     - true orphans (ispcentric-tagged secret with no billing customer)
     - unpaid / expired customers whose secret still lives on this NAS even when
       ``customer.router_id`` points at a different MikroTik
-    Paid customers assigned elsewhere are left alone (multi-NAS failover).
+    - paid customers assigned to another MikroTik: the secret is removed so the
+      same username cannot dial two routers at once (one session per account)
     """
     org_customers = _org_pppoe_customers_by_username(router)
     notes: list[str] = []
     kick_names: set[str] = set()
+    router_pk = getattr(router, "pk", None)
 
     for row in _print(
         sock, "/ppp/secret", props=".id,name,profile,disabled,comment"
@@ -14730,8 +14823,32 @@ def _block_orphan_pppoe_secrets_on_socket(sock: socket.socket, router) -> list[s
         if not name:
             continue
         customer = org_customers.get(name.lower())
+        assigned_id = getattr(customer, "router_id", None) if customer is not None else None
+        bound_elsewhere = (
+            customer is not None and assigned_id not in (None, "", router_pk)
+        )
+        if bound_elsewhere:
+            item_id = (row.get(".id") or "").strip()
+            if not item_id:
+                continue
+            terminal = _remove(sock, "/ppp/secret", item_id)
+            if terminal.get("_reply") == "!trap":
+                terminal = _set(
+                    sock,
+                    "/ppp/secret",
+                    item_id,
+                    disabled="yes",
+                    comment=f"{PPP_SECRET_TAG} bound to another router",
+                )
+            if terminal.get("_reply") != "!trap":
+                notes.append(f"removed PPPoE {name} (bound to another router)")
+                kick_names.add(name)
+            continue
         if customer is not None and _customer_internet_allowed(customer):
-            # Paid elsewhere — do not tear down a failover secret.
+            if assigned_id in (None, "") and router_pk and _pppoe_has_active_session(
+                sock, name
+            ):
+                _claim_unassigned_pppoe_router(customer, router_pk)
             continue
         profile = (row.get("profile") or "").strip()
         if profile == PPPOE_BLOCKED_PROFILE_NAME:
@@ -15695,8 +15812,10 @@ def _repair_unpaid_hotspot_leak_on_socket(
         )
         if cleared:
             notes.append(f"cleared {cleared} captive DNS hijack(s)")
+        # Always rewrite the pool guard. A router pushed before the DNS redirect
+        # otherwise keeps drop-everything rules and the pay sheet stays white.
+        notes.extend(_ensure_hotspot_pool_wan_guard(sock, portal_url=portal))
         if leak_found or login_broken:
-            notes.extend(_ensure_hotspot_pool_wan_guard(sock, portal_url=portal))
             notes.extend(
                 _ensure_hotspot_tether_block(
                     sock,
@@ -16993,32 +17112,24 @@ def provision_customer_pppoe(
             if len(routers) == 1:
                 target = routers[0]
             elif len(routers) > 1:
-                results = [
-                    provision_customer_pppoe(
+                # One secret, one NAS. Installing the same login on every
+                # router lets the account dial in two places at once.
+                last_error = "Could not reach any organization MikroTik."
+                results = []
+                for item in routers:
+                    result = provision_customer_pppoe(
                         customer,
                         router=item,
                         candidate_hosts=candidate_hosts,
                         ensure_stack=ensure_stack,
                         force_disabled=force_disabled,
                     )
-                    for item in routers
-                ]
-                ok_results = [item for item in results if item.get("ok")]
-                if ok_results:
-                    return {
-                        "ok": True,
-                        "username": username,
-                        "routers": ok_results,
-                        "message": (
-                            f"PPPoE secret “{username}” pushed to "
-                            f"{len(ok_results)} MikroTik router(s)."
-                        ),
-                    }
-                first_error = next(
-                    (item.get("error") for item in results if item.get("error")),
-                    "Could not reach any organization MikroTik.",
-                )
-                return {"ok": False, "error": first_error, "results": results}
+                    results.append(result)
+                    if result.get("ok"):
+                        return result
+                    if result.get("error"):
+                        last_error = result["error"]
+                return {"ok": False, "error": last_error, "results": results}
         if target is None:
             return {
                 "ok": False,
@@ -25179,9 +25290,22 @@ def _ensure_isp_hotspot_stack(
     )
     # Hard-stop unpaid pool clients (QUIC/app leak) even when Hotspot dynamic
     # firewall or PPPoE compulsory LAN drop is incomplete.
-    notes.extend(
-        _ensure_hotspot_pool_wan_guard(sock, portal_url=pay_url or garden_url)
+    guard_notes = _ensure_hotspot_pool_wan_guard(
+        sock, portal_url=pay_url or garden_url
     )
+    notes.extend(guard_notes)
+    if any("no billing IPv4" in n for n in guard_notes):
+        raise ConnectionError(
+            "Hotspot pay page has no billing IPv4. Set PUBLIC_BASE_URL or "
+            "WIREGUARD_ENDPOINT to the VPS public address, then push Hotspot "
+            "again. Unpaid clients are blocked from other sites until then."
+        )
+    if any("could not be placed" in n for n in guard_notes):
+        raise ConnectionError(
+            "Hotspot pool firewall could not be inserted before the LAN-to-WAN "
+            "accept, so unpaid clients would still be able to browse. "
+            + " ".join(n for n in guard_notes if "could not be placed" in n)
+        )
     notes.extend(
         _ensure_hotspot_tether_block(
             sock,
