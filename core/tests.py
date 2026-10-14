@@ -9311,6 +9311,14 @@ class HotspotIntermittentDropTests(SimpleTestCase):
                 return_value=["Hotspot pool WAN guard"],
             ),
             patch(
+                "core.mikrotik_connect._ensure_hotspot_billing_dns_static",
+                return_value=["DNS pin billing.example → 203.0.113.10"],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_walled_garden",
+                return_value=["walled garden billing.example"],
+            ),
+            patch(
                 "core.mikrotik_connect._ensure_hotspot_tether_block",
                 side_effect=AssertionError("must not rewrite tether without leak"),
             ),
@@ -9324,6 +9332,9 @@ class HotspotIntermittentDropTests(SimpleTestCase):
         self.assertEqual(bounce_calls, [])
         self.assertTrue(
             any("pool WAN guard" in n for n in (result.get("notes") or []))
+        )
+        self.assertTrue(
+            any("walled garden" in n for n in (result.get("notes") or []))
         )
         self.assertEqual(result.get("repaired"), 0)
 

@@ -15815,6 +15815,13 @@ def _repair_unpaid_hotspot_leak_on_socket(
         # Always rewrite the pool guard. A router pushed before the DNS redirect
         # otherwise keeps drop-everything rules and the pay sheet stays white.
         notes.extend(_ensure_hotspot_pool_wan_guard(sock, portal_url=portal))
+        # HTTPS pay (Chrome upgrades http→https) never reaches the VPS unless
+        # the Hotspot walled garden and the DNS pin match the billing IP.
+        # Doing this only when login.html is missing left most routers timing
+        # out on https://…/hotspot/…/pay/.
+        if portal:
+            notes.extend(_ensure_hotspot_billing_dns_static(sock, portal))
+            notes.extend(_ensure_hotspot_walled_garden(sock, portal))
         if leak_found or login_broken:
             notes.extend(
                 _ensure_hotspot_tether_block(
@@ -21830,10 +21837,13 @@ def _ensure_hotspot_billing_dns_static(
     except ValueError:
         pass
 
-    ips = _portal_target_ipv4s(portal_url)
+    # Same public address the pool firewall allows. A router-local lookup can
+    # return a tunnel or stale address, and HTTPS to that address then times out.
+    ips = sorted(_portal_billing_ipv4s(portal_url)) or _portal_target_ipv4s(portal_url)
     if not ips:
         notes.append(f"warning: could not resolve {host} for Hotspot DNS pin")
         return notes
+    ips = ips[:1]
 
     existing = {
         ((row.get("name") or "").strip().lower(), (row.get("comment") or "")): (
