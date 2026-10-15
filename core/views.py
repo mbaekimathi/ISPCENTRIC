@@ -17005,6 +17005,7 @@ def client_router_login_start(request, customer_id: int):
             customer.save(update_fields=update_fields)
 
     login_error = (login.get("error") or "").strip()
+    login_blocked = bool(login.get("login_blocked"))
     # Web UI is reachable but auto-sign-in failed — always offer Save & connect
     # so a wrong/outdated saved (or NAS-default) password can be corrected.
     needs_password = not authenticated
@@ -17017,7 +17018,12 @@ def client_router_login_start(request, customer_id: int):
             else "Could not sign in automatically. Enter the client router admin password."
         )
     guidance = []
-    if needs_password:
+    if login_blocked:
+        guidance = [
+            "Edit the password above — the rejected one is not sent again.",
+            "Save & connect stores the updated password on this client and signs in with it.",
+        ]
+    elif needs_password:
         guidance = (
             [
                 "Confirm the username/password above match this client router "
@@ -17057,6 +17063,7 @@ def client_router_login_start(request, customer_id: int):
                 (customer.cpe_password or working_pass or probe_password or "").strip()
             ),
             "needs_password": needs_password,
+            "login_blocked": login_blocked,
             "login_error": login_error,
             "tried_password": had_password if needs_password else False,
         }

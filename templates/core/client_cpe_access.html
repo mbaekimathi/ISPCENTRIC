@@ -384,7 +384,11 @@
           + ".";
       }
     }
-    if (stampEl) stampEl.textContent = data.authenticated ? "Signed in" : "Connected";
+    if (stampEl) {
+      stampEl.textContent = data.authenticated
+        ? "Signed in"
+        : (passwordBlocked ? "Update password" : "Connected");
+    }
     if (connecting) {
       connecting.hidden = needPass;
       if (connectingTitle) {
@@ -428,6 +432,17 @@
       if (errorActions) errorActions.hidden = false;
       if (fixNasBtn) fixNasBtn.hidden = true;
       if (errorDetail) errorDetail.textContent = "";
+      var blockedPass = passwordForm
+        && passwordForm.querySelector("input[name=cpe_password]");
+      if (
+        passwordBlocked
+        && blockedPass
+        && !blockedPass.matches(":focus")
+        && String(blockedPass.value || "") === String(cpePass || "")
+      ) {
+        blockedPass.focus();
+        blockedPass.select();
+      }
     }
     if (data.cpe_username) {
       cpeUser = data.cpe_username;
@@ -435,10 +450,15 @@
       if (userInput && !userInput.matches(":focus")) userInput.value = cpeUser;
     }
     if (newTab) {
-      newTab.href = url;
-      newTab.hidden = false;
-      if (!opened) {
-        try { newTab.focus(); } catch (err) {}
+      if (passwordBlocked) {
+        newTab.hidden = true;
+        newTab.removeAttribute("href");
+      } else {
+        newTab.href = url;
+        newTab.hidden = false;
+        if (!opened) {
+          try { newTab.focus(); } catch (err) {}
+        }
       }
     }
   }
@@ -513,7 +533,12 @@
   }
 
   function connect(body, fromUserGesture) {
-    if (!startUrl || inFlight) return;
+    if (!startUrl) return;
+    var gen = ++connectGen;
+    if (connectAbort) {
+      try { connectAbort.abort(); } catch (err) {}
+    }
+    connectAbort = new AbortController();
     inFlight = true;
     closePendingTab();
     // Open a blank tab during a user click so the later redirect is not
@@ -534,6 +559,7 @@
       method: body ? "POST" : "GET",
       credentials: "same-origin",
       headers: { "X-Requested-With": "XMLHttpRequest" },
+      signal: connectAbort.signal,
     };
     if (body) {
       options.headers["X-CSRFToken"] = csrfInput ? csrfInput.value : "";
@@ -546,6 +572,7 @@
         });
       })
       .then(function (result) {
+        if (gen !== connectGen) return;
         var data = result.data || {};
         if (data.cpe_username) {
           cpeUser = data.cpe_username;
@@ -560,7 +587,9 @@
         }
         showError(data);
       })
-      .catch(function () {
+      .catch(function (err) {
+        if (err && err.name === "AbortError") return;
+        if (gen !== connectGen) return;
         showError({
           failure_class: "unreachable",
           detail: "Could not reach the billing server to start router access.",
@@ -568,7 +597,7 @@
         });
       })
       .finally(function () {
-        inFlight = false;
+        if (gen === connectGen) inFlight = false;
       });
   }
 
