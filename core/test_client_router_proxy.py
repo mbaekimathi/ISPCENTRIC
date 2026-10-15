@@ -743,6 +743,72 @@ class ClientRouterProxyTests(TestCase):
         self.assertEqual(self.customer.cpe_password, "newsecret")
         self.assertEqual(probe.call_args.kwargs.get("cpe_password"), "newsecret")
 
+    def test_start_posts_updated_password_after_rejection(self):
+        """An edited password is saved and sent even when the previous one was rejected."""
+        self.customer.cpe_password = "shelterlink2020"
+        self.customer.cpe_username = "admin"
+        self.customer.save(update_fields=["cpe_password", "cpe_username"])
+        self.cpe_login_patcher.stop()
+        self.addCleanup(self.cpe_login_patcher.start)
+        seen = []
+
+        def _login(*args, **kwargs):
+            seen.append(kwargs.get("cpe_password"))
+            password = kwargs.get("cpe_password") or ""
+            rejected = password == "shelterlink2020"
+            return {
+                "ok": not rejected,
+                "authenticated": not rejected,
+                "cookies": {} if rejected else {"stok": "ok"},
+                "basic_header": "",
+                "vendor": "tenda",
+                "cpe_username": "admin",
+                "cpe_password": password,
+                "support_user": False,
+                "login_blocked": rejected,
+                "error": (
+                    "The saved client router admin password was rejected — only 4 "
+                    "attempts left. Update the saved password before trying again."
+                    if rejected
+                    else ""
+                ),
+                "steps": [],
+            }
+
+        with (
+            patch(
+                "core.views.probe_customer_cpe_web",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "cpe_host": "10.20.0.55",
+                    "port": 80,
+                    "reachable": True,
+                    "ping_ok": True,
+                },
+            ),
+            patch("core.views.login_customer_cpe_web_session", side_effect=_login),
+        ):
+            rejected = self.client.post(
+                f"/app/clients/{self.customer.pk}/router-login/start/",
+                {"cpe_username": "admin", "cpe_password": "shelterlink2020"},
+            )
+            updated = self.client.post(
+                f"/app/clients/{self.customer.pk}/router-login/start/",
+                {"cpe_username": "admin", "cpe_password": "new-router-pass"},
+            )
+
+        rejected_payload = rejected.json()
+        self.assertTrue(rejected_payload["login_blocked"])
+        self.assertFalse(rejected_payload["authenticated"])
+        self.assertTrue(rejected_payload["needs_password"])
+        updated_payload = updated.json()
+        self.assertTrue(updated_payload["authenticated"])
+        self.assertFalse(updated_payload["login_blocked"])
+        self.assertEqual(seen, ["shelterlink2020", "new-router-pass"])
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.cpe_password, "new-router-pass")
+
     def test_start_uses_nas_default_cpe_password_when_client_has_none(self):
         """Online clients without a saved CPE password still try the NAS default."""
         self.nas.default_cpe_username = "admin"
@@ -1398,6 +1464,72 @@ class CpeWebLoginLockoutTests(TestCase):
             result = self._fetch()
 
         self.assertIn("three minutes", result["error"])
+
+    def test_open_router_skips_a_rejected_password_until_it_changes(self):
+        """Save & connect must not repost a rejected password, but a new one is tried."""
+        calls = []
+
+        @contextmanager
+        def _proxy(*args, **kwargs):
+            yield {"host": "10.9.0.2", "port": 39001, "cpe_host": "10.20.0.11"}
+
+        def _tenda(proxy, password, **kwargs):
+            calls.append(password)
+            return False, {}, (
+                "The saved client router admin password was rejected — only 4 "
+                "attempts left before the router locks logins for three minutes. "
+                "Update the saved password before trying again."
+            )
+
+        with (
+            patch.object(mikrotik_connect, "customer_cpe_web_proxy", _proxy),
+            patch.object(
+                mikrotik_connect,
+                "_cpe_web_http_request",
+                return_value=(
+                    200,
+                    b"<html>login.html type=\"password\" tenda</html>",
+                    {},
+                    "",
+                ),
+            ),
+            patch.object(mikrotik_connect, "_tenda_web_login", side_effect=_tenda),
+            patch.object(mikrotik_connect, "_detect_cpe_web_vendor", return_value="tenda"),
+        ):
+            first = mikrotik_connect.login_customer_cpe_web_session(
+                "10.9.0.2",
+                "admin",
+                "secret",
+                pppoe_username="customer1",
+                cpe_username="admin",
+                cpe_password="shelterlink2020",
+                cpe_port=80,
+            )
+            second = mikrotik_connect.login_customer_cpe_web_session(
+                "10.9.0.2",
+                "admin",
+                "secret",
+                pppoe_username="customer1",
+                cpe_username="admin",
+                cpe_password="shelterlink2020",
+                cpe_port=80,
+            )
+            third = mikrotik_connect.login_customer_cpe_web_session(
+                "10.9.0.2",
+                "admin",
+                "secret",
+                pppoe_username="customer1",
+                cpe_username="admin",
+                cpe_password="updated-secret",
+                cpe_port=80,
+            )
+
+        self.assertTrue(first["login_blocked"])
+        self.assertIn("4 attempts", first["error"])
+        self.assertTrue(second["login_blocked"])
+        self.assertEqual(second["error"], first["error"])
+        self.assertEqual(calls, ["shelterlink2020", "updated-secret"])
+        self.assertTrue(third["login_blocked"])
 
     def test_a_new_password_is_allowed_to_try_again(self):
         attempts = []
