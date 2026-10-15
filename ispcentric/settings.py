@@ -248,13 +248,12 @@ def _wireguard_sync_command() -> str:
 # Optional helper on the VPS, e.g. sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh
 WIREGUARD_SYNC_COMMAND = _wireguard_sync_command()
 
-# Background MikroTik watchdog (sample_mikrotik_status): repair management + WAN.
-MIKROTIK_AUTO_RESTORE = env_flag("MIKROTIK_AUTO_RESTORE", "true" if HOSTED else "false")
+# Off by default. Auto-restore rewrites WAN/firewall after a few missed polls
+# and that drops subscriber sessions. Turn on only while diagnosing an outage.
+MIKROTIK_AUTO_RESTORE = env_flag("MIKROTIK_AUTO_RESTORE", "false")
 MIKROTIK_AUTO_RESTORE_COOLDOWN_SEC = int(os.getenv("MIKROTIK_AUTO_RESTORE_COOLDOWN_SEC") or "300")
 MIKROTIK_INTERNET_PROBE_COOLDOWN_SEC = int(os.getenv("MIKROTIK_INTERNET_PROBE_COOLDOWN_SEC") or "300")
-MIKROTIK_AUTO_RESTORE_ALERTS = env_flag(
-    "MIKROTIK_AUTO_RESTORE_ALERTS", "true" if HOSTED else "false"
-)
+MIKROTIK_AUTO_RESTORE_ALERTS = env_flag("MIKROTIK_AUTO_RESTORE_ALERTS", "false")
 MIKROTIK_AUTO_RESTORE_ALERT_COOLDOWN_SEC = int(
     os.getenv("MIKROTIK_AUTO_RESTORE_ALERT_COOLDOWN_SEC") or "3600"
 )
@@ -265,7 +264,7 @@ MIKROTIK_PORTS_POLL_MS = int(os.getenv("MIKROTIK_PORTS_POLL_MS") or ("20000" if 
 MIKROTIK_ASSIGNED_PORTS_POLL_MS = int(
     os.getenv("MIKROTIK_ASSIGNED_PORTS_POLL_MS") or ("25000" if HOSTED else "15000")
 )
-MIKROTIK_DETAIL_POLL_MS = int(os.getenv("MIKROTIK_DETAIL_POLL_MS") or ("25000" if HOSTED else "20000"))
+MIKROTIK_DETAIL_POLL_MS = int(os.getenv("MIKROTIK_DETAIL_POLL_MS") or "45000")
 # PPP profile keepalive for dead-peer cleanup (only-one redial). Gentle default
 # avoids bouncing flaky-but-live CPEs on deploy; tighten later if needed (30s).
 PPPOE_KEEPALIVE_TIMEOUT = (os.getenv("PPPOE_KEEPALIVE_TIMEOUT") or "2m").strip() or "2m"

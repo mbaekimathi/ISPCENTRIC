@@ -1370,6 +1370,7 @@
 
   var pollTick = 0;
   setInterval(function () {
+    if (document.hidden) return;
     pollTick += 1;
     loadLive({
       clientsForce: pollTick % 3 === 0,

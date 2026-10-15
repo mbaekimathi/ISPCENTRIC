@@ -130,7 +130,6 @@ from core.mikrotik_connect import (
     apply_mikrotik_uplink_failover,
     apply_mikrotik_uplink_balance,
     _reject_behind_provider_unbridge,
-    read_smart_balance_status,
     apply_mikrotik_single_wan,
     switch_mikrotik_single_wan,
     apply_pppoe_enforcement_on_router,
@@ -1058,12 +1057,53 @@ def _mikrotik_live_cache_key(org_pk: int, router_pk: int) -> str:
     return f"mikrotik_live:{org_pk}:{router_pk}"
 
 
+def _mikrotik_live_good_key(org_pk: int, router_pk: int) -> str:
+    return f"mikrotik_live_good:{org_pk}:{router_pk}"
+
+
+_MIKROTIK_LIVE_GOOD_TTL = 180
+
+
 def _cached_mikrotik_live_snapshot(org_pk: int, router_pk: int) -> dict | None:
     """Last live snapshot from cache — no RouterOS API call."""
     cached = cache.get(_mikrotik_live_cache_key(org_pk, router_pk))
     if cached is None:
         return None
     return dict(cached)
+
+
+def _remember_good_mikrotik_live(org_pk: int, router_pk: int, snapshot: dict) -> None:
+    if snapshot.get("ok") and snapshot.get("online"):
+        cache.set(
+            _mikrotik_live_good_key(org_pk, router_pk),
+            dict(snapshot),
+            _MIKROTIK_LIVE_GOOD_TTL,
+        )
+
+
+def _last_good_mikrotik_live(org_pk: int, router_pk: int) -> dict | None:
+    cached = cache.get(_mikrotik_live_good_key(org_pk, router_pk))
+    if not isinstance(cached, dict):
+        return None
+    return dict(cached)
+
+
+def _soft_hold_mikrotik_live(org_pk: int, router_pk: int, failed: dict) -> dict | None:
+    """Keep the last online frame through a management blip."""
+    prior = _cached_mikrotik_live_snapshot(org_pk, router_pk)
+    if not (prior and prior.get("ok") and prior.get("online")):
+        prior = _last_good_mikrotik_live(org_pk, router_pk)
+    if not (prior and prior.get("ok") and prior.get("online")):
+        return None
+    soft = dict(prior)
+    soft["soft_outage"] = True
+    soft["cooling_down"] = True
+    soft["stale_live"] = True
+    soft["deferred_reason"] = (
+        failed.get("deferred_reason")
+        or "Tunnel soft — showing last known live data (subscribers stay online)"
+    )
+    return soft
 
 
 def _strip_remote_only_live_flags(payload: dict) -> dict:
@@ -3068,14 +3108,12 @@ def _build_client_balance_insights(
         "bps_target_pct_by_isp": distribution.get("bps_target_pct") or {},
         "bandwidth_drift": bandwidth_drift,
         "can_auto_enable": can_auto_enable,
-        "auto_enable_label": "Turn on smart balance",
+        "auto_enable_label": "Apply multi-ISP sharing",
         "recommendation": " ".join(recommendations),
         "recommendations": recommendations,
         "verified_member_count": len(verified_members),
         "can_switch_clients": bool(analysis.get("can_switch_clients")),
-        "auto_rebalance": bool(
-            router.smart_auto_balance_enabled and imbalanced and applied and uses_marks
-        ),
+        "auto_rebalance": False,
     }
 
 
@@ -3092,82 +3130,8 @@ def _try_auto_rebalance_client_isps(
     member_ports: list[str],
     smart_balance_status: dict | None = None,
 ) -> dict:
-    """Move clients toward capacity-weighted ISP targets when share is skewed."""
-    if not balance_insights.get("auto_rebalance"):
-        return {}
-    if not router_analysis.get("can_switch_clients"):
-        return {}
-    ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
-    if len(ordered) < 2:
-        return {"skipped": True, "reason": "need_two_members"}
-
-    slow_ports = []
-    if isinstance(smart_balance_status, dict):
-        slow_ports = [
-            str(p).strip()
-            for p in (smart_balance_status.get("slow_ports") or [])
-            if str(p).strip()
-        ]
-
-    port_weights = (
-        dict(router.uplink_weights)
-        if isinstance(router.uplink_weights, dict)
-        else {}
-    )
-    moves_needed = int(balance_insights.get("moves_needed") or 1)
-    drift = balance_insights.get("bandwidth_drift") or {}
-    forced_drift = bool(
-        drift.get("sustained")
-        and drift.get("overloaded_isp")
-        and drift.get("underloaded_isp")
-    )
-    cooldown = (
-        max(CLIENT_REBALANCE_COOLDOWN_S, 120)
-        if forced_drift
-        else CLIENT_REBALANCE_FAST_COOLDOWN_S
-        if moves_needed > 1
-        else CLIENT_REBALANCE_COOLDOWN_S
-    )
-    cache_key = _client_isp_rebalance_cache_key(router.pk)
-    if not cache.add(cache_key, 1, cooldown):
-        return {"skipped": True, "reason": "throttled"}
-
-    try:
-        with _api_session(
-            api_host,
-            router.username,
-            router.password or "",
-            timeout=12.0,
-        ) as sock:
-            result = auto_rebalance_client_isps(
-                sock,
-                member_ports=ordered,
-                clients=list(router_analysis.get("clients") or []),
-                slow_ports=slow_ports,
-                port_weights=port_weights,
-                preferred_overloaded_isp=str(drift.get("overloaded_isp") or ""),
-                preferred_underloaded_isp=str(drift.get("underloaded_isp") or ""),
-                router_pk=router.pk,
-                throttle_seconds=0,
-            )
-    except Exception as exc:
-        cache.delete(cache_key)
-        return {"ok": False, "error": str(exc) or "Could not rebalance clients."}
-
-    if result.get("ok"):
-        cache.delete(f"mikrotik_assigned_ports_live:{router.organization_id}:{router.pk}")
-        record_client_isp_movements(
-            router,
-            result.get("moved") or [],
-            source=ClientIspMovement.Source.AUTO_REBALANCE,
-            seamless=True,
-            imbalance_reason=str(result.get("imbalance_reason") or ""),
-        )
-    elif result.get("skipped"):
-        cache.set(cache_key, 1, max(15, cooldown // 2))
-    else:
-        cache.delete(cache_key)
-    return result
+    """Automatic client moving was removed with smart balance."""
+    return {}
 
 
 def _assigned_balance_auto_cache_key(router_pk: int) -> str:
@@ -5713,32 +5677,17 @@ PORTS_ASSIGN_HINTS = {
 
 
 def _smart_balance_health(uplink_live: dict, uplink_mode: str) -> dict:
-    """Whether smart balance is fully active on the MikroTik (PCC + ping monitor)."""
-    mode = (uplink_mode or "").strip()
+    """Slow-link smart balance was removed. PCC share no longer needs a monitor."""
     live = uplink_live if uplink_live.get("ok") else {}
-    live_mode = (live.get("mode") or "").strip()
     pcc_rules = int(live.get("balance_pcc_rules") or 0)
-    monitor_on = bool(live.get("smart_balance_enabled"))
-    if mode != MikroTikRouter.UplinkMode.SMART_BALANCE:
-        return {
-            "applies": False,
-            "effective": False,
-            "needs_apply": False,
-            "monitor_on": monitor_on,
-            "pcc_rules": pcc_rules,
-        }
-    effective = live_mode == "smart_balance" and pcc_rules >= 2 and monitor_on
-    needs_apply = not effective
     return {
-        "applies": True,
-        "effective": effective,
-        "needs_apply": needs_apply,
-        "needs_monitor_repair": (
-            live_mode == "smart_balance" and pcc_rules >= 2 and not monitor_on
-        ),
-        "monitor_on": monitor_on,
+        "applies": False,
+        "effective": False,
+        "needs_apply": False,
+        "needs_monitor_repair": False,
+        "monitor_on": False,
         "pcc_rules": pcc_rules,
-        "live_mode": live_mode,
+        "live_mode": (live.get("mode") or "").strip(),
     }
 
 
@@ -5804,9 +5753,8 @@ def _try_auto_apply_smart_balance(
     live_ports: list[dict] | None = None,
     force: bool = False,
 ) -> dict:
-    """Push smart balance to RouterOS when configured in the app but not yet effective."""
-    health = _smart_balance_health(uplink_live, router.uplink_mode)
-    if not health.get("applies") or health.get("effective"):
+    """Push multi-ISP load sharing when the operator asks. No slow-link monitor."""
+    if not force:
         return {}
     ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
     ordered = list(dict.fromkeys(ordered))
@@ -5845,7 +5793,8 @@ def _try_auto_apply_smart_balance(
         }
 
     cache_key = _smart_balance_auto_cache_key(router.pk)
-    if not force and cache.get(cache_key):
+    held = cache.get(cache_key)
+    if held in {"applied", "pending"} or (not force and held):
         return {"skipped": True, "reason": "throttled"}
 
     # Already has PCC on the router — do not tear it down and rebuild on every poll.
@@ -5942,7 +5891,7 @@ def _try_auto_apply_smart_balance(
                 "ok": True,
                 "auto_applied": True,
                 "message": job_result.get("message")
-                or "Smart balance applied on the MikroTik (PCC + slow-link monitor).",
+                or "Multi-ISP sharing applied on the MikroTik.",
                 "ports": ordered_ports,
                 "weights": live.uplink_weights,
             }
@@ -8304,18 +8253,13 @@ def _workspace_analytics_payload(org, *, force: bool = False, hours: int = 24) -
             pppoe_connected_not_surfing_trend,
             record_workspace_fup_hits_snapshot,
             router_network_performance_trend,
-            sample_organization_usage,
             workspace_client_access_trend,
             workspace_fup_hits_trend,
         )
 
-        # Never force the org-wide MikroTik usage sweep from the dashboard poll —
-        # refresh=1 already re-probes router health elsewhere. Sampling stays
-        # gated so back/focus navigation does not stall the previous page.
-        try:
-            sample_organization_usage(org, force=False)
-        except Exception:
-            pass
+        # Home dashboard charts use samples already stored. Do not log into
+        # every router from this poll — usage pages and the slow fair-usage
+        # job are the only readers.
         snapshot["network_trend"] = router_network_performance_trend(
             org, hours=hours, use_cache=not force
         )
@@ -12923,14 +12867,7 @@ def _ports_live_payload(
         and bool(uplink_live.get("ok"))
         and (uplink_live.get("mode") or "").strip() in _weighted_share_uplink_modes()
     )
-    smart_balance_applied = (
-        balance_router_applied
-        and (
-            uplink_mode != MikroTikRouter.UplinkMode.SMART_BALANCE
-            or bool(smart_balance_health.get("effective"))
-            or bool(smart_balance_auto.get("ok"))
-        )
-    )
+    smart_balance_applied = balance_router_applied
     if smart_balance_auto.get("ok"):
         smart_balance_health = _smart_balance_health(
             uplink_live if uplink_live.get("ok") else {},
@@ -13442,19 +13379,13 @@ def _perform_client_isp_switch(
             ready = router_client_isp_switch_ready(sock, member_ports=member_ports)
             if not ready.get("ok"):
                 return ready
-            live_status = read_smart_balance_status(sock, member_ports)
-            slow_ports = [
-                str(p).strip()
-                for p in (live_status.get("slow_ports") or [])
-                if str(p).strip()
-            ]
             result = switch_client_to_isp_port(
                 sock,
                 client_ip=ip,
                 target_port=target,
                 member_ports=member_ports,
                 customer_id=customer.pk,
-                slow_ports=slow_ports,
+                slow_ports=[],
                 manual=True,
             )
     except Exception as exc:
@@ -13535,22 +13466,14 @@ def mikrotik_assigned_ports_apply(request, router_id: int):
         raw = (request.POST.get("enabled") or "").strip().lower()
         enabled = raw in {"1", "true", "yes", "on"}
         if enabled:
-            try:
-                live = _ports_live_payload(router, include_client_analysis=True)
-            except Exception:
-                live = {}
-            if not live.get("can_toggle_auto_balance"):
-                return JsonResponse(
-                    {
-                        "ok": False,
-                        "error": (
-                            "Auto balance needs smart balance applied on this router "
-                            "with live client ISP switching."
-                        ),
-                    },
-                    status=400,
-                )
-        router.smart_auto_balance_enabled = enabled
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "error": "Automatic client balancing has been removed. Use Switch link.",
+                },
+                status=400,
+            )
+        router.smart_auto_balance_enabled = False
         router.save(update_fields=["smart_auto_balance_enabled", "updated_at"])
         cache.delete(f"mikrotik_assigned_ports_live:{org.pk}:{router.pk}")
         cache.delete(f"mikrotik_ports_live:{org.pk}:{router.pk}")
@@ -13811,7 +13734,13 @@ def mikrotik_reconnect(request, router_id: int):
     except Exception:
         pass
 
-    schedule_nas_refresh(router_pk)
+    # Management reconnect only. Rewriting every PPP secret / reauthenticating
+    # Hotspot here dropped live subscribers whenever the badge flapped.
+    schedule_nas_refresh(
+        router_pk,
+        reauthenticate=False,
+        sync_pppoe_secrets=False,
+    )
 
     return JsonResponse(
         {
@@ -14014,21 +13943,11 @@ def mikrotik_live(request, router_id: int):
         discover=False,
     )
     dial = (snapshot.get("dial_host") or router.api_host or router.host or "").strip()
-    if not snapshot.get("ok") and (
-        snapshot.get("cooling_down") or snapshot.get("soft_outage")
-    ):
-        # Hold the last good live frame instead of flashing the page offline —
-        # cool-down is a management-path pause, not a client disconnect.
-        prior = _cached_mikrotik_live_snapshot(org.pk, router.pk)
-        if prior and prior.get("ok") and prior.get("online"):
-            soft = dict(prior)
-            soft["soft_outage"] = True
-            soft["cooling_down"] = True
-            soft["stale_live"] = True
-            soft["deferred_reason"] = (
-                "Tunnel soft — showing last known live data "
-                "(subscribers stay online)"
-            )
+    if not snapshot.get("ok") and not snapshot.get("auth_error"):
+        # Hold the last good live frame instead of flashing the page offline.
+        # A dropped API socket is a management-path pause, not a client disconnect.
+        soft = _soft_hold_mikrotik_live(org.pk, router.pk, snapshot)
+        if soft is not None:
             from core.mikrotik_auto_restore import get_auto_restore_record
 
             soft["auto_restore"] = get_auto_restore_record(router.pk)
@@ -14103,12 +14022,19 @@ def mikrotik_live(request, router_id: int):
     from core.mikrotik_auto_restore import get_auto_restore_record
 
     snapshot["auto_restore"] = get_auto_restore_record(router.pk)
+    if snapshot.get("ok") and snapshot.get("online"):
+        _remember_good_mikrotik_live(org.pk, router.pk, snapshot)
+    elif snapshot.get("auth_error"):
+        cache.delete(_mikrotik_live_good_key(org.pk, router.pk))
     if snapshot.get("management_deferred"):
         ttl = 60
-    elif getattr(settings, "HOSTED", False) and snapshot.get("ok"):
-        ttl = 9
+    elif snapshot.get("ok") and snapshot.get("online"):
+        # Keep the frame until the next page poll so an open detail page
+        # does not log in again on every tick.
+        poll_s = max(20, int(getattr(settings, "MIKROTIK_DETAIL_POLL_MS", 45000)) // 1000)
+        ttl = max(20, poll_s - 5)
     else:
-        ttl = 4
+        ttl = 8
     cache.set(cache_key, snapshot, ttl)
     return JsonResponse(_strip_remote_only_live_flags(snapshot))
 
@@ -15260,8 +15186,13 @@ def mikrotik_status(request):
             continue
         if item.get("management_deferred"):
             continue
-        if (item.get("status") or "") != "connected":
+        status_now = (item.get("status") or "")
+        # Soft misses must keep the last online frame. Wiping it made the
+        # detail page dial again, show Disconnected, and invite a reconnect
+        # that rewrote PPP/Hotspot and dropped subscribers.
+        if status_now in {"auth_failed", "wrong_host"} and not item.get("stabilized"):
             cache.delete(f"mikrotik_live:{org.pk}:{rid}")
+            cache.delete(_mikrotik_live_good_key(org.pk, rid))
     if not onboarding_hold:
         try:
             from core.mikrotik_status_samples import record_mikrotik_status_samples
@@ -20382,20 +20313,13 @@ def clients_surfing_status(request):
     from billing.usage_samples import (
         get_org_live_usage,
         org_live_usage_is_fresh,
-        sample_organization_usage,
     )
 
     live_map: dict = {}
     use_live_snapshot = False
-    if force:
-        # Refresh usage samples in the background; session badges use the
-        # dedicated surfing probe (stale session merge), not the live map,
-        # which can briefly mark everyone offline during concurrent NAS work.
-        try:
-            sample_organization_usage(org, force=True)
-        except Exception:
-            pass
-    elif org_live_usage_is_fresh(org):
+    # A refresh asks the router who is online (below). Do not also run the
+    # usage sweep — that is a second login on every poll.
+    if not force and org_live_usage_is_fresh(org):
         live = get_org_live_usage(org)
         live_map = live.get(service) if isinstance(live.get(service), dict) else {}
         use_live_snapshot = True

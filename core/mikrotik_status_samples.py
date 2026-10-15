@@ -46,7 +46,20 @@ _AUTH_FAILURE_TOKENS = (
     "check username",
     "check the saved",
     "check saved",
-    "login failed",
+    "username and password",
+)
+# Our own fallback text for a socket that died mid-login. RouterOS password
+# traps use the phrases above; this bare string must not flip the router offline.
+_GENERIC_LOGIN_FAILURES = frozenset({"login failed", "login failed."})
+_SESSION_PRESSURE_TOKENS = (
+    "connection closed",
+    "closed while reading",
+    "unexpected reply",
+    "api is busy",
+    "management api is busy",
+    "session limit",
+    "too many",
+    "already logged",
 )
 _CONNECTIVITY_FAILURE_TOKENS = (
     "timed out",
@@ -133,11 +146,17 @@ def is_credential_login_failure(error: str | None) -> bool:
     text = (error or "").strip().lower()
     if not text:
         return False
+    if text in _GENERIC_LOGIN_FAILURES:
+        return False
     if any(token in text for token in _CONNECTIVITY_FAILURE_TOKENS):
+        return False
+    if any(token in text for token in _SESSION_PRESSURE_TOKENS):
         return False
     if any(token in text for token in _AUTH_FAILURE_TOKENS):
         return True
-    return True
+    # Unknown login text is a transport miss, not a wrong password. Treating
+    # it as credentials made the dashboard flip Disconnected and kick clients.
+    return False
 
 
 def status_after_api_probe(
@@ -527,9 +546,16 @@ def stabilize_live_status_row(
         return row
 
     if status in _IMMEDIATE_LIVE_OUTAGE:
-        cache.delete(stable_key)
-        cache.delete(pending_key)
-        return row
+        # A real password trap should surface immediately. A dropped API
+        # socket that was mislabeled auth_failed must keep the last Connected
+        # row so we do not auto-repair and disconnect subscribers.
+        if status != "auth_failed" or is_credential_login_failure(row.get("error")):
+            cache.delete(stable_key)
+            cache.delete(pending_key)
+            return row
+        status = "reachable"
+        row = dict(row)
+        row["status"] = status
 
     if status not in _SOFT_LIVE_OUTAGE:
         return row

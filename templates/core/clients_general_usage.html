@@ -1662,8 +1662,8 @@
     });
   }
 
-  setInterval(function () { loadTrends(false); }, 60000);
-  setInterval(function () { loadSurfing(false); }, 30000);
+  setInterval(function () { if (document.hidden) return; loadTrends(false); }, 60000);
+  setInterval(function () { if (document.hidden) return; loadSurfing(false); }, 30000);
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) {
       loadTrends(false);

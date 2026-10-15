@@ -2160,6 +2160,75 @@ def recover_mikrotik_connection(
 
 
 _thread_api_pool = threading.local()
+# One in-flight API login per router, shared by every worker via the jobs cache.
+# Nested calls on the same thread reuse that hold. A second worker waits briefly
+# and then skips, instead of opening another RouterOS session.
+_api_gate_state = threading.local()
+_API_GATE_TTL_SEC = 30
+
+
+def _api_gate_key(dial: str) -> str:
+    return f"mikrotik_api_gate:{dial}"
+
+
+def _api_gate_acquire(dial: str) -> bool:
+    depth = int(getattr(_api_gate_state, "depth", 0) or 0)
+    if depth > 0:
+        _api_gate_state.depth = depth + 1
+        return True
+    try:
+        from django.core.cache import caches
+
+        from core.subscription_sync import _pid_is_alive
+    except Exception:
+        _api_gate_state.depth = 1
+        _api_gate_state.held = False
+        return True
+    cache = caches["jobs"]
+    key = _api_gate_key(dial)
+    deadline = time.monotonic() + 1.2
+    while True:
+        try:
+            got = cache.add(key, os.getpid(), timeout=_API_GATE_TTL_SEC)
+        except Exception:
+            _api_gate_state.depth = 1
+            _api_gate_state.held = False
+            return True
+        if got:
+            _api_gate_state.depth = 1
+            _api_gate_state.held = True
+            return True
+        try:
+            holder = int(cache.get(key) or 0)
+        except (TypeError, ValueError):
+            holder = 0
+        if holder and not _pid_is_alive(holder):
+            try:
+                cache.delete(key)
+            except Exception:
+                return False
+            continue
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _api_gate_release(dial: str) -> None:
+    depth = int(getattr(_api_gate_state, "depth", 0) or 0)
+    if depth > 1:
+        _api_gate_state.depth = depth - 1
+        return
+    held = bool(getattr(_api_gate_state, "held", False))
+    _api_gate_state.depth = 0
+    _api_gate_state.held = False
+    if depth <= 0 or not held:
+        return
+    try:
+        from django.core.cache import caches
+
+        caches["jobs"].delete(_api_gate_key(dial))
+    except Exception:
+        pass
 
 
 def _api_pool_enabled() -> bool:
@@ -2274,71 +2343,77 @@ def _api_session(
     pooled_in = False
     sock: socket.socket | None = None
     keep_in_pool = False
+    if not _api_gate_acquire(dial):
+        # Do not cool the host — another job already holds a live session.
+        raise TimeoutError("Management API is busy — retrying shortly.")
     try:
-        if use_pool:
-            sock = _api_pool_take(pool_key)
-            pooled_in = sock is not None
-        if sock is None:
-            sock, tcp_ms, login_ms = _api_connect_and_login(
+        try:
+            if use_pool:
+                sock = _api_pool_take(pool_key)
+                pooled_in = sock is not None
+            if sock is None:
+                sock, tcp_ms, login_ms = _api_connect_and_login(
+                    host,
+                    dial,
+                    username,
+                    password,
+                    port=port,
+                    timeout=timeout,
+                )
+            else:
+                sock.settimeout(timeout)
+            connected = True
+            yield sock
+            keep_in_pool = use_pool
+        except TimeoutError:
+            # Light CPE list probes must not quarantine the ISP NAS for surfing /
+            # MikroTik status — a slow CPE TCP check is not "NAS dead".
+            # Local LAN hosts also need a second chance; only cool WG peers hard.
+            if cool_host:
+                # Short cool-downs: long enough to stop a poll stampede, short
+                # enough that a flaky WireGuard peer recovers without minutes of
+                # "Cannot access this MikroTik" toast spam.
+                if _is_wireguard_tunnel_host(host) or getattr(settings, "HOSTED", False):
+                    mark_mikrotik_host_unreachable(host, ttl=25)
+                else:
+                    mark_mikrotik_host_unreachable(host, ttl=10)
+            _api_pool_discard(pool_key)
+            raise
+        except OSError:
+            if cool_host:
+                if _is_wireguard_tunnel_host(host) or getattr(settings, "HOSTED", False):
+                    mark_mikrotik_host_unreachable(host, ttl=25)
+                else:
+                    mark_mikrotik_host_unreachable(host, ttl=10)
+            _api_pool_discard(pool_key)
+            raise
+        except ConnectionError:
+            _api_pool_discard(pool_key)
+            raise
+        finally:
+            if sock is not None:
+                if keep_in_pool and connected:
+                    _api_pool_put(pool_key, sock)
+                else:
+                    if not pooled_in or not keep_in_pool:
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
+            total_ms = int((time.perf_counter() - started) * 1000)
+            log = logger.info if total_ms >= 1000 else logger.debug
+            log(
+                "mikrotik api host=%s dial=%s tcp_ms=%s login_ms=%s total_ms=%s ok=%s pooled=%s",
                 host,
                 dial,
-                username,
-                password,
-                port=port,
-                timeout=timeout,
+                tcp_ms,
+                login_ms,
+                total_ms,
+                connected,
+                pooled_in or keep_in_pool,
             )
-        else:
-            sock.settimeout(timeout)
-        connected = True
-        yield sock
-        keep_in_pool = use_pool
-    except TimeoutError:
-        # Light CPE list probes must not quarantine the ISP NAS for surfing /
-        # MikroTik status — a slow CPE TCP check is not "NAS dead".
-        # Local LAN hosts also need a second chance; only cool WG peers hard.
-        if cool_host:
-            # Short cool-downs: long enough to stop a poll stampede, short
-            # enough that a flaky WireGuard peer recovers without minutes of
-            # "Cannot access this MikroTik" toast spam.
-            if _is_wireguard_tunnel_host(host) or getattr(settings, "HOSTED", False):
-                mark_mikrotik_host_unreachable(host, ttl=25)
-            else:
-                mark_mikrotik_host_unreachable(host, ttl=10)
-        _api_pool_discard(pool_key)
-        raise
-    except OSError:
-        if cool_host:
-            if _is_wireguard_tunnel_host(host) or getattr(settings, "HOSTED", False):
-                mark_mikrotik_host_unreachable(host, ttl=25)
-            else:
-                mark_mikrotik_host_unreachable(host, ttl=10)
-        _api_pool_discard(pool_key)
-        raise
-    except ConnectionError:
-        _api_pool_discard(pool_key)
-        raise
     finally:
-        if sock is not None:
-            if keep_in_pool and connected:
-                _api_pool_put(pool_key, sock)
-            else:
-                if not pooled_in or not keep_in_pool:
-                    try:
-                        sock.close()
-                    except OSError:
-                        pass
-        total_ms = int((time.perf_counter() - started) * 1000)
-        log = logger.info if total_ms >= 1000 else logger.debug
-        log(
-            "mikrotik api host=%s dial=%s tcp_ms=%s login_ms=%s total_ms=%s ok=%s pooled=%s",
-            host,
-            dial,
-            tcp_ms,
-            login_ms,
-            total_ms,
-            connected,
-            pooled_in or keep_in_pool,
-        )
+        _api_gate_release(dial)
 
 
 def _cpe_proxy_port(cpe_host: str, scope: str = "") -> int:
@@ -8178,18 +8253,40 @@ def fetch_mikrotik_live_snapshot(
                 "wifi_label": ", ".join(wifi_ssids[:2]) if wifi_ssids else "—",
                 **uplink,
             }
-    except TimeoutError:
+    except TimeoutError as exc:
+        message = str(exc).strip()
+        if "busy" in message.lower():
+            return {
+                "ok": False,
+                "online": False,
+                "error": message,
+                "soft_outage": True,
+                "cooling_down": True,
+            }
         return {
             "ok": False,
             "online": False,
             "error": "Connection timed out. Is the router reachable on API port 8728?",
         }
     except ConnectionError as exc:
+        from core.mikrotik_status_samples import is_credential_login_failure
+
+        message = str(exc).strip()
+        if is_credential_login_failure(message):
+            return {
+                "ok": False,
+                "online": False,
+                "error": message or "Login failed. Check the saved username and password.",
+                "auth_error": True,
+            }
+        # Socket reset / mid-read close is a management blip. Subscribers stay
+        # online — do not report a wrong password or trigger reconnect.
         return {
             "ok": False,
             "online": False,
-            "error": str(exc) or "Login failed. Check the saved username and password.",
-            "auth_error": True,
+            "error": message or "Management path dropped during API login.",
+            "soft_outage": True,
+            "cooling_down": True,
         }
     except OSError as exc:
         return {
@@ -12260,6 +12357,18 @@ def _portal_target_ipv4(portal_url: str) -> str:
     return ips[0] if ips else ""
 
 
+def _hotspot_pay_ipv4s(portal_url: str) -> list[str]:
+    """
+    IPv4 of the Hotspot pay URL only.
+
+    Phones open this address from the sign-in sheet. WireGuard endpoints and
+    tunnel addresses are for the router API, not for the pay page, so they
+    are not included.
+    """
+    ips = _portal_target_ipv4s((portal_url or "").strip())
+    return ips[:1]
+
+
 def _portal_billing_ipv4s(
     portal_url: str = "", *, organization=None
 ) -> frozenset[str]:
@@ -12767,7 +12876,7 @@ def _ensure_hotspot_pool_wan_guard(
             break
 
     notes.extend(_ensure_hotspot_pool_dns_redirect(sock))
-    billing_ips = sorted(_portal_billing_ipv4s(portal_url))
+    billing_ips = _hotspot_pay_ipv4s(portal_url)
 
     rules: list[dict[str, str]] = [
         {
@@ -12799,8 +12908,8 @@ def _ensure_hotspot_pool_wan_guard(
     if not billing_ips:
         notes.append(
             "warning: no billing IPv4 resolved — unpaid clients stay blocked from "
-            "WAN, and the pay page cannot load until PUBLIC_BASE_URL or "
-            "WIREGUARD_ENDPOINT is a public IPv4. Push Hotspot again after that."
+            "WAN, and the pay page cannot load until PUBLIC_BASE_URL is the "
+            "public pay site. Push Hotspot again after that."
         )
     # Always drop the rest of the pool. Skipping this when DNS fails is what
     # let unpaid clients ride the LAN→WAN accept.
@@ -13000,6 +13109,42 @@ def _ensure_pppoe_client_dns_accept(sock: socket.socket) -> list[str]:
     return notes
 
 
+def _pppoe_client_pay_base(portal_url: str = "") -> str:
+    """
+    HTTP origin an expired PPPoE phone should open.
+
+    Uses the public billing site. A WireGuard tunnel address is how the router
+    talks to this server, not an address a subscriber phone can open.
+    """
+    from core.hotspot_portal import (
+        _host_is_private_ip,
+        prefer_http_captive_url,
+        public_base_url,
+    )
+
+    def _openable(url: str) -> str:
+        url = prefer_http_captive_url((url or "").strip()).rstrip("/")
+        if not url:
+            return ""
+        try:
+            host = (urlparse(url).hostname or "").strip()
+        except Exception:
+            return ""
+        if not host or host in {"localhost", "127.0.0.1", "::1"}:
+            return ""
+        if _host_is_private_ip(host):
+            return ""
+        return url
+
+    public = _openable(public_base_url() or "")
+    if public:
+        return public
+    explicit = prefer_http_captive_url((portal_url or "").strip()).rstrip("/")
+    if explicit:
+        return explicit
+    return _billing_portal_base_url(portal_url)
+
+
 def _ensure_pppoe_expired_access(
     sock: socket.socket,
     *,
@@ -13014,7 +13159,7 @@ def _ensure_pppoe_expired_access(
     """
     notes: list[str] = []
 
-    portal = _billing_portal_base_url(portal_url)
+    portal = _pppoe_client_pay_base(portal_url)
     billing_ip = _portal_target_ipv4(portal) if portal else ""
     if not billing_ip:
         notes.append("warning: no billing IP - expired pay redirect not installed")
@@ -15795,7 +15940,10 @@ def _repair_unpaid_hotspot_leak_on_socket(
     router_id = getattr(router, "pk", None)
     host = (getattr(router, "host", None) or "").strip()
     notes = _block_orphan_hotspot_users_on_socket(sock, router)
-    portal = _billing_portal_base_url(organization=org)
+    portal_urls = _hotspot_portal_urls_for_org(org)
+    portal = (portal_urls.get("pay_url") or "").strip() or _billing_portal_base_url(
+        organization=org
+    )
     leak_found = any(
         "blocked orphan" in n
         or "blocked untagged" in n
@@ -18559,8 +18707,8 @@ def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
         if _delete_hotspot_file(sock, dst):
             notes.append(f"removed {dst}")
 
-    # CPE renew is the PPPoE expired path — open via billing IPv4 when hosted.
-    pay_html = _captive_pay_redirect_html(portal_url, via_billing_ip=True)
+    # Expired PPPoE: login.html sends the phone straight to the pay page.
+    pay_html = _captive_pay_redirect_html(portal_url, via_billing_ip=False)
     wrote_login = False
     if pay_html:
         for dst in (
@@ -20764,19 +20912,17 @@ def _pppoe_pay_portal_url(
                     )
                 )
     else:
-        base = _billing_portal_base_url(
-            explicit if parsed_explicit.scheme else "",
-            organization=organization,
+        base = _pppoe_client_pay_base(
+            explicit if parsed_explicit.scheme else ""
         )
         if not base:
             return ""
         url = f"{base.rstrip('/')}{path}"
 
-    # Hosted: open via billing IPv4 so HTTPS-First does not upgrade the public
-    # name before the expired-client → billing firewall allow is hit.
-    from core.hotspot_portal import prefer_captive_open_url
+    # Phones open the public http pay page. Do not rewrite it to a bare IPv4.
+    from core.hotspot_portal import prefer_http_captive_url
 
-    url = prefer_captive_open_url(url)
+    url = prefer_http_captive_url(url)
 
     if customer is not None and getattr(customer, "pk", None) and getattr(organization, "pk", None):
         token = signing.dumps(
@@ -20808,7 +20954,7 @@ def _pppoe_pay_portal_url(
                 parsed.fragment,
             )
         )
-    return prefer_captive_open_url(url)
+    return prefer_http_captive_url(url)
 
 
 def sync_customer_subscription_access(
@@ -21837,9 +21983,8 @@ def _ensure_hotspot_billing_dns_static(
     except ValueError:
         pass
 
-    # Same public address the pool firewall allows. A router-local lookup can
-    # return a tunnel or stale address, and HTTPS to that address then times out.
-    ips = sorted(_portal_billing_ipv4s(portal_url)) or _portal_target_ipv4s(portal_url)
+    # Same address the pool firewall allows. One host, one IPv4.
+    ips = _hotspot_pay_ipv4s(portal_url)
     if not ips:
         notes.append(f"warning: could not resolve {host} for Hotspot DNS pin")
         return notes
@@ -22073,11 +22218,9 @@ def _ensure_hotspot_walled_garden(sock: socket.socket, redirect_url: str) -> lis
             if terminal.get("_reply") != "!trap":
                 notes.append(f"walled garden {dst_host}")
 
-    # Always install IP accepts — hostname allow alone does not open TCP to a
-    # remote VPS on many RouterOS builds (phones then get ERR_CONNECTION_TIMED_OUT).
-    # Use the aggregated billing set so bare-IP login.html (legacy) and hostname
-    # URLs both work after a Hotspot push.
-    billing_ips = sorted(_portal_billing_ipv4s(redirect_url))
+    # Hostname allow alone does not open TCP to a remote VPS on many RouterOS
+    # builds (phones then get ERR_CONNECTION_TIMED_OUT). Allow the pay host only.
+    billing_ips = _hotspot_pay_ipv4s(redirect_url)
     label = next(iter(sorted(hosts)), "") or "billing"
     if billing_ips:
         for billing_ip in billing_ips:
@@ -22087,7 +22230,7 @@ def _ensure_hotspot_walled_garden(sock: socket.socket, redirect_url: str) -> lis
     else:
         notes.append(
             "warning: could not resolve billing IP for Hotspot walled garden — "
-            "pay page may time out until PUBLIC_BASE_URL / WIREGUARD_ENDPOINT is set"
+            "pay page may time out until PUBLIC_BASE_URL is the public pay site"
         )
     return notes
 
@@ -25306,9 +25449,9 @@ def _ensure_isp_hotspot_stack(
     notes.extend(guard_notes)
     if any("no billing IPv4" in n for n in guard_notes):
         raise ConnectionError(
-            "Hotspot pay page has no billing IPv4. Set PUBLIC_BASE_URL or "
-            "WIREGUARD_ENDPOINT to the VPS public address, then push Hotspot "
-            "again. Unpaid clients are blocked from other sites until then."
+            "Hotspot pay page has no billing IPv4. Set PUBLIC_BASE_URL to the "
+            "public pay site, then push Hotspot again. Unpaid clients are "
+            "blocked from other sites until then."
         )
     if any("could not be placed" in n for n in guard_notes):
         raise ConnectionError(
@@ -27225,7 +27368,7 @@ def build_mikrotik_recovery_script_sections(router) -> list[dict[str, str]]:
             "bond": "Bonded uplinks",
             "failover": "Failover",
             "balance": "Load balance",
-            "smart_balance": "Smart balance",
+            "smart_balance": "Load balance",
         }.get(uplink_mode, uplink_mode.replace("_", " ").title())
         members = _recovery_uplink_members(router)
         sections.insert(
@@ -29334,47 +29477,6 @@ def _install_balance_pcc(
     }
 
 
-SMART_BALANCE_SCRIPT_NAME = "ispcentric-smart-balance"
-SMART_BALANCE_SCHEDULER_NAME = "ispcentric-smart-balance"
-SMART_BALANCE_SLOW_RTT_MS = 250
-SMART_BALANCE_RECOVER_RTT_MS = 180
-SMART_BALANCE_SLOW_LOSS_PCT = 25
-SMART_BALANCE_RECOVER_LOSS_PCT = 10
-SMART_BALANCE_PING_TARGETS = ("1.1.1.1", "8.8.8.8")
-
-
-def _smart_balance_api_cache_key(host: str) -> str:
-    host = (host or "").strip()
-    return f"smart_balance_api_ping:{host or 'unknown'}"
-
-
-def _parse_routeros_rtt_ms(value: str) -> float | None:
-    """Parse RouterOS duration strings like ``10ms227us`` into milliseconds."""
-    raw = (value or "").strip().lower()
-    if not raw:
-        return None
-    ms_part = 0.0
-    us_part = 0.0
-    if "ms" in raw:
-        head, _, tail = raw.partition("ms")
-        try:
-            ms_part = float(head or 0)
-        except ValueError:
-            return None
-        raw = tail
-    if raw.endswith("us"):
-        try:
-            us_part = float(raw[:-2] or 0)
-        except ValueError:
-            us_part = 0.0
-    if ms_part or us_part:
-        return ms_part + (us_part / 1000.0)
-    try:
-        return float(raw)
-    except ValueError:
-        return None
-
-
 def _balance_table_has_active_default(
     sock: socket.socket,
     mark_index: int,
@@ -29400,600 +29502,6 @@ def _balance_table_has_active_default(
     except Exception:
         return False
     return False
-
-
-def _balance_member_connectivity(
-    sock: socket.socket,
-    *,
-    port_name: str,
-    mark_index: int,
-    wan_iface: str,
-) -> dict[str, Any]:
-    """Gateway, route, and ping state for one smart-balance member."""
-    port_name = (port_name or "").strip()
-    wan_iface = (wan_iface or port_name).strip()
-    gateways = _detect_dhcp_gateways(sock, port_name)
-    ping = _ping_wan_via_api(sock, wan_iface)
-    try:
-        recv = int(ping.get("recv") if ping.get("recv") is not None else 0)
-    except (TypeError, ValueError):
-        recv = 0
-    try:
-        loss = int(ping.get("loss") if ping.get("loss") is not None else 100)
-    except (TypeError, ValueError):
-        loss = 100
-    try:
-        max_rtt = float(
-            ping.get("max_rtt_ms") if ping.get("max_rtt_ms") is not None else 0.0
-        )
-    except (TypeError, ValueError):
-        max_rtt = 0.0
-    return {
-        "gateways": gateways,
-        "has_gateway": bool(gateways),
-        "route_active": _balance_table_has_active_default(sock, mark_index),
-        "ping_recv": recv,
-        "ping_loss": loss,
-        "ping_rtt_ms": max_rtt,
-    }
-
-
-def _remove_client_isp_pins_for_mark(
-    sock: socket.socket,
-    mark_index: int,
-) -> int:
-    """Drop manual/auto ISP pins targeting one PCC slot (broken/sidelined link)."""
-    mark = f"{UPLINK_CONN_MARK_PREFIX}{mark_index}"
-    removed = 0
-    try:
-        rows = _print(
-            sock,
-            "/ip/firewall/mangle",
-            props=".id,comment,chain,action,new-connection-mark",
-        )
-    except Exception:
-        return 0
-    for row in rows:
-        if CLIENT_ISP_PIN_TAG not in (row.get("comment") or ""):
-            continue
-        if (row.get("new-connection-mark") or "").strip() != mark:
-            continue
-        item_id = (row.get(".id") or "").strip()
-        if not item_id:
-            continue
-        if _remove(sock, "/ip/firewall/mangle", item_id).get("_reply") not in {
-            "!trap",
-            "!fatal",
-        }:
-            removed += 1
-    return removed
-
-
-def _ping_wan_via_api(
-    sock: socket.socket,
-    interface: str,
-    *,
-    targets: tuple[str, ...] = SMART_BALANCE_PING_TARGETS,
-) -> dict[str, int | float]:
-    """Ping targets out a specific WAN using the RouterOS API (not scripts)."""
-    iface = (interface or "").strip()
-    total_sent = 0
-    total_recv = 0
-    max_rtt_ms = 0.0
-    for target in targets:
-        target = (target or "").strip()
-        if not target or not iface:
-            continue
-        rows, terminal = _command(
-            sock,
-            [
-                "/ping",
-                f"=address={target}",
-                "=count=2",
-                "=interval=500ms",
-                f"=interface={iface}",
-            ],
-        )
-        total_sent += 2
-        if terminal.get("_reply") in {"!trap", "!fatal"}:
-            continue
-        last = rows[-1] if rows else {}
-        try:
-            total_recv += int(last.get("received") or 0)
-        except (TypeError, ValueError):
-            pass
-        rtt = _parse_routeros_rtt_ms(str(last.get("avg-rtt") or ""))
-        if rtt is not None:
-            max_rtt_ms = max(max_rtt_ms, rtt)
-    loss = 100
-    if total_sent > 0:
-        loss = 100 - ((total_recv * 100) // total_sent)
-    return {
-        "sent": total_sent,
-        "recv": total_recv,
-        "loss": loss,
-        "max_rtt_ms": max_rtt_ms,
-    }
-
-
-def _set_smart_balance_member_active(
-    sock: socket.socket,
-    index: int,
-    *,
-    active: bool,
-) -> None:
-    """Enable or sideline one PCC pool member (mangle slots + WAN table routes)."""
-    table = _balance_table_name(index)
-    mark = f"ispcentric-c{index}"
-    disabled = "no" if active else "yes"
-    try:
-        for row in _print(
-            sock,
-            "/ip/firewall/mangle",
-            props=".id,chain,action,new-connection-mark,per-connection-classifier,disabled,comment",
-        ):
-            if UPLINK_TAG not in (row.get("comment") or ""):
-                continue
-            if (row.get("chain") or "").strip() != "prerouting":
-                continue
-            if (row.get("new-connection-mark") or "").strip() != mark:
-                continue
-            if not (row.get("per-connection-classifier") or "").strip():
-                continue
-            item_id = (row.get(".id") or "").strip()
-            if item_id:
-                _set(sock, "/ip/firewall/mangle", item_id, disabled=disabled)
-    except Exception:
-        pass
-    try:
-        for row in _print(
-            sock,
-            "/ip/route",
-            props=".id,routing-table,comment,disabled",
-        ):
-            if UPLINK_TAG not in (row.get("comment") or ""):
-                continue
-            if (row.get("routing-table") or "").strip() != table:
-                continue
-            item_id = (row.get(".id") or "").strip()
-            if item_id:
-                _set(sock, "/ip/route", item_id, disabled=disabled)
-    except Exception:
-        pass
-
-
-def run_smart_balance_monitor_via_api(
-    sock: socket.socket,
-    members: list[dict[str, str]],
-    *,
-    force: bool = False,
-    host: str = "",
-) -> dict[str, Any]:
-    """
-    Ping each WAN via the RouterOS API and sideline slow PCC slots.
-
-    RouterOS scripts cannot reliably run ``/ping`` on some boards (e.g. RB951
-    on 7.12.x), so health checks run from the billing server over the API.
-    """
-    ordered = sorted(
-        members,
-        key=lambda m: (-int(m.get("weight") or 1), str(m.get("interface") or "")),
-    )
-    for index, item in enumerate(ordered):
-        item["index"] = str(index)
-    if len(ordered) < 2:
-        return {"ok": False, "error": "Need at least two WAN members for smart balance."}
-
-    cache_key = _smart_balance_api_cache_key(host)
-    if not force:
-        try:
-            from django.core.cache import cache
-
-            if cache.get(cache_key):
-                return {"ok": True, "skipped": True, "reason": "throttled"}
-        except Exception:
-            pass
-
-    prior = read_smart_balance_status(
-        sock, [str(m.get("interface") or "").strip() for m in ordered]
-    )
-    prior_state = prior.get("members") if isinstance(prior.get("members"), dict) else {}
-
-    member_results: dict[str, str] = {}
-    slow_ports: list[str] = []
-    for item in ordered:
-        index = int(item.get("index") or 0)
-        port_name = (item.get("interface") or "").strip()
-        wan_iface = (item.get("wan_iface") or port_name).strip()
-        if not port_name or not wan_iface:
-            continue
-        conn = _balance_member_connectivity(
-            sock,
-            port_name=port_name,
-            mark_index=index,
-            wan_iface=wan_iface,
-        )
-        recv = int(conn.get("ping_recv") or 0)
-        loss = int(conn.get("ping_loss") or 100)
-        max_rtt = float(conn.get("ping_rtt_ms") or 0.0)
-        has_gateway = bool(conn.get("has_gateway"))
-        route_active = bool(conn.get("route_active"))
-
-        # No ISP gateway on this port — clients routed here cannot browse.
-        if not has_gateway:
-            healthy = [
-                int(item.get("index") or 0)
-                for item in ordered
-                if int(item.get("index") or 0) != index
-            ]
-            if healthy:
-                _rehome_client_isp_pins_from_mark(
-                    sock,
-                    mark_index=index,
-                    target_index=healthy[0],
-                )
-            _set_smart_balance_member_active(sock, index, active=False)
-            _remove_client_isp_pins_for_mark(sock, index)
-            member_results[port_name] = "slow"
-            slow_ports.append(port_name)
-            continue
-
-        bad = (
-            recv <= 0
-            or max_rtt > SMART_BALANCE_SLOW_RTT_MS
-            or loss > SMART_BALANCE_SLOW_LOSS_PCT
-        )
-        good = (
-            recv > 0
-            and max_rtt < SMART_BALANCE_RECOVER_RTT_MS
-            and loss < SMART_BALANCE_RECOVER_LOSS_PCT
-        )
-        # Some ISPs block ICMP on the WAN — keep the link up when DHCP + route are OK.
-        if bad and not good and route_active and has_gateway and recv <= 0:
-            _set_smart_balance_member_active(sock, index, active=True)
-            member_results[port_name] = "ok"
-            continue
-        if bad and not good:
-            healthy = [
-                int(item.get("index") or 0)
-                for item in ordered
-                if int(item.get("index") or 0) != index
-                and member_results.get(str(item.get("interface") or "")) != "slow"
-            ]
-            if not healthy:
-                healthy = [
-                    int(item.get("index") or 0)
-                    for item in ordered
-                    if int(item.get("index") or 0) != index
-                ]
-            if healthy:
-                _rehome_client_isp_pins_from_mark(
-                    sock,
-                    mark_index=index,
-                    target_index=healthy[0],
-                )
-            _set_smart_balance_member_active(sock, index, active=False)
-            _remove_client_isp_pins_for_mark(sock, index)
-            member_results[port_name] = "slow"
-            slow_ports.append(port_name)
-        elif good:
-            _set_smart_balance_member_active(sock, index, active=True)
-            member_results[port_name] = "ok"
-        else:
-            member_results[port_name] = prior_state.get(port_name) or "ok"
-            if member_results[port_name] == "slow":
-                slow_ports.append(port_name)
-            elif member_results[port_name] == "ok":
-                _set_smart_balance_member_active(sock, index, active=True)
-
-    try:
-        from django.core.cache import cache
-
-        cache.set(cache_key, "1", 90)
-    except Exception:
-        pass
-
-    return {
-        "ok": True,
-        "members": member_results,
-        "slow_ports": slow_ports,
-        "via": "api",
-    }
-
-
-def _build_smart_balance_marker_script() -> str:
-    """RouterOS placeholder — real ping monitor runs via billing server API."""
-    return (
-        "# ISPCENTRIC smart balance — link health checked via billing server API\n"
-        ":return"
-    )
-
-
-def _build_smart_balance_ros_script(members: list[dict[str, str]]) -> str:
-    """RouterOS script: ping each WAN table and disable PCC slots when slow."""
-    lines = [
-        "# ISPCENTRIC smart balance — avoid slow ISP links",
-        f":local slowRtt {SMART_BALANCE_SLOW_RTT_MS}ms",
-        f":local recoverRtt {SMART_BALANCE_RECOVER_RTT_MS}ms",
-        f":local slowLoss {SMART_BALANCE_SLOW_LOSS_PCT}",
-        f":local recoverLoss {SMART_BALANCE_RECOVER_LOSS_PCT}",
-        ':local targets {"1.1.1.1";"8.8.8.8"}',
-        "",
-    ]
-    for item in members:
-        index = int(item.get("index") or 0)
-        iface = (item.get("interface") or "").strip()
-        wan_iface = (item.get("wan_iface") or iface).strip()
-        table = _balance_table_name(index)
-        mark = f"ispcentric-c{index}"
-        lines.extend(
-            [
-                f"# {iface}",
-                f":global ispcentricSmart{index}",
-                (
-                    f':if ([:typeof $ispcentricSmart{index}] = "nothing") do='
-                    f'{{ :set ispcentricSmart{index} "ok" }}'
-                ),
-                f':local tbl{index} "{table}"',
-                f':local wan{index} "{wan_iface}"',
-                f':local mark{index} "{mark}"',
-                f":local sent{index} 0",
-                f":local recv{index} 0",
-                f":local maxRtt{index} 0ms",
-                f":foreach target in=$targets do={{",
-                "  :do {",
-                (
-                    f"    :local got [/ping address=$target count=3 interval=200ms "
-                    f"interface=$wan{index}]"
-                ),
-                f"    :set recv{index} ($recv{index} + $got)",
-                f"    :set sent{index} ($sent{index} + 3)",
-                f"    :if ($got > 0) do={{",
-                (
-                    f"      :local pingOut [/ping address=$target count=1 interval=200ms "
-                    f"interface=$wan{index} as-value]"
-                ),
-                f"      :local avg ($pingOut->\"avg-rtt\")",
-                f"      :if ($avg > $maxRtt{index}) do={{ :set maxRtt{index} $avg }}",
-                "    }",
-                "  } on-error={",
-                f"    :set sent{index} ($sent{index} + 3)",
-                "  }",
-                "}",
-                f":local loss{index} 100",
-                f":if ($sent{index} > 0) do={{",
-                f"  :set loss{index} (100 - (($recv{index} * 100) / $sent{index}))",
-                "}",
-                f":local bad{index} false",
-                (
-                    f":if ($recv{index} = 0 or $maxRtt{index} > $slowRtt "
-                    f"or $loss{index} > $slowLoss) do={{ :set bad{index} true }}"
-                ),
-                f":local good{index} false",
-                (
-                    f":if ($recv{index} > 0 and $maxRtt{index} < $recoverRtt "
-                    f"and $loss{index} < $recoverLoss) do={{ :set good{index} true }}"
-                ),
-                (
-                    f":if ($bad{index} and ($ispcentricSmart{index} = \"ok\")) do={{"
-                ),
-                (
-                    f"  :foreach id in=[/ip firewall mangle find where chain=prerouting "
-                    f'and comment~"{UPLINK_TAG}" and new-connection-mark=$mark{index} '
-                    f'and per-connection-classifier~":"] do={{'
-                ),
-                "    /ip firewall mangle disable $id",
-                "  }",
-                (
-                    f"  :foreach id in=[/ip route find where comment~\"{UPLINK_TAG}\" "
-                    f"and routing-table=$tbl{index}] do={{"
-                ),
-                "    /ip route disable $id",
-                "  }",
-                f'  :set ispcentricSmart{index} "slow"',
-                "}",
-                (
-                    f":if ($good{index} and ($ispcentricSmart{index} = \"slow\")) do={{"
-                ),
-                (
-                    f"  :foreach id in=[/ip firewall mangle find where chain=prerouting "
-                    f'and comment~"{UPLINK_TAG}" and new-connection-mark=$mark{index} '
-                    f'and per-connection-classifier~":"] do={{'
-                ),
-                "    /ip firewall mangle enable $id",
-                "  }",
-                (
-                    f"  :foreach id in=[/ip route find where comment~\"{UPLINK_TAG}\" "
-                    f"and routing-table=$tbl{index}] do={{"
-                ),
-                "    /ip route enable $id",
-                "  }",
-                f'  :set ispcentricSmart{index} "ok"',
-                "}",
-                "",
-            ]
-        )
-    return "\n".join(lines)
-
-
-def _remove_named_routeros_items(sock: socket.socket, path: str, name: str) -> int:
-    removed = 0
-    for row in _print(sock, path, props=".id,name"):
-        if (row.get("name") or "").strip() != name:
-            continue
-        item_id = (row.get(".id") or "").strip()
-        if not item_id:
-            continue
-        if _remove(sock, path, item_id).get("_reply") not in {"!trap", "!fatal"}:
-            removed += 1
-    return removed
-
-
-def _install_smart_balance_monitor(
-    sock: socket.socket,
-    members: list[dict[str, str]],
-    *,
-    interval: str = "1m",
-) -> dict[str, Any]:
-    """Install RouterOS script + scheduler to avoid slow WAN PCC slots."""
-    ordered = sorted(
-        members,
-        key=lambda m: (-int(m.get("weight") or 1), str(m.get("interface") or "")),
-    )
-    for index, item in enumerate(ordered):
-        item["index"] = str(index)
-    if len(ordered) < 2:
-        return {"ok": False, "error": "Need at least two WAN members for smart balance."}
-
-    script_body = _build_smart_balance_marker_script()
-    _remove_named_routeros_items(sock, "/system/scheduler", SMART_BALANCE_SCHEDULER_NAME)
-    _remove_named_routeros_items(sock, "/system/script", SMART_BALANCE_SCRIPT_NAME)
-
-    script_terminal = _add(
-        sock,
-        "/system/script",
-        name=SMART_BALANCE_SCRIPT_NAME,
-        source=script_body,
-        comment=UPLINK_TAG,
-        policy="read,write,policy,test,sniff,sensitive,romon",
-    )
-    if script_terminal.get("_reply") in {"!trap", "!fatal"}:
-        script_terminal, _ = _add_or_set_attempts(
-            sock,
-            "/system/script",
-            "",
-            [
-                {
-                    "name": SMART_BALANCE_SCRIPT_NAME,
-                    "source": script_body,
-                    "comment": UPLINK_TAG,
-                }
-            ],
-        )
-    if script_terminal.get("_reply") in {"!trap", "!fatal"}:
-        return {
-            "ok": False,
-            "error": _trap_message(
-                script_terminal, "Could not install smart-balance monitor script."
-            ),
-        }
-
-    sched_attempts = [
-        {
-            "name": SMART_BALANCE_SCHEDULER_NAME,
-            "interval": interval,
-            "on-event": SMART_BALANCE_SCRIPT_NAME,
-            "start-time": "startup",
-            "comment": UPLINK_TAG,
-            "policy": "read,write,policy,test,sniff,sensitive,romon",
-        },
-        {
-            "name": SMART_BALANCE_SCHEDULER_NAME,
-            "interval": interval,
-            "on-event": SMART_BALANCE_SCRIPT_NAME,
-            "start-time": "startup",
-            "comment": UPLINK_TAG,
-        },
-        {
-            "name": SMART_BALANCE_SCHEDULER_NAME,
-            "interval": interval,
-            "on-event": SMART_BALANCE_SCRIPT_NAME,
-            "comment": UPLINK_TAG,
-        },
-    ]
-    sched_terminal, _ = _add_or_set_attempts(
-        sock, "/system/scheduler", "", sched_attempts
-    )
-    if sched_terminal.get("_reply") in {"!trap", "!fatal"}:
-        return {
-            "ok": False,
-            "error": _trap_message(
-                sched_terminal, "Could not install smart-balance scheduler."
-            ),
-        }
-
-    monitor = run_smart_balance_monitor_via_api(
-        sock, ordered, force=True, host=""
-    )
-
-    return {
-        "ok": True,
-        "script": SMART_BALANCE_SCRIPT_NAME,
-        "scheduler": SMART_BALANCE_SCHEDULER_NAME,
-        "members": [m.get("interface") for m in ordered],
-        "monitor": monitor,
-    }
-
-
-def read_smart_balance_status(
-    sock: socket.socket,
-    member_ports: list[str],
-) -> dict[str, Any]:
-    """Read whether each WAN PCC pool slot is active or temporarily sidelined."""
-    ports = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
-    if len(ports) < 2:
-        return {"ok": False, "members": {}}
-
-    has_scheduler = False
-    try:
-        for row in _print(sock, "/system/scheduler", props="name,comment,disabled"):
-            if (row.get("name") or "").strip() != SMART_BALANCE_SCHEDULER_NAME:
-                continue
-            if UPLINK_TAG in (row.get("comment") or ""):
-                has_scheduler = not _flag_yes(row.get("disabled"))
-                break
-    except Exception:
-        has_scheduler = False
-
-    members: dict[str, str] = {}
-    for index, name in enumerate(ports):
-        mark = f"ispcentric-c{index}"
-        pcc_total = 0
-        pcc_disabled = 0
-        try:
-            mangle_rows = _print(
-                sock,
-                "/ip/firewall/mangle",
-                props="chain,action,new-connection-mark,per-connection-classifier,disabled,comment",
-                query={"comment~": UPLINK_TAG},
-            )
-        except Exception:
-            mangle_rows = []
-        if not mangle_rows:
-            try:
-                mangle_rows = _print(
-                    sock,
-                    "/ip/firewall/mangle",
-                    props="chain,action,new-connection-mark,per-connection-classifier,disabled,comment",
-                )
-            except Exception:
-                mangle_rows = []
-        try:
-            for row in mangle_rows:
-                if UPLINK_TAG not in (row.get("comment") or ""):
-                    continue
-                if (row.get("chain") or "").strip() != "prerouting":
-                    continue
-                if (row.get("new-connection-mark") or "").strip() != mark:
-                    continue
-                if not (row.get("per-connection-classifier") or "").strip():
-                    continue
-                pcc_total += 1
-                if _flag_yes(row.get("disabled")):
-                    pcc_disabled += 1
-        except Exception:
-            pass
-        if pcc_total and pcc_disabled >= pcc_total:
-            members[name] = "slow"
-        else:
-            members[name] = "ok"
-
-    return {
-        "ok": True,
-        "enabled": has_scheduler,
-        "members": members,
-        "slow_ports": [name for name, state in members.items() if state == "slow"],
-    }
 
 
 def _extract_balance_gateway_hints(
@@ -30115,6 +29623,21 @@ def _resolve_balance_member_gateway(
     return interface, gateway or ""
 
 
+def _remove_legacy_smart_balance_timer(sock: socket.socket) -> None:
+    """Drop the old on-router smart-balance script if a previous apply left one."""
+    for path in ("/system/scheduler", "/system/script"):
+        try:
+            rows = _print(sock, path, props=".id,name")
+        except Exception:
+            continue
+        for row in rows:
+            if (row.get("name") or "").strip() != "ispcentric-smart-balance":
+                continue
+            item_id = (row.get(".id") or "").strip()
+            if item_id:
+                _remove(sock, path, item_id)
+
+
 def apply_mikrotik_uplink_balance(
     host: str,
     username: str,
@@ -30136,9 +29659,6 @@ def apply_mikrotik_uplink_balance(
     ``member_weights`` maps port → Mbps, connections are split in that ratio
     (e.g. 100/20 → ~5:1). Otherwise each member gets an equal share.
 
-    When ``smart_balance`` is True, a RouterOS scheduler pings each WAN and
-    temporarily disables PCC slots for links that are slow or lossy.
-
     Phased apply reconnects over alternate API hosts when unbridging drops LAN API.
     DHCP/PPPoE clients are preserved; client default-routes are only retired after
     PCC routes are installed so management (WireGuard) stays up mid-apply.
@@ -30149,10 +29669,12 @@ def apply_mikrotik_uplink_balance(
     members = [p.strip() for p in (member_ports or []) if (p or "").strip()]
     members = list(dict.fromkeys(members))
     weights_in = member_weights if isinstance(member_weights, dict) else {}
+    # Slow-link smart balance was removed. This always installs plain PCC share.
+    smart_balance = False
     dial_hosts = _api_hosts_for_uplink_apply(host, api_hosts=api_hosts)
-    recovery_mode = "smart_balance" if smart_balance else "balance"
+    recovery_mode = "balance"
     recovery_script = build_uplink_recovery_script(recovery_mode, members=members)
-    mode_label = "smart balance" if smart_balance else "load balance"
+    mode_label = "load balance"
 
     if not host or not username:
         return {"ok": False, "error": "Missing router credentials."}
@@ -30352,25 +29874,6 @@ def apply_mikrotik_uplink_balance(
                             or "",
                         )
 
-                    smart_status: dict[str, Any] = {}
-                    if smart_balance:
-                        _uplink_progress(
-                            progress, "Installing slow-link monitor…", "smart_monitor"
-                        )
-                        smart = _install_smart_balance_monitor(sock, balance_members)
-                        if not smart.get("ok"):
-                            return {
-                                "ok": False,
-                                "error": smart.get("error")
-                                or "Could not install smart-balance monitor.",
-                                "unbridged": unbridged,
-                                "recovery_script": recovery_script,
-                            }
-                        smart_status = read_smart_balance_status(
-                            sock,
-                            [m["interface"] for m in balance_members],
-                        )
-
                     labels = list(
                         pcc.get("members") or [m["interface"] for m in balance_members]
                     )
@@ -30403,12 +29906,7 @@ def apply_mikrotik_uplink_balance(
                             f"weighted {ratio} toward {preferred or 'fastest'} "
                             f"({mbps_bits}); ping-checks drop a dead ISP"
                         )
-                    if smart_balance:
-                        share_text += (
-                            "; smart monitor avoids slow links "
-                            f"(>{SMART_BALANCE_SLOW_RTT_MS}ms or >{SMART_BALANCE_SLOW_LOSS_PCT}% loss)"
-                        )
-
+                    _remove_legacy_smart_balance_timer(sock)
                     backflow = _ensure_uplink_no_backflow(
                         sock,
                         [m["interface"] for m in balance_members]
@@ -30420,9 +29918,9 @@ def apply_mikrotik_uplink_balance(
                     )
                     return {
                         "ok": True,
-                        "mode": "smart_balance" if smart_balance else "balance",
-                        "smart_balance": smart_balance,
-                        "smart_balance_status": smart_status if smart_balance else {},
+                        "mode": "balance",
+                        "smart_balance": False,
+                        "smart_balance_status": {},
                         "ports": labels,
                         "wan_interface": preferred or (labels[0] if labels else ""),
                         "unbridged": unbridged,
@@ -30437,11 +29935,7 @@ def apply_mikrotik_uplink_balance(
                         "session_host": session_host,
                         "recovery_script": recovery_script,
                         "message": (
-                            (
-                                f"Smart balance ready across {', '.join(labels)} "
-                                if smart_balance
-                                else f"Load balance ready across {', '.join(labels)} "
-                            )
+                            f"Load balance ready across {', '.join(labels)} "
                             + f"({share_text})."
                             + (
                                 f" Waiting on gateway for: {', '.join(missing_gw)}."
@@ -31170,22 +30664,11 @@ def _read_mikrotik_uplink_multi_on_sock(
     except Exception:
         pcc_rules = 0
 
-    smart_scheduler = False
-    try:
-        for row in _print(sock, "/system/scheduler", props="name,comment,disabled"):
-            if (row.get("name") or "").strip() != SMART_BALANCE_SCHEDULER_NAME:
-                continue
-            if UPLINK_TAG in (row.get("comment") or ""):
-                smart_scheduler = not _flag_yes(row.get("disabled"))
-                break
-    except Exception:
-        smart_scheduler = False
-
     mode = "single"
     if bonds:
         mode = "bond"
     elif pcc_rules >= 2:
-        mode = "smart_balance" if smart_scheduler else "balance"
+        mode = "balance"
     else:
         distances = {
             str(c.get("distance") or "1") for c in failover_clients if not c.get("disabled")
@@ -31206,11 +30689,6 @@ def _read_mikrotik_uplink_multi_on_sock(
             not c.get("disabled") for c in failover_clients
         )
 
-    smart_balance_status: dict[str, Any] = {}
-    ports_for_status = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
-    if mode == "smart_balance" and len(ports_for_status) >= 2:
-        smart_balance_status = read_smart_balance_status(sock, ports_for_status)
-
     return {
         "ok": True,
         "mode": mode,
@@ -31219,8 +30697,8 @@ def _read_mikrotik_uplink_multi_on_sock(
         "checked_routes": checked_routes,
         "healthy": healthy,
         "balance_pcc_rules": pcc_rules,
-        "smart_balance_enabled": smart_scheduler,
-        "smart_balance_status": smart_balance_status,
+        "smart_balance_enabled": False,
+        "smart_balance_status": {},
     }
 
 
@@ -31903,8 +31381,8 @@ def router_client_isp_switch_ready(
     return {
         "ok": False,
         "error": (
-            "Turn on smart balance first — client switching needs multi-ISP "
-            "routing tables on the MikroTik."
+            "Apply multi-ISP sharing first — client switching needs the "
+            "load-balance routing tables on the MikroTik."
         ),
     }
 
@@ -32105,115 +31583,6 @@ def auto_rebalance_client_isps(
         "imbalance_reason": plan.get("imbalance_reason") or "",
         "total_bps": plan.get("total_bps") or 0,
         "seamless": bool(seamless),
-    }
-
-
-def maintain_router_smart_balance(
-    host: str,
-    username: str,
-    password: str,
-    *,
-    member_ports: list[str],
-    port_weights: dict[str, Any] | None = None,
-    primary_wan: str = "",
-    bond_interface: str = "",
-    rebalance: bool = True,
-    router_pk: int = 0,
-    timeout: float = 12.0,
-) -> dict[str, Any]:
-    """
-    Background smart-balance maintenance: ping monitor + optional client rebalance.
-
-    Intended for scheduled runs so link health and load spreading work without
-    the assigned-ports page open.
-    """
-    host = (host or "").strip()
-    ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
-    ordered = list(dict.fromkeys(ordered))
-    if not host or len(ordered) < 2:
-        return {"ok": False, "error": "Need host and at least two ISP ports."}
-
-    weights = _client_isp_capacity_weights(ordered, port_weights, healthy_ports=ordered)
-    monitor_members = [
-        {
-            "interface": name,
-            "index": str(index),
-            "wan_iface": name,
-            "weight": str(weights.get(name) or CLIENT_ISP_DEFAULT_WEIGHT_MBPS),
-        }
-        for index, name in enumerate(ordered)
-    ]
-
-    monitor_result: dict[str, Any] = {}
-    smart_status: dict[str, Any] = {}
-    rebalance_result: dict[str, Any] = {}
-    try:
-        with _api_session(host, username, password or "", timeout=timeout) as sock:
-            monitor_result = run_smart_balance_monitor_via_api(
-                sock,
-                monitor_members,
-                force=False,
-                host=host,
-            )
-            smart_status = read_smart_balance_status(sock, ordered)
-            slow_ports = list(smart_status.get("slow_ports") or [])
-
-            if rebalance:
-                usage = _read_client_wan_usage_on_sock(
-                    sock,
-                    host,
-                    uplink_mode="smart_balance",
-                    member_ports=ordered,
-                    primary_wan=primary_wan or (ordered[0] if ordered else ""),
-                    bond_interface=bond_interface or "",
-                )
-                if usage.get("uses_connection_marks") or usage.get("mark_to_port"):
-                    clients: list[dict[str, Any]] = []
-                    pins = usage.get("client_pins") if isinstance(usage.get("client_pins"), dict) else {}
-                    mark_to_port = usage.get("mark_to_port") if isinstance(usage.get("mark_to_port"), dict) else {}
-                    for ip, row in (usage.get("ip_usage") or {}).items():
-                        if not ip:
-                            continue
-                        pin = pins.get(ip) if isinstance(pins, dict) else {}
-                        mark_index = row.get("mark_index")
-                        isp_port = (row.get("isp_port") or "").strip()
-                        if not isp_port and mark_index is not None:
-                            isp_port = str(
-                                mark_to_port.get(str(mark_index))
-                                or mark_to_port.get(mark_index)
-                                or ""
-                            ).strip()
-                        clients.append(
-                            {
-                                "online": True,
-                                "ip": ip,
-                                "isp_port": isp_port,
-                                "isp_pinned": bool((pin or {}).get("pinned")),
-                                "connection_count": int(row.get("connections") or 0),
-                                "download_bps": int(row.get("download_bps") or 0),
-                                "upload_bps": int(row.get("upload_bps") or 0),
-                                "customer_id": (pin or {}).get("customer_id") or "",
-                                "name": ip,
-                            }
-                        )
-                    if len(clients) >= 2:
-                        rebalance_result = auto_rebalance_client_isps(
-                            sock,
-                            member_ports=ordered,
-                            clients=clients,
-                            slow_ports=slow_ports,
-                            port_weights=port_weights,
-                            router_pk=router_pk,
-                            throttle_seconds=CLIENT_REBALANCE_COOLDOWN_S,
-                        )
-    except Exception as exc:
-        return {"ok": False, "error": str(exc) or "Smart balance maintenance failed."}
-
-    return {
-        "ok": True,
-        "monitor": monitor_result,
-        "smart_balance_status": smart_status,
-        "rebalance": rebalance_result,
     }
 
 

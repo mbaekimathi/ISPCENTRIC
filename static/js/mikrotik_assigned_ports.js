@@ -991,8 +991,15 @@
     fetchLive(false);
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(function () {
+      if (document.hidden) return;
       fetchLive(false);
     }, pollMs);
+    if (!root._assignedPortsVisibilityBound) {
+      root._assignedPortsVisibilityBound = true;
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) fetchLive(false);
+      });
+    }
   }
 
   var retryBtn = root.querySelector("[data-assigned-retry]");

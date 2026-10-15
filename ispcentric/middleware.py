@@ -298,6 +298,16 @@ class CaptivePortalHttpMiddleware:
             # Undo any HSTS from an earlier https admin visit / misconfig.
             if "Strict-Transport-Security" in response:
                 del response["Strict-Transport-Security"]
+            # Phone sign-in sheets often show the pay page inside a frame.
+            # DENY leaves the user on the router "Opening payment page" bounce.
+            if "X-Frame-Options" in response:
+                del response["X-Frame-Options"]
+            csp = response.get("Content-Security-Policy") or ""
+            if "frame-ancestors 'none'" in csp:
+                response["Content-Security-Policy"] = csp.replace(
+                    "frame-ancestors 'none'",
+                    "frame-ancestors *",
+                )
             response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response["Pragma"] = "no-cache"
         return response
@@ -312,8 +322,7 @@ class HotspotCaptiveProbeMiddleware:
     without this handler that request 404s instead of showing the captive page.
 
     Expired PPPoE sessions are dst-nat'd the same way; their REMOTE_ADDR sits in
-    the PPPoE pool, so they land on ``/pppoe/…/pay/``. Paused PPPoE sessions land
-    on ``/pppoe/…/pause/``.
+    the PPPoE pool, so they land on ``/pppoe/…/pay/``.
 
     CaptiveHostRewriteMiddleware may have already replaced the Host header —
     always also check ``request.captive_original_host``.
@@ -430,106 +439,32 @@ class HotspotCaptiveProbeMiddleware:
             pppoe_customer = find_pppoe_customer_for_ip(org, remote)
         except Exception:
             pppoe_customer = None
-        # Registered PPPoE sessions always use /pppoe/… (token locked), even when
-        # the phone IP is not in the classic 10.20.0.0/24 pool.
-        # Paused → /pause/; expired / unpaid → /pay/.
+        # Expired PPPoE always opens /pppoe/…/pay/. The pay page itself sends a
+        # frozen package on to the pause notice.
         prefer_pppoe = bool(renew_or_pppoe_pool or pppoe_customer is not None)
-        pppoe_page = "pay"
-        if prefer_pppoe:
-            try:
-                from billing.services import customer_package_is_paused
 
-                customer_for_page = pppoe_customer
-                if customer_for_page is None:
-                    # Probe bursts sometimes outrun /ppp/active after kick/redial.
-                    # Fall back to the signed ?t= from DHCP option 114 / login.html
-                    # when the OS already followed that URL onto a probe host.
-                    from django.core import signing
-
-                    token = (request.GET.get("t") or "").strip()
-                    if token and org is not None:
-                        try:
-                            payload = signing.loads(
-                                token,
-                                salt="pppoe-payment",
-                                max_age=60 * 60 * 24 * 30,
-                            )
-                        except Exception:
-                            payload = None
-                        if (
-                            isinstance(payload, dict)
-                            and payload.get("org") == org.pk
-                            and payload.get("mode") == "pppoe"
-                            and payload.get("cid")
-                        ):
-                            from billing.models import Customer
-
-                            customer_for_page = (
-                                Customer.objects.filter(
-                                    pk=payload.get("cid"),
-                                    organization=org,
-                                    service_type=Customer.ServiceType.PPPOE,
-                                )
-                                .only("id", "package_paused_at", "account_number")
-                                .first()
-                            )
-                            if customer_for_page is not None:
-                                pppoe_customer = customer_for_page
-                if customer_for_page is not None and customer_package_is_paused(
-                    customer_for_page
-                ):
-                    pppoe_page = "pause"
-            except Exception:
-                pppoe_page = "pay"
-
-        # Hotspot probes: unpaid / unknown MAC → /pay/ first (one hop).
-        # Paid MACs that can already surf → /reconnect/ (skip pay → welcome).
-        # Paused packages → /pause/.
-        # Resolve MAC once — a second NAS walk here was doubling captive latency.
-        hotspot_view = "core:hotspot_pay"
+        # Every Hotspot sign-in opens the pay page. That page reconnects a
+        # paid device and shows the pause notice when the package is frozen.
         hotspot_mac = ""
         if not prefer_pppoe:
             try:
-                from billing.devices import (
-                    find_hotspot_customer_for_mac,
-                    hotspot_mac_can_surf,
-                )
-                from billing.services import customer_package_is_paused
                 from core.mikrotik_connect import find_hotspot_mac_for_ip
 
                 hotspot_mac = find_hotspot_mac_for_ip(org, remote) or ""
-                if hotspot_mac:
-                    hotspot_customer = find_hotspot_customer_for_mac(
-                        org, hotspot_mac, active_only=True
-                    )
-                    if hotspot_customer is not None and customer_package_is_paused(
-                        hotspot_customer
-                    ):
-                        hotspot_view = "core:hotspot_pause"
-                    elif hotspot_customer is not None and hotspot_mac_can_surf(
-                        hotspot_customer, hotspot_mac
-                    ):
-                        hotspot_view = "core:hotspot_reconnect"
             except Exception:
-                hotspot_view = "core:hotspot_pay"
                 hotspot_mac = ""
 
         if prefer_pppoe:
             pay_path = reverse(
-                (
-                    "core:pppoe_pause"
-                    if pppoe_page == "pause"
-                    else "core:pppoe_pay"
-                ),
+                "core:pppoe_pay",
                 kwargs={"join_code": org.join_code},
             )
         else:
             pay_path = reverse(
-                hotspot_view,
+                "core:hotspot_pay",
                 kwargs={"join_code": org.join_code},
             )
         from core.hotspot_portal import (
-            prefer_captive_open_url,
             prefer_hotspot_open_url,
             prefer_http_captive_url,
             public_base_url,
@@ -545,10 +480,9 @@ class HotspotCaptiveProbeMiddleware:
             base = prefer_http_captive_url(
                 request.build_absolute_uri("/")
             ).rstrip("/")
-        # Hotspot: keep hostname (walled-garden dst-host). PPPoE renew may use
-        # billing IPv4 so HTTPS-First does not race the expired allow rule.
-        open_url = prefer_captive_open_url if prefer_pppoe else prefer_hotspot_open_url
-        target = open_url(f"{base}{pay_path}")
+        # One http pay URL for both Hotspot and expired PPPoE. A bare billing
+        # IPv4 is what left the sign-in sheet on the redirect page.
+        target = prefer_hotspot_open_url(f"{base}{pay_path}")
         if query:
             target = f"{target}?{query}"
         if prefer_pppoe:

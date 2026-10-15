@@ -296,7 +296,13 @@
   });
 
   load(true);
-  timer = window.setInterval(function () { load(false); }, 15000);
+  timer = window.setInterval(function () {
+    if (document.hidden) return;
+    load(false);
+  }, 15000);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) load(false);
+  });
   window.addEventListener("beforeunload", function () {
     if (timer) window.clearInterval(timer);
   });

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Persist PPPoE/Hotspot usage samples for General usage charts without anyone
-# opening /app/clients/usage/ or per-client usage-analysis pages.
+# Slow PPPoE/Hotspot usage snapshot so fair-usage caps still count when
+# nobody has a usage page open. Live charts sample on those pages instead.
 # Driven by deploy/systemd/ispcentric-usage-sample.timer (and the in-process
 # boot loop as a second path).
 set -uo pipefail

@@ -1083,6 +1083,9 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertTrue(_usage_sample_enabled())
         self.assertGreaterEqual(_usage_sample_interval_sec(), 30)
         self.assertGreaterEqual(_usage_sample_startup_delay_sec(), 0)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("USAGE_SAMPLE_INTERVAL_SEC", None)
+            self.assertEqual(_usage_sample_interval_sec(), 600.0)
 
     def test_usage_sample_not_tied_to_subscription_no_sweep(self):
         """General usage must keep collecting when only --no-sweep is set."""
@@ -2414,8 +2417,8 @@ class CaptiveProbeMiddlewareTests(TestCase):
         self.assertEqual(find_mac.call_count, 1)
 
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
-    def test_hotspot_probe_paid_mac_uses_reconnect(self):
-        """Paid subscribers skip the pay wall via /reconnect/."""
+    def test_hotspot_probe_paid_mac_uses_pay_page(self):
+        """Paid and unpaid phones both open the pay page from the sign-in probe."""
         from datetime import timedelta
 
         from django.core.cache import cache
@@ -2471,7 +2474,8 @@ class CaptiveProbeMiddlewareTests(TestCase):
             response = middleware(request)
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn(f"/hotspot/{self.org.join_code}/reconnect/", response.url)
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
+        self.assertNotIn("/reconnect/", response.url)
 
     def test_kill_connections_skips_when_billing_preserve_empty(self):
         """Empty billing preserve must not RST captive pay TCP."""
@@ -2651,7 +2655,8 @@ class CaptiveProbeMiddlewareTests(TestCase):
         self.assertNotIn("/hotspot/", response.url)
 
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
-    def test_paused_pppoe_customer_probe_redirects_to_pause_page(self):
+    def test_paused_pppoe_customer_probe_redirects_to_pay_page(self):
+        """Expired and paused probes both open the pay page. Pay sends pauses on."""
         from django.core.cache import cache
         from django.http import HttpResponse
         from django.test import RequestFactory
@@ -2696,8 +2701,8 @@ class CaptiveProbeMiddlewareTests(TestCase):
         ):
             response = middleware(request)
         self.assertEqual(response.status_code, 302)
-        self.assertIn(f"/pppoe/{self.org.join_code}/pause/", response.url)
-        self.assertNotIn("/pay/", response.url)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
+        self.assertNotIn("/pause/", response.url)
         self.assertIn("t=", response.url)
 
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
@@ -5059,8 +5064,8 @@ class PortalBaseUrlReachabilityTests(SimpleTestCase):
     def test_hosted_hotspot_pay_url_keeps_hostname_not_bare_ipv4(self):
         """
         Bare billing IPv4 in login.html bypasses HTTP walled-garden dst-host
-        and times out when walled-garden/ip is missing. Hotspot must keep the
-        public hostname; PPPoE renew still may use prefer_captive_open_url.
+        and times out when walled-garden/ip is missing. Hotspot and expired
+        PPPoE both keep the public hostname.
         """
         from core.hotspot_portal import hotspot_portal_urls
 
@@ -5111,7 +5116,7 @@ class PppoePayPortalUrlTests(SimpleTestCase):
         HOSTED=True,
         DEBUG=False,
     )
-    def test_pppoe_pay_url_uses_billing_ipv4_when_hosted(self):
+    def test_pppoe_pay_url_keeps_public_hostname_when_hosted(self):
         from core.mikrotik_connect import _pppoe_pay_portal_url
 
         org = type("Org", (), {"join_code": "121212", "pk": 1})()
@@ -5121,10 +5126,10 @@ class PppoePayPortalUrlTests(SimpleTestCase):
         ):
             url = _pppoe_pay_portal_url(org)
         self.assertTrue(
-            url.startswith("http://178.162.241.99/pppoe/121212/pay/"),
+            url.startswith("http://isp.richcom.co.ke/pppoe/121212/pay/"),
             msg=url,
         )
-        self.assertNotIn("isp.richcom.co.ke", url)
+        self.assertNotIn("178.162.241.99", url)
 
     @override_settings(PUBLIC_BASE_URL="auto", HOSTED=False, DEBUG=True)
     def test_auto_public_base_builds_absolute_lan_pay_url(self):
@@ -10661,21 +10666,15 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         self.assertNotIn("https://isp.richcom.co.ke/", html)
 
     @override_settings(HOSTED=True, PUBLIC_BASE_URL="http://isp.richcom.co.ke")
-    def test_pppoe_cpe_login_html_may_use_billing_ipv4(self):
-        from unittest.mock import patch
-
+    def test_pppoe_cpe_login_html_keeps_public_hostname(self):
         from core.mikrotik_connect import _captive_pay_redirect_html
 
-        with patch(
-            "core.hotspot_portal.resolve_public_billing_ipv4",
-            return_value="178.162.241.99",
-        ):
-            html = _captive_pay_redirect_html(
-                "https://isp.richcom.co.ke/pppoe/534970/pay/",
-                via_billing_ip=True,
-            )
-        self.assertIn("http://178.162.241.99/pppoe/534970/pay/", html)
-        self.assertNotIn("isp.richcom.co.ke", html)
+        html = _captive_pay_redirect_html(
+            "https://isp.richcom.co.ke/pppoe/534970/pay/",
+            via_billing_ip=False,
+        )
+        self.assertIn("http://isp.richcom.co.ke/pppoe/534970/pay/", html)
+        self.assertNotIn("178.162.241.99", html)
 
     def test_hotspot_server_bypass_resolves_domain_public_base(self):
         """Domain PUBLIC_BASE_URL must still install billing IP bypass + garden."""
@@ -12172,8 +12171,8 @@ class AccessFlowCorrectionLoopTests(TestCase):
             ),
             patch("core.mikrotik_connect._first_forward_drop_id", return_value="*drop"),
             patch(
-                "core.mikrotik_connect._portal_billing_ipv4s",
-                return_value=frozenset({"203.0.113.10"}),
+                "core.mikrotik_connect._hotspot_pay_ipv4s",
+                return_value=["203.0.113.10"],
             ),
             patch(
                 "core.mikrotik_connect._ensure_hotspot_pool_dns_redirect",
@@ -12263,8 +12262,8 @@ class AccessFlowCorrectionLoopTests(TestCase):
             ),
             patch("core.mikrotik_connect._first_forward_drop_id", return_value="*drop"),
             patch(
-                "core.mikrotik_connect._portal_billing_ipv4s",
-                return_value=frozenset(),
+                "core.mikrotik_connect._hotspot_pay_ipv4s",
+                return_value=[],
             ),
             patch(
                 "core.mikrotik_connect._ensure_hotspot_pool_dns_redirect",
@@ -12336,8 +12335,8 @@ class AccessFlowCorrectionLoopTests(TestCase):
             ),
             patch("core.mikrotik_connect._first_forward_drop_id", return_value="*lan"),
             patch(
-                "core.mikrotik_connect._portal_billing_ipv4s",
-                return_value=frozenset({"203.0.113.10"}),
+                "core.mikrotik_connect._hotspot_pay_ipv4s",
+                return_value=["203.0.113.10"],
             ),
             patch(
                 "core.mikrotik_connect._ensure_hotspot_pool_dns_redirect",
@@ -14090,6 +14089,16 @@ class LayeredRouterHealthLoopTests(TestCase):
             )
         )
         self.assertFalse(is_credential_login_failure(""))
+        self.assertFalse(is_credential_login_failure("Login failed."))
+        self.assertFalse(
+            is_credential_login_failure("Connection closed while reading word.")
+        )
+        self.assertTrue(is_credential_login_failure("cannot log in"))
+        self.assertTrue(
+            is_credential_login_failure(
+                "Login failed. Check the saved username and password."
+            )
+        )
         status, auth_ok, error = status_after_api_probe(
             {"ok": False, "error": "Could not reach 10.9.0.50:8728."},
             via="api",

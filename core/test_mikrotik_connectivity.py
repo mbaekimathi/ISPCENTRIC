@@ -246,6 +246,40 @@ class ApiSessionReuseTests(SimpleTestCase):
         session_cm.assert_called_once()
         self.assertTrue(session_cm.call_args.kwargs.get("reuse"))
 
+    def test_api_gate_reentrant_on_same_thread(self):
+        from django.core.cache import caches
+
+        from core.mikrotik_connect import _api_gate_acquire, _api_gate_release
+
+        dial = "10.9.0.14"
+        key = f"mikrotik_api_gate:{dial}"
+        caches["jobs"].delete(key)
+        self.assertTrue(_api_gate_acquire(dial))
+        self.assertTrue(_api_gate_acquire(dial))
+        _api_gate_release(dial)
+        self.assertIsNotNone(caches["jobs"].get(key))
+        _api_gate_release(dial)
+        self.assertIsNone(caches["jobs"].get(key))
+
+    def test_dropped_api_socket_is_soft_outage_not_bad_password(self):
+        with patch(
+            "core.mikrotik_connect._api_session",
+            side_effect=ConnectionError("Connection closed while reading word."),
+        ):
+            snap = fetch_mikrotik_live_snapshot("10.9.0.14", "admin", "secret")
+        self.assertFalse(snap.get("auth_error"))
+        self.assertTrue(snap.get("soft_outage"))
+        self.assertFalse(snap.get("ok"))
+
+    def test_router_password_trap_stays_auth_error(self):
+        with patch(
+            "core.mikrotik_connect._api_session",
+            side_effect=ConnectionError("invalid user name or password (6)"),
+        ):
+            snap = fetch_mikrotik_live_snapshot("10.9.0.14", "admin", "secret")
+        self.assertTrue(snap.get("auth_error"))
+        self.assertFalse(snap.get("soft_outage"))
+
 
 class WireGuardBootSyncTests(SimpleTestCase):
     def test_sync_interval_respects_floor(self):
@@ -413,6 +447,44 @@ class HostedStabilizationPipelineTests(TestCase):
             tunnel_by_router=tunnel_map,
         )
         self.assertEqual(rows[0]["status"], "disconnected")
+
+    def test_generic_login_failed_does_not_drop_connected(self):
+        from core.mikrotik_status_samples import (
+            _live_stable_cache_key,
+            stabilize_live_status_row,
+        )
+
+        connected = {
+            "id": self.router.pk,
+            "status": "connected",
+            "online": True,
+            "error": "",
+        }
+        cache.set(_live_stable_cache_key(self.org.pk, self.router.pk), connected, 90)
+        held = stabilize_live_status_row(
+            self.org.pk,
+            self.router.pk,
+            {
+                "id": self.router.pk,
+                "status": "auth_failed",
+                "online": False,
+                "error": "Login failed.",
+            },
+        )
+        self.assertEqual(held["status"], "connected")
+        self.assertTrue(held.get("stabilized"))
+
+        dropped = stabilize_live_status_row(
+            self.org.pk,
+            self.router.pk,
+            {
+                "id": self.router.pk,
+                "status": "auth_failed",
+                "online": False,
+                "error": "invalid user name or password",
+            },
+        )
+        self.assertEqual(dropped["status"], "auth_failed")
 
 
 class RouterScriptCleanupTests(SimpleTestCase):

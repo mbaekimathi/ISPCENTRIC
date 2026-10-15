@@ -31,24 +31,6 @@
         </p>
       </div>
       <div class="mk-ports-hero-actions mk-assigned-hero-actions">
-        <label class="mk-auto-balance-toggle{% if router.smart_auto_balance_enabled %} is-on{% endif %}" data-auto-balance-toggle-wrap {% if is_suspended %}hidden{% endif %} hidden>
-          <input
-            type="checkbox"
-            data-auto-balance-toggle
-            role="switch"
-            aria-label="Auto balance clients across ISP links"
-            {% if router.smart_auto_balance_enabled %}checked{% endif %}
-          >
-          <span class="mk-auto-balance-switch-track" aria-hidden="true"></span>
-          <span class="mk-auto-balance-toggle-copy">
-            <span class="mk-auto-balance-toggle-label" data-auto-balance-toggle-label>
-              {% if router.smart_auto_balance_enabled %}Stop auto balancing{% else %}Auto balance{% endif %}
-            </span>
-            <span class="mk-auto-balance-toggle-hint" data-auto-balance-toggle-hint>
-              {% if router.smart_auto_balance_enabled %}Spreading clients across links{% else %}Manual Switch always works{% endif %}
-            </span>
-          </span>
-        </label>
         <span class="mk-live-pill" data-assigned-live-pill hidden>
           <span class="mk-live-dot" aria-hidden="true"></span>
           Live
@@ -104,7 +86,7 @@
         <p data-assigned-balance-message></p>
       </div>
       <button type="button" class="btn btn-primary btn-sm" data-assigned-balance-apply hidden>
-        Turn on smart balance
+        Turn on multi-ISP sharing
       </button>
     </div>
 

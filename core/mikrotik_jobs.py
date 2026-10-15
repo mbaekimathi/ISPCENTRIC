@@ -436,6 +436,7 @@ def schedule_nas_refresh(
     router_pk: int,
     *,
     reauthenticate: bool = True,
+    sync_pppoe_secrets: bool = True,
     on_complete: Callable[[], None] | None = None,
 ) -> None:
     """Push PPPoE/Hotspot stack to one router in the background."""
@@ -452,7 +453,11 @@ def schedule_nas_refresh(
 
         try:
             live = MikroTikRouter.objects.select_related("organization").get(pk=router_pk)
-            return run_nas_refresh_with_retry(live, reauthenticate=reauthenticate)
+            return run_nas_refresh_with_retry(
+                live,
+                reauthenticate=reauthenticate,
+                sync_pppoe_secrets=sync_pppoe_secrets,
+            )
         finally:
             if on_complete:
                 on_complete()

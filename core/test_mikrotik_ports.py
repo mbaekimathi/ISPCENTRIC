@@ -2179,66 +2179,6 @@ class BalanceUplinkImprovementTests(SimpleTestCase):
         )
         self.assertTrue(any(a["code"] == "balance_member_down" for a in alerts))
 
-    def test_smart_balance_script_contains_ping_monitor(self):
-        from core.mikrotik_connect import (
-            _build_smart_balance_marker_script,
-            _parse_routeros_rtt_ms,
-        )
-
-        script = _build_smart_balance_marker_script()
-        self.assertIn("billing server API", script)
-        self.assertIn(":return", script)
-        self.assertAlmostEqual(_parse_routeros_rtt_ms("10ms227us"), 10.227, places=2)
-        self.assertAlmostEqual(_parse_routeros_rtt_ms("250ms"), 250.0, places=1)
-
-    def test_smart_balance_scheduler_uses_on_event_hyphen(self):
-        from core.mikrotik_connect import (
-            SMART_BALANCE_SCRIPT_NAME,
-            _install_smart_balance_monitor,
-        )
-
-        add_calls: list[dict] = []
-
-        def fake_add(sock, path, **props):
-            add_calls.append({"path": path, **props})
-            return {"_reply": "!done", "ret": "*1"}
-
-        def fake_add_or_set(sock, path, item_id, attempts):
-            if path == "/system/scheduler":
-                add_calls.append({"path": path, **attempts[0]})
-                return {"_reply": "!done"}, ""
-            return {"_reply": "!done"}, ""
-
-        with (
-            patch(
-                "core.mikrotik_connect._remove_named_routeros_items",
-                return_value=0,
-            ),
-            patch("core.mikrotik_connect._add", side_effect=fake_add),
-            patch(
-                "core.mikrotik_connect._add_or_set_attempts",
-                side_effect=fake_add_or_set,
-            ),
-            patch(
-                "core.mikrotik_connect._command",
-                return_value=([], {"_reply": "!done"}),
-            ),
-        ):
-            result = _install_smart_balance_monitor(
-                object(),
-                [
-                    {"interface": "ether1", "weight": "100", "index": "0"},
-                    {"interface": "ether2", "weight": "100", "index": "1"},
-                ],
-            )
-
-        self.assertTrue(result.get("ok"), result)
-        sched_calls = [c for c in add_calls if c.get("path") == "/system/scheduler"]
-        self.assertTrue(sched_calls)
-        self.assertIn("on-event", sched_calls[0])
-        self.assertNotIn("on_event", sched_calls[0])
-        self.assertEqual(sched_calls[0].get("on-event"), SMART_BALANCE_SCRIPT_NAME)
-
     def test_smart_balance_slow_alert(self):
         alerts = _build_uplink_health_alerts(
             uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
@@ -2337,29 +2277,19 @@ class SmartBalanceAutoSetupTests(SimpleTestCase):
         self.assertEqual(members[0], "ether4")
         self.assertIn("ether1", members)
 
-    def test_smart_balance_health_requires_monitor(self):
+    def test_smart_balance_health_does_not_require_a_monitor(self):
         health = _smart_balance_health(
             {
                 "ok": True,
-                "mode": "smart_balance",
+                "mode": "balance",
                 "balance_pcc_rules": 4,
                 "smart_balance_enabled": False,
             },
             MikroTikRouter.UplinkMode.SMART_BALANCE,
         )
-        self.assertTrue(health.get("needs_apply"))
+        self.assertFalse(health.get("needs_apply"))
         self.assertFalse(health.get("effective"))
-
-        ok = _smart_balance_health(
-            {
-                "ok": True,
-                "mode": "smart_balance",
-                "balance_pcc_rules": 4,
-                "smart_balance_enabled": True,
-            },
-            MikroTikRouter.UplinkMode.SMART_BALANCE,
-        )
-        self.assertTrue(ok.get("effective"))
+        self.assertFalse(health.get("monitor_on"))
 
 
 class SwitchSingleWanTests(SimpleTestCase):
@@ -3206,9 +3136,8 @@ class AntiFlapUplinkTests(SimpleTestCase):
                         _port("ether2", uplink_kind="dhcp"),
                     ],
                 )
-        self.assertTrue(result.get("skipped"))
-        self.assertEqual(result.get("reason"), "pcc_already_present")
         apply_balance.assert_not_called()
+        self.assertEqual(result, {})
 
     def test_smart_balance_success_sets_long_cooldown(self):
         from core.views import (
@@ -3281,6 +3210,7 @@ class AntiFlapUplinkTests(SimpleTestCase):
                     _port("ether1", uplink_kind="dhcp"),
                     _port("ether2", uplink_kind="dhcp"),
                 ],
+                force=True,
             )
             second = _try_auto_apply_smart_balance(
                 router,
@@ -3297,6 +3227,7 @@ class AntiFlapUplinkTests(SimpleTestCase):
                     _port("ether1", uplink_kind="dhcp"),
                     _port("ether2", uplink_kind="dhcp"),
                 ],
+                force=True,
             )
         self.assertTrue(first.get("ok"))
         self.assertTrue(first.get("scheduled") or first.get("auto_applied"))
@@ -3832,14 +3763,6 @@ class HotMultiUplinkApplySimulationTests(SimpleTestCase):
                 return_value=[],
             ),
             patch(
-                "core.mikrotik_connect._install_smart_balance_monitor",
-                return_value={"ok": True},
-            ),
-            patch(
-                "core.mikrotik_connect.read_smart_balance_status",
-                return_value={"ok": True, "slow_ports": [], "members": {}},
-            ),
-            patch(
                 "core.mikrotik_connect._ensure_uplink_no_backflow",
                 return_value={"ok": True, "changed": True},
             ),
@@ -3854,7 +3777,7 @@ class HotMultiUplinkApplySimulationTests(SimpleTestCase):
             )
 
         self.assertTrue(result.get("ok"), result)
-        self.assertEqual(result.get("mode"), "smart_balance")
+        self.assertEqual(result.get("mode"), "balance")
         self.assertIn("clear_policy", calls)
         self.assertIn("install_pcc", calls)
         self.assertLess(calls.index("clear_policy"), calls.index("install_pcc"))
@@ -4874,81 +4797,6 @@ class ClientIspSwitchTests(SimpleTestCase):
         self.assertEqual(result["connections_cleared"], 2)
         remove_mock.assert_called_once_with(sock)
         kill_mock.assert_called_once_with(sock, ["10.10.0.1", "10.10.0.2"])
-
-
-class SmartBalanceMemberConnectivityTests(SimpleTestCase):
-    def test_monitor_sidelines_member_without_gateway(self):
-        from core.mikrotik_connect import run_smart_balance_monitor_via_api
-
-        sock = object()
-        members = [
-            {"interface": "ether1", "wan_iface": "ether1", "weight": "100", "index": "0"},
-            {"interface": "ether2", "wan_iface": "ether2", "weight": "100", "index": "1"},
-        ]
-        with patch(
-            "core.mikrotik_connect.read_smart_balance_status",
-            return_value={"members": {}},
-        ), patch(
-            "core.mikrotik_connect._balance_member_connectivity",
-            side_effect=[
-                {
-                    "has_gateway": True,
-                    "route_active": True,
-                    "ping_recv": 3,
-                    "ping_loss": 0,
-                    "ping_rtt_ms": 20.0,
-                },
-                {
-                    "has_gateway": False,
-                    "route_active": False,
-                    "ping_recv": 0,
-                    "ping_loss": 100,
-                    "ping_rtt_ms": 0.0,
-                },
-            ],
-        ), patch(
-            "core.mikrotik_connect._set_smart_balance_member_active"
-        ) as set_active, patch(
-            "core.mikrotik_connect._remove_client_isp_pins_for_mark"
-        ), patch("django.core.cache.cache.set"):
-            result = run_smart_balance_monitor_via_api(
-                sock, members, force=True, host="10.0.0.1"
-            )
-
-        self.assertTrue(result.get("ok"))
-        self.assertIn("ether2", result.get("slow_ports") or [])
-        set_active.assert_any_call(sock, 1, active=False)
-
-    def test_monitor_keeps_member_when_gateway_up_but_ping_blocked(self):
-        from core.mikrotik_connect import run_smart_balance_monitor_via_api
-
-        sock = object()
-        members = [
-            {"interface": "ether1", "wan_iface": "ether1", "weight": "100", "index": "0"},
-            {"interface": "ether2", "wan_iface": "ether2", "weight": "100", "index": "1"},
-        ]
-        with patch(
-            "core.mikrotik_connect.read_smart_balance_status",
-            return_value={"members": {}},
-        ), patch(
-            "core.mikrotik_connect._balance_member_connectivity",
-            return_value={
-                "has_gateway": True,
-                "route_active": True,
-                "ping_recv": 0,
-                "ping_loss": 100,
-                "ping_rtt_ms": 0.0,
-            },
-        ), patch(
-            "core.mikrotik_connect._set_smart_balance_member_active"
-        ) as set_active, patch("django.core.cache.cache.set"):
-            result = run_smart_balance_monitor_via_api(
-                sock, members, force=True, host="10.0.0.1"
-            )
-
-        self.assertTrue(result.get("ok"))
-        self.assertNotIn("ether2", result.get("slow_ports") or [])
-        set_active.assert_any_call(sock, 1, active=True)
 
 
 class SharedIspProbeTests(SimpleTestCase):

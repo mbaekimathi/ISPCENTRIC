@@ -1,5 +1,5 @@
 [Unit]
-Description=ISPCENTRIC customer usage sample (General usage charts)
+Description=ISPCENTRIC customer usage sample (fair-usage totals)
 After=network-online.target ispcentric.service
 
 [Service]

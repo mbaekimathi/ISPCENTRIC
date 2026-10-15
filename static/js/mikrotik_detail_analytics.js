@@ -379,6 +379,7 @@
   if (!suspended) {
     fetchAnalytics(false);
     pollTimer = setInterval(function () {
+      if (document.hidden) return;
       fetchAnalytics(false);
     }, pollMs);
     document.addEventListener("visibilitychange", function () {
