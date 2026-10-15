@@ -6875,7 +6875,7 @@ class ClientsSurfingStatusTests(TestCase):
         client = data["clients"][0]
         self.assertFalse(client["surfing"])
         self.assertEqual(client["state"], "checking")
-        self.assertEqual(client["label"], "Checking")
+        self.assertEqual(client["label"], "Not surfing")
         self.assertFalse(client["router_reachable"])
         self.assertIn("timed out", client["reason"].lower())
         self.assertNotEqual(client.get("connection_label"), "Not connected")
@@ -7204,9 +7204,9 @@ class ClientsSurfingStatusTests(TestCase):
 
         self.assertTrue(data["ok"])
         self.assertFalse(data["session_active"])
-        self.assertEqual(data["session_state"], "checking")
-        self.assertEqual(data["session_label"], "Checking")
-        self.assertIn("busy", (data.get("hint") or "").lower())
+        self.assertEqual(data["session_state"], "not_surfing")
+        self.assertEqual(data["session_label"], "Not surfing")
+        self.assertIn("no internet", (data.get("hint") or "").lower())
         self.assertNotIn("error", data)
 
     def test_pppoe_portal_is_pppoe_only(self):

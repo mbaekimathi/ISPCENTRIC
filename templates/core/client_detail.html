@@ -311,7 +311,7 @@
         <div class="client-cmd-metric-body">
           <span class="client-cmd-metric-label">Session</span>
           <strong data-hero="session">
-            {% if customer.service_type == "pppoe" or customer.service_type == "hotspot" %}Checking…{% else %}—{% endif %}
+            —
           </strong>
           <em data-hero-meta="session">{% if customer.service_type == "pppoe" %}PPPoE{% else %}{{ customer.get_service_type_display }}{% endif %}</em>
         </div>
@@ -1333,14 +1333,23 @@
       }
       var state = (item.state || "").trim();
       var label = (item.label || "").trim();
-      if (!label) {
+      if (state === "checking") {
+        state = item.internet_allowed === false ? "disconnected" : "not_surfing";
+      }
+      if (!label || label === "Checking" || label === "Offline") {
         if (item.surfing || state === "surfing") label = "Surfing";
         else if (state === "not_surfing") label = "Not surfing";
         else if (state === "expired") label = "Expired";
         else label = "Disconnected";
       }
-      var meta = (item.connected_wifi_ssid || item.connection_label || item.reason || "").trim();
-      if (!meta) meta = service === "hotspot" ? "Hotspot" : "PPPoE";
+      var meta = "PPPoE";
+      if (state === "surfing" || item.surfing) meta = "Online";
+      else if (state === "not_surfing") meta = "In subscription, no internet";
+      else if (state === "expired") meta = "Subscription ended";
+      else meta = "Not connected";
+      if (service === "hotspot" && item.connected_wifi_ssid) {
+        meta = item.connected_wifi_ssid;
+      }
       var chipState = "is-idle";
       if (state === "surfing" || item.surfing) chipState = "is-good";
       else if (state === "disconnected" || state === "expired") chipState = "is-bad";
@@ -1407,25 +1416,6 @@
           data.clients.forEach(function (row) {
             if (Number(row.id) === customerId) item = row;
           });
-          var reasonText = ((item && (item.reason || item.connection_label)) || "").toLowerCase();
-          var sessionUnread = !!(
-            item && (
-              item.state === "checking" ||
-              reasonText.indexOf("busy") >= 0 ||
-              reasonText.indexOf("not read") >= 0 ||
-              reasonText.indexOf("retrying") >= 0
-            )
-          );
-          if (sessionUnread) {
-            heroChip(
-              "session",
-              "Checking",
-              (item && item.reason) || "Management API is busy — retrying shortly.",
-              "is-idle"
-            );
-            heroChip("throughput", "—", "Waiting for the router", "is-idle");
-            return;
-          }
           applySurfingHero(item);
           if (item && (item.surfing || item.state === "surfing")) {
             refreshThroughput(force);
@@ -2248,12 +2238,12 @@
       applyHotspotSession(data || { connected: false, session_active: false, hint: message }, message);
       return;
     }
-    setText("session", "Offline");
-    setText("session-hint", message || "Not connected");
+    setText("session", "Disconnected");
+    setText("session-hint", "Not connected");
     clearTrafficMeters();
     root.classList.remove("is-online");
     root.classList.add("is-offline");
-    heroChip("session", "Offline", message || "Not connected", "is-bad");
+    heroChip("session", "Disconnected", "Not connected", "is-bad");
   }
 
   function applyHotspotSession(data, fallbackMessage) {
@@ -2321,15 +2311,12 @@
         renderSessionBreakdown(data.session_breakdown);
         if (!data.ok && data.error) {
           if (softUsageMiss(data.error)) {
-            if (root.classList.contains("is-online")) {
-              if (subEl) subEl.textContent = "Still in subscription — last live session kept.";
-            } else {
+            if (!root.classList.contains("is-online")) {
               root.classList.remove("is-offline");
-              setText("session", "Checking");
-              setText("session-hint", data.error);
-              heroChip("session", "Checking", data.error, "is-idle");
-              heroChip("throughput", "—", "Waiting for the router", "is-idle");
-              if (subEl) subEl.textContent = data.error;
+              setText("session", "Not surfing");
+              setText("session-hint", "In subscription, no internet");
+              heroChip("session", "Not surfing", "In subscription, no internet", "is-idle");
+              heroChip("throughput", "—", "No live traffic", "is-idle");
             }
             stampNow();
             return;
@@ -2401,64 +2388,17 @@
           if (pppoeState === "surfing") pppoeLabel = "Surfing";
           else if (pppoeState === "not_surfing") pppoeLabel = "Not surfing";
           else if (pppoeState === "expired") pppoeLabel = "Expired";
-          else if (pppoeState === "checking") pppoeLabel = "Checking";
           else pppoeLabel = "Disconnected";
         }
-        var packageStaysUp = data.internet_allowed !== false && (
-          pppoeState === "checking" ||
-          data.cpe_renew_clear_pending ||
-          (pppoeState === "surfing" && !data.session_active)
-        );
-        if (packageStaysUp && !(pppoeState === "surfing" && data.session_active)) {
-          root.classList.add("is-online");
-          root.classList.remove("is-offline");
-          setText("session", "Surfing");
-          setText(
-            "session-hint",
-            data.hint || "Package active — subscribers stay online."
-          );
-          heroChip(
-            "session",
-            "Surfing",
-            data.hint || "Package active — subscribers stay online.",
-            "is-good"
-          );
-          if (subEl) {
-            subEl.textContent = data.hint || "Package active — subscribers stay online.";
-          }
-        } else if (pppoeState === "checking") {
-          root.classList.remove("is-online");
-          root.classList.remove("is-offline");
-          setText("session", pppoeLabel || "Checking");
-          setText(
-            "session-hint",
-            data.hint || "Management API is busy — retrying shortly."
-          );
-          heroChip(
-            "session",
-            pppoeLabel || "Checking",
-            data.hint || "Router login is in use",
-            "is-idle"
-          );
-          heroChip("throughput", "—", "Waiting for the router", "is-idle");
-          if (subEl) {
-            subEl.textContent = data.hint || "Management API is busy — retrying shortly.";
-          }
-        } else if (pppoeState === "surfing" && data.session_active) {
+        if (pppoeState === "checking") {
+          pppoeState = data.internet_allowed === false ? "disconnected" : "not_surfing";
+          pppoeLabel = pppoeState === "disconnected" ? "Disconnected" : "Not surfing";
+        }
+        if (pppoeState === "surfing" && data.session_active) {
           root.classList.add("is-online");
           root.classList.remove("is-offline");
           setText("session", pppoeLabel);
-          var pppoeHint =
-            data.hint ||
-            (data.service || "PPPoE") +
-            (data.interface ? " · " + data.interface : "") +
-            (data.speed_source === "cpe" ? " · CPE live" : "");
-          if (data.cpe_renew_clear_pending) {
-            pppoeHint =
-              data.hint ||
-              "Package active — CPE renew Hotspot still clearing";
-          }
-          setText("session-hint", pppoeHint);
+          setText("session-hint", "Online");
           setText("download", data.download_label || "—");
           setText("upload", data.upload_label || "—");
           if (data.speed_source === "cpe") {
@@ -2481,12 +2421,7 @@
           setText("caller", data.caller_id ? ("Caller " + data.caller_id) : "Caller / MAC");
           setMeter("download", data.download_bps, planDownBps);
           setMeter("upload", data.upload_bps, planUpBps);
-          heroChip(
-            "session",
-            pppoeLabel,
-            (data.service || "PPPoE") + (data.uptime ? " · up " + data.uptime : ""),
-            "is-good"
-          );
+          heroChip("session", pppoeLabel, "Online", "is-good");
           heroChip(
             "throughput",
             (data.download_label || "—") + " ↓ " + (data.upload_label || "—") + " ↑",
@@ -2513,14 +2448,11 @@
           root.classList.add("is-offline");
           clearTrafficMeters();
           setText("session", pppoeLabel || "Not surfing");
-          setText(
-            "session-hint",
-            data.hint || "Dialed in, but not surfing"
-          );
+          setText("session-hint", "In subscription, no internet");
           heroChip(
             "session",
             pppoeLabel || "Not surfing",
-            data.hint || "Connected, no internet",
+            "In subscription, no internet",
             "is-idle"
           );
           if (subEl) {
@@ -2531,9 +2463,9 @@
                 " — not surfing");
           }
         } else if (pppoeState === "expired") {
-          applyOffline(data.hint || "Subscription ended — no internet.", data);
+          applyOffline("Subscription ended", data);
           setText("session", "Expired");
-          heroChip("session", "Expired", data.hint || "No internet", "is-bad");
+          heroChip("session", "Expired", "Subscription ended", "is-bad");
           if (subEl) {
             subEl.textContent = data.hint || "Subscription ended — no internet.";
           }

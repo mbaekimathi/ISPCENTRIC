@@ -18148,74 +18148,32 @@ def client_usage(request, customer_id: int):
         except Exception:
             subscription_expired = False
 
-        # Match /app/clients/surfing/: Surfing = dialed + paid + not blocked.
-        surfing = bool(session_online and internet_allowed and not on_blocked_profile)
-        if payload.get("session_checked") is False and internet_allowed and not subscription_expired:
+        # Four session labels only: Surfing, Not surfing, Disconnected, Expired.
+        # An unfinished read does not invent Checking or Offline.
+        surfing = bool(
+            session_online and internet_allowed and not on_blocked_profile
+        )
+        if payload.get("usage_held") and session_online and internet_allowed and not on_blocked_profile:
             surfing = True
-            session_state = "surfing"
-            session_label = "Surfing"
-            session_hint = (
-                "Package active — session check still running. "
-                "Subscribers stay online."
-            )
-        elif payload.get("session_checked") is False:
+        if subscription_expired and not surfing:
             surfing = False
-            session_state = "checking"
-            session_label = "Checking"
-            session_hint = (
-                payload.get("hint")
-                or "Management API is busy — retrying shortly."
-            )
+            session_state = "expired"
+            session_label = "Expired"
+            session_hint = "Subscription ended"
         elif surfing:
             session_state = "surfing"
             session_label = "Surfing"
-            session_hint = "Online — internet OK"
-        elif subscription_expired:
-            session_state = "expired"
-            session_label = "Expired"
-            session_hint = (
-                payload.get("hint")
-                or "Subscription ended — no internet"
-            )
-        elif not session_online:
-            session_state = "disconnected"
-            session_label = "Disconnected"
-            session_hint = (
-                payload.get("hint")
-                or "Router not dialed — no active PPPoE session"
-            )
-        else:
+            session_hint = "Online"
+        elif internet_allowed:
+            surfing = False
             session_state = "not_surfing"
             session_label = "Not surfing"
-            if on_blocked_profile:
-                session_hint = (
-                    "Dialed in, but blocked on the router — access not synced"
-                )
-            elif not internet_allowed:
-                session_hint = (
-                    "Dialed in, but outside package period — no internet"
-                )
-            else:
-                session_hint = payload.get("hint") or "Dialed in — not surfing"
-
-        if pending_renew and internet_allowed and not subscription_expired:
-            session_hint = (
-                "Package active. The Wi-Fi pay page may still be clearing. "
-                "The PPPoE session stays up."
-            )
-            if not on_blocked_profile:
-                surfing = True
-                session_state = "surfing"
-                session_label = "Surfing"
-        if payload.get("usage_held"):
-            session_hint = (
-                "Still in subscription — last live session kept. "
-                "The router read timed out."
-            )
-            if session_online and internet_allowed and not on_blocked_profile:
-                surfing = True
-                session_state = "surfing"
-                session_label = "Surfing"
+            session_hint = "In subscription, no internet"
+        else:
+            surfing = False
+            session_state = "disconnected"
+            session_label = "Disconnected"
+            session_hint = "Not connected"
 
         payload["surfing"] = surfing
         payload["session_state"] = session_state
@@ -21013,6 +20971,7 @@ def clients_surfing_status(request):
                 reason = ""
 
         surfing = False
+        internet_allowed = False
         if customer.status != Customer.Status.ACTIVE:
             reason = customer.get_status_display()
         elif router_unreachable and not session_online and not connected:
@@ -21080,7 +21039,7 @@ def clients_surfing_status(request):
             else:
                 if router_unreachable or presence_unread:
                     state = "checking"
-                    label = "Checking"
+                    label = "Not surfing" if internet_allowed else "Disconnected"
                     if not reason:
                         reason = router_error or "Session list was not read"
                 else:
@@ -21124,7 +21083,7 @@ def clients_surfing_status(request):
                             or "Session list was not read on this MikroTik"
                         )
                     state = "checking"
-                    label = "Checking"
+                    label = "Not surfing"
                     router_unreachable = True
         else:
             # Dialed on the NAS but not getting internet (blocked, outside period, …).
@@ -21135,7 +21094,11 @@ def clients_surfing_status(request):
         connected_wifi_ssid = ""
         connection_label = "Disconnected" if service == "hotspot" else "Not connected"
         if state == "checking":
-            connection_label = reason or "Session list was not read"
+            connection_label = (
+                "In subscription, no internet"
+                if internet_allowed
+                else "Not connected"
+            )
         if connected:
             connected_count += 1
             live_router = (
