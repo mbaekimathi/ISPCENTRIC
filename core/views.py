@@ -15033,8 +15033,36 @@ def mikrotik_status(request):
         if org
         else []
     )
+    def _work_fields(rows=None):
+        from core.mikrotik_connect import routers_holding_api
+        from core.subscription_sync import is_fleet_write_active
+
+        holding = routers_holding_api(routers)
+        seen = {int(item["id"]) for item in holding}
+        for row in rows or []:
+            if not row.get("api_busy"):
+                continue
+            try:
+                rid = int(row.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if rid in seen:
+                continue
+            seen.add(rid)
+            holding.append(
+                {
+                    "id": rid,
+                    "name": (row.get("name") or "").strip() or "MikroTik",
+                    "host": (row.get("host") or "").strip(),
+                }
+            )
+        return {
+            "fleet_sync": bool(org and is_fleet_write_active()),
+            "working": holding,
+        }
+
     if not routers:
-        return JsonResponse({"ok": True, "routers": []})
+        return JsonResponse({"ok": True, "routers": [], "fleet_sync": False, "working": []})
 
     force_refresh = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
     cache_key = f"mikrotik_status:{org.pk if org else 0}"
@@ -15049,16 +15077,14 @@ def mikrotik_status(request):
 
             attach_auto_restore_to_rows(cached)
             return JsonResponse(
-                {"ok": True, "routers": cached, "onboarding_hold": True}
+                {
+                    "ok": True,
+                    "routers": cached,
+                    "onboarding_hold": True,
+                    **_work_fields(cached),
+                }
             )
-    if not force_refresh:
-        cached = cache.get(cache_key)
-        if cached is not None:
-            from core.mikrotik_auto_restore import attach_auto_restore_to_rows
-
-            attach_auto_restore_to_rows(cached)
-            return JsonResponse({"ok": True, "routers": cached})
-    elif org:
+    if org:
         from core.subscription_sync import is_fleet_write_active
 
         if is_fleet_write_active():
@@ -15072,8 +15098,18 @@ def mikrotik_status(request):
                         "ok": True,
                         "routers": held,
                         "fleet_sync_hold": True,
+                        **_work_fields(held),
                     }
                 )
+    if not force_refresh:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            from core.mikrotik_auto_restore import attach_auto_restore_to_rows
+
+            attach_auto_restore_to_rows(cached)
+            return JsonResponse(
+                {"ok": True, "routers": cached, **_work_fields(cached)}
+            )
 
     results = {}
 
@@ -15113,7 +15149,11 @@ def mikrotik_status(request):
                 backfill["serial_number"] = live_serial
             if live_soft and live_soft != (router.software_id or "").strip():
                 backfill["software_id"] = live_soft
-        elif via == "api" and getattr(settings, "HOSTED", False):
+        elif (
+            via == "api"
+            and getattr(settings, "HOSTED", False)
+            and not item.get("api_busy")
+        ):
             cache.delete(auth_cache_key)
         return router.id, {**item, "_backfill": backfill}
 
@@ -15207,6 +15247,7 @@ def mikrotik_status(request):
             "ok": True,
             "routers": payload,
             "onboarding_hold": onboarding_hold,
+            **_work_fields(payload),
         }
     )
 
@@ -20082,6 +20123,7 @@ def _probe_mikrotik_router_combined(router) -> dict:
             or hotspot.get("cooling_down")
             or hotspot.get("timeout")
             or "timed out" in (result["error"] or "").lower()
+            or "api is busy" in (result["error"] or "").lower()
             or "cooling down" in (result["error"] or "").lower()
         )
     )

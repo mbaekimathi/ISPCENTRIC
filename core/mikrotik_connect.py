@@ -2171,6 +2171,48 @@ def _api_gate_key(dial: str) -> str:
     return f"mikrotik_api_gate:{dial}"
 
 
+def routers_holding_api(routers) -> list[dict[str, Any]]:
+    """Routers whose management login is open right now.
+
+    The expiry watch and subscription sweep hold this lock while they write.
+    Callers use it to show "being worked on" without starting another login.
+    """
+    try:
+        from django.core.cache import caches
+
+        jobs = caches["jobs"]
+    except Exception:
+        return []
+    holding: list[dict[str, Any]] = []
+    for router in routers:
+        dials: list[str] = []
+        for raw in (
+            getattr(router, "host", None),
+            getattr(router, "vpn_address", None),
+        ):
+            dial = dial_host((raw or "").strip())
+            if dial and dial not in dials:
+                dials.append(dial)
+        if not any(jobs.get(_api_gate_key(dial)) for dial in dials):
+            continue
+        holding.append(
+            {
+                "id": int(getattr(router, "pk", 0) or getattr(router, "id", 0) or 0),
+                "name": (getattr(router, "name", None) or "").strip() or "MikroTik",
+                "host": (
+                    (getattr(router, "host", None) or "")
+                    or (getattr(router, "vpn_address", None) or "")
+                ).strip(),
+            }
+        )
+    return holding
+
+
+def api_timeout_is_busy(exc: BaseException | None) -> bool:
+    """True when the failure is another job holding this router's API login."""
+    return "busy" in str(exc or "").lower()
+
+
 def _api_gate_acquire(dial: str) -> bool:
     depth = int(getattr(_api_gate_state, "depth", 0) or 0)
     if depth > 0:
@@ -9906,7 +9948,17 @@ def fetch_active_pppoe_usernames(
                     blocked.append(name.lower())
             clear_mikrotik_host_cooldown(host)
             return {"ok": True, "usernames": names, "blocked": blocked, "error": ""}
-    except TimeoutError:
+    except TimeoutError as exc:
+        if api_timeout_is_busy(exc):
+            return {
+                "ok": False,
+                "usernames": [],
+                "blocked": [],
+                "error": str(exc).strip() or "Management API is busy — retrying shortly.",
+                "timeout": True,
+                "api_busy": True,
+                "soft_outage": True,
+            }
         mark_mikrotik_host_unreachable(host)
         return {
             "ok": False,
@@ -10046,7 +10098,19 @@ def fetch_hotspot_client_macs(
                 "wifi_ssid": wifi_ssid,
                 "error": "",
             }
-    except TimeoutError:
+    except TimeoutError as exc:
+        if api_timeout_is_busy(exc):
+            return {
+                "ok": False,
+                "active_macs": [],
+                "connected_macs": [],
+                "active_uptime_by_mac": {},
+                "wifi_ssid": "",
+                "error": str(exc).strip() or "Management API is busy — retrying shortly.",
+                "timeout": True,
+                "api_busy": True,
+                "soft_outage": True,
+            }
         mark_mikrotik_host_unreachable(host)
         error = "Connection timed out."
     except ConnectionError as exc:
@@ -10098,7 +10162,15 @@ def test_mikrotik_api_login(
                 result["wifi_password"] = ""
                 result["wifi_mode"] = ""
                 return result
-        except TimeoutError:
+        except TimeoutError as exc:
+            if api_timeout_is_busy(exc):
+                return {
+                    "ok": False,
+                    "error": str(exc).strip()
+                    or "Management API is busy — retrying shortly.",
+                    "api_busy": True,
+                    "soft_outage": True,
+                }
             return {
                 "ok": False,
                 "error": "Connection timed out. Is the router reachable on API port 8728?",

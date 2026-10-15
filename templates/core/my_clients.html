@@ -236,6 +236,12 @@
       </div>
     </div>
 
+    <section class="clients-work-banner" data-routers-working hidden aria-live="polite">
+      <p class="clients-work-kicker">Routers being worked on</p>
+      <p class="clients-work-copy" data-routers-working-copy></p>
+      <ul class="clients-work-list" data-routers-working-list></ul>
+    </section>
+
     <div id="clients-list-host" class="clients-list-host" data-clients-list-host>
       {% if pending_view %}
         {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No installed PPPoE clients awaiting activation" empty_text="Technician-installed clients awaiting activation will appear here." empty_search_title="No installed clients match your search" empty_search_text="Try another name or phone number." service_label="PPPoE" show_pppoe=1 show_router=1 pending_activation=1 clients_query=clients_query %}
@@ -564,7 +570,77 @@
   var timer = null;
   var started = false;
 
-  function setStatus(el, online, status) {
+  function workingMap(rows) {
+    var map = {};
+    (rows || []).forEach(function (row) {
+      if (row && row.id != null) map[String(row.id)] = row;
+    });
+    window.__ispRoutersWorking = map;
+    return map;
+  }
+
+  function paintWorkBanner(data, working) {
+    var banner = document.querySelector("[data-routers-working]");
+    if (!banner) return;
+    var names = (working || []).map(function (row) {
+      var name = (row.name || "MikroTik").trim();
+      return row.host ? name + " · " + row.host : name;
+    });
+    var fleet = !!(data && (data.fleet_sync || data.fleet_sync_hold));
+    var copy = banner.querySelector("[data-routers-working-copy]");
+    var list = banner.querySelector("[data-routers-working-list]");
+    if (!names.length && !fleet) {
+      banner.hidden = true;
+      if (list) list.innerHTML = "";
+      return;
+    }
+    banner.hidden = false;
+    if (copy) {
+      copy.textContent = names.length
+        ? "MikroTik and Remote show Working on these routers. Subscribers stay online."
+        : "A fleet sync is running. MikroTik and Remote checks are waiting. Subscribers stay online.";
+    }
+    if (list) {
+      list.innerHTML = names.map(function (name) {
+        return "<li>" + name.replace(/[&<>"]/g, function (ch) {
+          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch];
+        }) + "</li>";
+      }).join("");
+    }
+  }
+
+  function paintRemoteWorking(working) {
+    var ids = {};
+    (working || []).forEach(function (row) {
+      if (row && row.id != null) ids[String(row.id)] = true;
+    });
+    document.querySelectorAll("[data-client-remote]").forEach(function (el) {
+      var rid = el.getAttribute("data-router-id") || "";
+      if (!ids[rid]) {
+        if (el.getAttribute("data-work-hold") === "1") {
+          el.removeAttribute("data-work-hold");
+          el.classList.remove("is-working");
+        }
+        return;
+      }
+      el.setAttribute("data-work-hold", "1");
+      el.classList.remove(
+        "is-checking",
+        "is-connected",
+        "is-disconnected",
+        "is-limited",
+        "is-auth-failed",
+        "is-reachable",
+        "is-unavailable"
+      );
+      el.classList.add("is-working");
+      var textEl = el.querySelector(".mikrotik-link-label");
+      if (textEl) textEl.textContent = "Working";
+      el.title = "This MikroTik is being updated. Remote access waits. The client stays online.";
+    });
+  }
+
+  function setStatus(el, online, status, working) {
     if (!el) return;
     el.classList.remove(
       "is-checking",
@@ -572,11 +648,18 @@
       "is-disconnected",
       "is-limited",
       "is-auth-failed",
-      "is-reachable"
+      "is-reachable",
+      "is-working"
     );
+    var label = el.querySelector(".mikrotik-link-label");
+    if (working) {
+      el.classList.add("is-working");
+      if (label) label.textContent = "Working";
+      el.title = "This MikroTik is being updated. Subscribers stay online.";
+      return;
+    }
     var state = (status || "").toLowerCase();
     if (!state) state = online ? "connected" : "disconnected";
-    var label = el.querySelector(".mikrotik-link-label");
     if (state === "connected") {
       el.classList.add("is-connected");
       if (label) label.textContent = "ISP online";
@@ -616,9 +699,13 @@
       .then(function (res) { return res.json(); })
       .then(function (data) {
         if (!data || !data.ok || !data.routers) return;
+        var working = workingMap(data.working);
+        paintWorkBanner(data, data.working || []);
+        paintRemoteWorking(data.working || []);
         data.routers.forEach(function (item) {
+          var busy = !!working[String(item.id)];
           document.querySelectorAll('[data-router-status="' + item.id + '"]').forEach(function (el) {
-            setStatus(el, !!item.online, item.status || "");
+            setStatus(el, !!item.online, item.status || "", busy);
           });
         });
       })
@@ -669,6 +756,24 @@
 
   function setRemoteStatus(el, status, label, title) {
     if (!el) return;
+    var rid = el.getAttribute("data-router-id") || "";
+    if (rid && window.__ispRoutersWorking && window.__ispRoutersWorking[rid]) {
+      el.setAttribute("data-work-hold", "1");
+      el.classList.remove(
+        "is-checking",
+        "is-connected",
+        "is-disconnected",
+        "is-limited",
+        "is-auth-failed",
+        "is-reachable",
+        "is-unavailable"
+      );
+      el.classList.add("is-working");
+      var held = el.querySelector(".mikrotik-link-label");
+      if (held) held.textContent = "Working";
+      el.title = "This MikroTik is being updated. Remote access waits. The client stays online.";
+      return;
+    }
     el.classList.remove(
       "is-checking",
       "is-connected",

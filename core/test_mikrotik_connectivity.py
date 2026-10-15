@@ -261,6 +261,60 @@ class ApiSessionReuseTests(SimpleTestCase):
         _api_gate_release(dial)
         self.assertIsNone(caches["jobs"].get(key))
 
+    def test_routers_holding_api_lists_only_open_sessions(self):
+        from django.core.cache import caches
+
+        from core.mikrotik_connect import _api_gate_key, routers_holding_api
+
+        jobs = caches["jobs"]
+        busy = SimpleNamespace(pk=4, name="SHELTERLINK-LOWER-1", host="10.9.0.14", vpn_address="")
+        idle = SimpleNamespace(pk=5, name="KILY", host="10.9.0.16", vpn_address="")
+        jobs.set(_api_gate_key("10.9.0.14"), 1, 30)
+        try:
+            rows = routers_holding_api([busy, idle])
+        finally:
+            jobs.delete(_api_gate_key("10.9.0.14"))
+        self.assertEqual([row["id"] for row in rows], [4])
+        self.assertEqual(rows[0]["name"], "SHELTERLINK-LOWER-1")
+
+    def test_busy_api_login_stays_connected_instead_of_port_timeout(self):
+        from core.mikrotik_connect import test_mikrotik_api_login
+        from core.mikrotik_status_samples import classify_mikrotik_probe
+
+        busy = TimeoutError("Management API is busy — retrying shortly.")
+        with patch("core.mikrotik_connect._api_session", side_effect=busy):
+            login = test_mikrotik_api_login(
+                "10.9.0.14", "admin", "secret", include_wifi=False
+            )
+        self.assertTrue(login.get("api_busy"))
+        self.assertNotIn("8728", login.get("error") or "")
+        row = classify_mikrotik_probe(
+            {"online": True, "via": "api"},
+            host="10.9.0.14",
+            username="admin",
+            password="secret",
+            login=login,
+        )
+        self.assertEqual(row.get("status"), "connected")
+        self.assertTrue(row.get("api_busy"))
+        self.assertTrue(row.get("online"))
+        self.assertEqual(row.get("error") or "", "")
+
+    def test_busy_session_read_does_not_mark_router_down(self):
+        from core.mikrotik_connect import (
+            clear_mikrotik_host_cooldown,
+            fetch_active_pppoe_usernames,
+            is_mikrotik_host_cooling_down,
+        )
+
+        host = "10.9.0.14"
+        clear_mikrotik_host_cooldown(host)
+        busy = TimeoutError("Management API is busy — retrying shortly.")
+        with patch("core.mikrotik_connect._api_session", side_effect=busy):
+            result = fetch_active_pppoe_usernames(host, "admin", "secret")
+        self.assertTrue(result.get("api_busy"))
+        self.assertFalse(is_mikrotik_host_cooling_down(host))
+
     def test_dropped_api_socket_is_soft_outage_not_bad_password(self):
         with patch(
             "core.mikrotik_connect._api_session",

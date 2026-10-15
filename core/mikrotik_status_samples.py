@@ -159,6 +159,16 @@ def is_credential_login_failure(error: str | None) -> bool:
     return False
 
 
+def api_login_is_busy(login: dict[str, Any] | None) -> bool:
+    """True when a status login lost the router to another in-flight API job."""
+    if not isinstance(login, dict):
+        return False
+    if login.get("api_busy"):
+        return True
+    text = (login.get("error") or "").lower()
+    return "api is busy" in text or "management api is busy" in text
+
+
 def status_after_api_probe(
     login: dict[str, Any] | None,
     *,
@@ -241,6 +251,7 @@ def classify_mikrotik_probe(
     serial_number = (serial_number or "").strip()
     software_id = (software_id or "").strip()
     identity_login: dict[str, Any] | None = None
+    api_busy = False
 
     if online and via == "api":
         if skip_login:
@@ -256,7 +267,7 @@ def classify_mikrotik_probe(
                     timeout=login_timeout,
                     include_wifi=False,
                 )
-                if not login.get("ok"):
+                if not login.get("ok") and not api_login_is_busy(login):
                     login_error = (login.get("error") or "").strip().lower()
                     flaky = (
                         not login_error
@@ -271,7 +282,15 @@ def classify_mikrotik_probe(
                             timeout=login_timeout + 1.5,
                             include_wifi=False,
                         )
-            status, auth_ok, error = status_after_api_probe(login, via=via)
+            if api_login_is_busy(login):
+                # Another job already has a live session. Keep optimum health
+                # instead of painting a false port-8728 timeout.
+                api_busy = True
+                status = "connected"
+                auth_ok = False
+                error = ""
+            else:
+                status, auth_ok, error = status_after_api_probe(login, via=via)
             if auth_ok:
                 identity_login = login
                 live_serial = (login.get("serial_number") or "").strip()
@@ -303,6 +322,11 @@ def classify_mikrotik_probe(
                 serial_number = live_serial
             if live_soft:
                 software_id = live_soft
+        elif api_login_is_busy(login):
+            api_busy = True
+            status = "connected"
+            auth_ok = False
+            error = ""
         elif login:
             status, auth_ok, error = status_after_api_probe(login, via="api")
         else:
@@ -339,11 +363,15 @@ def classify_mikrotik_probe(
                     pass
 
     probe_reachable = bool(probe.get("online")) or status == "reachable"
+    online_flag = bool(auth_ok) if via == "api" else probe_reachable and via != "ping"
+    if api_busy:
+        online_flag = True
     return {
-        "online": bool(auth_ok) if via == "api" else probe_reachable and via != "ping",
-        "reachable": probe_reachable,
+        "online": online_flag,
+        "reachable": probe_reachable or api_busy,
         "auth_ok": auth_ok,
         "manageable": bool(auth_ok),
+        "api_busy": api_busy,
         "status": status,
         "via": via,
         "error": error,
@@ -1282,8 +1310,11 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
         )
         if row.get("auth_ok") and getattr(settings, "HOSTED", False) and not skip_login:
             cache.set(auth_cache_key, True, _HOSTED_AUTH_CACHE_TTL)
-        elif via == "api" and getattr(settings, "HOSTED", False) and not row.get(
-            "auth_ok"
+        elif (
+            via == "api"
+            and getattr(settings, "HOSTED", False)
+            and not row.get("auth_ok")
+            and not row.get("api_busy")
         ):
             cache.delete(auth_cache_key)
         return router.id, row

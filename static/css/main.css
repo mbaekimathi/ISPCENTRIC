@@ -6995,6 +6995,47 @@ body.staff-nav-lock {
   display: none;
 }
 
+.clients-work-banner {
+  margin: 0 0 0.85rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 12px;
+  background: rgba(41, 128, 185, 0.08);
+  border: 1px solid rgba(41, 128, 185, 0.22);
+}
+
+.clients-work-kicker {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #1a6fa8;
+}
+
+.clients-work-copy {
+  margin: 0.25rem 0 0;
+  font-size: 0.84rem;
+  color: var(--ink, #1c2830);
+}
+
+.clients-work-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.clients-work-list li {
+  margin: 0;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(41, 128, 185, 0.12);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 .clients-workspace .clients-status-hint {
   margin: 0;
 }
@@ -10125,6 +10166,32 @@ button.clients-list-table-action {
 .mikrotik-link-status.is-disconnected .mikrotik-link-dot {
   background: #e74c3c;
   box-shadow: 0 0 0 3px rgba(231, 76, 60, 0.16);
+}
+
+.mikrotik-link-status.is-working {
+  color: #1a6fa8;
+}
+
+.mikrotik-link-status.is-working .mikrotik-link-dot {
+  background: #2980b9;
+  box-shadow: 0 0 0 3px rgba(41, 128, 185, 0.2);
+}
+
+.clients-list-table td[data-label="MikroTik"] .mikrotik-link-status.is-working {
+  gap: 0.28rem;
+  font-size: 0.68rem;
+  line-height: 1.2;
+}
+
+.clients-list-table td[data-label="MikroTik"] .mikrotik-link-status.is-working .mikrotik-link-label {
+  position: static !important;
+  width: auto !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  clip: auto !important;
+  white-space: nowrap !important;
 }
 
 .mikrotik-link-status.is-limited {
