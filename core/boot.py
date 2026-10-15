@@ -476,6 +476,12 @@ def _run_near_deadline_expiry_sync() -> None:
         return
 
     with background_mikrotik_work():
+        try:
+            from billing.fup import roll_elapsed_fup_windows
+
+            roll_elapsed_fup_windows(sync_access=True)
+        except Exception:
+            logger.exception("FUP midnight window roll failed")
         _run_near_deadline_expiry_sync_locked(
             api_timeout_is_busy=api_timeout_is_busy,
         )

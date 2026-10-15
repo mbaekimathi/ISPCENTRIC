@@ -173,6 +173,13 @@ class Command(BaseCommand):
 
         customers = list(qs)
         if not dry_run:
+            from billing.fup import roll_elapsed_fup_windows
+
+            # Sweep pushes NAS state itself; only clear elapsed FUP windows here.
+            rolled = roll_elapsed_fup_windows(sync_access=False)
+            if rolled:
+                self._write(self.stdout, f"FUP windows reset: {rolled}")
+                customers = list(qs)
             self._notify_package_lifecycle(customers)
 
         if dry_run:

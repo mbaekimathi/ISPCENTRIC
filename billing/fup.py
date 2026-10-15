@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from calendar import monthrange
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -75,7 +76,6 @@ def customer_fup_usage_snapshot(customer, plan=None) -> dict[str, Any]:
         return empty
 
     limit = plan_fup_limit_bytes(plan)
-    period = fup_period_timedelta(plan)
     window_start = _as_aware(getattr(customer, "fup_window_start", None))
     now = _now()
     used = int(getattr(customer, "fup_bytes_used", 0) or 0)
@@ -83,7 +83,7 @@ def customer_fup_usage_snapshot(customer, plan=None) -> dict[str, Any]:
     restricted = bool(getattr(customer, "fup_restricted", False)) and client_on
 
     # Expired windows display as a fresh period until enforcement resets them.
-    if window_start and period and window_start + period <= now:
+    if window_start and fup_window_has_elapsed(plan, window_start, now):
         used = 0
         restricted = False
 
@@ -256,13 +256,24 @@ def organization_fup_attention_clients(
     }
 
 
-def fup_period_timedelta(plan) -> timedelta | None:
+def _fup_period_parts(plan) -> tuple[int, str] | None:
     if plan is None:
         return None
     value = int(getattr(plan, "fup_period_value", 0) or 0)
     if value < 1:
         return None
     unit = (getattr(plan, "fup_period_unit", "") or "").strip().lower()
+    if unit not in {"hours", "days", "weeks", "months", "years"}:
+        return None
+    return value, unit
+
+
+def fup_period_timedelta(plan) -> timedelta | None:
+    """Approximate length. Hourly windows use this exactly; calendar units reset at 00:00."""
+    parts = _fup_period_parts(plan)
+    if parts is None:
+        return None
+    value, unit = parts
     if unit == "hours":
         return timedelta(hours=value)
     if unit == "days":
@@ -274,6 +285,62 @@ def fup_period_timedelta(plan) -> timedelta | None:
     if unit == "years":
         return timedelta(days=365 * value)
     return None
+
+
+def _add_calendar_months(start: date, months: int) -> date:
+    month_index = start.month - 1 + months
+    year = start.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(start.day, monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _local_midnight(stamp: datetime) -> datetime:
+    local = timezone.localtime(stamp)
+    return timezone.make_aware(
+        datetime.combine(local.date(), time.min),
+        timezone.get_current_timezone(),
+    )
+
+
+def fup_next_reset_at(plan, window_start: datetime) -> datetime | None:
+    """
+    Exclusive end of the FUP window that contains ``window_start``.
+
+    Day, week, month, and year windows end at local 00:00 so a 1-day cap
+    resets every midnight. Hourly windows stay on the clock they started.
+    """
+    parts = _fup_period_parts(plan)
+    start = _as_aware(window_start)
+    if parts is None or start is None:
+        return None
+    value, unit = parts
+    if unit == "hours":
+        return start + timedelta(hours=value)
+    anchor = _local_midnight(start)
+    if unit == "days":
+        return anchor + timedelta(days=value)
+    if unit == "weeks":
+        return anchor + timedelta(weeks=value)
+    if unit == "months":
+        target = _add_calendar_months(anchor.date(), value)
+        return timezone.make_aware(
+            datetime.combine(target, time.min),
+            timezone.get_current_timezone(),
+        )
+    if unit == "years":
+        target = _add_calendar_months(anchor.date(), 12 * value)
+        return timezone.make_aware(
+            datetime.combine(target, time.min),
+            timezone.get_current_timezone(),
+        )
+    return None
+
+
+def fup_window_has_elapsed(plan, window_start: datetime, now: datetime) -> bool:
+    reset_at = fup_next_reset_at(plan, window_start)
+    stamp = _as_aware(now)
+    return reset_at is not None and stamp is not None and reset_at <= stamp
 
 
 def _as_aware(stamp) -> datetime | None:
@@ -317,8 +384,7 @@ def ensure_fup_window(customer, plan=None, *, now: datetime | None = None) -> bo
         return False
 
     stamp = _as_aware(now) or _now()
-    period = fup_period_timedelta(plan)
-    if period is None:
+    if _fup_period_parts(plan) is None:
         return False
 
     window_start = _as_aware(getattr(customer, "fup_window_start", None))
@@ -333,8 +399,12 @@ def ensure_fup_window(customer, plan=None, *, now: datetime | None = None) -> bo
 
     advanced = False
     # Advance through any fully elapsed windows (e.g. after long offline).
-    while window_start + period <= stamp:
-        window_start = window_start + period
+    # Calendar periods land on local 00:00; hourly periods keep their clock.
+    for _ in range(10000):
+        reset_at = fup_next_reset_at(plan, window_start)
+        if reset_at is None or reset_at > stamp or reset_at <= window_start:
+            break
+        window_start = reset_at
         advanced = True
     if advanced:
         reset_customer_fup_window(customer, at=window_start, save=True)
@@ -525,6 +595,7 @@ def apply_fup_byte_delta(customer, delta_bytes: int, plan=None) -> dict[str, Any
     if not customer_fup_is_active(customer, plan) or not getattr(customer, "pk", None):
         return {"ok": True, "skipped": True, "changed": False}
 
+    restricted_before = bool(getattr(customer, "fup_restricted", False))
     ensure_fup_window(customer, plan)
     delta = max(0, int(delta_bytes or 0))
     if delta > 0:
@@ -533,7 +604,12 @@ def apply_fup_byte_delta(customer, delta_bytes: int, plan=None) -> dict[str, Any
         )
         customer.fup_bytes_used = int(getattr(customer, "fup_bytes_used", 0) or 0) + delta
 
-    return evaluate_customer_fup(customer, plan=plan, recompute_usage=False)
+    return evaluate_customer_fup(
+        customer,
+        plan=plan,
+        recompute_usage=False,
+        restricted_before=restricted_before,
+    )
 
 
 def evaluate_customer_fup(
@@ -542,6 +618,7 @@ def evaluate_customer_fup(
     *,
     recompute_usage: bool = False,
     sync_access: bool = True,
+    restricted_before: bool | None = None,
 ) -> dict[str, Any]:
     """
     Apply or clear FUP restriction for ``customer``.
@@ -577,6 +654,8 @@ def evaluate_customer_fup(
             "action": "",
         }
 
+    if restricted_before is None:
+        restricted_before = bool(getattr(customer, "fup_restricted", False))
     ensure_fup_window(customer, plan)
     if recompute_usage:
         refresh_customer_fup_usage(customer, plan, save=True)
@@ -598,6 +677,9 @@ def evaluate_customer_fup(
         customer.fup_restricted = False
         customer.fup_restricted_at = None
         update_fields.extend(["fup_restricted", "fup_restricted_at"])
+        changed = True
+    elif not should_restrict and restricted_before and not was_restricted:
+        # Window roll already cleared the flag. Still push full speed / access.
         changed = True
 
     if update_fields and getattr(customer, "pk", None):
@@ -632,6 +714,51 @@ def evaluate_customer_fup(
         "bytes_used": used,
         "bytes_limit": limit,
     }
+
+
+def roll_elapsed_fup_windows(*, now: datetime | None = None, sync_access: bool = True) -> int:
+    """
+    Clear FUP restrictions whose window has reached its reset instant.
+
+    Called from the expiry watch so a client disconnected or throttled for
+    hitting a daily cap is restored at local 00:00 even if they are offline
+    and not producing usage samples.
+    """
+    from billing.models import Customer
+
+    stamp = _as_aware(now) or _now()
+    qs = (
+        Customer.objects.filter(
+            fup_restricted=True,
+            fup_enabled=True,
+            plan__fup_enabled=True,
+        )
+        .select_related("plan", "organization", "router")
+        .order_by("id")
+    )
+    cleared = 0
+    for customer in qs.iterator(chunk_size=100):
+        window_start = _as_aware(getattr(customer, "fup_window_start", None))
+        plan = getattr(customer, "plan", None)
+        if window_start is None or not fup_window_has_elapsed(plan, window_start, stamp):
+            continue
+        try:
+            result = evaluate_customer_fup(
+                customer,
+                plan=plan,
+                sync_access=sync_access,
+            )
+        except Exception:
+            logger.exception(
+                "FUP window roll failed for customer_id=%s",
+                getattr(customer, "pk", None),
+            )
+            continue
+        if result.get("changed") and not result.get("restricted"):
+            cleared += 1
+    if cleared:
+        logger.info("FUP windows reset for %s customer(s)", cleared)
+    return cleared
 
 
 def _schedule_fup_access_sync(customer) -> None:

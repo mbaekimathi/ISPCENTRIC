@@ -1964,7 +1964,8 @@ class BillingPackageRegisterForm(forms.ModelForm):
         self.fields["fup_period_unit"].choices = BillingPlan.DurationUnit.choices
         self.fields["fup_action"].choices = BillingPlan.FupAction.choices
         self.fields["fup_period_value"].help_text = (
-            "Reset window for the data cap — e.g. every 1 month or every 7 days."
+            "Reset window for the data cap — e.g. every 1 day or every 1 month. "
+            "Day, week, month, and year windows reset at local 00:00."
         )
         self.fields["fup_data_limit_gb"].help_text = (
             "Total download + upload one client may use in each FUP period."

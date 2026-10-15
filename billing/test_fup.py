@@ -7,14 +7,19 @@ from django.urls import reverse
 from django.utils import timezone
 
 from accounts.models import Organization
+from datetime import datetime, timedelta
+
 from billing.fup import (
     apply_fup_byte_delta,
     customer_fup_blocks_internet,
     customer_fup_is_active,
     customer_fup_throttle_speeds,
+    customer_fup_usage_snapshot,
     evaluate_customer_fup,
+    fup_next_reset_at,
     plan_fup_limit_bytes,
     reset_customer_fup_window,
+    roll_elapsed_fup_windows,
     set_customer_fup_enabled,
 )
 from billing.models import BillingPlan, Customer
@@ -325,3 +330,171 @@ class CustomerFupEnforcementTests(TestCase):
         self.assertIn("Fair usage policy", html)
         self.assertIn("data-client-fup", html)
         self.assertIn("Disabled", html)
+
+
+def _local_at(year, month, day, hour=0, minute=0):
+    return timezone.make_aware(
+        datetime(year, month, day, hour, minute),
+        timezone.get_current_timezone(),
+    )
+
+
+class FupMidnightResetTests(TestCase):
+    """Daily FUP windows end at local 00:00, not 24 hours after they started."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-fup-midnight", password="x")
+        self.org = Organization.objects.create(
+            name="FUP Midnight ISP",
+            owner=self.owner,
+            join_code="929292",
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Daily Cap",
+            price=Decimal("1500.00"),
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            duration=BillingPlan.Duration.MONTHLY,
+            fup_enabled=True,
+            fup_period_value=1,
+            fup_period_unit=BillingPlan.DurationUnit.DAYS,
+            fup_data_limit_gb=Decimal("1.00"),
+            fup_action=BillingPlan.FupAction.THROTTLE,
+            fup_throttle_download_mbps=1,
+            fup_throttle_upload_mbps=1,
+        )
+        started = _local_at(2026, 10, 14, 15, 30)
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Midnight Client",
+            phone="0712000001",
+            account_number="FUP-MID-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=started,
+            package_end=started + timedelta(days=30),
+            pppoe_username="fupmid",
+        )
+
+    def _restrict_from(self, started):
+        limit = plan_fup_limit_bytes(self.plan)
+        reset_customer_fup_window(self.customer, at=started)
+        self.customer.fup_bytes_used = limit
+        self.customer.fup_restricted = True
+        self.customer.fup_restricted_at = started
+        self.customer.save(
+            update_fields=["fup_bytes_used", "fup_restricted", "fup_restricted_at"]
+        )
+
+    def test_one_day_window_resets_at_local_midnight(self):
+        started = _local_at(2026, 10, 14, 15, 30)
+        self._restrict_from(started)
+        self.assertEqual(fup_next_reset_at(self.plan, started), _local_at(2026, 10, 15, 0, 0))
+
+        before = _local_at(2026, 10, 14, 23, 59)
+        with (
+            patch("billing.fup._now", return_value=before),
+            patch("billing.fup._schedule_fup_access_sync"),
+        ):
+            still = evaluate_customer_fup(
+                self.customer, recompute_usage=False, sync_access=False
+            )
+            self.assertTrue(still["restricted"])
+            self.assertEqual(customer_fup_throttle_speeds(self.customer), (1, 1))
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.fup_restricted)
+        self.assertEqual(self.customer.fup_bytes_used, plan_fup_limit_bytes(self.plan))
+
+        at_midnight = _local_at(2026, 10, 15, 0, 0)
+        with (
+            patch("billing.fup._now", return_value=at_midnight),
+            patch("billing.fup._schedule_fup_access_sync") as sync,
+        ):
+            result = evaluate_customer_fup(
+                self.customer, recompute_usage=False, sync_access=True
+            )
+            self.assertIsNone(customer_fup_throttle_speeds(self.customer))
+            self.assertFalse(customer_fup_blocks_internet(self.customer))
+        self.customer.refresh_from_db()
+        self.assertFalse(result["restricted"])
+        self.assertTrue(result["changed"])
+        self.assertFalse(self.customer.fup_restricted)
+        self.assertEqual(self.customer.fup_bytes_used, 0)
+        self.assertEqual(self.customer.fup_window_start, at_midnight)
+        sync.assert_called()
+
+    def test_afternoon_start_does_not_wait_until_next_afternoon(self):
+        started = _local_at(2026, 10, 14, 15, 30)
+        self._restrict_from(started)
+        morning = _local_at(2026, 10, 15, 9, 0)
+        with (
+            patch("billing.fup._now", return_value=morning),
+            patch("billing.fup._schedule_fup_access_sync"),
+        ):
+            result = evaluate_customer_fup(
+                self.customer, recompute_usage=False, sync_access=False
+            )
+            snap = customer_fup_usage_snapshot(self.customer, self.plan)
+        self.customer.refresh_from_db()
+        self.assertFalse(result["restricted"])
+        self.assertEqual(self.customer.fup_window_start, _local_at(2026, 10, 15, 0, 0))
+        self.assertEqual(snap["bytes_used"], 0)
+        self.assertFalse(snap["restricted"])
+
+    def test_disconnect_lifts_at_midnight_via_roll(self):
+        self.plan.fup_action = BillingPlan.FupAction.DISCONNECT
+        self.plan.save(update_fields=["fup_action"])
+        started = _local_at(2026, 10, 14, 18, 0)
+        self._restrict_from(started)
+        with patch("billing.fup._now", return_value=started):
+            self.assertTrue(customer_fup_blocks_internet(self.customer))
+            self.assertFalse(customer_receives_internet(self.customer))
+
+        with patch("billing.fup._now", return_value=_local_at(2026, 10, 15, 0, 5)):
+            with patch("billing.fup._schedule_fup_access_sync") as sync:
+                cleared = roll_elapsed_fup_windows(now=_local_at(2026, 10, 15, 0, 5))
+        self.customer.refresh_from_db()
+        self.assertEqual(cleared, 1)
+        self.assertFalse(self.customer.fup_restricted)
+        self.assertEqual(self.customer.fup_bytes_used, 0)
+        self.assertFalse(customer_fup_blocks_internet(self.customer))
+        self.assertTrue(customer_receives_internet(self.customer))
+        sync.assert_called()
+
+    def test_hourly_window_does_not_snap_to_midnight(self):
+        self.plan.fup_period_unit = BillingPlan.DurationUnit.HOURS
+        self.plan.fup_period_value = 6
+        self.plan.save(update_fields=["fup_period_unit", "fup_period_value"])
+        started = _local_at(2026, 10, 14, 20, 0)
+        self._restrict_from(started)
+        self.assertEqual(fup_next_reset_at(self.plan, started), _local_at(2026, 10, 15, 2, 0))
+        from billing.fup import ensure_fup_window
+
+        self.assertFalse(
+            ensure_fup_window(self.customer, self.plan, now=_local_at(2026, 10, 15, 0, 0))
+        )
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.fup_restricted)
+        self.assertTrue(
+            ensure_fup_window(self.customer, self.plan, now=_local_at(2026, 10, 15, 2, 0))
+        )
+
+    def test_seven_day_window_resets_on_midnight_of_day_seven(self):
+        self.plan.fup_period_value = 7
+        self.plan.save(update_fields=["fup_period_value"])
+        started = _local_at(2026, 10, 1, 11, 0)
+        self.assertEqual(fup_next_reset_at(self.plan, started), _local_at(2026, 10, 8, 0, 0))
+        self._restrict_from(started)
+        from billing.fup import ensure_fup_window
+
+        self.assertFalse(
+            ensure_fup_window(self.customer, self.plan, now=_local_at(2026, 10, 7, 23, 0))
+        )
+        self.assertTrue(
+            ensure_fup_window(self.customer, self.plan, now=_local_at(2026, 10, 8, 0, 0))
+        )
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.fup_window_start, _local_at(2026, 10, 8, 0, 0))
+        self.assertEqual(self.customer.fup_bytes_used, 0)
