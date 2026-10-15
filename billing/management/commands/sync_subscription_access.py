@@ -226,6 +226,15 @@ class Command(BaseCommand):
         blocked = len(customers) - allowed
 
         def _work_one(router):
+            from core.mikrotik_connect import (
+                _pppoe_customers_for_router,
+                background_mikrotik_work,
+            )
+
+            with background_mikrotik_work():
+                return _work_one_router(router)
+
+        def _work_one_router(router):
             from core.mikrotik_connect import _pppoe_customers_for_router
 
             pppoe_customers = list(_pppoe_customers_for_router(router))

@@ -182,7 +182,7 @@ def _mark_usage_sampling_heartbeat() -> None:
     cache.set(_USAGE_SAMPLE_HEARTBEAT_KEY, time.time(), ttl)
 
 
-def run_usage_sample_all_orgs(*, label: str = "interval") -> dict:
+def _run_usage_sample_all_orgs_body(*, label: str = "interval") -> dict:
     """
     Persist live PPPoE/Hotspot counters for every organization.
 
@@ -278,6 +278,14 @@ def run_usage_sample_all_orgs(*, label: str = "interval") -> dict:
     finally:
         release_fleet_read_lock()
         cache.delete(_USAGE_SAMPLE_LOCK_KEY)
+
+
+def run_usage_sample_all_orgs(*, label: str = "interval") -> dict:
+    """Usage sampling is background work and yields the router login to operators."""
+    from core.mikrotik_connect import background_mikrotik_work
+
+    with background_mikrotik_work():
+        return _run_usage_sample_all_orgs_body(label=label)
 
 
 # Back-compat alias for older imports / tests.
@@ -454,24 +462,33 @@ def _run_near_deadline_expiry_sync() -> None:
     sync so MikroTik rewrites never overlap. If the lock is busy, urgent
     already-expired blocks still run without fleet repair.
     """
+    from core.subscription_sync import try_acquire_expiry_watch_lock
+
+    watch_interval = int(_expiry_watch_interval_sec())
+    # Hold the shared fleet lock for this short watch pass.
+    from core.mikrotik_connect import api_timeout_is_busy, background_mikrotik_work
+
+    if not try_acquire_expiry_watch_lock(ttl_sec=max(90, watch_interval * 3)):
+        # Fleet writer busy — still cut already-expired clients so a long sweep
+        # cannot leave unpaid sessions surfing until the next free lock.
+        with background_mikrotik_work():
+            _run_urgent_expired_blocks_without_fleet_lock()
+        return
+
+    with background_mikrotik_work():
+        _run_near_deadline_expiry_sync_locked(
+            api_timeout_is_busy=api_timeout_is_busy,
+        )
+
+
+def _run_near_deadline_expiry_sync_locked(*, api_timeout_is_busy) -> None:
     from billing.services import customers_for_subscription_enforcement_watch
     from core.mikrotik_connect import (
         repair_router_access_leaks_on_router,
         sync_customer_subscription_access,
     )
     from core.models import MikroTikRouter
-    from core.subscription_sync import (
-        release_expiry_watch_lock,
-        try_acquire_expiry_watch_lock,
-    )
-
-    watch_interval = int(_expiry_watch_interval_sec())
-    # Hold the shared fleet lock for this short watch pass.
-    if not try_acquire_expiry_watch_lock(ttl_sec=max(90, watch_interval * 3)):
-        # Fleet writer busy — still cut already-expired clients so a long sweep
-        # cannot leave unpaid sessions surfing until the next free lock.
-        _run_urgent_expired_blocks_without_fleet_lock()
-        return
+    from core.subscription_sync import release_expiry_watch_lock
 
     try:
         from django.core.cache import cache
@@ -532,6 +549,12 @@ def _run_near_deadline_expiry_sync() -> None:
                 )
                 if result.get("ok") or result.get("allowed") is False:
                     synced += 1
+            except TimeoutError as exc:
+                if not api_timeout_is_busy(exc):
+                    logger.exception(
+                        "near-deadline sync failed for %s",
+                        getattr(customer, "account_number", customer.pk),
+                    )
             except Exception:
                 logger.exception(
                     "near-deadline sync failed for %s",
@@ -571,24 +594,36 @@ def _run_near_deadline_expiry_sync() -> None:
 
             def _repair_one_router(router):
                 """Run all access repairs for one NAS sequentially (no API races)."""
-                from core.mikrotik_connect import is_mikrotik_host_cooling_down
+                from core.mikrotik_connect import (
+                    background_mikrotik_work,
+                    is_mikrotik_host_cooling_down,
+                )
                 from core.views import _resolve_working_nas_host
 
-                api_host = _resolve_working_nas_host(router, timeout=0.8)
-                if is_mikrotik_host_cooling_down(api_host):
-                    return []
-                try:
-                    return repair_router_access_leaks_on_router(
-                        router,
-                        repair_paid=run_paid_repair,
-                        repair_unpaid=run_unpaid_repair,
-                    )
-                except Exception:
-                    logger.exception(
-                        "access repair failed router=%s",
-                        getattr(router, "pk", None),
-                    )
-                    return []
+                with background_mikrotik_work():
+                    api_host = _resolve_working_nas_host(router, timeout=0.8)
+                    if is_mikrotik_host_cooling_down(api_host):
+                        return []
+                    try:
+                        return repair_router_access_leaks_on_router(
+                            router,
+                            repair_paid=run_paid_repair,
+                            repair_unpaid=run_unpaid_repair,
+                        )
+                    except TimeoutError as exc:
+                        if api_timeout_is_busy(exc):
+                            return []
+                        logger.exception(
+                            "access repair failed router=%s",
+                            getattr(router, "pk", None),
+                        )
+                        return []
+                    except Exception:
+                        logger.exception(
+                            "access repair failed router=%s",
+                            getattr(router, "pk", None),
+                        )
+                        return []
 
             workers = min(4, len(routers))
             with ThreadPoolExecutor(max_workers=workers) as pool:

@@ -178,8 +178,14 @@ def evaluate_nas_connectivity(router, *, timeout: float = 2.5) -> dict:
             timeout=login_timeout,
             include_wifi=False,
         )
+        from core.mikrotik_status_samples import (
+            api_login_is_busy,
+            is_credential_login_failure,
+        )
+
         # One flaky retry on tunnel/connectivity noise (mirrors status sampler).
-        if not login.get("ok"):
+        # A busy login is another job already on this router — retrying just waits.
+        if not login.get("ok") and not api_login_is_busy(login):
             err = (login.get("error") or "").strip().lower()
             flaky = (not err) or any(
                 token in err
@@ -218,12 +224,45 @@ def evaluate_nas_connectivity(router, *, timeout: float = 2.5) -> dict:
                 "details": details,
             }
 
-        # Same credentials on every dial address — stop on auth failure.
+        router_name = (getattr(router, "name", None) or host).strip()
+        if api_login_is_busy(login):
+            return {
+                "ok": False,
+                "reachable": True,
+                "api_ok": False,
+                "api_busy": True,
+                "error": sweep_log_text(
+                    login.get("error") or "Management API is busy."
+                ),
+                "hint": (
+                    f"{router_name} is being worked on. Subscribers stay online. "
+                    "Retry in a moment — do not Reconnect."
+                ),
+                "details": details,
+            }
+
+        login_error = sweep_log_text(login.get("error") or "API login failed.")
+        if not is_credential_login_failure(login.get("error")):
+            return {
+                "ok": False,
+                "reachable": True,
+                "api_ok": False,
+                "login_incomplete": True,
+                "error": login_error,
+                "hint": (
+                    f"{router_name} answered, but the management login did not finish. "
+                    "Retry. Do not Reconnect — that rewrites the router."
+                ),
+                "details": details,
+            }
+
+        # Same credentials on every dial address — stop on a real password trap.
         return {
             "ok": False,
             "reachable": True,
             "api_ok": False,
-            "error": sweep_log_text(login.get("error") or "API login failed."),
+            "auth_failed": True,
+            "error": login_error,
             "hint": "Update saved API username/password, then MikroTik -> Reconnect.",
             "details": details,
         }
@@ -1223,6 +1262,17 @@ def evaluate_layered_cpe_access(
     details["nas"] = nas.get("details") or {}
     layers["nas_ok"] = bool(nas.get("api_ok"))
     if not layers["nas_ok"]:
+        if nas.get("api_busy") or nas.get("login_incomplete"):
+            return {
+                "ok": False,
+                "skipped": False,
+                "failure_class": "nas_busy",
+                "failing_layer": "nas",
+                "error": nas.get("error") or "Management API is busy.",
+                "hint": nas.get("hint")
+                or "MikroTik login is in use. Remote access was not checked.",
+                "details": details,
+            }
         return {
             "ok": False,
             "skipped": False,

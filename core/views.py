@@ -985,6 +985,13 @@ def _cpe_router_guidance(
     mode = (access_mode or "pppoe").strip().lower()
     fc = (failure_class or "").strip().lower()
 
+    if fc == "nas_busy":
+        return [
+            f"{nas} is being updated right now.",
+            "Subscribers stay online. Remote access waits until that login finishes.",
+            "Retry in a moment. Do not Reconnect — that rewrites the router and can drop clients.",
+        ]
+
     if fc == "nas_down":
         steps = [
             f"The billing server cannot reach {nas} right now.",
@@ -16768,6 +16775,45 @@ def client_router_login_start(request, customer_id: int):
         base_meta["via_tunnel"] = via_tunnel
     via_tunnel = bool(base_meta["via_tunnel"])
     if not nas_check.get("api_ok"):
+        nas_busy = bool(nas_check.get("api_busy") or nas_check.get("login_incomplete"))
+        if not nas_busy:
+            from core.mikrotik_connect import routers_holding_api
+
+            nas_busy = bool(routers_holding_api([nas]))
+        if nas_busy:
+            detail = (
+                nas_check.get("hint")
+                or f"{nas.name or 'This MikroTik'} is being worked on. "
+                "Subscribers stay online. Retry in a moment."
+            )
+            guidance = _cpe_router_guidance(
+                failure_class="nas_busy",
+                access_mode=access_mode,
+                gateway=MK_PPPOE_LOCAL_ADDRESS,
+                nas_name=nas.name or "",
+                via_tunnel=via_tunnel,
+            )
+            busy_meta = dict(base_meta)
+            busy_meta["checked_ports"] = []
+            return JsonResponse(
+                {
+                    **busy_meta,
+                    "ok": False,
+                    "failure_class": "nas_busy",
+                    "session_active": False,
+                    "ping_ok": True,
+                    "api_ok": False,
+                    "api_busy": True,
+                    "cpe_host": "",
+                    "detail": detail,
+                    "error": nas_check.get("error") or detail,
+                    "steps": [
+                        f"{nas.name or nas_host} is being worked on"
+                        + (" over the tunnel" if via_tunnel else "")
+                    ],
+                    "guidance": guidance,
+                }
+            )
         detail = (
             nas_check.get("hint")
             or nas_check.get("error")
@@ -16779,8 +16825,14 @@ def client_router_login_start(request, customer_id: int):
             gateway=MK_PPPOE_LOCAL_ADDRESS,
             nas_name=nas.name or "",
             via_tunnel=via_tunnel,
-            detail=detail,
+            detail="" if nas_check.get("auth_failed") else detail,
         )
+        if nas_check.get("auth_failed"):
+            guidance = [
+                "The tunnel is up. RouterOS rejected the saved API username or password.",
+                "Update the API password on the MikroTik page, then retry.",
+                "Reconnect only after the password is saved. It rewrites the router.",
+            ]
         return JsonResponse(
             {
                 **base_meta,
@@ -19437,6 +19489,7 @@ _CLIENT_REMOTE_SOFT_FAILURES_CLASSES = frozenset(
         "probe_error",
         # Transient API/WG blips — MikroTik column often still Connected.
         "nas_down",
+        "nas_busy",
     }
 )
 
@@ -19657,6 +19710,19 @@ def _client_remote_access_row(
         }
         row = _stabilize_client_remote_access_row(row)
         cache.set(cache_key, row, 20 if row.get("status") == "ready" else 25)
+        return row
+
+    if failure == "nas_busy":
+        row = {
+            "id": customer_id,
+            "status": "offline",
+            "label": "Waiting",
+            "title": hint
+            or "MikroTik login is in use. Remote access was not checked.",
+            "failure_class": "nas_busy",
+        }
+        row = _stabilize_client_remote_access_row(row)
+        cache.set(cache_key, row, 20 if row.get("status") == "ready" else 15)
         return row
 
     if failure == "nas_down":
@@ -19923,8 +19989,33 @@ def _client_surf_pending_key(organization_id: int, customer_id: int) -> str:
     return f"client_surf_pending:v1:{organization_id}:{customer_id}"
 
 
+_SURF_UNREAD_TOKENS = (
+    "busy",
+    "timed out",
+    "timeout",
+    "cooling",
+    "session list was not read",
+    "subscription sync in progress",
+    "management path",
+    "check failed",
+    "recently unreachable",
+    "merged last known sessions",
+)
+
+
+def _surf_row_was_not_read(row: dict) -> bool:
+    """True when this poll did not actually see /ppp/active or Hotspot active."""
+    state = (row.get("state") or "").strip().lower()
+    if state != "disconnected" or row.get("session_online"):
+        return False
+    reason = (row.get("reason") or "").lower()
+    return any(token in reason for token in _SURF_UNREAD_TOKENS)
+
+
 def _surf_probe_failure_is_soft(row: dict) -> bool:
     """True when a disconnected row is likely a flaky NAS poll, not a real drop."""
+    if _surf_row_was_not_read(row):
+        return True
     state = (row.get("state") or "").strip().lower()
     if state != "disconnected":
         return False
@@ -19936,18 +20027,11 @@ def _surf_probe_failure_is_soft(row: dict) -> bool:
     return any(
         token in reason
         for token in (
-            "cooling down",
-            "timed out",
-            "timeout",
             "unreachable",
-            "check failed",
-            "recently unreachable",
             "router disconnected",
             "no active session on any router",
             "no active hotspot session",
             "router not dialed",
-            "merged last known sessions",
-            "subscription sync in progress",
         )
     )
 
@@ -19988,6 +20072,15 @@ def stabilize_client_surfing_row(
     last_good = cache.get(stable_key)
     if not isinstance(last_good, dict) or not last_good.get("surfing"):
         return row
+
+    # A missed read is not evidence the CPE dropped. Keep Surfing until a
+    # poll that actually listed sessions says otherwise.
+    if _surf_row_was_not_read(row):
+        held = dict(last_good)
+        held["stabilized"] = True
+        held["probe_state"] = state
+        held["probe_reason"] = row.get("reason") or ""
+        return held
 
     if not _surf_probe_failure_is_soft(row):
         cache.delete(stable_key)
@@ -20071,6 +20164,11 @@ def _probe_mikrotik_router_combined(router) -> dict:
             )
             stale["stale"] = True
             return stale
+        empty["error"] = (
+            "Subscription sync in progress — session list was not read"
+        )
+        empty["stale"] = True
+        return empty
     api_host = _resolve_working_nas_host(router, timeout=1.5)
     if is_mikrotik_host_cooling_down(api_host):
         stale = _load_router_surf_probe_snapshot(router_id)
@@ -20327,7 +20425,7 @@ def clients_surfing_status(request):
         if service == "hotspot"
         else Customer.ServiceType.PPPOE
     )
-    cache_key = f"clients_surfing:{org.pk}:{service}:v9"
+    cache_key = f"clients_surfing:{org.pk}:{service}:v10"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -20359,11 +20457,20 @@ def clients_surfing_status(request):
 
     live_map: dict = {}
     use_live_snapshot = False
+    unread_router_ids: set[int] = set()
     # A refresh asks the router who is online (below). Do not also run the
     # usage sweep — that is a second login on every poll.
     if not force and org_live_usage_is_fresh(org):
         live = get_org_live_usage(org)
         live_map = live.get(service) if isinstance(live.get(service), dict) else {}
+        unread_key = (
+            "hotspot_routers_unread" if service == "hotspot" else "pppoe_routers_unread"
+        )
+        for raw_rid in live.get(unread_key) or []:
+            try:
+                unread_router_ids.add(int(raw_rid))
+            except (TypeError, ValueError):
+                continue
         use_live_snapshot = True
 
     assigned_router_ids = {c.router_id for c in customers if c.router_id}
@@ -20526,6 +20633,7 @@ def clients_surfing_status(request):
         reason = ""
         connection_reason = ""
         connected_router_id = None
+        presence_unread = False
         entry: dict = {}
         if not identity and not hotspot_identities:
             reason = "No device MAC" if service == "hotspot" else "No PPPoE username"
@@ -20536,7 +20644,18 @@ def clients_surfing_status(request):
                 entry = {}
             session_online = bool(entry.get("session_active"))
             connected = session_online
-            if not session_online:
+            if (
+                customer.router_id
+                and int(customer.router_id) in unread_router_ids
+                and not session_online
+            ):
+                # This MikroTik was not read. Absence is not a dropped session.
+                presence_unread = True
+                session_online = False
+                connected = False
+                reason = "Session list was not read on this MikroTik"
+                connection_reason = reason
+            elif not session_online:
                 reason = (
                     "No active Hotspot session"
                     if service == "hotspot"
@@ -20633,6 +20752,10 @@ def clients_surfing_status(request):
         else:
             router_unreachable = False
             router_error = ""
+        if presence_unread:
+            router_unreachable = True
+            router_error = reason or "Session list was not read on this MikroTik"
+            reason = router_error
 
         surfing = False
         if customer.status != Customer.Status.ACTIVE:

@@ -767,12 +767,19 @@ def merge_live_presence_maps(
     organization_id: int,
     previous_map: dict[Any, Any] | None,
     current_map: dict[Any, Any] | None,
+    *,
+    observed_ids: set[int] | None = None,
 ) -> dict[int, dict[str, Any]]:
     """
     Require consecutive inactive polls before dropping session_active.
 
     Stops usage sampling from flashing every client offline when another
     fleet job briefly empties /ppp/active or /ip/hotspot/active.
+
+    ``observed_ids`` is the set of customers whose router was actually read
+    this poll. Everyone else keeps the previous session flag. A missed or
+    busy MikroTik must not count as "no session" just because a different
+    router in the same organization answered.
     """
     prev = previous_map if isinstance(previous_map, dict) else {}
     cur = current_map if isinstance(current_map, dict) else {}
@@ -788,6 +795,10 @@ def merge_live_presence_maps(
     for key, prev_entry in prev.items():
         cid = _live_map_customer_id(key)
         if cid is None or not isinstance(prev_entry, dict):
+            continue
+        if observed_ids is not None and cid not in observed_ids:
+            if cid not in merged:
+                merged[cid] = dict(prev_entry)
             continue
         if not prev_entry.get("session_active"):
             continue
@@ -1168,7 +1179,26 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
     want_pppoe = bool(pppoe_by_username)
     want_hotspot = bool(hotspot_by_mac)
 
+    in_background = False
+    try:
+        from core.mikrotik_connect import mikrotik_work_is_background
+
+        in_background = mikrotik_work_is_background()
+    except Exception:
+        in_background = False
+
     def _probe(
+        router: MikroTikRouter,
+    ) -> tuple[int, bool, dict[str, dict[str, Any]], bool, dict[str, dict[str, Any]]]:
+        from contextlib import nullcontext
+
+        from core.mikrotik_connect import background_mikrotik_work
+
+        job = background_mikrotik_work() if in_background else nullcontext()
+        with job:
+            return _probe_router(router)
+
+    def _probe_router(
         router: MikroTikRouter,
     ) -> tuple[int, bool, dict[str, dict[str, Any]], bool, dict[str, dict[str, Any]]]:
         if should_skip_background_router_dial():
@@ -1204,6 +1234,8 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
     hotspot_agg: dict[int, dict[str, Any]] = {}
     reachable_hotspot_routers: set[int] = set()
     reachable_pppoe_routers: set[int] = set()
+    observed_pppoe: set[int] = set()
+    observed_hotspot: set[int] = set()
     live_pppoe: dict[int, dict[str, Any]] = {}
     live_hotspot: dict[int, dict[str, Any]] = {}
     seen_hotspot_macs: dict[str, Customer] = {}
@@ -1238,6 +1270,7 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                         except Exception:
                             pass
                         matched.add(customer.pk)
+                        observed_pppoe.add(customer.pk)
                         # Keep the busiest live rate if the same client appears on
                         # more than one NAS (rare; unassigned / migrated accounts).
                         down = _as_int((payload or {}).get("download_bps"))
@@ -1261,6 +1294,7 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                         if customer.pk in matched or customer.pk in seen_offline:
                             continue
                         seen_offline.add(customer.pk)
+                        observed_pppoe.add(customer.pk)
                         live_pppoe.setdefault(
                             customer.pk,
                             {
@@ -1284,6 +1318,7 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                         if not customer:
                             continue
                         matched_hotspot.add(customer.pk)
+                        observed_hotspot.add(customer.pk)
                         seen_hotspot_macs[compact] = customer
                         entry = dict(payload or {})
                         entry["ok"] = True
@@ -1374,6 +1409,7 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                 if customer.pk in matched_hotspot or customer.pk in seen_offline_hs:
                     continue
                 seen_offline_hs.add(customer.pk)
+                observed_hotspot.add(customer.pk)
                 live_hotspot.setdefault(
                     customer.pk,
                     {
@@ -1395,6 +1431,31 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
     except Exception:
         pass
 
+    router_ids = {int(router.pk) for router in routers}
+    # Every NAS answered, so an unassigned client missing from all session
+    # tables was really not dialed. A partial read must not do this.
+    if want_pppoe and router_ids and reachable_pppoe_routers == router_ids:
+        for customer in customers:
+            if customer.service_type != Customer.ServiceType.PPPOE:
+                continue
+            if not (customer.pppoe_username or "").strip():
+                continue
+            observed_pppoe.add(customer.pk)
+            live_pppoe.setdefault(
+                customer.pk,
+                {
+                    "session_active": False,
+                    "download_bps": 0,
+                    "upload_bps": 0,
+                    "gadgets": 0,
+                },
+            )
+    if want_hotspot and router_ids and reachable_hotspot_routers == router_ids:
+        for customer in customers:
+            if customer.service_type != Customer.ServiceType.HOTSPOT:
+                continue
+            observed_hotspot.add(customer.pk)
+
     previous_live = get_org_live_usage(organization)
     if any_router_ok:
         org_id = int(organization.pk)
@@ -1402,11 +1463,13 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
             org_id,
             previous_live.get("pppoe"),
             live_pppoe,
+            observed_ids=observed_pppoe,
         )
         live_hotspot = merge_live_presence_maps(
             org_id,
             previous_live.get("hotspot"),
             live_hotspot,
+            observed_ids=observed_hotspot,
         )
         cache.set(
             _org_live_usage_cache_key(organization.pk),
@@ -1415,6 +1478,10 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                 "at": timezone.now().isoformat(),
                 "pppoe": live_pppoe,
                 "hotspot": live_hotspot,
+                "pppoe_routers_unread": sorted(router_ids - reachable_pppoe_routers),
+                "hotspot_routers_unread": sorted(
+                    router_ids - reachable_hotspot_routers
+                ),
             },
             _ORG_LIVE_USAGE_TTL,
         )

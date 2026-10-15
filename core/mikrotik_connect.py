@@ -220,13 +220,22 @@ def _api_login(sock: socket.socket, username: str, password: str) -> dict[str, A
     return _login_failed(legacy)
 
 
+class MikrotikApiYield(Exception):
+    """Background job released this router so an operator action can log in."""
+
+
 def _command(sock: socket.socket, words: list[str]) -> tuple[list[dict[str, str]], dict[str, str]]:
     """Run a RouterOS API command. Returns (replies, done/trap attrs).
+
+    A background sweep or expiry watch stops before the next command when an
+    operator is waiting for this router, so remote access is not stuck behind
+    a long repair.
 
     RouterOS may send one or more !trap sentences before a final !done.
     We must consume through !done/!fatal or the next command reads a stale !done
     and looks like an empty successful reply (e.g. secret print returns no rows).
     """
+    _background_yield_if_requested()
     _write_sentence(sock, words)
     replies: list[dict[str, str]] = []
     terminal: dict[str, str] = {}
@@ -2164,6 +2173,68 @@ _thread_api_pool = threading.local()
 # Nested calls on the same thread reuse that hold. A second worker waits briefly
 # and then skips, instead of opening another RouterOS session.
 _api_gate_state = threading.local()
+_api_job = threading.local()
+_API_USER_WAIT_SEC = 4.0
+
+
+@contextmanager
+def background_mikrotik_work():
+    """Mark this thread's MikroTik logins as background work.
+
+    Operator requests (remote access, saves, status) take the router login
+    first. This job finishes the current command, drops the login, and
+    continues after the operator is done.
+    """
+    previous = bool(getattr(_api_job, "background", False))
+    _api_job.background = True
+    try:
+        yield
+    finally:
+        _api_job.background = previous
+
+
+def mikrotik_work_is_background() -> bool:
+    return bool(getattr(_api_job, "background", False))
+
+
+def _api_yield_key(dial: str) -> str:
+    return f"mikrotik_api_yield:{dial}"
+
+
+def _api_gate_holder(raw) -> tuple[str, int]:
+    """Return (kind, pid). kind is ``i`` (operator) or ``b`` (background)."""
+    if raw is None or raw == "":
+        return "", 0
+    text = str(raw).strip()
+    if ":" in text:
+        kind, _, pid_text = text.partition(":")
+        try:
+            return kind[:1] or "b", int(pid_text)
+        except ValueError:
+            return kind[:1] or "b", 0
+    try:
+        # Older workers stored a bare pid. Treat that as background so an
+        # operator can still ask the job to step aside.
+        return "b", int(text)
+    except (TypeError, ValueError):
+        return "", 0
+
+
+def _background_yield_if_requested() -> None:
+    if not mikrotik_work_is_background():
+        return
+    dial = (getattr(_api_job, "dial", None) or "").strip()
+    if not dial:
+        return
+    try:
+        from django.core.cache import caches
+
+        if caches["jobs"].get(_api_yield_key(dial)):
+            raise MikrotikApiYield()
+    except MikrotikApiYield:
+        raise
+    except Exception:
+        return
 _API_GATE_TTL_SEC = 30
 
 
@@ -2218,6 +2289,7 @@ def _api_gate_acquire(dial: str) -> bool:
     if depth > 0:
         _api_gate_state.depth = depth + 1
         return True
+    background = mikrotik_work_is_background()
     try:
         from django.core.cache import caches
 
@@ -2225,34 +2297,65 @@ def _api_gate_acquire(dial: str) -> bool:
     except Exception:
         _api_gate_state.depth = 1
         _api_gate_state.held = False
+        _api_job.dial = dial
         return True
     cache = caches["jobs"]
     key = _api_gate_key(dial)
-    deadline = time.monotonic() + 1.2
-    while True:
-        try:
-            got = cache.add(key, os.getpid(), timeout=_API_GATE_TTL_SEC)
-        except Exception:
-            _api_gate_state.depth = 1
-            _api_gate_state.held = False
-            return True
-        if got:
-            _api_gate_state.depth = 1
-            _api_gate_state.held = True
-            return True
-        try:
-            holder = int(cache.get(key) or 0)
-        except (TypeError, ValueError):
-            holder = 0
-        if holder and not _pid_is_alive(holder):
+    yield_key = _api_yield_key(dial)
+    # Operator actions wait long enough for a background job to finish the
+    # command it is already running and drop the login. Background jobs do
+    # not wait on an operator.
+    deadline = time.monotonic() + (1.2 if background else _API_USER_WAIT_SEC)
+    asked_yield = False
+    try:
+        while True:
+            if background:
+                try:
+                    if cache.get(yield_key):
+                        return False
+                except Exception:
+                    pass
             try:
-                cache.delete(key)
+                token = f"{'b' if background else 'i'}:{os.getpid()}"
+                got = cache.add(key, token, timeout=_API_GATE_TTL_SEC)
             except Exception:
+                _api_gate_state.depth = 1
+                _api_gate_state.held = False
+                _api_job.dial = dial
+                return True
+            if got:
+                _api_gate_state.depth = 1
+                _api_gate_state.held = True
+                _api_job.dial = dial
+                _api_job.token = token
+                return True
+            try:
+                holder_kind, holder_pid = _api_gate_holder(cache.get(key))
+            except Exception:
+                holder_kind, holder_pid = "", 0
+            if holder_pid and not _pid_is_alive(holder_pid):
+                try:
+                    cache.delete(key)
+                except Exception:
+                    return False
+                continue
+            if background and holder_kind == "i":
                 return False
-            continue
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.05)
+            if not background and holder_kind != "i":
+                try:
+                    cache.set(yield_key, 1, timeout=20)
+                    asked_yield = True
+                except Exception:
+                    pass
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+    finally:
+        if asked_yield:
+            try:
+                cache.delete(yield_key)
+            except Exception:
+                pass
 
 
 def _api_gate_release(dial: str) -> None:
@@ -2263,12 +2366,20 @@ def _api_gate_release(dial: str) -> None:
     held = bool(getattr(_api_gate_state, "held", False))
     _api_gate_state.depth = 0
     _api_gate_state.held = False
+    _api_job.dial = ""
+    token = getattr(_api_job, "token", None)
+    _api_job.token = ""
     if depth <= 0 or not held:
         return
     try:
         from django.core.cache import caches
 
-        caches["jobs"].delete(_api_gate_key(dial))
+        cache = caches["jobs"]
+        key = _api_gate_key(dial)
+        # An operator may already have taken the login after this job yielded.
+        if token and str(cache.get(key) or "") != str(token):
+            return
+        cache.delete(key)
     except Exception:
         pass
 
@@ -2407,6 +2518,10 @@ def _api_session(
             connected = True
             yield sock
             keep_in_pool = use_pool
+        except MikrotikApiYield:
+            # Operator is waiting. Drop this login without cooling the host.
+            _api_pool_discard(pool_key)
+            raise TimeoutError("Management API is busy — retrying shortly.")
         except TimeoutError:
             # Light CPE list probes must not quarantine the ISP NAS for surfing /
             # MikroTik status — a slow CPE TCP check is not "NAS dead".
@@ -9054,7 +9169,17 @@ def fetch_router_bulk_live_usage(
                 "hotspot": hotspot_sessions,
                 "error": "",
             }
-    except TimeoutError:
+    except TimeoutError as exc:
+        if api_timeout_is_busy(exc):
+            return {
+                "ok": False,
+                "pppoe": {},
+                "hotspot": {},
+                "error": str(exc).strip() or "Management API is busy — retrying shortly.",
+                "timeout": True,
+                "api_busy": True,
+                "soft_outage": True,
+            }
         mark_mikrotik_host_unreachable(host)
         return {
             "ok": False,

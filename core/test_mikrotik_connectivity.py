@@ -246,6 +246,66 @@ class ApiSessionReuseTests(SimpleTestCase):
         session_cm.assert_called_once()
         self.assertTrue(session_cm.call_args.kwargs.get("reuse"))
 
+    def test_operator_login_makes_background_job_yield(self):
+        import threading
+        import time
+
+        from django.core.cache import caches
+
+        from core.mikrotik_connect import (
+            MikrotikApiYield,
+            _api_gate_acquire,
+            _api_gate_key,
+            _api_gate_release,
+            _api_yield_key,
+            _background_yield_if_requested,
+            background_mikrotik_work,
+        )
+
+        dial = "10.9.0.21"
+        jobs = caches["jobs"]
+        jobs.delete(_api_gate_key(dial))
+        jobs.delete(_api_yield_key(dial))
+        started = threading.Event()
+        errors: list[BaseException] = []
+
+        def job():
+            try:
+                with background_mikrotik_work():
+                    if not _api_gate_acquire(dial):
+                        raise AssertionError("background job did not get the login")
+                    started.set()
+                    seen = False
+                    for _ in range(80):
+                        if jobs.get(_api_yield_key(dial)):
+                            seen = True
+                            break
+                        time.sleep(0.05)
+                    if not seen:
+                        raise AssertionError("operator did not ask the job to yield")
+                    try:
+                        _background_yield_if_requested()
+                    except MikrotikApiYield:
+                        pass
+                    else:
+                        raise AssertionError("background command did not yield")
+                    _api_gate_release(dial)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+                started.set()
+
+        worker = threading.Thread(target=job)
+        worker.start()
+        self.assertTrue(started.wait(2))
+        self.assertFalse(errors)
+        self.assertTrue(_api_gate_acquire(dial))
+        self.assertIsNone(jobs.get(_api_yield_key(dial)))
+        _api_gate_release(dial)
+        worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(errors)
+        self.assertIsNone(jobs.get(_api_gate_key(dial)))
+
     def test_api_gate_reentrant_on_same_thread(self):
         from django.core.cache import caches
 
@@ -276,6 +336,49 @@ class ApiSessionReuseTests(SimpleTestCase):
             jobs.delete(_api_gate_key("10.9.0.14"))
         self.assertEqual([row["id"] for row in rows], [4])
         self.assertEqual(rows[0]["name"], "SHELTERLINK-LOWER-1")
+
+    def test_busy_nas_login_is_not_a_password_or_reconnect_failure(self):
+        from core.connectivity_verification import evaluate_nas_connectivity
+
+        router = SimpleNamespace(
+            name="SHELTERLINK-LOWER-1",
+            host="10.9.0.14",
+            username="admin",
+            password="secret",
+            vpn_address="10.9.0.14",
+        )
+        with (
+            patch(
+                "core.mikrotik_connect.resolve_nas_api_host",
+                return_value="10.9.0.14",
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.9.0.14"],
+            ),
+            patch(
+                "core.mikrotik_connect.is_mikrotik_host_cooling_down",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": True, "via": "api"},
+            ),
+            patch(
+                "core.mikrotik_connect.test_mikrotik_api_login",
+                return_value={
+                    "ok": False,
+                    "api_busy": True,
+                    "error": "Management API is busy — retrying shortly.",
+                },
+            ),
+        ):
+            result = evaluate_nas_connectivity(router, timeout=2.0)
+        self.assertTrue(result.get("api_busy"))
+        self.assertFalse(result.get("api_ok"))
+        self.assertNotIn("password", (result.get("hint") or "").lower())
+        self.assertIn("do not Reconnect", result.get("hint") or "")
+        self.assertIn("being worked on", result.get("hint") or "")
 
     def test_busy_api_login_stays_connected_instead_of_port_timeout(self):
         from core.mikrotik_connect import test_mikrotik_api_login

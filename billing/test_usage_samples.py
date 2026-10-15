@@ -1123,6 +1123,73 @@ class SampleOrganizationUsageTests(TestCase):
 
     @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
     @patch("core.mikrotik_connect.fetch_router_bulk_live_usage")
+    def test_unread_router_does_not_drop_its_clients(self, mock_live, _mock_cool):
+        """A router that was not read must keep its last session when another NAS answers."""
+        from billing.usage_samples import get_org_live_usage
+
+        other = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Other",
+            host="10.0.0.3",
+            username="admin",
+            password="secret",
+        )
+        other_client = Customer.objects.create(
+            organization=self.org,
+            router=other,
+            full_name="Other Online",
+            phone="0700000103",
+            account_number="PPP-OTHER-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="other1",
+        )
+
+        def _live(host, *_args, **_kwargs):
+            host = (host or "").strip()
+            if host == "10.0.0.3" and getattr(_live, "fail_other", False):
+                return {
+                    "ok": False,
+                    "pppoe": {},
+                    "hotspot": {},
+                    "error": "Management API is busy — retrying shortly.",
+                    "timeout": True,
+                    "api_busy": True,
+                }
+            sessions = {}
+            if host == "10.0.0.2":
+                sessions["online1"] = {
+                    "session_active": True,
+                    "bytes_in": 100,
+                    "bytes_out": 50,
+                    "uptime_raw": "1h",
+                }
+            if host == "10.0.0.3":
+                sessions["other1"] = {
+                    "session_active": True,
+                    "bytes_in": 100,
+                    "bytes_out": 50,
+                    "uptime_raw": "1h",
+                }
+            return {"ok": True, "pppoe": sessions, "hotspot": {}, "error": ""}
+
+        mock_live.side_effect = _live
+        sample_organization_usage(self.org, force=True)
+        live = get_org_live_usage(self.org)
+        self.assertTrue(live["pppoe"][other_client.pk]["session_active"])
+
+        _live.fail_other = True
+        sample_organization_usage(self.org, force=True)
+        sample_organization_usage(self.org, force=True)
+        live = get_org_live_usage(self.org)
+        self.assertTrue(live["pppoe"][self.online.pk]["session_active"])
+        self.assertTrue(
+            live["pppoe"][other_client.pk]["session_active"],
+            "clients on a router that was not read must stay at the last session",
+        )
+        self.assertIn(other.pk, live.get("pppoe_routers_unread") or [])
+
+    @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
+    @patch("core.mikrotik_connect.fetch_router_bulk_live_usage")
     def test_failed_probe_does_not_mark_everyone_offline(self, mock_live, _mock_cool):
         mock_live.return_value = {
             "ok": False,

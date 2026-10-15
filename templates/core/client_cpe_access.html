@@ -265,6 +265,7 @@
   var DEFAULT_PATH = errorPath ? errorPath.textContent : "";
 
   function failureTitle(fc) {
+    if (fc === "nas_busy") return "Router is being worked on";
     if (fc === "nas_down") return viaTunnel ? "Tunnel or NAS is down" : "NAS is unreachable";
     if (fc === "offline") return "Subscriber is offline";
     if (fc === "unreachable") return "Router could not be reached";
@@ -447,8 +448,13 @@
     }
     var fc = data.failure_class || "";
     if (statusEl) statusEl.textContent = data.detail || data.error || "Could not open the client router.";
+    var kicker = errorBox && errorBox.querySelector(".client-router-error-kicker");
+    if (kicker) {
+      kicker.textContent = fc === "nas_busy" ? "In progress" : "Connection failed";
+    }
     if (stampEl) {
-      if (fc === "nas_down") stampEl.textContent = viaTunnel ? "Tunnel down" : "NAS down";
+      if (fc === "nas_busy") stampEl.textContent = "Working";
+      else if (fc === "nas_down") stampEl.textContent = viaTunnel ? "Tunnel down" : "NAS down";
       else if (fc === "offline") stampEl.textContent = "Offline";
       else if (data.session_active && data.ping_ok) stampEl.textContent = "Blocked";
       else stampEl.textContent = "Failed";
@@ -465,7 +471,7 @@
       var pathBits = [];
       if (data.cpe_host) pathBits.push("Client IP " + data.cpe_host);
       else if (DEFAULT_PATH) pathBits.push(DEFAULT_PATH.trim());
-      if (data.checked_ports && data.checked_ports.length) {
+      if (fc !== "nas_busy" && data.checked_ports && data.checked_ports.length) {
         pathBits.push("ports " + data.checked_ports.join(", "));
       }
       errorPath.textContent = pathBits.join(" · ") || DEFAULT_PATH;
@@ -481,6 +487,7 @@
     fillGuidance(data.guidance || []);
     if (errorActions) errorActions.hidden = false;
     if (fixNasBtn) fixNasBtn.hidden = fc !== "nas_down";
+    if (fc === "nas_busy" && errorDetail) errorDetail.textContent = "";
   }
 
   function connect(body, fromUserGesture) {

@@ -77,9 +77,6 @@ class Command(BaseCommand):
             stream.write(text.encode("ascii", errors="replace").decode("ascii") + "\n")
 
     def handle(self, *args, **options):
-        from billing.models import Customer
-        from core.models import MikroTikRouter
-
         dry_run = bool(options.get("dry_run"))
         skip_pppoe = bool(options.get("skip_pppoe"))
         skip_hotspot = bool(options.get("skip_hotspot"))
@@ -88,6 +85,36 @@ class Command(BaseCommand):
         org_id = int(options.get("organization") or 0)
         router_id = int(options.get("router") or 0)
         name_filter = (options.get("name") or "").strip()
+
+        from core.mikrotik_connect import background_mikrotik_work
+
+        lock_held = False
+        with background_mikrotik_work():
+            self._sync_routers(
+                dry_run=dry_run,
+                skip_pppoe=skip_pppoe,
+                skip_hotspot=skip_hotspot,
+                sync_secrets=sync_secrets,
+                force=force,
+                org_id=org_id,
+                router_id=router_id,
+                name_filter=name_filter,
+            )
+
+    def _sync_routers(
+        self,
+        *,
+        dry_run,
+        skip_pppoe,
+        skip_hotspot,
+        sync_secrets,
+        force,
+        org_id,
+        router_id,
+        name_filter,
+    ):
+        from billing.models import Customer
+        from core.models import MikroTikRouter
 
         lock_held = False
         if not dry_run and not force:

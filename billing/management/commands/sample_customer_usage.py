@@ -29,7 +29,10 @@ class Command(BaseCommand):
             if org is None:
                 self.stderr.write(self.style.ERROR(f"Organization {org_id} not found."))
                 return
-            result = sample_organization_usage(org, force=True)
+            from core.mikrotik_connect import background_mikrotik_work
+
+            with background_mikrotik_work():
+                result = sample_organization_usage(org, force=True)
             _mark_usage_sampling_heartbeat()
             self.stdout.write(
                 self.style.SUCCESS(

@@ -609,35 +609,8 @@
     }
   }
 
-  function paintRemoteWorking(working) {
-    var ids = {};
-    (working || []).forEach(function (row) {
-      if (row && row.id != null) ids[String(row.id)] = true;
-    });
-    document.querySelectorAll("[data-client-remote]").forEach(function (el) {
-      var rid = el.getAttribute("data-router-id") || "";
-      if (!ids[rid]) {
-        if (el.getAttribute("data-work-hold") === "1") {
-          el.removeAttribute("data-work-hold");
-          el.classList.remove("is-working");
-        }
-        return;
-      }
-      el.setAttribute("data-work-hold", "1");
-      el.classList.remove(
-        "is-checking",
-        "is-connected",
-        "is-disconnected",
-        "is-limited",
-        "is-auth-failed",
-        "is-reachable",
-        "is-unavailable"
-      );
-      el.classList.add("is-working");
-      var textEl = el.querySelector(".mikrotik-link-label");
-      if (textEl) textEl.textContent = "Working";
-      el.title = "This MikroTik is being updated. Remote access waits. The client stays online.";
-    });
+  function paintRemoteWorking() {
+    // Remote shows the CPE check. A MikroTik "Working" hold must not replace it.
   }
 
   function setStatus(el, online, status, working) {
@@ -756,24 +729,6 @@
 
   function setRemoteStatus(el, status, label, title) {
     if (!el) return;
-    var rid = el.getAttribute("data-router-id") || "";
-    if (rid && window.__ispRoutersWorking && window.__ispRoutersWorking[rid]) {
-      el.setAttribute("data-work-hold", "1");
-      el.classList.remove(
-        "is-checking",
-        "is-connected",
-        "is-disconnected",
-        "is-limited",
-        "is-auth-failed",
-        "is-reachable",
-        "is-unavailable"
-      );
-      el.classList.add("is-working");
-      var held = el.querySelector(".mikrotik-link-label");
-      if (held) held.textContent = "Working";
-      el.title = "This MikroTik is being updated. Remote access waits. The client stays online.";
-      return;
-    }
     el.classList.remove(
       "is-checking",
       "is-connected",
@@ -798,7 +753,7 @@
       el.classList.add("is-unavailable");
       if (textEl) textEl.textContent = text || "N/A";
       el.title = title || "This client has no CPE to open remotely";
-    } else if (/^checking$/i.test(text) || /^retry$/i.test(text)) {
+    } else if (/^(checking|retry|waiting)$/i.test(text)) {
       // In-progress / soft miss — not a hard Offline/NAS-down failure.
       el.classList.add("is-checking");
       if (textEl) textEl.textContent = text || "Checking";
