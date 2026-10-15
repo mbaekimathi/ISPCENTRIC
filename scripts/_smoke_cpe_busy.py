@@ -1,9 +1,10 @@
 """Smoke the open-router path against a real management-login lock.
 
-No MySQL and no live MikroTik. A background thread holds the API gate the
-same way a sweep does. The probe must either wait until that login is free
-and then find the client web port, or report nas_busy instead of an
-unreachable client router.
+No MySQL and no live MikroTik. A background thread holds the writer login
+the same way a sweep does. The probe must open a side login and find the
+client web port without asking that sweep to drop its socket. A second
+operator, when the side login is already taken, reports nas_busy instead
+of an unreachable client router.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ class _Sock:
 def _clear() -> None:
     jobs = caches["jobs"]
     jobs.delete(mk._api_gate_key(DIAL))
+    jobs.delete(mk._api_op_gate_key(DIAL))
     jobs.delete(mk._api_yield_key(DIAL))
 
 
@@ -108,7 +110,13 @@ def _probe(timeout: float) -> tuple[dict, float]:
         return result, time.monotonic() - started
 
 
-def _scenario(name: str, hold_s: float, yield_ok: bool, timeout: float) -> tuple[dict, str, float]:
+def _scenario(
+    name: str,
+    hold_s: float,
+    yield_ok: bool,
+    timeout: float,
+    before_probe=None,
+) -> tuple[dict, str, float]:
     _clear()
     started = threading.Event()
     released = threading.Event()
@@ -120,6 +128,8 @@ def _scenario(name: str, hold_s: float, yield_ok: bool, timeout: float) -> tuple
     thread.start()
     if not started.wait(3):
         raise AssertionError(f"{name}: background login never started")
+    if before_probe:
+        before_probe()
     result, elapsed = _probe(timeout)
     thread.join(timeout + 3)
     failure = _cpe_router_failure_class(result, nas_ok=True)
@@ -134,28 +144,29 @@ def _scenario(name: str, hold_s: float, yield_ok: bool, timeout: float) -> tuple
 
 
 def main() -> None:
-    yielded, yielded_class, yielded_elapsed = _scenario("yield", 5, True, 12)
-    if not yielded.get("ok") or yielded.get("port") != 80 or yielded.get("api_busy"):
-        raise SystemExit(f"yield: expected the router to open, got {yielded}")
-    if yielded_elapsed > 3:
-        raise SystemExit(f"yield: operator waited too long ({yielded_elapsed:.2f}s)")
+    beside, beside_class, beside_elapsed = _scenario("beside-sweep", 5, False, 12)
+    if not beside.get("ok") or beside.get("port") != 80 or beside.get("api_busy"):
+        raise SystemExit(f"beside-sweep: expected the router to open, got {beside}")
+    if beside_elapsed > 3:
+        raise SystemExit(f"beside-sweep: operator waited too long ({beside_elapsed:.2f}s)")
 
-    waited, waited_class, waited_elapsed = _scenario("wait-out", 6, False, 12)
-    if not waited.get("ok") or waited.get("api_busy") or waited.get("port") != 80:
-        raise SystemExit(f"wait-out: expected a retry to open the router, got {waited}")
-    if waited_elapsed < 5:
-        raise SystemExit(f"wait-out: returned before the login was free ({waited_elapsed:.2f}s)")
+    jobs = caches["jobs"]
 
-    busy, busy_class, _busy_elapsed = _scenario("still-busy", 30, False, 3)
+    def _take_side_login() -> None:
+        jobs.set(mk._api_op_gate_key(DIAL), f"i:{os.getpid()}", 30)
+
+    busy, busy_class, _busy_elapsed = _scenario(
+        "side-taken", 30, False, 3, before_probe=_take_side_login
+    )
     if not busy.get("api_busy") or busy.get("ok"):
-        raise SystemExit(f"still-busy: expected a busy login, got {busy}")
+        raise SystemExit(f"side-taken: expected a busy login, got {busy}")
     if busy_class != "nas_busy":
-        raise SystemExit(f"still-busy: classified as {busy_class}, not nas_busy")
+        raise SystemExit(f"side-taken: classified as {busy_class}, not nas_busy")
     if "unreachable" in (busy.get("hint") or "").lower():
-        raise SystemExit(f"still-busy: hint blames the client router: {busy.get('hint')}")
+        raise SystemExit(f"side-taken: hint blames the client router: {busy.get('hint')}")
 
     print("SMOKE OK")
-    print(f"classes yield={yielded_class} wait={waited_class} busy={busy_class}")
+    print(f"classes beside={beside_class} busy={busy_class}")
     os._exit(0)
 
 

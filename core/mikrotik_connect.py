@@ -2169,9 +2169,11 @@ def recover_mikrotik_connection(
 
 
 _thread_api_pool = threading.local()
-# One in-flight API login per router, shared by every worker via the jobs cache.
-# Nested calls on the same thread reuse that hold. A second worker waits briefly
-# and then skips, instead of opening another RouterOS session.
+# One background writer plus one operator login per router. Nested calls on
+# the same thread reuse that hold. A second writer waits, instead of opening
+# another RouterOS session that would rewrite PPP secrets at the same time.
+# The operator login runs beside the writer: aborting the writer mid
+# /ppp/secret update is what drops surfing sessions.
 _api_gate_state = threading.local()
 _api_job = threading.local()
 _API_USER_WAIT_SEC = 4.0
@@ -2181,9 +2183,9 @@ _API_USER_WAIT_SEC = 4.0
 def background_mikrotik_work():
     """Mark this thread's MikroTik logins as background work.
 
-    Operator requests (remote access, saves, status) take the router login
-    first. This job finishes the current command, drops the login, and
-    continues after the operator is done.
+    Sweeps and usage samples keep their login until the current repair
+    finishes. An operator action (remote access, save, status) opens a
+    second login beside that job instead of forcing it to drop the socket.
     """
     previous = bool(getattr(_api_job, "background", False))
     _api_job.background = True
@@ -2242,6 +2244,11 @@ def _api_gate_key(dial: str) -> str:
     return f"mikrotik_api_gate:{dial}"
 
 
+def _api_op_gate_key(dial: str) -> str:
+    """Second login used by an operator while a background job holds the writer."""
+    return f"mikrotik_api_op:{dial}"
+
+
 def routers_holding_api(routers) -> list[dict[str, Any]]:
     """Routers whose management login is open right now.
 
@@ -2284,6 +2291,42 @@ def api_timeout_is_busy(exc: BaseException | None) -> bool:
     return "busy" in str(exc or "").lower()
 
 
+def _api_mark_hold(dial: str, token: str, *, slot: str) -> None:
+    _api_gate_state.depth = 1
+    _api_gate_state.held = True
+    _api_gate_state.slot = slot
+    _api_job.dial = dial
+    _api_job.token = token
+
+
+def _api_try_operator_side_login(cache, dial: str, pid_is_alive) -> bool:
+    """One operator login beside a live background writer. Never steals it."""
+    key = _api_op_gate_key(dial)
+    token = f"i:{os.getpid()}"
+    try:
+        if cache.add(key, token, timeout=_API_GATE_TTL_SEC):
+            _api_mark_hold(dial, token, slot="op")
+            return True
+    except Exception:
+        return False
+    try:
+        _kind, holder_pid = _api_gate_holder(cache.get(key))
+    except Exception:
+        return False
+    if holder_pid and not pid_is_alive(holder_pid):
+        try:
+            cache.delete(key)
+        except Exception:
+            return False
+        try:
+            if cache.add(key, token, timeout=_API_GATE_TTL_SEC):
+                _api_mark_hold(dial, token, slot="op")
+                return True
+        except Exception:
+            return False
+    return False
+
+
 def _api_gate_acquire(dial: str) -> bool:
     depth = int(getattr(_api_gate_state, "depth", 0) or 0)
     if depth > 0:
@@ -2297,14 +2340,15 @@ def _api_gate_acquire(dial: str) -> bool:
     except Exception:
         _api_gate_state.depth = 1
         _api_gate_state.held = False
+        _api_gate_state.slot = ""
         _api_job.dial = dial
         return True
     cache = caches["jobs"]
     key = _api_gate_key(dial)
     yield_key = _api_yield_key(dial)
-    # Operator actions wait long enough for a background job to finish the
-    # command it is already running and drop the login. Background jobs do
-    # not wait on an operator.
+    # Background jobs do not wait on an operator. Operators wait only for
+    # another operator; a background writer keeps its socket and the operator
+    # uses the side login instead.
     deadline = time.monotonic() + (1.2 if background else _API_USER_WAIT_SEC)
     asked_yield = False
     try:
@@ -2321,13 +2365,11 @@ def _api_gate_acquire(dial: str) -> bool:
             except Exception:
                 _api_gate_state.depth = 1
                 _api_gate_state.held = False
+                _api_gate_state.slot = ""
                 _api_job.dial = dial
                 return True
             if got:
-                _api_gate_state.depth = 1
-                _api_gate_state.held = True
-                _api_job.dial = dial
-                _api_job.token = token
+                _api_mark_hold(dial, token, slot="main")
                 return True
             try:
                 holder_kind, holder_pid = _api_gate_holder(cache.get(key))
@@ -2339,9 +2381,15 @@ def _api_gate_acquire(dial: str) -> bool:
                 except Exception:
                     return False
                 continue
-            if background and holder_kind == "i":
+            if not background and holder_kind == "b":
+                if _api_try_operator_side_login(cache, dial, _pid_is_alive):
+                    return True
+            elif background and holder_kind == "i":
                 return False
-            if not background and holder_kind != "i":
+            elif not background and holder_kind != "i":
+                # Unknown holder (not a live sweep). Ask it to finish the
+                # current command. A known background writer is never asked
+                # to drop the socket — that abort disconnects surfing CPEs.
                 try:
                     cache.set(yield_key, 1, timeout=20)
                     asked_yield = True
@@ -2364,8 +2412,10 @@ def _api_gate_release(dial: str) -> None:
         _api_gate_state.depth = depth - 1
         return
     held = bool(getattr(_api_gate_state, "held", False))
+    slot = getattr(_api_gate_state, "slot", "") or "main"
     _api_gate_state.depth = 0
     _api_gate_state.held = False
+    _api_gate_state.slot = ""
     _api_job.dial = ""
     token = getattr(_api_job, "token", None)
     _api_job.token = ""
@@ -2375,8 +2425,8 @@ def _api_gate_release(dial: str) -> None:
         from django.core.cache import caches
 
         cache = caches["jobs"]
-        key = _api_gate_key(dial)
-        # An operator may already have taken the login after this job yielded.
+        key = _api_op_gate_key(dial) if slot == "op" else _api_gate_key(dial)
+        # Another worker may already have replaced this hold.
         if token and str(cache.get(key) or "") != str(token):
             return
         cache.delete(key)

@@ -246,27 +246,27 @@ class ApiSessionReuseTests(SimpleTestCase):
         session_cm.assert_called_once()
         self.assertTrue(session_cm.call_args.kwargs.get("reuse"))
 
-    def test_operator_login_makes_background_job_yield(self):
+    def test_operator_login_runs_beside_background_writer(self):
         import threading
-        import time
 
         from django.core.cache import caches
 
         from core.mikrotik_connect import (
-            MikrotikApiYield,
             _api_gate_acquire,
             _api_gate_key,
             _api_gate_release,
+            _api_op_gate_key,
             _api_yield_key,
-            _background_yield_if_requested,
             background_mikrotik_work,
         )
 
         dial = "10.9.0.21"
         jobs = caches["jobs"]
         jobs.delete(_api_gate_key(dial))
+        jobs.delete(_api_op_gate_key(dial))
         jobs.delete(_api_yield_key(dial))
         started = threading.Event()
+        release_bg = threading.Event()
         errors: list[BaseException] = []
 
         def job():
@@ -275,32 +275,27 @@ class ApiSessionReuseTests(SimpleTestCase):
                     if not _api_gate_acquire(dial):
                         raise AssertionError("background job did not get the login")
                     started.set()
-                    seen = False
-                    for _ in range(80):
-                        if jobs.get(_api_yield_key(dial)):
-                            seen = True
-                            break
-                        time.sleep(0.05)
-                    if not seen:
-                        raise AssertionError("operator did not ask the job to yield")
-                    try:
-                        _background_yield_if_requested()
-                    except MikrotikApiYield:
-                        pass
-                    else:
-                        raise AssertionError("background command did not yield")
+                    if not release_bg.wait(3):
+                        raise AssertionError("operator did not finish the side login")
                     _api_gate_release(dial)
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
                 started.set()
+                release_bg.set()
 
         worker = threading.Thread(target=job)
         worker.start()
         self.assertTrue(started.wait(2))
         self.assertFalse(errors)
+        writer = jobs.get(_api_gate_key(dial))
         self.assertTrue(_api_gate_acquire(dial))
+        self.assertEqual(jobs.get(_api_gate_key(dial)), writer)
+        self.assertIsNotNone(jobs.get(_api_op_gate_key(dial)))
         self.assertIsNone(jobs.get(_api_yield_key(dial)))
         _api_gate_release(dial)
+        self.assertIsNone(jobs.get(_api_op_gate_key(dial)))
+        self.assertEqual(jobs.get(_api_gate_key(dial)), writer)
+        release_bg.set()
         worker.join(3)
         self.assertFalse(worker.is_alive())
         self.assertFalse(errors)
