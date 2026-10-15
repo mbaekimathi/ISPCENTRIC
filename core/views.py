@@ -18150,7 +18150,15 @@ def client_usage(request, customer_id: int):
 
         # Match /app/clients/surfing/: Surfing = dialed + paid + not blocked.
         surfing = bool(session_online and internet_allowed and not on_blocked_profile)
-        if payload.get("session_checked") is False:
+        if payload.get("session_checked") is False and internet_allowed and not subscription_expired:
+            surfing = True
+            session_state = "surfing"
+            session_label = "Surfing"
+            session_hint = (
+                "Package active — session check still running. "
+                "Subscribers stay online."
+            )
+        elif payload.get("session_checked") is False:
             surfing = False
             session_state = "checking"
             session_label = "Checking"
@@ -18190,11 +18198,15 @@ def client_usage(request, customer_id: int):
             else:
                 session_hint = payload.get("hint") or "Dialed in — not surfing"
 
-        if pending_renew and internet_allowed:
+        if pending_renew and internet_allowed and not subscription_expired:
             session_hint = (
-                "Package active — CPE renew Hotspot still clearing. "
-                "Phones may see the pay page until the CPE redials."
+                "Package active. The Wi-Fi pay page may still be clearing. "
+                "The PPPoE session stays up."
             )
+            if not on_blocked_profile:
+                surfing = True
+                session_state = "surfing"
+                session_label = "Surfing"
         if payload.get("usage_held"):
             session_hint = (
                 "Still in subscription — last live session kept. "

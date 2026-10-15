@@ -2404,7 +2404,29 @@
           else if (pppoeState === "checking") pppoeLabel = "Checking";
           else pppoeLabel = "Disconnected";
         }
-        if (pppoeState === "checking") {
+        var packageStaysUp = data.internet_allowed !== false && (
+          pppoeState === "checking" ||
+          data.cpe_renew_clear_pending ||
+          (pppoeState === "surfing" && !data.session_active)
+        );
+        if (packageStaysUp && !(pppoeState === "surfing" && data.session_active)) {
+          root.classList.add("is-online");
+          root.classList.remove("is-offline");
+          setText("session", "Surfing");
+          setText(
+            "session-hint",
+            data.hint || "Package active — subscribers stay online."
+          );
+          heroChip(
+            "session",
+            "Surfing",
+            data.hint || "Package active — subscribers stay online.",
+            "is-good"
+          );
+          if (subEl) {
+            subEl.textContent = data.hint || "Package active — subscribers stay online.";
+          }
+        } else if (pppoeState === "checking") {
           root.classList.remove("is-online");
           root.classList.remove("is-offline");
           setText("session", pppoeLabel || "Checking");

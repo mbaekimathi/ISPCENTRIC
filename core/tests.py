@@ -8833,6 +8833,24 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
             )
         )
 
+    def test_unfinished_session_check_does_not_kick(self):
+        from core.mikrotik_connect import _pppoe_customer_needs_session_kick
+
+        customer = self._customer(pk=3)
+        self.assertFalse(
+            _pppoe_customer_needs_session_kick(
+                customer,
+                previous_profile="ispcentric-pppoe",
+                profile="ispcentric-blocked",
+                disabled=False,
+                internet_allowed=False,
+                session_was_blocked=False,
+                session_active_before=True,
+                live={"active_read_ok": False, "secret_read_ok": True},
+                allow_paid_kick=True,
+            )
+        )
+
     def test_renew_pending_does_not_kick_when_session_already_up(self):
         from core.mikrotik_connect import (
             mark_cpe_renew_clear_pending,

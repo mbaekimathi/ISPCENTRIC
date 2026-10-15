@@ -284,6 +284,32 @@ def _print(
     return replies
 
 
+def _print_checked(
+    sock: socket.socket,
+    path: str,
+    *,
+    props: str = "",
+    query: dict[str, str] | None = None,
+) -> tuple[list[dict[str, str]], bool]:
+    """Like _print, but False when RouterOS trapped instead of listing rows.
+
+    A trap used to look like an empty session list. Sweeps then rewrote every
+    secret, and RouterOS dropped the live PPPoE sessions.
+    """
+    words = [f"{path}/print"]
+    if props:
+        words.append(f"=.proplist={props}")
+    if query:
+        for key, value in query.items():
+            if value is None:
+                continue
+            words.append(f"?{key}={value}")
+    replies, terminal = _command(sock, words)
+    if terminal.get("_reply") in {"!trap", "!fatal"} or not terminal.get("_reply"):
+        return [], False
+    return replies, True
+
+
 def _set(sock: socket.socket, path: str, item_id: str, **props: str) -> dict[str, str]:
     words = [f"{path}/set", f"=.id={item_id}"]
     for key, value in props.items():
@@ -14484,39 +14510,49 @@ def _pppoe_live_state_maps(sock: socket.socket) -> dict[str, Any]:
     """
     secret_profiles: dict[str, str] = {}
     secret_rows: dict[str, dict[str, str]] = {}
+    secret_read_ok = True
     try:
-        for row in _print(
+        secret_print, secret_read_ok = _print_checked(
             sock,
             "/ppp/secret",
             props=".id,name,profile,disabled,comment,password",
-        ):
-            name = (row.get("name") or "").strip().lower()
-            if name:
-                secret_profiles[name] = (row.get("profile") or "").strip()
-                secret_rows[name] = row
+        )
+        if secret_read_ok:
+            for row in secret_print:
+                name = (row.get("name") or "").strip().lower()
+                if name:
+                    secret_profiles[name] = (row.get("profile") or "").strip()
+                    secret_rows[name] = row
     except Exception:
         secret_profiles = {}
         secret_rows = {}
+        secret_read_ok = False
 
     active_names: set[str] = set()
     active_addresses: dict[str, set[str]] = {}
     active_profiles: dict[str, str] = {}
+    active_read_ok = True
     try:
-        for row in _print(sock, "/ppp/active", props="name,address,profile"):
-            name = (row.get("name") or "").strip().lower()
-            if not name:
-                continue
-            active_names.add(name)
-            addr = (row.get("address") or "").strip()
-            if addr:
-                active_addresses.setdefault(name, set()).add(addr)
-            profile = (row.get("profile") or "").strip()
-            if profile:
-                active_profiles[name] = profile
+        active_print, active_read_ok = _print_checked(
+            sock, "/ppp/active", props="name,address,profile"
+        )
+        if active_read_ok:
+            for row in active_print:
+                name = (row.get("name") or "").strip().lower()
+                if not name:
+                    continue
+                active_names.add(name)
+                addr = (row.get("address") or "").strip()
+                if addr:
+                    active_addresses.setdefault(name, set()).add(addr)
+                profile = (row.get("profile") or "").strip()
+                if profile:
+                    active_profiles[name] = profile
     except Exception:
         active_names = set()
         active_addresses = {}
         active_profiles = {}
+        active_read_ok = False
 
     blocked_list_addresses: set[str] = set()
     try:
@@ -14539,6 +14575,8 @@ def _pppoe_live_state_maps(sock: socket.socket) -> dict[str, Any]:
         "active_profiles": active_profiles,
         "blocked_list_addresses": blocked_list_addresses,
         "arp_complete": _pppoe_arp_complete_map(sock),
+        "secret_read_ok": secret_read_ok,
+        "active_read_ok": active_read_ok,
     }
 
 
@@ -15610,6 +15648,11 @@ def _pppoe_customer_needs_session_kick(
     """
     previous = (previous_profile or "").strip()
     target = (profile or "").strip()
+    # An unfinished session check is not "offline". Do not drop the CPE.
+    if live is not None and (
+        live.get("active_read_ok") is False or live.get("secret_read_ok") is False
+    ):
+        return False
     restoring_surf = bool(
         internet_allowed
         and not disabled
@@ -15645,18 +15688,12 @@ def _pppoe_customer_needs_session_kick(
             or target == PPPOE_BLOCKED_PROFILE_NAME
         )
     )
-    needs_redial_nudge = bool(
-        restoring_surf
-        and cpe_renew_clear_is_pending(customer)
-        and not session_active_before
-    )
+    needs_redial_nudge = False
     _ = (sock, live)
     if allow_paid_kick and restoring_surf:
-        return bool(
-            hard_profile_change
-            or session_was_blocked
-            or needs_redial_nudge
-        )
+        # A pending CPE renew must not bounce the secret. Disabling it to
+        # force a redial drops whoever is still surfing.
+        return bool(hard_profile_change or session_was_blocked)
     if allow_paid_kick and session_active_before:
         return bool(disabled or _subscription_expired_for_drop(customer))
     return False
@@ -15707,6 +15744,19 @@ def _pppoe_batch_write_on_socket(
     notes.extend(_disable_fasttrack_connection_rules(sock))
 
     live = _pppoe_live_state_maps(sock)
+    if live.get("active_read_ok") is False or live.get("secret_read_ok") is False:
+        notes.append(
+            "Session check did not finish — subscribers stay online "
+            "(no secret rewrite, no kick)."
+        )
+        return {
+            "notes": notes,
+            "errors": 0,
+            "kick_usernames": [],
+            "block_kick_usernames": [],
+            "renew_portal_customers": [],
+            "blocked_identity_customers": [],
+        }
     for customer in customers:
         username = (customer.pppoe_username or "").strip()
         password = customer.pppoe_password or ""
@@ -17907,9 +17957,7 @@ def provision_customer_pppoe(
                     and not session_was_blocked
                     and _pppoe_has_active_session(sock, username)
                 )
-                needs_redial_nudge = bool(
-                    restoring_surf and cpe_renew_clear_is_pending(customer)
-                )
+                needs_redial_nudge = False
                 if restoring_surf and session_was_blocked:
                     cleared = _clear_pppoe_blocked_address_list(sock, username)
                     if cleared:
