@@ -92,7 +92,7 @@ class Command(BaseCommand):
                 ok = status in {200, 302}
                 if label == "captive-login":
                     ok = ok and body_len >= _MIN_HOTSPOT_LOGIN_BYTES
-                    ok = ok and b"mac=$(mac)" in response.content
+                    ok = ok and b"$(mac)" in response.content
                 if label == "reconnect":
                     ok = status == 302 and "pay" in (response.get("Location") or "")
                 if label == "pay":
@@ -123,7 +123,11 @@ class Command(BaseCommand):
                     self.stdout.write(self.style.ERROR(f"fetch-src unreachable: {exc}"))
 
             sample_html = _captive_pay_redirect_html(pay_url)
-            ok = len(sample_html) >= _MIN_HOTSPOT_LOGIN_BYTES and "mac=$(mac)" in sample_html
+            ok = (
+                len(sample_html) >= _MIN_HOTSPOT_LOGIN_BYTES
+                and "$(mac)" in sample_html
+                and "/pay/mac/" in sample_html
+            )
             self.stdout.write(
                 (self.style.SUCCESS if ok else self.style.ERROR)(
                     f"login.html template len={len(sample_html)} {'OK' if ok else 'FAIL'}"

@@ -434,7 +434,7 @@ class ApiSessionReuseTests(SimpleTestCase):
                 "secret",
                 customer=customer,
                 auto_enable_www=True,
-                timeout=4.0,
+                timeout=0.3,
             )
         self.assertTrue(probe.get("session_active"))
         self.assertEqual(probe.get("cpe_host"), "10.20.0.235")

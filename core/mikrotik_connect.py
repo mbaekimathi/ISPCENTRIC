@@ -3662,6 +3662,49 @@ _CPE_WEB_LOGIN_BLOCK_LOCK = threading.Lock()
 _CPE_WEB_LOGIN_BLOCK_SECONDS = 900.0
 
 
+def _cpe_web_login_session_key(nas_host: str, scope: str, cpe_port: int):
+    return (dial_host(nas_host), (scope or "").strip(), int(cpe_port))
+
+
+def _cpe_web_login_blocked_message(
+    nas_host: str, scope: str, cpe_port: int, password: str
+) -> str:
+    """Rejection text when this exact password must not be sent again."""
+    if not (password or ""):
+        return ""
+    key = _cpe_web_login_session_key(nas_host, scope, cpe_port)
+    now = time.monotonic()
+    with _CPE_WEB_LOGIN_BLOCK_LOCK:
+        block = dict(_CPE_WEB_LOGIN_BLOCKS.get(key) or {})
+        if block.get("expires_at", 0) <= now:
+            if block:
+                _CPE_WEB_LOGIN_BLOCKS.pop(key, None)
+            return ""
+    if block.get("password") != password:
+        return ""
+    return str(block.get("message") or "")
+
+
+def _remember_cpe_web_login_failure(
+    nas_host: str, scope: str, cpe_port: int, password: str, message: str
+) -> None:
+    if not (password or "").strip():
+        return
+    key = _cpe_web_login_session_key(nas_host, scope, cpe_port)
+    with _CPE_WEB_LOGIN_BLOCK_LOCK:
+        _CPE_WEB_LOGIN_BLOCKS[key] = {
+            "password": password,
+            "message": message,
+            "expires_at": time.monotonic() + _CPE_WEB_LOGIN_BLOCK_SECONDS,
+        }
+
+
+def _clear_cpe_web_login_block(nas_host: str, scope: str, cpe_port: int) -> None:
+    key = _cpe_web_login_session_key(nas_host, scope, cpe_port)
+    with _CPE_WEB_LOGIN_BLOCK_LOCK:
+        _CPE_WEB_LOGIN_BLOCKS.pop(key, None)
+
+
 def _cpe_login_failure_message(location: str) -> str:
     """Translate a CPE login redirect into the router's own error meaning."""
     code = ""
@@ -4248,6 +4291,18 @@ def login_customer_cpe_web_session(
         return result
 
     steps: list[str] = result["steps"]
+    saved_password = (cpe_password or "").strip()
+    # A rejected admin password must not be posted again. A different password
+    # (what the operator just typed and saved) is allowed through.
+    if saved_password:
+        blocked_message = _cpe_web_login_blocked_message(
+            nas_host, scope, cpe_port, saved_password
+        )
+        if blocked_message:
+            result["error"] = blocked_message
+            result["login_blocked"] = True
+            steps.append("skipped login until the saved password changes")
+            return result
     try:
         with customer_cpe_web_proxy(
             nas_host,
@@ -4299,7 +4354,6 @@ def login_customer_cpe_web_session(
                     )
                     return result
 
-            saved_password = (cpe_password or "").strip()
             default_user = (default_cpe_username or "").strip() or "admin"
             default_pass = (default_cpe_password or "").strip()
             user = (cpe_username or "").strip() or "admin"
@@ -4388,6 +4442,7 @@ def login_customer_cpe_web_session(
                         )
                         if ok:
                             steps.append(f"signed in to Tenda web UI as {cand_user}")
+                            _clear_cpe_web_login_block(nas_host, scope, cpe_port)
                             result.update(
                                 {
                                     "ok": True,
@@ -4400,12 +4455,17 @@ def login_customer_cpe_web_session(
                             )
                             _remember_last_cpe_web_vendor(nas_host, scope, "tenda")
                             return result
-                        if err and "locked out" in err.lower():
+                        if err and (
+                            "locked out" in err.lower() or "rejected" in err.lower()
+                        ):
+                            _remember_cpe_web_login_failure(
+                                nas_host, scope, cpe_port, password, err
+                            )
                             result["error"] = err
-                            break
-                        if err and "rejected" in err.lower() and saved_password:
-                            result["error"] = err
-                            if vendor == "tenda":
+                            result["login_blocked"] = True
+                            if "locked out" in err.lower() or (
+                                saved_password and vendor == "tenda"
+                            ):
                                 break
                     continue
 
@@ -4419,6 +4479,7 @@ def login_customer_cpe_web_session(
                     )
                     if ok:
                         steps.append(f"signed in to MikroTik WebFig as {cand_user}")
+                        _clear_cpe_web_login_block(nas_host, scope, cpe_port)
                         result.update(
                             {
                                 "ok": True,
@@ -4583,13 +4644,11 @@ def fetch_customer_cpe_web_data(
             resolved_address = str(target["address"]).strip()
             resolved_gateway = (target.get("gateway") or resolved_gateway).strip()
 
-    session_key = (dial_host(nas_host), scope, int(cpe_port))
-    with _CPE_WEB_LOGIN_BLOCK_LOCK:
-        block = dict(_CPE_WEB_LOGIN_BLOCKS.get(session_key) or {})
-    blocked = (
-        block.get("expires_at", 0) > time.monotonic()
-        and block.get("password") == cpe_password
+    session_key = _cpe_web_login_session_key(nas_host, scope, cpe_port)
+    blocked_message = _cpe_web_login_blocked_message(
+        nas_host, scope, cpe_port, cpe_password
     )
+    blocked = bool(blocked_message)
 
     try:
         with customer_cpe_web_proxy(
@@ -4626,7 +4685,7 @@ def fetch_customer_cpe_web_data(
                     result["error"] = "Open and sign in to the client router, then refresh this data."
                     return result
                 if blocked:
-                    result["error"] = block.get("message") or (
+                    result["error"] = blocked_message or (
                         "The saved client router admin password was rejected."
                     )
                     return result
@@ -4664,12 +4723,9 @@ def fetch_customer_cpe_web_data(
                 )
                 if rejected:
                     message = _cpe_login_failure_message(login_location)
-                    with _CPE_WEB_LOGIN_BLOCK_LOCK:
-                        _CPE_WEB_LOGIN_BLOCKS[session_key] = {
-                            "password": cpe_password,
-                            "message": message,
-                            "expires_at": time.monotonic() + _CPE_WEB_LOGIN_BLOCK_SECONDS,
-                        }
+                    _remember_cpe_web_login_failure(
+                        nas_host, scope, cpe_port, cpe_password, message
+                    )
                     result["error"] = message
                     return result
                 status_code, status_payload, new_cookies, _ = _cpe_web_json_request(
@@ -5161,14 +5217,24 @@ def probe_customer_cpe_web(
     steps: list[str] = result["steps"]
 
     if customer is not None:
-        target = resolve_customer_cpe_target(
-            nas_host,
-            nas_username,
-            nas_password,
-            customer,
-            port=nas_port,
-            timeout=min(timeout, 5.0),
-        )
+        resolve_deadline = time.monotonic() + (0.0 if light else float(timeout))
+        while True:
+            target = resolve_customer_cpe_target(
+                nas_host,
+                nas_username,
+                nas_password,
+                customer,
+                port=nas_port,
+                timeout=min(timeout, 5.0),
+            )
+            if (
+                light
+                or target.get("ok")
+                or not target.get("api_busy")
+                or time.monotonic() >= resolve_deadline
+            ):
+                break
+            time.sleep(0.2)
         if not target.get("ok"):
             result["error"] = target.get("error") or "Could not resolve the client router."
             if target.get("api_busy"):
@@ -5317,12 +5383,22 @@ def probe_customer_cpe_web(
                 "checked. Retry in a moment."
             )
 
-    try:
+    def _scan_until_login_free(port_list: tuple[int, ...]) -> int | None:
+        """Open-router scans wait out a busy NAS login. List polls do not."""
         if light:
             with _nas_list_probe_lock(nas_host):
-                found_port = _scan_ports(candidate_ports)
-        else:
-            found_port = _scan_ports(candidate_ports)
+                return _scan_ports(port_list)
+        deadline = time.monotonic() + float(timeout)
+        while True:
+            try:
+                return _scan_ports(port_list)
+            except TimeoutError as exc:
+                if not api_timeout_is_busy(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.2)
+
+    try:
+        found_port = _scan_until_login_free(candidate_ports)
     except ConnectionError as exc:
         result["error"] = str(exc) or "Could not sign in to the ISP MikroTik."
         return result
@@ -5390,7 +5466,7 @@ def probe_customer_cpe_web(
                 dict.fromkeys([*(discovered or []), *candidate_ports])
             )
             try:
-                found_port = _scan_ports(retry_ports)
+                found_port = _scan_until_login_free(retry_ports)
             except (ConnectionError, TimeoutError, OSError) as exc:
                 _note_probe_api_failure(exc)
                 if result.get("api_busy"):
@@ -12177,18 +12253,21 @@ def _ensure_pppoe_stack(
     notes.append("PPP AAA set to local secrets (one session per account)")
 
     server_id = ""
+    server_row: dict[str, str] | None = None
     for row in _print(
         sock,
         "/interface/pppoe-server/server",
-        props=".id,service-name,interface,disabled,default-profile,comment",
+        props=".id,service-name,interface,disabled,default-profile,authentication,comment",
     ):
         iface = (row.get("interface") or "").strip()
         comment = row.get("comment") or ""
         if iface == lan_interface or PPP_SECRET_TAG in comment:
             server_id = (row.get(".id") or "").strip()
+            server_row = row
             break
         if not server_id and not _is_disabled(row):
             server_id = (row.get(".id") or "").strip()
+            server_row = row
 
     server_props = {
         "service-name": "",
@@ -12198,7 +12277,21 @@ def _ensure_pppoe_stack(
         "disabled": "no",
         "comment": PPP_SECRET_TAG,
     }
-    if server_id:
+    server_already = False
+    if server_row and server_id:
+        auth = (server_row.get("authentication") or "").replace(" ", "").lower()
+        server_already = (
+            (server_row.get("interface") or "").strip() == lan_interface
+            and (server_row.get("default-profile") or "").strip() == PPPOE_PROFILE_NAME
+            and (server_row.get("service-name") or "").strip() == ""
+            and not _is_disabled(server_row)
+            and PPP_SECRET_TAG in (server_row.get("comment") or "")
+            and (not auth or "pap" in auth)
+        )
+    if server_already:
+        # Rewriting the PPPoE server drops every dialed CPE on this LAN.
+        notes.append(f"PPPoE server already listening on {lan_interface}")
+    elif server_id:
         terminal = _set(sock, "/interface/pppoe-server/server", server_id, **server_props)
         if terminal.get("_reply") == "!trap":
             core = {
@@ -14220,6 +14313,27 @@ def _current_ppp_secret_profile(
     return ""
 
 
+def _subscription_expired_for_drop(customer) -> bool:
+    """True only when the package deadline has passed.
+
+    Sweeps and other background jobs may disconnect a session only in this
+    case. A policy error, a paused clock, or a missing read must not drop a
+    client who is still inside the subscription.
+    """
+    if customer is None:
+        return False
+    try:
+        from billing.services import customer_subscription_expired
+
+        return bool(customer_subscription_expired(customer))
+    except Exception:
+        logger.exception(
+            "subscription expiry check failed customer=%s — not dropping",
+            getattr(customer, "pk", None),
+        )
+        return False
+
+
 def _customer_internet_allowed(customer) -> bool:
     """Whether this customer should have unrestricted internet (surfing)."""
     try:
@@ -14958,6 +15072,14 @@ def _ensure_ppp_secret(
 
     action = "updated"
     created = False
+    # Computed before any password write. RouterOS drops the live PPPoE
+    # session when /ppp/secret password is set, even to the same value.
+    password_changed = bool(
+        (
+            _pppoe_password_is_readable(previous_password)
+            and previous_password != password
+        )
+    )
     if secret_id:
         terminal = _set(sock, "/ppp/secret", secret_id, **base_props)
         if terminal.get("_reply") == "!trap":
@@ -14995,14 +15117,17 @@ def _ensure_ppp_secret(
         )
 
     # Password MUST be set on its own — never rely on multi-property add/set alone.
-    pwd_terminal = _set(sock, "/ppp/secret", secret_id, password=password)
-    if pwd_terminal.get("_reply") == "!trap":
-        raise ConnectionError(
-            _trap_message(
-                pwd_terminal,
-                f"Could not set PPPoE password for “{username}” on the MikroTik.",
+    # Skip the write when the stored password already matches, or when RouterOS
+    # hid it. Rewriting it on every sweep was disconnecting in-package clients.
+    if created or password_changed:
+        pwd_terminal = _set(sock, "/ppp/secret", secret_id, password=password)
+        if pwd_terminal.get("_reply") == "!trap":
+            raise ConnectionError(
+                _trap_message(
+                    pwd_terminal,
+                    f"Could not set PPPoE password for “{username}” on the MikroTik.",
+                )
             )
-        )
 
     # Soft-apply rate-limit on the secret when RouterOS accepts it. The
     # per-package PPP profile rate-limit is the primary enforcement path.
@@ -15029,13 +15154,14 @@ def _ensure_ppp_secret(
         raise ConnectionError(
             f"PPPoE secret “{username}” missing after install — dial-in would fail."
         )
-    stored_password = verified.get("password")
-    if (
-        _pppoe_password_is_readable(stored_password)
-        and stored_password != password
-    ):
-        # Rare: write did not stick. Retry once, then fail hard.
-        _set(sock, "/ppp/secret", secret_id, password=password)
+    if created or password_changed:
+        stored_password = verified.get("password")
+        if (
+            _pppoe_password_is_readable(stored_password)
+            and stored_password != password
+        ):
+            # Rare: write did not stick. Retry once, then fail hard.
+            _set(sock, "/ppp/secret", secret_id, password=password)
         again = None
         for row in _print(sock, "/ppp/secret"):
             if (row.get("name") or "").strip().lower() == username.lower():
@@ -15223,7 +15349,12 @@ def _block_orphan_pppoe_secrets_on_socket(sock: socket.socket, router) -> list[s
         bound_elsewhere = (
             customer is not None and assigned_id not in (None, "", router_pk)
         )
+        expired = customer is not None and _subscription_expired_for_drop(customer)
         if bound_elsewhere:
+            # Same username on the wrong NAS. Removing the secret drops whoever
+            # is dialed here. Do that only after the package has expired.
+            if not expired:
+                continue
             item_id = (row.get(".id") or "").strip()
             if not item_id:
                 continue
@@ -15264,7 +15395,12 @@ def _block_orphan_pppoe_secrets_on_socket(sock: socket.socket, router) -> list[s
         )
         if terminal.get("_reply") != "!trap":
             notes.append(f"blocked {reason} PPPoE {name}")
-            kick_names.add(name)
+            if customer is None or expired:
+                kick_names.add(name)
+            else:
+                notes.append(
+                    f"left PPPoE session up for {name} — package is not expired"
+                )
 
     if not kick_names:
         return notes
@@ -15393,8 +15529,7 @@ def _pppoe_customer_needs_session_kick(
     Whether this secret rewrite requires dropping /ppp/active for the CPE.
 
     Sweep / fleet-repair policy (``allow_paid_kick=False``, the default):
-    **never** disconnect a paid in-package client. Only kick when access must
-    stop (expired / unpaid / blocked profile). Payment and explicit restore
+    disconnect only after the package deadline. Payment and explicit restore
     paths pass ``allow_paid_kick=True`` so a just-paid CPE can redial.
     """
     previous = (previous_profile or "").strip()
@@ -15415,19 +15550,16 @@ def _pppoe_customer_needs_session_kick(
     ):
         clear_cpe_renew_clear_pending(customer)
 
-    stuck_unblocked_session = bool(
-        target == PPPOE_BLOCKED_PROFILE_NAME
-        and not session_was_blocked
-        and session_active_before
-    )
-    unpaid_must_stop = bool(
-        (not internet_allowed or disabled or target == PPPOE_BLOCKED_PROFILE_NAME)
-        and session_active_before
-    )
-
     if restoring_surf and not allow_paid_kick:
         _ = (sock, live, session_was_blocked)
         return False
+
+    # Background sweeps and fleet repair: leave the session up unless the
+    # package deadline has passed. Unpaid-but-still-in-package, paused, and
+    # a failed policy read must not disconnect the CPE.
+    if not allow_paid_kick:
+        _ = (sock, live, session_was_blocked, disabled, target, internet_allowed)
+        return bool(session_active_before and _subscription_expired_for_drop(customer))
 
     hard_profile_change = bool(
         previous
@@ -15449,7 +15581,9 @@ def _pppoe_customer_needs_session_kick(
             or session_was_blocked
             or needs_redial_nudge
         )
-    return bool(stuck_unblocked_session or unpaid_must_stop)
+    if allow_paid_kick and session_active_before:
+        return bool(disabled or _subscription_expired_for_drop(customer))
+    return False
 
 
 def _pppoe_batch_classify_customers(customers: list) -> tuple[int, int, bool]:
@@ -16262,7 +16396,13 @@ def _repair_unpaid_hotspot_leak_on_socket(
         if login_broken:
             # Only bounce when portal was broken — avoids mid-pay disconnects
             # during routine orphan sweeps.
-            notes.extend(_bounce_isp_hotspot_clients(sock, drop_wifi=True))
+            notes.extend(
+                _bounce_isp_hotspot_clients(
+                    sock,
+                    drop_wifi=True,
+                    preserve_macs=_in_subscription_hotspot_mac_set(org),
+                )
+            )
             notes.append("bounced unpaid Wi‑Fi after captive repair")
     except Exception as exc:  # noqa: BLE001
         notes.append(
@@ -19469,7 +19609,10 @@ def _bounce_cpe_wifi_clients(sock: socket.socket) -> list[str]:
 
 
 def _bounce_isp_hotspot_clients(
-    sock: socket.socket, *, drop_wifi: bool = True
+    sock: socket.socket,
+    *,
+    drop_wifi: bool = True,
+    preserve_macs: set[str] | None = None,
 ) -> list[str]:
     """
     Force unpaid Hotspot clients back onto login.html / the pay page.
@@ -19494,6 +19637,11 @@ def _bounce_isp_hotspot_clients(
     if cookies:
         notes.append(f"cleared {cookies} Hotspot cookie(s)")
 
+    keep_macs = {
+        _normalize_hotspot_mac(mac)
+        for mac in (preserve_macs or set())
+        if _normalize_hotspot_mac(mac)
+    }
     unauthorized_macs: set[str] = set()
     cleared = 0
     for path in ("/ip/hotspot/active", "/ip/hotspot/host"):
@@ -19505,6 +19653,8 @@ def _bounce_isp_hotspot_clients(
             if (row.get("authorized") or "").strip().lower() in {"true", "yes"}:
                 continue
             mac = _normalize_hotspot_mac(row.get("mac-address") or "")
+            if mac and mac in keep_macs:
+                continue
             if mac:
                 unauthorized_macs.add(mac)
             terminal = _remove(sock, path, item_id)
@@ -23625,6 +23775,36 @@ def _allowed_hotspot_macs_for_customer(customer) -> list[str]:
     return allowed
 
 
+def _in_subscription_hotspot_mac_set(organization) -> set[str]:
+    """MACs whose package has not expired. Background jobs must not drop these."""
+    from billing.devices import hotspot_macs_for_customer
+    from billing.models import Customer
+
+    macs: set[str] = set()
+    if organization is None:
+        return macs
+    qs = Customer.objects.filter(
+        organization_id=organization.pk,
+        service_type=Customer.ServiceType.HOTSPOT,
+    ).prefetch_related("devices")
+    for customer in qs:
+        if getattr(customer, "package_end", None) is None:
+            continue
+        if _subscription_expired_for_drop(customer):
+            continue
+        primary = _normalize_hotspot_mac(getattr(customer, "hotspot_mac", "") or "")
+        if primary:
+            macs.add(primary)
+        try:
+            for mac in hotspot_macs_for_customer(customer):
+                normalized = _normalize_hotspot_mac(mac)
+                if normalized:
+                    macs.add(normalized)
+        except Exception:
+            continue
+    return macs
+
+
 def _paid_hotspot_mac_set(organization) -> set[str]:
     """MACs that may surf Hotspot right now according to billing."""
     from billing.models import Customer
@@ -23655,6 +23835,7 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
         return []
 
     paid_macs = _paid_hotspot_mac_set(org)
+    protected_macs = _in_subscription_hotspot_mac_set(org)
     billing_preserve = _portal_billing_ipv4s(organization=org)
     notes: list[str] = []
     active_rows = _print(
@@ -23672,7 +23853,7 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
         name = _normalize_hotspot_mac(row.get("name") or "")
         if not _is_hotspot_mac_name(name):
             continue
-        if name in paid_macs:
+        if name in paid_macs or name in protected_macs:
             continue
         comment = row.get("comment") or ""
         tagged = ISP_HOTSPOT_TAG in comment
@@ -23717,7 +23898,7 @@ def _block_orphan_hotspot_users_on_socket(sock: socket.socket, router) -> list[s
         address = (row.get("address") or "").strip()
         if not address:
             continue
-        if mac in paid_macs:
+        if mac in paid_macs or mac in protected_macs:
             paid_ips.add(address)
         else:
             leak_ips.add(address)

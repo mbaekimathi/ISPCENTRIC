@@ -73,9 +73,9 @@
           <p class="client-router-creds-kicker">Router login</p>
           <h2 class="client-router-creds-title">Credentials</h2>
           <p class="client-router-creds-hint">
-            Client router admin login
+            Edit the password, then Save &amp; connect. The updated password is stored on this client and used to sign in.
             {% if uses_nas_default_credentials or uses_nas_default_password %}
-              · <strong>From NAS default</strong>
+              <strong>From NAS default</strong>
             {% endif %}
           </p>
         </div>
@@ -251,10 +251,12 @@
   var newTab = root.querySelector("[data-router-newtab]");
   var csrfInput = root.querySelector("[data-router-password-form] input[name=csrfmiddlewaretoken]");
   var inFlight = false;
+  var connectGen = 0;
+  var connectAbort = null;
   var routerStarted = false;
   var pendingTab = null;
   var busyRetries = 0;
-  var BUSY_RETRY_LIMIT = 3;
+  var BUSY_RETRY_LIMIT = 1;
   var connectingTitle = root.querySelector(".client-router-connecting-title");
   var connectingHostLine = root.querySelector("[data-router-host-line]");
   var DEFAULT_CONNECTING_TITLE = connectingTitle
@@ -354,8 +356,10 @@
       frame.hidden = true;
       frame.removeAttribute("src");
     }
-    var needPass = !data.authenticated && !!data.needs_password;
-    var opened = openRouterTab(url);
+    var passwordBlocked = !!data.login_blocked;
+    var needPass = (!data.authenticated && !!data.needs_password) || passwordBlocked;
+    if (passwordBlocked) closePendingTab();
+    var opened = passwordBlocked ? false : openRouterTab(url);
     // Initial page-load connect has no user gesture, so popups are often
     // blocked — fall through to the current tab instead of leaving a dead iframe.
     if (!opened && !needPass) {

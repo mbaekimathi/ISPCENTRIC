@@ -2226,6 +2226,27 @@ class PayPagePoolMismatchGuardTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["hotspot_mac"], "AA:BB:CC:DD:EE:FF")
+        # RouterOS appends ?dst= / link-login-only= onto the 302. The MAC is
+        # already in the path, so that junk must not hide the pay page.
+        spliced = self.client.get(
+            f"/hotspot/{self.org.join_code}/pay/mac/AA:BB:CC:DD:EE:FF/"
+            "?dst=&link-login-only=http://10.50.50.1/login",
+            REMOTE_ADDR="203.0.113.10",
+        )
+        self.assertEqual(spliced.status_code, 200)
+        self.assertEqual(spliced.context["hotspot_mac"], "AA:BB:CC:DD:EE:FF")
+        captive = self.client.get(
+            f"/hotspot/{self.org.join_code}/captive-login/",
+            REMOTE_ADDR="203.0.113.10",
+        )
+        self.assertEqual(captive.status_code, 200)
+        body = captive.content.decode()
+        self.assertIn("/pay/mac/$(mac)/", body)
+        self.assertIn('http-status == 302', body)
+        location = next(
+            line for line in body.splitlines() if 'http-header == "Location"' in line
+        )
+        self.assertNotIn("?", location)
 
     def test_hotspot_pay_redirects_cpe_renew_pool_client(self):
         response = self.client.get(
@@ -8867,7 +8888,11 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
         )
         self.assertFalse(cpe_renew_clear_is_pending(customer))
 
-    def test_unknown_previous_still_kicks_leaking_blocked_secret(self):
+    def test_unknown_previous_does_not_kick_until_package_expires(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
         from core.mikrotik_connect import (
             PPPOE_BLOCKED_PROFILE_NAME,
             clear_cpe_renew_clear_pending,
@@ -8876,9 +8901,31 @@ class PppoeSessionKickDecisionTests(SimpleTestCase):
 
         customer = self._customer()
         clear_cpe_renew_clear_pending(customer)
-        self.assertTrue(
+        self.assertFalse(
             _pppoe_customer_needs_session_kick(
                 customer,
+                previous_profile="",
+                profile=PPPOE_BLOCKED_PROFILE_NAME,
+                disabled=False,
+                internet_allowed=False,
+                session_was_blocked=False,
+                session_active_before=True,
+            )
+        )
+        expired = type(
+            "Customer",
+            (),
+            {
+                "pk": 43,
+                "package_start": timezone.now() - timedelta(days=3),
+                "package_end": timezone.now() - timedelta(days=2),
+                "plan": None,
+            },
+        )()
+        clear_cpe_renew_clear_pending(expired)
+        self.assertTrue(
+            _pppoe_customer_needs_session_kick(
+                expired,
                 previous_profile="",
                 profile=PPPOE_BLOCKED_PROFILE_NAME,
                 disabled=False,
@@ -11352,7 +11399,7 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         )
         self.assertNotIn("?", location)
         self.assertNotIn("&", location)
-        self.assertIn("mac=$(mac)", login)
+        self.assertIn("/mac/$(mac)/", login)
         self.assertIn("$(if http-status == 302)", login)
         self.assertEqual(written["hotspot/error.html"], login)
         self.assertIn("$(link-redirect)", written["hotspot/redirect.html"])
@@ -12770,7 +12817,7 @@ class AccessFlowCorrectionLoopTests(TestCase):
         ):
             html = _captive_pay_redirect_html(url)
             self.assertIn("$(if http-status == 302)", html)
-            self.assertIn("mac=$(mac)", html)
+            self.assertIn("$(mac)", html)
             self.assertIn("window.location.replace", html)
             # Absolute pay target present (trailing slash may be stripped before ?mac=).
             self.assertIn(url.rstrip("/").split("?")[0], html)
