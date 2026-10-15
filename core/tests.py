@@ -7177,6 +7177,37 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertEqual(second["session_label"], "Surfing")
         self.assertTrue(second.get("usage_held"))
 
+    @patch("core.views.fetch_customer_pppoe_usage")
+    def test_client_usage_busy_read_is_checking_not_offline(self, fetch_usage):
+        """A busy management login must not paint an in-package client offline."""
+        from django.core.cache import cache
+
+        self.customer.router = self.router
+        self.customer.save(update_fields=["router"])
+        cache.delete(f"client_usage_last_good:v1:{self.customer.pk}")
+        cache.delete(f"client_usage:v3:{self.org.pk}:{self.customer.pk}")
+        fetch_usage.return_value = {
+            "ok": False,
+            "online": False,
+            "session_active": False,
+            "error": "Management API is busy — retrying shortly.",
+            "api_busy": True,
+            "timeout": True,
+            "soft_outage": True,
+        }
+
+        data = self.client.get(
+            f"/app/clients/{self.customer.pk}/usage/",
+            {"refresh": "1"},
+        ).json()
+
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["session_active"])
+        self.assertEqual(data["session_state"], "checking")
+        self.assertEqual(data["session_label"], "Checking")
+        self.assertIn("busy", (data.get("hint") or "").lower())
+        self.assertNotIn("error", data)
+
     def test_pppoe_portal_is_pppoe_only(self):
         from django.test import RequestFactory
 

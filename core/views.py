@@ -18041,6 +18041,24 @@ def client_usage(request, customer_id: int):
             pppoe_username=customer.pppoe_username,
         )
         payload = _hold_in_package_pppoe_usage(customer, payload)
+        if _pppoe_usage_read_failed(payload):
+            # In-package, but this read never saw the session list and there
+            # is no last live session to keep. That is not an offline client.
+            note = (
+                payload.get("error") or "Management API is busy — retrying shortly."
+            ).strip()
+            payload = {
+                "ok": True,
+                "online": False,
+                "session_active": False,
+                "session_checked": False,
+                "api_busy": True,
+                "soft_outage": True,
+                "pppoe_username": (customer.pppoe_username or "").strip(),
+                "service": "pppoe",
+                "on_blocked_profile": False,
+                "hint": note,
+            }
         payload["speed_source"] = "nas"
         payload["cpe_host"] = (payload.get("address") or "").strip()
         payload["cpe_auth_ok"] = False
@@ -18123,7 +18141,15 @@ def client_usage(request, customer_id: int):
 
         # Match /app/clients/surfing/: Surfing = dialed + paid + not blocked.
         surfing = bool(session_online and internet_allowed and not on_blocked_profile)
-        if surfing:
+        if payload.get("session_checked") is False:
+            surfing = False
+            session_state = "checking"
+            session_label = "Checking"
+            session_hint = (
+                payload.get("hint")
+                or "Management API is busy — retrying shortly."
+            )
+        elif surfing:
             session_state = "surfing"
             session_label = "Surfing"
             session_hint = "Online — internet OK"
@@ -18184,7 +18210,11 @@ def client_usage(request, customer_id: int):
 
         # Only persist successful router reads — timeouts/errors must not look
         # like the client went offline.
-        if payload.get("ok") and not payload.get("usage_held"):
+        if (
+            payload.get("ok")
+            and not payload.get("usage_held")
+            and payload.get("session_checked") is not False
+        ):
             sample_payload = dict(payload)
             if is_hotspot:
                 sample_payload["session_active"] = nas_authenticated
@@ -21003,6 +21033,8 @@ def clients_surfing_status(request):
                             if is_fleet_write_active()
                             else "Session list was not read on this MikroTik"
                         )
+                        state = "checking"
+                        label = "Checking"
                         router_unreachable = True
         else:
             # Dialed on the NAS but not getting internet (blocked, outside period, …).

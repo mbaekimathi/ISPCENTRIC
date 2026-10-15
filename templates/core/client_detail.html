@@ -1407,6 +1407,25 @@
           data.clients.forEach(function (row) {
             if (Number(row.id) === customerId) item = row;
           });
+          var reasonText = ((item && (item.reason || item.connection_label)) || "").toLowerCase();
+          var sessionUnread = !!(
+            item && (
+              item.state === "checking" ||
+              reasonText.indexOf("busy") >= 0 ||
+              reasonText.indexOf("not read") >= 0 ||
+              reasonText.indexOf("retrying") >= 0
+            )
+          );
+          if (sessionUnread) {
+            heroChip(
+              "session",
+              "Checking",
+              (item && item.reason) || "Management API is busy — retrying shortly.",
+              "is-idle"
+            );
+            heroChip("throughput", "—", "Waiting for the router", "is-idle");
+            return;
+          }
           applySurfingHero(item);
           if (item && (item.surfing || item.state === "surfing")) {
             refreshThroughput(force);
@@ -2301,8 +2320,17 @@
         if (!data) return;
         renderSessionBreakdown(data.session_breakdown);
         if (!data.ok && data.error) {
-          if (root.classList.contains("is-online") && softUsageMiss(data.error)) {
-            if (subEl) subEl.textContent = "Still in subscription — last live session kept.";
+          if (softUsageMiss(data.error)) {
+            if (root.classList.contains("is-online")) {
+              if (subEl) subEl.textContent = "Still in subscription — last live session kept.";
+            } else {
+              root.classList.remove("is-offline");
+              setText("session", "Checking");
+              setText("session-hint", data.error);
+              heroChip("session", "Checking", data.error, "is-idle");
+              heroChip("throughput", "—", "Waiting for the router", "is-idle");
+              if (subEl) subEl.textContent = data.error;
+            }
             stampNow();
             return;
           }
@@ -2373,9 +2401,28 @@
           if (pppoeState === "surfing") pppoeLabel = "Surfing";
           else if (pppoeState === "not_surfing") pppoeLabel = "Not surfing";
           else if (pppoeState === "expired") pppoeLabel = "Expired";
+          else if (pppoeState === "checking") pppoeLabel = "Checking";
           else pppoeLabel = "Disconnected";
         }
-        if (pppoeState === "surfing" && data.session_active) {
+        if (pppoeState === "checking") {
+          root.classList.remove("is-online");
+          root.classList.remove("is-offline");
+          setText("session", pppoeLabel || "Checking");
+          setText(
+            "session-hint",
+            data.hint || "Management API is busy — retrying shortly."
+          );
+          heroChip(
+            "session",
+            pppoeLabel || "Checking",
+            data.hint || "Router login is in use",
+            "is-idle"
+          );
+          heroChip("throughput", "—", "Waiting for the router", "is-idle");
+          if (subEl) {
+            subEl.textContent = data.hint || "Management API is busy — retrying shortly.";
+          }
+        } else if (pppoeState === "surfing" && data.session_active) {
           root.classList.add("is-online");
           root.classList.remove("is-offline");
           setText("session", pppoeLabel);
