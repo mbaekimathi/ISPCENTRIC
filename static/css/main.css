@@ -9564,6 +9564,35 @@ button.clients-list-table-action {
   align-self: center;
 }
 
+.client-usage-fup-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+}
+
+.client-usage-fup-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.client-usage-fup-name {
+  font-weight: 650;
+  opacity: 0.8;
+}
+
+.client-usage-fup-state {
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--muted, #64748b);
+}
+
 .client-fup-toggle.is-on {
   background: rgba(22, 163, 74, 0.14);
   border-color: rgba(22, 163, 74, 0.35);

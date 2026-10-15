@@ -23,6 +23,32 @@
       </div>
     </div>
     <div class="packages-hero-actions">
+      {% if plan_fup_configured %}
+      <form
+        method="post"
+        action="{% url 'core:client_detail' customer.id %}"
+        class="client-usage-fup-form"
+        data-client-fup
+        data-client-fup-form
+        data-no-page-loader="1"
+      >
+        {% csrf_token %}
+        <input type="hidden" name="action" value="set_client_fup">
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <input type="hidden" name="fup_enabled" value="{% if client_fup_enabled %}0{% else %}1{% endif %}" data-client-fup-value>
+        <button
+          type="submit"
+          class="client-cmd-btn client-fup-toggle client-usage-fup-toggle{% if client_fup_enabled %} is-on{% else %} is-off{% endif %}"
+          data-client-fup-btn
+          aria-pressed="{% if client_fup_enabled %}true{% else %}false{% endif %}"
+          aria-label="Fair usage policy for this client"
+        >
+          <span class="client-usage-fup-name">Fair usage</span>
+          <span data-client-fup-label>{% if client_fup_enabled %}On{% else %}Off{% endif %}</span>
+        </button>
+        <span class="client-usage-fup-state" data-client-fup-status>{{ client_fup.status_label|default:"—" }}</span>
+      </form>
+      {% endif %}
       {% if back_url %}
       <a class="btn btn-ghost btn-sm clients-usage-hero-btn" href="{{ back_url }}">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 18l-6-6 6-6"/></svg>
@@ -387,6 +413,75 @@
 {% endblock %}
 
 {% block client_extra_js %}
+<script>
+(function () {
+  function toast(message, kind) {
+    if (typeof window.showToast === "function") {
+      window.showToast(message, kind || "info");
+      return;
+    }
+    if (message) window.alert(message);
+  }
+
+  document.querySelectorAll("[data-client-fup-form]").forEach(function (form) {
+    var btn = form.querySelector("[data-client-fup-btn]");
+    var label = form.querySelector("[data-client-fup-label]");
+    var valueInput = form.querySelector("[data-client-fup-value]");
+    var status = form.querySelector("[data-client-fup-status]");
+    var inFlight = false;
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      if (inFlight || !btn || !valueInput) return;
+      var enabling = valueInput.value === "1";
+      inFlight = true;
+      btn.disabled = true;
+      if (label) label.textContent = enabling ? "…" : "…";
+      fetch(form.getAttribute("action") || window.location.pathname, {
+        method: "POST",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin",
+        body: new FormData(form),
+      })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            return { ok: res.ok, data: data };
+          });
+        })
+        .then(function (result) {
+          if (!result.ok || !result.data || !result.data.ok) {
+            toast(
+              (result.data && (result.data.error || result.data.message)) ||
+                "Could not update fair usage policy.",
+              "error"
+            );
+            if (label) label.textContent = enabling ? "Off" : "On";
+            btn.disabled = false;
+            return;
+          }
+          var enabled = !!result.data.fup_enabled;
+          valueInput.value = enabled ? "0" : "1";
+          btn.classList.toggle("is-on", enabled);
+          btn.classList.toggle("is-off", !enabled);
+          btn.setAttribute("aria-pressed", enabled ? "true" : "false");
+          btn.disabled = false;
+          if (label) label.textContent = enabled ? "On" : "Off";
+          if (status) {
+            status.textContent = result.data.fup_status_label || (enabled ? "OK" : "Exempt");
+          }
+          toast(result.data.message || "Fair usage policy updated.", "info");
+        })
+        .catch(function () {
+          toast("Network error while updating fair usage policy.", "error");
+          if (label) label.textContent = enabling ? "Off" : "On";
+          btn.disabled = false;
+        })
+        .finally(function () {
+          inFlight = false;
+        });
+    });
+  });
+})();
+</script>
 <script src="{% static 'vendor/chart.umd.min.js' %}"></script>
 <script>
 (function () {

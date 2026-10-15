@@ -331,6 +331,32 @@ class CustomerFupEnforcementTests(TestCase):
         self.assertIn("data-client-fup", html)
         self.assertIn("Disabled", html)
 
+        usage = self.client.get(
+            reverse("core:client_usage_analysis", kwargs={"customer_id": self.customer.pk})
+        )
+        self.assertEqual(usage.status_code, 200)
+        usage_html = usage.content.decode()
+        self.assertIn("Fair usage", usage_html)
+        self.assertIn("set_client_fup", usage_html)
+        self.assertIn("data-client-fup-btn", usage_html)
+        self.assertIn(">Off<", usage_html)
+
+        usage_url = reverse(
+            "core:client_usage_analysis", kwargs={"customer_id": self.customer.pk}
+        )
+        with patch("billing.fup._schedule_fup_access_sync"):
+            turned_on = self.client.post(
+                url,
+                {
+                    "action": "set_client_fup",
+                    "fup_enabled": "1",
+                    "next": usage_url,
+                },
+            )
+        self.assertRedirects(turned_on, usage_url)
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.fup_enabled)
+
 
 def _local_at(year, month, day, hour=0, minute=0):
     return timezone.make_aware(
