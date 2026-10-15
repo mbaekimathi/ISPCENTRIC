@@ -253,6 +253,8 @@
   var inFlight = false;
   var routerStarted = false;
   var pendingTab = null;
+  var busyRetries = 0;
+  var BUSY_RETRY_LIMIT = 3;
   var connectingTitle = root.querySelector(".client-router-connecting-title");
   var connectingHostLine = root.querySelector("[data-router-host-line]");
   var DEFAULT_CONNECTING_TITLE = connectingTitle
@@ -439,6 +441,22 @@
 
   function showError(data) {
     data = data || {};
+    var fcEarly = data.failure_class || "";
+    if (fcEarly === "nas_busy" && busyRetries < BUSY_RETRY_LIMIT) {
+      busyRetries += 1;
+      closePendingTab();
+      showConnecting("Management API is busy — retrying shortly.");
+      if (connectingTitle) connectingTitle.textContent = "Router is being worked on";
+      if (connectingHostLine) {
+        connectingHostLine.textContent = "The ISP MikroTik login is in use. Retrying shortly.";
+      }
+      if (stampEl) stampEl.textContent = "Working";
+      window.setTimeout(function () {
+        connect(credentialsBodyFromForm(), false);
+      }, 2000);
+      return;
+    }
+    if (fcEarly !== "nas_busy") busyRetries = 0;
     closePendingTab();
     root.classList.add("is-failed");
     root.classList.remove("is-connected");
@@ -532,6 +550,7 @@
           viaTunnel = data.via_tunnel;
         }
         if (data.ok && data.proxy_url) {
+          busyRetries = 0;
           showProxy(data.proxy_url, data);
           return;
         }
@@ -564,6 +583,7 @@
   root.querySelectorAll("[data-router-retry]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       routerStarted = true;
+      busyRetries = 0;
       connect(credentialsBodyFromForm(), true);
     });
   });

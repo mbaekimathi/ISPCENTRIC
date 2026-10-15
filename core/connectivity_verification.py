@@ -1319,6 +1319,18 @@ def evaluate_layered_cpe_access(
     layers["ping_ok"] = bool(probe.get("ping_ok"))
     layers["web_ok"] = bool(probe.get("ok") and probe.get("port"))
 
+    if probe.get("api_busy"):
+        return {
+            "ok": False,
+            "skipped": False,
+            "failure_class": "nas_busy",
+            "failing_layer": "nas",
+            "error": probe.get("error") or "Management API is busy.",
+            "hint": probe.get("hint")
+            or "MikroTik login is in use. Remote access was not checked.",
+            "details": details,
+        }
+
     if not layers["session_active"]:
         return {
             "ok": False,

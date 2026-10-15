@@ -5171,6 +5171,12 @@ def probe_customer_cpe_web(
         )
         if not target.get("ok"):
             result["error"] = target.get("error") or "Could not resolve the client router."
+            if target.get("api_busy"):
+                result["api_busy"] = True
+                result["hint"] = (
+                    "The ISP MikroTik login is in use. The client router was not "
+                    "checked. Retry in a moment."
+                )
             return result
         if not target.get("session_active") or not target.get("address"):
             result["hint"] = target.get("hint") or "The client router is offline."
@@ -5191,6 +5197,12 @@ def probe_customer_cpe_web(
         )
         if not session.get("ok"):
             result["error"] = session.get("error") or "Could not read the client's connection."
+            if session.get("api_busy"):
+                result["api_busy"] = True
+                result["hint"] = (
+                    "The ISP MikroTik login is in use. The client router was not "
+                    "checked. Retry in a moment."
+                )
             return result
         if not session.get("session_active") or not session.get("address"):
             result["hint"] = session.get("hint") or "The client router is offline."
@@ -5296,6 +5308,15 @@ def probe_customer_cpe_web(
                 result["error"] = install_error
             return found
 
+    def _note_probe_api_failure(exc: BaseException) -> None:
+        result["error"] = str(exc) or "Timed out probing the client router."
+        if api_timeout_is_busy(exc):
+            result["api_busy"] = True
+            result["hint"] = (
+                "The ISP MikroTik login is in use. The client router was not "
+                "checked. Retry in a moment."
+            )
+
     try:
         if light:
             with _nas_list_probe_lock(nas_host):
@@ -5305,7 +5326,10 @@ def probe_customer_cpe_web(
     except ConnectionError as exc:
         result["error"] = str(exc) or "Could not sign in to the ISP MikroTik."
         return result
-    except (TimeoutError, OSError) as exc:
+    except TimeoutError as exc:
+        _note_probe_api_failure(exc)
+        return result
+    except OSError as exc:
         result["error"] = str(exc) or "Timed out probing the client router."
         return result
 
@@ -5368,7 +5392,9 @@ def probe_customer_cpe_web(
             try:
                 found_port = _scan_ports(retry_ports)
             except (ConnectionError, TimeoutError, OSError) as exc:
-                result["error"] = str(exc) or result.get("error") or ""
+                _note_probe_api_failure(exc)
+                if result.get("api_busy"):
+                    return result
                 found_port = None
             if found_port:
                 result["ok"] = True
@@ -9709,6 +9735,7 @@ def resolve_customer_cpe_target(
         result["gateway"] = PPPOE_LOCAL_ADDRESS
         result["error"] = session.get("error") or ""
         result["hint"] = session.get("hint") or ""
+        result["api_busy"] = bool(session.get("api_busy"))
         return result
 
     router = getattr(customer, "router", None)
@@ -9785,6 +9812,10 @@ def resolve_customer_cpe_target(
                     }
                 )
             return result
+    except TimeoutError as exc:
+        result["error"] = str(exc).strip() or "Timed out reaching the ISP MikroTik."
+        result["api_busy"] = api_timeout_is_busy(exc)
+        return result
     except ConnectionError as exc:
         result["error"] = str(exc) or "Could not sign in to the ISP MikroTik."
         return result
@@ -9815,6 +9846,7 @@ def resolve_customer_cpe_session(
             "session_active": False,
             "address": "",
             "error": usage.get("error") or "Could not read the PPPoE session.",
+            "api_busy": bool(usage.get("api_busy")),
         }
     if not usage.get("session_active") or not address:
         return {
@@ -25034,8 +25066,36 @@ def _write_hotspot_html_file(sock: socket.socket, dst_path: str, html: str) -> b
     return _hotspot_login_file_ok(sock, dst_path)
 
 
+def _captive_redirect_target(pay_url: str) -> str:
+    """Absolute URL login.html should open, with the device MAC attached.
+
+    ISP Hotspot pay URLs put ``$(mac)`` in the path (``/pay/mac/$(mac)/``).
+    A ``?mac=`` query is what RouterOS rewrites: it splices ``dst`` and
+    ``link-login-only`` into the Location line and the phone never reaches
+    the pay page. Extra query params appended after a path MAC are ignored.
+
+    PPPoE renew URLs already carry a signed ``?t=`` token, so the MAC stays
+    on that query string.
+    """
+    pay_url = (pay_url or "").strip()
+    if not pay_url:
+        return ""
+    parsed = urlparse(pay_url)
+    path = parsed.path or "/"
+    leaf = path.rstrip("/").rsplit("/", 1)[-1].lower()
+    if "/hotspot/" in path.lower() and leaf == "pay" and not parsed.query:
+        base_path = path if path.endswith("/") else f"{path}/"
+        if not base_path.rstrip("/").endswith("/mac/$(mac)"):
+            base_path = f"{base_path}mac/$(mac)/"
+        return urlunparse((parsed.scheme, parsed.netloc, base_path, "", "", ""))
+    if "?" in pay_url:
+        path_part, query_part = pay_url.split("?", 1)
+        return f"{path_part}?{query_part}&mac=$(mac)"
+    return f"{pay_url}?mac=$(mac)"
+
+
 def _captive_pay_redirect_html(pay_url: str, *, via_billing_ip: bool = False) -> str:
-    """Hotspot login page that HTTP-redirects every OS to the payment/pause page.
+    """One HTTP 302 from the router Hotspot page to the payment page.
 
     ``via_billing_ip`` is for PPPoE CPE renew only. ISP Hotspot login.html must
     keep the public hostname so MikroTik HTTP walled-garden ``dst-host`` rules
@@ -25047,44 +25107,24 @@ def _captive_pay_redirect_html(pay_url: str, *, via_billing_ip: bool = False) ->
         pay_url = prefer_captive_open_url(pay_url or "")
     else:
         pay_url = prefer_hotspot_open_url(pay_url or "")
-    if not pay_url:
+    target = _captive_redirect_target(pay_url)
+    if not target:
         return ""
-    # Keep an existing query string (e.g. signed ?t= for PPPoE account auto-fill).
-    # Only strip a trailing slash on the path, not after query params.
-    if "?" in pay_url:
-        path_part, query_part = pay_url.split("?", 1)
-        base = f"{path_part.rstrip('?')}?{query_part}"
-        sep = "&"
-    else:
-        # Keep trailing slash on /reconnect/ and /pay/ — Django routes expect it.
-        base = (pay_url or "").strip()
-        sep = "?"
     path_lower = (urlparse(pay_url).path or "").lower()
     is_pause = path_lower.rstrip("/").endswith("/pause")
     is_reconnect = path_lower.rstrip("/").endswith("/reconnect")
     if is_pause:
         page_title = "Internet paused"
-        body_text = "Opening pause notice…"
         link_text = "Continue"
     elif is_reconnect:
         page_title = "Connecting"
-        body_text = "Reconnecting to your package…"
         link_text = "Continue"
     else:
         page_title = "Pay to connect"
-        body_text = "Opening payment page…"
         link_text = "Continue to payment"
-    # Only pass MAC — Django resolves the device from mac= or the client IP.
-    # Extra RouterOS vars ($(link-orig-esc), $(link-login-only-esc), …) break
-    # the Location query on many builds: & separators merge into dst and phones
-    # open URLs like dst=http://connectlogin-only=http://10.50.50.1/login.
-    target = f"{base}{sep}mac=$(mac)"
-    # RouterOS macros ($(mac), …) must stay literal in Location/meta/JS — do not
-    # HTML-entity-encode '&' or substitution breaks on the CPE.
-    # A real 302 is required for non-browser captive clients such as Windows NCSI;
-    # they do not execute the JavaScript/meta-refresh in a 200 HTML response.
-    # Keep the HTML as a fallback for captive browsers with unusual redirect handling
-    # (older Android WebView, some Huawei/Samsung captive sheets).
+    # RouterOS macros ($(mac), …) must stay literal — do not HTML-escape them.
+    # The 302 is what Windows NCSI and Android follow. Meta refresh + one
+    # script cover captive sheets that ignore the status line.
     return (
         "$(if http-status == 302)Payment required$(endif)\n"
         f'$(if http-header == "Location"){target}$(endif)\n'
@@ -25094,23 +25134,44 @@ def _captive_pay_redirect_html(pay_url: str, *, via_billing_ip: bool = False) ->
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f'<meta http-equiv="refresh" content="0;url={target}">\n'
-        '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">\n'
-        '<meta http-equiv="Pragma" content="no-cache">\n'
-        '<meta http-equiv="Expires" content="0">\n'
+        '<meta http-equiv="pragma" content="no-cache">\n'
+        '<meta http-equiv="expires" content="-1">\n'
         f"<title>{page_title}</title>\n"
         "<script>\n"
-        "(function(){\n"
-        f"var u={target!r};\n"
-        "try{window.top.location.replace(u);}catch(e){}\n"
-        "try{window.location.replace(u);}catch(e){}\n"
-        "setTimeout(function(){window.location.href=u;},50);\n"
-        "})();\n"
+        f"window.top.location.replace({target!r});\n"
+        f"window.location.replace({target!r});\n"
         "</script>\n"
         "</head>\n"
         "<body>\n"
-        f"<p>{body_text}</p>\n"
         f'<p><a href="{target}">{link_text}</a></p>\n'
-        f'<noscript><meta http-equiv="refresh" content="0;url={target}"></noscript>\n'
+        "</body>\n"
+        "</html>\n"
+    )
+
+
+def _captive_link_redirect_html() -> str:
+    """Page RouterOS serves for ``/redirect`` (the Windows "Open" button).
+
+    ``$(link-redirect)`` is the login URL while the device is not logged in,
+    and the site they originally asked for once they are. login.html then
+    sends unpaid clients to the pay page. Without this file, ``/redirect``
+    is empty and the pay page never opens.
+    """
+    target = "$(link-redirect)"
+    return (
+        "$(if http-status == 302)Redirect$(endif)\n"
+        f'$(if http-header == "Location"){target}$(endif)\n'
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        f'<meta http-equiv="refresh" content="0;url={target}">\n'
+        '<meta http-equiv="pragma" content="no-cache">\n'
+        '<meta http-equiv="expires" content="-1">\n'
+        "<title>Sign in</title>\n"
+        "</head>\n"
+        "<body>\n"
+        f'<p><a href="{target}">Continue</a></p>\n'
         "</body>\n"
         "</html>\n"
     )
@@ -25204,30 +25265,38 @@ def _fetch_isp_hotspot_pages(
         )
         return notes
 
-    # login.html sends unpaid clients straight to /pay/ (one hop). Paid MACs
-    # still reconnect from the pay page banner without an extra /reconnect/ load
-    # that captive browsers abort when leak repair drops WAN mid-request.
+    # login.html sends unpaid clients straight to /pay/ (one hop). A failed
+    # MAC login (expired package) shows error.html / flogin.html instead, so
+    # those must carry the same redirect or the phone stays on the router.
     pay_html = _captive_pay_redirect_html(pay)
     alogin_html = _captive_alogin_html(welcome) if welcome else ""
+    link_html = _captive_link_redirect_html()
 
     for dst in _STALE_PROBE_FILES:
         if _delete_hotspot_file(sock, dst):
             notes.append(f"removed {dst}")
 
     if pay_html:
-        # login.html serves the unauthenticated client; rlogin.html is the same
-        # page reached via the RADIUS/redirect path. Both get macro substitution.
-        for dst in ("hotspot/login.html", "hotspot/rlogin.html"):
+        # login.html: first visit. error/flogin: MAC login failed (disabled
+        # user). logout: session ended. rlogin: alternate login path.
+        for dst in (
+            "hotspot/login.html",
+            "hotspot/rlogin.html",
+            "hotspot/error.html",
+            "hotspot/flogin.html",
+            "hotspot/logout.html",
+        ):
             if _write_hotspot_html_file(sock, dst, pay_html):
                 notes.append(f"installed {dst}")
             else:
                 notes.append(f"could not write {dst}")
 
-        # redirect.html is how RouterOS bounces an *authorized* client to the
-        # site it originally asked for. Overwriting it sends paying customers
-        # back to the pay page, so leave the built-in page in place.
-        if _delete_hotspot_file(sock, "hotspot/redirect.html"):
-            notes.append("removed hotspot/redirect.html")
+        # Windows "Open" requests /redirect. That file must exist and point at
+        # $(link-redirect) (the login page), which then 302s to /pay/.
+        if _write_hotspot_html_file(sock, "hotspot/redirect.html", link_html):
+            notes.append("installed hotspot/redirect.html")
+        else:
+            notes.append("could not write hotspot/redirect.html")
 
     if alogin_html:
         # Both pages are only reached once the client is logged in, so they point

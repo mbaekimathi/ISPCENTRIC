@@ -403,6 +403,85 @@ class ApiSessionReuseTests(SimpleTestCase):
         self.assertTrue(row.get("online"))
         self.assertEqual(row.get("error") or "", "")
 
+    def test_cpe_probe_busy_login_is_not_an_unreachable_router(self):
+        from core import mikrotik_connect as mk
+        from core.connectivity_verification import evaluate_layered_cpe_access
+        from core.views import _cpe_router_failure_class
+
+        busy = TimeoutError("Management API is busy — retrying shortly.")
+        customer = SimpleNamespace(pk=7)
+        with (
+            patch.object(
+                mk,
+                "resolve_customer_cpe_target",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "address": "10.20.0.235",
+                    "scope": "connuser",
+                    "gateway": "10.20.0.1",
+                    "mode": "pppoe",
+                },
+            ),
+            patch.object(mk, "_try_cached_cpe_web_ports", return_value=None),
+            patch.object(mk, "_preferred_cpe_web_ports", return_value=(80, 8081)),
+            patch.object(mk, "_api_session", side_effect=busy),
+            patch.object(mk, "prepare_customer_cpe_access") as prepare,
+        ):
+            probe = mk.probe_customer_cpe_web(
+                "10.9.0.5",
+                "admin",
+                "secret",
+                customer=customer,
+                auto_enable_www=True,
+                timeout=4.0,
+            )
+        self.assertTrue(probe.get("session_active"))
+        self.assertEqual(probe.get("cpe_host"), "10.20.0.235")
+        self.assertTrue(probe.get("api_busy"))
+        self.assertFalse(probe.get("ok"))
+        self.assertIn("login is in use", probe.get("hint") or "")
+        prepare.assert_not_called()
+        self.assertEqual(
+            _cpe_router_failure_class(probe, nas_ok=True),
+            "nas_busy",
+        )
+
+        router = SimpleNamespace(
+            username="admin",
+            password="secret",
+            host="10.9.0.5",
+            api_host="10.9.0.5",
+            account_status="active",
+        )
+        subscriber = SimpleNamespace(
+            pk=7,
+            router=router,
+            service_type="pppoe",
+            pppoe_username="connuser",
+            pppoe_password="",
+            cpe_username="",
+            cpe_password="",
+            account_number="A7",
+        )
+        with (
+            patch(
+                "core.connectivity_verification.evaluate_nas_connectivity",
+                return_value={"api_ok": True, "details": {"working_host": "10.9.0.5"}},
+            ),
+            patch(
+                "core.mikrotik_connect.probe_customer_cpe_web",
+                return_value=probe,
+            ),
+            patch(
+                "core.mikrotik_connect.resolve_customer_cpe_credentials",
+                return_value=("admin", "", "admin", ""),
+            ),
+        ):
+            layered = evaluate_layered_cpe_access(subscriber, timeout=2.0, light=True)
+        self.assertEqual(layered.get("failure_class"), "nas_busy")
+        self.assertIn("login is in use", layered.get("hint") or "")
+
     def test_busy_session_read_does_not_mark_router_down(self):
         from core.mikrotik_connect import (
             clear_mikrotik_host_cooldown,

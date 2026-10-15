@@ -1153,7 +1153,7 @@
 
   window.__clientsRefreshSurf = refreshSurf;
   refreshSurf(false);
-  timer = setInterval(function () { refreshSurf(false); }, 45000);
+  timer = setInterval(function () { refreshSurf(true); }, 45000);
   var lastSurfForceAt = 0;
   document.addEventListener("visibilitychange", function () {
     if (document.hidden) return;

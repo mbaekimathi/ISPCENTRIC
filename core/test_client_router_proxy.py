@@ -258,6 +258,40 @@ class ClientRouterProxyTests(TestCase):
         self.assertIn("PPPoE", payload["detail"])
         self.assertTrue(any("PPPoE" in step for step in payload["guidance"]))
 
+    def test_busy_api_during_cpe_probe_is_not_an_unreachable_router(self):
+        with patch(
+            "core.views.probe_customer_cpe_web",
+            return_value={
+                "ok": False,
+                "session_active": True,
+                "cpe_host": "10.20.0.235",
+                "port": None,
+                "reachable": False,
+                "ping_ok": False,
+                "api_busy": True,
+                "error": "Management API is busy — retrying shortly.",
+                "hint": (
+                    "The ISP MikroTik login is in use. The client router was not "
+                    "checked. Retry in a moment."
+                ),
+            },
+        ):
+            response = self.client.get(
+                f"/app/clients/{self.customer.pk}/router-login/start/",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["failure_class"], "nas_busy")
+        self.assertTrue(payload["api_busy"])
+        self.assertFalse(payload["needs_password"])
+        self.assertEqual(payload["checked_ports"], [])
+        self.assertIn("being worked on", " ".join(payload["guidance"]).lower())
+        self.assertFalse(
+            any("admin password" in step.lower() for step in payload["guidance"])
+        )
+
     def test_start_fails_fast_when_nas_unreachable(self):
         with (
             patch(

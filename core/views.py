@@ -961,6 +961,8 @@ def _cpe_router_failure_class(probe: dict | None = None, *, nas_ok: bool = True)
     probe = probe or {}
     if probe.get("ok"):
         return "ok"
+    if probe.get("api_busy"):
+        return "nas_busy"
     if not probe.get("session_active"):
         return "offline"
     if probe.get("ping_ok"):
@@ -16871,9 +16873,17 @@ def client_router_login_start(request, customer_id: int):
     if not probe.get("ok"):
         failure_class = _cpe_router_failure_class(probe, nas_ok=True)
         detail = probe.get("hint") or probe.get("error") or ""
+        if failure_class == "nas_busy":
+            detail = (
+                probe.get("hint")
+                or f"{nas.name or 'This MikroTik'} is being worked on. "
+                "Subscribers stay online. Retry in a moment."
+            )
+            base_meta["checked_ports"] = []
         # CPE online but www/API failed — always offer password entry/correction.
         # A wrong saved admin password often surfaces as "blocked" or "unreachable".
-        show_password = failure_class not in {"nas_down", "offline"}
+        # A busy NAS login is not a client-router problem.
+        show_password = failure_class not in {"nas_down", "offline", "nas_busy"}
         guidance = _cpe_router_guidance(
             failure_class=failure_class,
             access_mode=mode,
@@ -16892,6 +16902,7 @@ def client_router_login_start(request, customer_id: int):
                 "session_active": bool(probe.get("session_active")),
                 "ping_ok": bool(probe.get("ping_ok")),
                 "api_ok": bool(probe.get("api_ok")),
+                "api_busy": bool(probe.get("api_busy")),
                 "www_enabled": bool(probe.get("www_enabled")),
                 "cpe_host": probe.get("cpe_host") or "",
                 "detail": detail,
@@ -20074,6 +20085,21 @@ def _router_surf_probe_snapshot_key(router_id: int) -> str:
     return f"clients_surfing_router_probe:v1:{int(router_id)}"
 
 
+def _pppoe_name_aliases(name: str) -> set[str]:
+    """Same + / no-+ forms fetch_customer_pppoe_usage uses for one subscriber."""
+    key = (name or "").strip().lower()
+    if not key:
+        return set()
+    alts = {key}
+    if key.startswith("+"):
+        rest = key[1:]
+        if rest:
+            alts.add(rest)
+    elif key.isdigit():
+        alts.add(f"+{key}")
+    return alts
+
+
 def _client_surf_stable_key(organization_id: int, customer_id: int) -> str:
     return f"client_surf_stable:v1:{organization_id}:{customer_id}"
 
@@ -20518,7 +20544,7 @@ def clients_surfing_status(request):
         if service == "hotspot"
         else Customer.ServiceType.PPPOE
     )
-    cache_key = f"clients_surfing:{org.pk}:{service}:v10"
+    cache_key = f"clients_surfing:{org.pk}:{service}:v11"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -20551,9 +20577,12 @@ def clients_surfing_status(request):
     live_map: dict = {}
     use_live_snapshot = False
     unread_router_ids: set[int] = set()
-    # A refresh asks the router who is online (below). Do not also run the
-    # usage sweep — that is a second login on every poll.
-    if not force and org_live_usage_is_fresh(org):
+    # The client CPE page (/app/clients/<id>/#router) reads /ppp/active for
+    # this subscriber. The usage-sample snapshot must not replace that read:
+    # a sample that still says offline was painting Disconnected here while
+    # the router page showed the session up. The snapshot is only a fallback
+    # when this poll cannot read the router.
+    if org_live_usage_is_fresh(org):
         live = get_org_live_usage(org)
         live_map = live.get(service) if isinstance(live.get(service), dict) else {}
         unread_key = (
@@ -20564,7 +20593,6 @@ def clients_surfing_status(request):
                 unread_router_ids.add(int(raw_rid))
             except (TypeError, ValueError):
                 continue
-        use_live_snapshot = True
 
     assigned_router_ids = {c.router_id for c in customers if c.router_id}
     has_unassigned = any(not c.router_id for c in customers)
@@ -20712,7 +20740,7 @@ def clients_surfing_status(request):
                 if not hotspot_identities:
                     return bool(identity and identity in pool)
                 return any(mac in pool for mac in hotspot_identities)
-            return bool(identity and identity in pool)
+            return bool(_pppoe_name_aliases(identity) & set(pool or ()))
 
         def _first_identity_in(pool: set[str]) -> str:
             if service == "hotspot":
@@ -20833,7 +20861,7 @@ def clients_surfing_status(request):
             )
             or set()
         )
-        on_blocked_profile = bool(identity) and identity in nas_blocked
+        on_blocked_profile = bool(_pppoe_name_aliases(identity) & set(nas_blocked or ()))
 
         # MikroTik probe failed → treat as disconnected (not "not surfing").
         if customer.router_id:
@@ -20849,6 +20877,22 @@ def clients_surfing_status(request):
             router_unreachable = True
             router_error = reason or "Session list was not read on this MikroTik"
             reason = router_error
+
+        # Probe failed, but the latest usage sample still has this subscriber
+        # dialed. Match the CPE page instead of painting Disconnected.
+        if (
+            service == "pppoe"
+            and not session_online
+            and router_unreachable
+            and customer.status == Customer.Status.ACTIVE
+        ):
+            snap = live_map.get(customer.pk) or live_map.get(str(customer.pk)) or {}
+            if isinstance(snap, dict) and snap.get("session_active"):
+                session_online = True
+                connected = True
+                presence_unread = False
+                router_unreachable = False
+                reason = ""
 
         surfing = False
         if customer.status != Customer.Status.ACTIVE:
@@ -24191,6 +24235,21 @@ def hotspot_reconnect(request, join_code: str):
 def hotspot_pay(request, join_code: str):
     """Public Hotspot payment page (captive redirect target + preview)."""
     return _hotspot_captive_page(request, join_code, expected_page="pay")
+
+
+@require_GET
+def hotspot_pay_for_mac(request, join_code: str, mac: str):
+    """Pay page when login.html put the MAC in the path.
+
+    RouterOS rewrites a ``?mac=`` Location header, so the router link is
+    ``/pay/mac/AA:BB:CC:DD:EE:FF/``. Query junk such as ``?dst=`` is ignored.
+    """
+    norm = _normalize_hotspot_mac(mac)
+    if norm:
+        updated = request.GET.copy()
+        updated["mac"] = norm
+        request.GET = updated
+    return hotspot_pay(request, join_code)
 
 
 def hotspot_pause(request, join_code: str):

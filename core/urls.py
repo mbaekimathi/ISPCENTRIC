@@ -324,6 +324,11 @@ urlpatterns = [
         name="hotspot_pay",
     ),
     path(
+        "hotspot/<str:join_code>/pay/mac/<path:mac>/",
+        views.hotspot_pay_for_mac,
+        name="hotspot_pay_for_mac",
+    ),
+    path(
         "hotspot/<str:join_code>/pause/",
         views.hotspot_pause,
         name="hotspot_pause",

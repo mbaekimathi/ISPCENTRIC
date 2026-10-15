@@ -2219,6 +2219,14 @@ class PayPagePoolMismatchGuardTests(TestCase):
         self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
         self.assertIn("account=PPP-1", response.url)
 
+    def test_hotspot_pay_mac_path_opens_the_pay_page(self):
+        response = self.client.get(
+            f"/hotspot/{self.org.join_code}/pay/mac/aa:bb:cc:dd:ee:ff/",
+            REMOTE_ADDR="203.0.113.10",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["hotspot_mac"], "AA:BB:CC:DD:EE:FF")
+
     def test_hotspot_pay_redirects_cpe_renew_pool_client(self):
         response = self.client.get(
             f"/hotspot/{self.org.join_code}/pay/",
@@ -6943,6 +6951,75 @@ class ClientsSurfingStatusTests(TestCase):
             timeout=3.5,
         )
 
+    @patch("core.views.fetch_hotspot_client_macs")
+    @patch("core.views.fetch_active_pppoe_usernames")
+    def test_offline_usage_snapshot_does_not_hide_a_live_session(
+        self, fetch_active, fetch_hotspot
+    ):
+        """Clients list must follow /ppp/active, not a stale offline sample."""
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        self.customer.router = self.router
+        self.customer.save(update_fields=["router"])
+        cache.set(
+            f"org_live_usage:v1:{self.org.pk}",
+            {
+                "ok": True,
+                "at": timezone.now().isoformat(),
+                "pppoe": {
+                    self.customer.pk: {
+                        "session_active": False,
+                        "download_bps": 0,
+                        "upload_bps": 0,
+                        "gadgets": 0,
+                    }
+                },
+                "hotspot": {},
+            },
+            120,
+        )
+        fetch_active.return_value = {
+            "ok": True,
+            "usernames": ["liveuser"],
+            "blocked": [],
+            "error": "",
+        }
+        fetch_hotspot.return_value = dict(self._HOTSPOT_PROBE_OK)
+
+        data = self.client.get("/app/clients/surfing/", {"service": "pppoe"}).json()
+
+        client = data["clients"][0]
+        self.assertTrue(client["surfing"])
+        self.assertEqual(client["state"], "surfing")
+        fetch_active.assert_called()
+
+    @patch("core.views.fetch_hotspot_client_macs")
+    @patch("core.views.fetch_active_pppoe_usernames")
+    def test_plus_prefixed_session_matches_digit_username(
+        self, fetch_active, fetch_hotspot
+    ):
+        """CPE lookup accepts +254… and 254…; the clients list must too."""
+        self.customer.router = self.router
+        self.customer.pppoe_username = "254700000088"
+        self.customer.save(update_fields=["router", "pppoe_username"])
+        fetch_active.return_value = {
+            "ok": True,
+            "usernames": ["+254700000088"],
+            "blocked": [],
+            "error": "",
+        }
+        fetch_hotspot.return_value = dict(self._HOTSPOT_PROBE_OK)
+
+        data = self.client.get(
+            "/app/clients/surfing/",
+            {"service": "pppoe", "refresh": "1"},
+        ).json()
+
+        client = data["clients"][0]
+        self.assertTrue(client["surfing"])
+        self.assertEqual(client["label"], "Surfing")
+
     @patch("core.views.fetch_customer_pppoe_usage")
     def test_client_usage_pppoe_blocked_profile_is_not_surfing(self, fetch_usage):
         """Detail page must match list: dialed + blocked secret = Not surfing."""
@@ -11260,13 +11337,26 @@ class IspHotspotInstantPayTests(SimpleTestCase):
             )
 
         self.assertTrue(any("installed hotspot/login.html" in n for n in notes))
+        self.assertTrue(any("installed hotspot/error.html" in n for n in notes))
+        self.assertTrue(any("installed hotspot/redirect.html" in n for n in notes))
         login = written["hotspot/login.html"]
         self.assertIn(
-            "http://billing.example/hotspot/505050/pay/?mac=$(mac)",
+            "http://billing.example/hotspot/505050/pay/mac/$(mac)/",
             login,
         )
+        self.assertNotIn("?mac=$(mac)", login)
+        location = next(
+            line
+            for line in login.splitlines()
+            if 'http-header == "Location"' in line
+        )
+        self.assertNotIn("?", location)
+        self.assertNotIn("&", location)
         self.assertIn("mac=$(mac)", login)
         self.assertIn("$(if http-status == 302)", login)
+        self.assertEqual(written["hotspot/error.html"], login)
+        self.assertIn("$(link-redirect)", written["hotspot/redirect.html"])
+        self.assertNotIn("/pay/", written["hotspot/redirect.html"])
         self.assertIn(
             "http://billing.example/hotspot/505050/welcome/",
             written["hotspot/alogin.html"],
