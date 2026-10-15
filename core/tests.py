@@ -6874,10 +6874,11 @@ class ClientsSurfingStatusTests(TestCase):
         data = response.json()
         client = data["clients"][0]
         self.assertFalse(client["surfing"])
-        self.assertEqual(client["state"], "disconnected")
-        self.assertEqual(client["label"], "Disconnected")
+        self.assertEqual(client["state"], "checking")
+        self.assertEqual(client["label"], "Checking")
         self.assertFalse(client["router_reachable"])
         self.assertIn("timed out", client["reason"].lower())
+        self.assertNotEqual(client.get("connection_label"), "Not connected")
 
     @patch("core.views.fetch_hotspot_client_macs")
     @patch("core.views.fetch_active_pppoe_usernames")

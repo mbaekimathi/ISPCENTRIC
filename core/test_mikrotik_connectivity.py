@@ -246,6 +246,39 @@ class ApiSessionReuseTests(SimpleTestCase):
         session_cm.assert_called_once()
         self.assertTrue(session_cm.call_args.kwargs.get("reuse"))
 
+    def test_one_empty_session_list_does_not_clear_the_router(self):
+        from django.core.cache import cache
+
+        from core.views import (
+            _hold_session_list_if_fleet_wiped,
+            _router_surf_probe_snapshot_key,
+            _save_router_surf_probe_snapshot,
+        )
+
+        router_id = 904
+        cache.delete(_router_surf_probe_snapshot_key(router_id))
+        _save_router_surf_probe_snapshot(
+            {
+                "router_id": router_id,
+                "pppoe_active": ["a", "b", "c", "d"],
+                "pppoe_blocked": [],
+                "hotspot_active": [],
+                "hotspot_connected": [],
+            }
+        )
+        first = _hold_session_list_if_fleet_wiped(
+            router_id,
+            {"router_id": router_id, "pppoe_active": [], "hotspot_active": [], "error": ""},
+        )
+        self.assertEqual(first["pppoe_active"], ["a", "b", "c", "d"])
+        self.assertTrue(first.get("fleet_held"))
+        second = _hold_session_list_if_fleet_wiped(
+            router_id,
+            {"router_id": router_id, "pppoe_active": [], "hotspot_active": [], "error": ""},
+        )
+        self.assertEqual(second["pppoe_active"], [])
+        self.assertFalse(second.get("fleet_held"))
+
     def test_operator_login_runs_beside_background_writer(self):
         import threading
 

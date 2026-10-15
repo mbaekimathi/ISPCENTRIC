@@ -935,6 +935,9 @@
     if (kind === "surfing") {
       el.classList.add("is-surfing");
       el.textContent = label || "Surfing";
+    } else if (kind === "checking") {
+      el.classList.add("is-checking");
+      el.textContent = label || "Checking";
     } else if (kind === "expired") {
       el.classList.add("is-expired");
       el.textContent = label || "Expired";

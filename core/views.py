@@ -16148,6 +16148,15 @@ def client_detail(request, customer_id: int):
                     }
                 )
             messages.success(request, msg)
+            nxt = (request.POST.get("next") or "").strip()
+            from django.utils.http import url_has_allowed_host_and_scheme
+
+            if nxt and url_has_allowed_host_and_scheme(
+                nxt,
+                allowed_hosts={request.get_host()},
+                require_https=request.is_secure(),
+            ):
+                return redirect(nxt)
             return redirect(
                 f"{reverse('core:client_detail', kwargs={'customer_id': customer.pk})}#router"
             )
@@ -19225,6 +19234,7 @@ def client_usage_analysis(request, customer_id: int):
         }
 
     from billing.devices import customer_account_devices, normalize_device_mac
+    from billing.fup import customer_fup_usage_snapshot, plan_fup_enabled
     from billing.usage_samples import get_org_live_usage
 
     online_macs: set[str] = set()
@@ -19268,6 +19278,9 @@ def client_usage_analysis(request, customer_id: int):
         devices_connected_count=devices_connected_count,
         devices_linked_count=len(account_devices),
         router_data_url=router_data_url,
+        plan_fup_configured=plan_fup_enabled(getattr(customer, "plan", None)),
+        client_fup=customer_fup_usage_snapshot(customer, getattr(customer, "plan", None)),
+        client_fup_enabled=bool(getattr(customer, "fup_enabled", True)),
     )
     ctx["client_nav_main"] = [
         *CLIENT_COMMON_NAV_START,
@@ -20162,8 +20175,12 @@ _SURF_UNREAD_TOKENS = (
 def _surf_row_was_not_read(row: dict) -> bool:
     """True when this poll did not actually see /ppp/active or Hotspot active."""
     state = (row.get("state") or "").strip().lower()
-    if state != "disconnected" or row.get("session_online"):
+    if row.get("session_online"):
         return False
+    if state not in {"disconnected", "checking"}:
+        return False
+    if state == "checking":
+        return True
     reason = (row.get("reason") or "").lower()
     return any(token in reason for token in _SURF_UNREAD_TOKENS)
 
@@ -20230,12 +20247,14 @@ def stabilize_client_surfing_row(
         return row
 
     # A missed read is not evidence the CPE dropped. Keep Surfing until a
-    # poll that actually listed sessions says otherwise.
+    # poll that actually listed sessions says otherwise. Refresh the hold so
+    # a long Management API job cannot expire it and paint the fleet offline.
     if _surf_row_was_not_read(row):
         held = dict(last_good)
         held["stabilized"] = True
         held["probe_state"] = state
         held["probe_reason"] = row.get("reason") or ""
+        cache.set(stable_key, dict(last_good), _CLIENT_SURF_STABLE_TTL)
         return held
 
     if not _surf_probe_failure_is_soft(row):
@@ -20287,7 +20306,55 @@ def _save_router_surf_probe_snapshot(row: dict) -> None:
     if not router_id:
         return
     if row.get("pppoe_active") or row.get("hotspot_active") or row.get("hotspot_connected"):
-        cache.set(_router_surf_probe_snapshot_key(router_id), dict(row), 90)
+        cache.set(_router_surf_probe_snapshot_key(router_id), dict(row), 600)
+
+
+def _fleet_wipe_confirm_key(router_id: int) -> str:
+    return f"clients_surfing_empty_confirm:v1:{int(router_id)}"
+
+
+def _hold_session_list_if_fleet_wiped(router_id: int, result: dict) -> dict:
+    """
+    One empty session list must not mark a whole router offline.
+
+    A contended Management API often returns !done with no rows. When the
+    previous read had several sessions, keep those names until a second
+    empty read confirms they are really gone.
+    """
+    if not isinstance(result, dict):
+        return result
+    prev = _load_router_surf_probe_snapshot(router_id) or {}
+    prev_pppoe = [n for n in (prev.get("pppoe_active") or []) if n]
+    prev_hotspot = [n for n in (prev.get("hotspot_active") or []) if n]
+    now_pppoe = [n for n in (result.get("pppoe_active") or []) if n]
+    now_hotspot = [n for n in (result.get("hotspot_active") or []) if n]
+    confirm_key = _fleet_wipe_confirm_key(router_id)
+    wiped_pppoe = len(prev_pppoe) >= 3 and not now_pppoe
+    wiped_hotspot = len(prev_hotspot) >= 3 and not now_hotspot
+    if not wiped_pppoe and not wiped_hotspot:
+        cache.delete(confirm_key)
+        return result
+    if cache.get(confirm_key):
+        cache.delete(confirm_key)
+        cache.delete(_router_surf_probe_snapshot_key(router_id))
+        return result
+    cache.set(confirm_key, 1, 120)
+    held = dict(result)
+    if wiped_pppoe:
+        held["pppoe_active"] = list(prev_pppoe)
+        if not held.get("pppoe_blocked"):
+            held["pppoe_blocked"] = list(prev.get("pppoe_blocked") or [])
+    if wiped_hotspot:
+        held["hotspot_active"] = list(prev_hotspot)
+        if not held.get("hotspot_connected"):
+            held["hotspot_connected"] = list(prev.get("hotspot_connected") or [])
+    held["fleet_held"] = True
+    held["stale_merged"] = True
+    note = (held.get("error") or "").strip()
+    held["error"] = (
+        (note + " — ") if note else ""
+    ) + "Session list was empty; keeping last known sessions"
+    return held
 
 
 def _probe_mikrotik_router_combined(router) -> dict:
@@ -20401,8 +20468,10 @@ def _probe_mikrotik_router_combined(router) -> dict:
                 (result["error"] or "Probe failed")
                 + " — merged last known sessions"
             ).strip()
+    result = _hold_session_list_if_fleet_wiped(router_id, result)
     if result["pppoe_active"] or result["hotspot_active"] or result["hotspot_connected"]:
-        _save_router_surf_probe_snapshot(result)
+        if not result.get("fleet_held"):
+            _save_router_surf_probe_snapshot(result)
     return result
 
 
@@ -20997,10 +21066,16 @@ def clients_surfing_status(request):
                 ):
                     reason = _period_blocked_reason(customer)
             else:
-                state = "disconnected"
-                label = "Disconnected"
-                if not reason:
-                    reason = router_error or "Device not seen on the Hotspot network"
+                if router_unreachable or presence_unread:
+                    state = "checking"
+                    label = "Checking"
+                    if not reason:
+                        reason = router_error or "Session list was not read"
+                else:
+                    state = "disconnected"
+                    label = "Disconnected"
+                    if not reason:
+                        reason = router_error or "Device not seen on the Hotspot network"
         elif subscription_expired:
             # Package ended — Internet column shows Expired (even if still dialed).
             state = "expired"
@@ -21026,16 +21101,19 @@ def clients_surfing_status(request):
                 if internet_allowed and (router_unreachable or presence_unread):
                     from core.subscription_sync import is_fleet_write_active
 
-                    if presence_unread or router_unreachable or is_fleet_write_active():
+                    if is_fleet_write_active() and not (reason or "").strip():
                         reason = (
                             "Subscription sync in progress — "
                             "session list was not read"
-                            if is_fleet_write_active()
-                            else "Session list was not read on this MikroTik"
                         )
-                        state = "checking"
-                        label = "Checking"
-                        router_unreachable = True
+                    elif not (reason or "").strip():
+                        reason = (
+                            router_error
+                            or "Session list was not read on this MikroTik"
+                        )
+                    state = "checking"
+                    label = "Checking"
+                    router_unreachable = True
         else:
             # Dialed on the NAS but not getting internet (blocked, outside period, …).
             state = "not_surfing"
@@ -21044,6 +21122,8 @@ def clients_surfing_status(request):
         connected_router_name = ""
         connected_wifi_ssid = ""
         connection_label = "Disconnected" if service == "hotspot" else "Not connected"
+        if state == "checking":
+            connection_label = reason or "Session list was not read"
         if connected:
             connected_count += 1
             live_router = (

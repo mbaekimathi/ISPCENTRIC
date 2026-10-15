@@ -10201,6 +10201,26 @@ def fetch_active_pppoe_usernames(
     port: int = 8728,
     timeout: float = 5.0,
 ) -> dict[str, Any]:
+    """Read /ppp/active, and try once more when the management login is busy."""
+    result = _fetch_active_pppoe_usernames_once(
+        host, username, password, port=port, timeout=timeout
+    )
+    if result.get("api_busy"):
+        time.sleep(0.4)
+        result = _fetch_active_pppoe_usernames_once(
+            host, username, password, port=port, timeout=timeout
+        )
+    return result
+
+
+def _fetch_active_pppoe_usernames_once(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port: int = 8728,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
     """
     Return lowercased PPPoE usernames currently online on a MikroTik.
 
@@ -10244,7 +10264,13 @@ def fetch_active_pppoe_usernames(
                 seen.add(key)
                 names.append(key)
             blocked: list[str] = []
-            for row in _print(sock, "/ppp/secret", props="name,profile,disabled"):
+            # The active list is the session read. A secret-print failure must
+            # not throw those names away — that looked like the whole NAS dropped.
+            try:
+                secret_rows = _print(sock, "/ppp/secret", props="name,profile,disabled")
+            except Exception:
+                secret_rows = []
+            for row in secret_rows:
                 name = (row.get("name") or "").strip()
                 if not name:
                     continue
