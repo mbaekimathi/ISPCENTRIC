@@ -2178,6 +2178,18 @@
     }
   }
 
+  function softUsageMiss(message) {
+    var text = (message || "").toLowerCase();
+    return (
+      text.indexOf("timed out") >= 0 ||
+      text.indexOf("timeout") >= 0 ||
+      text.indexOf("busy") >= 0 ||
+      text.indexOf("could not reach") >= 0 ||
+      text.indexOf("could not load") >= 0 ||
+      text.indexOf("cooling") >= 0
+    );
+  }
+
   function stampNow() {
     if (!stampEl) return;
     var d = new Date();
@@ -2289,6 +2301,11 @@
         if (!data) return;
         renderSessionBreakdown(data.session_breakdown);
         if (!data.ok && data.error) {
+          if (root.classList.contains("is-online") && softUsageMiss(data.error)) {
+            if (subEl) subEl.textContent = "Still in subscription — last live session kept.";
+            stampNow();
+            return;
+          }
           applyOffline(data.error, data);
           if (subEl) subEl.textContent = data.error;
           stampNow();
@@ -2461,6 +2478,11 @@
         stampNow();
       })
       .catch(function () {
+        if (root.classList.contains("is-online")) {
+          if (subEl) subEl.textContent = "Still in subscription — last live session kept.";
+          stampNow();
+          return;
+        }
         applyOffline("Could not load live usage.");
         if (subEl) subEl.textContent = "Could not load live usage.";
         stampNow();

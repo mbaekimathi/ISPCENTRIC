@@ -8773,8 +8773,19 @@ def fetch_customer_pppoe_usage(
                 "on_blocked_profile": on_blocked_profile,
                 "error": "",
             }
-    except TimeoutError:
-        return {**empty, "error": "Connection timed out reaching the router."}
+    except TimeoutError as exc:
+        busy = api_timeout_is_busy(exc)
+        return {
+            **empty,
+            "error": (
+                str(exc).strip()
+                if busy
+                else "Connection timed out reaching the router."
+            ),
+            "timeout": True,
+            "api_busy": busy,
+            "soft_outage": True,
+        }
     except OSError as exc:
         return {
             **empty,
@@ -8944,8 +8955,19 @@ def fetch_customer_hotspot_usage(
                 "speed_source": "hotspot",
                 "error": "",
             }
-    except TimeoutError:
-        return {**empty, "error": "Connection timed out reaching the router."}
+    except TimeoutError as exc:
+        busy = api_timeout_is_busy(exc)
+        return {
+            **empty,
+            "error": (
+                str(exc).strip()
+                if busy
+                else "Connection timed out reaching the router."
+            ),
+            "timeout": True,
+            "api_busy": busy,
+            "soft_outage": True,
+        }
     except OSError as exc:
         return {
             **empty,

@@ -7024,6 +7024,61 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertEqual(data["session_state"], "surfing")
         self.assertEqual(data["session_label"], "Surfing")
 
+    @patch("core.views.fetch_customer_pppoe_usage")
+    def test_client_usage_timeout_keeps_in_package_session(self, fetch_usage):
+        """A router timeout must not mark a subscribed PPPoE client offline."""
+        self.customer.router = self.router
+        self.customer.save(update_fields=["router"])
+        live = {
+            "ok": True,
+            "online": True,
+            "session_active": True,
+            "pppoe_username": "liveuser",
+            "address": "10.10.0.21",
+            "service": "pppoe",
+            "uptime": "2m",
+            "uptime_raw": "2m",
+            "bytes_in": 100,
+            "bytes_out": 200,
+            "bytes_in_label": "100 B",
+            "bytes_out_label": "200 B",
+            "download_bps": 1000,
+            "upload_bps": 500,
+            "download_label": "1 Kbps",
+            "upload_label": "500 bps",
+            "interface": "<pppoe-liveuser>",
+            "secret_profile": "ispcentric-pppoe",
+            "on_blocked_profile": False,
+            "error": "",
+        }
+        fetch_usage.side_effect = [
+            live,
+            {
+                "ok": False,
+                "online": False,
+                "session_active": False,
+                "error": "Connection timed out reaching the router.",
+                "timeout": True,
+                "soft_outage": True,
+            },
+        ]
+
+        first = self.client.get(
+            f"/app/clients/{self.customer.pk}/usage/",
+            {"refresh": "1"},
+        ).json()
+        self.assertTrue(first["surfing"])
+
+        second = self.client.get(
+            f"/app/clients/{self.customer.pk}/usage/",
+            {"refresh": "1"},
+        ).json()
+        self.assertTrue(second["ok"])
+        self.assertTrue(second["surfing"])
+        self.assertTrue(second["session_active"])
+        self.assertEqual(second["session_label"], "Surfing")
+        self.assertTrue(second.get("usage_held"))
+
     def test_pppoe_portal_is_pppoe_only(self):
         from django.test import RequestFactory
 

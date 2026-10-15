@@ -18022,6 +18022,7 @@ def client_usage(request, customer_id: int):
             router.password or "",
             pppoe_username=customer.pppoe_username,
         )
+        payload = _hold_in_package_pppoe_usage(customer, payload)
         payload["speed_source"] = "nas"
         payload["cpe_host"] = (payload.get("address") or "").strip()
         payload["cpe_auth_ok"] = False
@@ -18141,6 +18142,15 @@ def client_usage(request, customer_id: int):
                 "Package active — CPE renew Hotspot still clearing. "
                 "Phones may see the pay page until the CPE redials."
             )
+        if payload.get("usage_held"):
+            session_hint = (
+                "Still in subscription — last live session kept. "
+                "The router read timed out."
+            )
+            if session_online and internet_allowed and not on_blocked_profile:
+                surfing = True
+                session_state = "surfing"
+                session_label = "Surfing"
 
         payload["surfing"] = surfing
         payload["session_state"] = session_state
@@ -18156,7 +18166,7 @@ def client_usage(request, customer_id: int):
 
         # Only persist successful router reads — timeouts/errors must not look
         # like the client went offline.
-        if payload.get("ok"):
+        if payload.get("ok") and not payload.get("usage_held"):
             sample_payload = dict(payload)
             if is_hotspot:
                 sample_payload["session_active"] = nas_authenticated
@@ -18168,8 +18178,91 @@ def client_usage(request, customer_id: int):
     payload = _attach_session_breakdown(payload)
     # Short cache so live speeds stay useful without hammering the API.
     live_for_cache = payload.get("surfing") or payload.get("session_active")
+    if live_for_cache and payload.get("ok") and not payload.get("usage_held"):
+        cache.set(
+            _client_usage_last_good_key(customer.pk),
+            {k: v for k, v in payload.items() if k != "session_breakdown"},
+            _CLIENT_USAGE_LAST_GOOD_TTL,
+        )
     cache.set(cache_key, payload, 8 if live_for_cache else 4)
     return JsonResponse(payload)
+
+
+def _client_usage_last_good_key(customer_id: int) -> str:
+    return f"client_usage_last_good:v1:{int(customer_id)}"
+
+
+_CLIENT_USAGE_LAST_GOOD_TTL = 180
+
+
+def _pppoe_usage_read_failed(payload: dict) -> bool:
+    """True when the NAS session list was not actually read."""
+    if not isinstance(payload, dict) or payload.get("ok"):
+        return False
+    if payload.get("soft_outage") or payload.get("timeout") or payload.get("api_busy"):
+        return True
+    error = (payload.get("error") or "").lower()
+    return any(
+        token in error
+        for token in (
+            "timed out",
+            "timeout",
+            "busy",
+            "could not reach",
+            "cooling",
+            "soft",
+        )
+    )
+
+
+def _hold_in_package_pppoe_usage(customer, payload: dict) -> dict:
+    """
+    Keep the last live PPPoE session when a subscribed client’s router read fails.
+
+    A timeout is not a drop. Only a successful read with no session may clear it.
+    """
+    if not _pppoe_usage_read_failed(payload):
+        return payload
+    try:
+        from billing.services import customer_can_surf_via_pppoe
+
+        if not customer_can_surf_via_pppoe(customer):
+            return payload
+    except Exception:
+        return payload
+
+    last = cache.get(_client_usage_last_good_key(customer.pk))
+    if not (isinstance(last, dict) and last.get("session_active")):
+        from billing.usage_samples import get_org_live_usage
+
+        org = getattr(customer, "organization", None)
+        live = get_org_live_usage(org) if org is not None else {}
+        pppoe = live.get("pppoe") if isinstance(live.get("pppoe"), dict) else {}
+        entry = pppoe.get(customer.pk) or pppoe.get(str(customer.pk)) or {}
+        if isinstance(entry, dict) and entry.get("session_active"):
+            last = {
+                "ok": True,
+                "online": True,
+                "session_active": True,
+                "pppoe_username": (customer.pppoe_username or "").strip(),
+                "on_blocked_profile": False,
+                "service": "pppoe",
+                "uptime": "—",
+                "download_label": "—",
+                "upload_label": "—",
+                "bytes_in_label": "—",
+                "bytes_out_label": "—",
+            }
+    if not (isinstance(last, dict) and last.get("session_active")):
+        return payload
+    held = dict(last)
+    held["ok"] = True
+    held["online"] = True
+    held["session_active"] = True
+    held["usage_held"] = True
+    held["soft_outage"] = True
+    held.pop("error", None)
+    return held
 
 
 def _clients_usage_router_filter(request, org):
@@ -20839,6 +20932,27 @@ def clients_surfing_status(request):
             label = "Disconnected"
             if not reason:
                 reason = router_error or "Router not dialed — no active PPPoE session"
+            # A missed read or a sync holding the API is not a drop. In-package
+            # clients keep the last Surfing badge until a real session list.
+            if not subscription_expired and customer.status == Customer.Status.ACTIVE:
+                if not internet_allowed:
+                    from billing.services import customer_can_surf_via_pppoe
+
+                    try:
+                        internet_allowed = customer_can_surf_via_pppoe(customer)
+                    except Exception:
+                        internet_allowed = False
+                if internet_allowed and (router_unreachable or presence_unread):
+                    from core.subscription_sync import is_fleet_write_active
+
+                    if presence_unread or router_unreachable or is_fleet_write_active():
+                        reason = (
+                            "Subscription sync in progress — "
+                            "session list was not read"
+                            if is_fleet_write_active()
+                            else "Session list was not read on this MikroTik"
+                        )
+                        router_unreachable = True
         else:
             # Dialed on the NAS but not getting internet (blocked, outside period, …).
             state = "not_surfing"
