@@ -459,6 +459,11 @@ urlpatterns = [
         name="settings_communications_fetch",
     ),
     path(
+        "app/settings/communications/test/",
+        views.settings_communications_test,
+        name="settings_communications_test",
+    ),
+    path(
         "app/settings/payments/",
         views.settings_payments,
         name="settings_payments",
