@@ -39,6 +39,7 @@ from accounts.communications import (
     enrich_org_enabled_events,
     fetch_provider_options,
     isp_events_by_category,
+    test_provider_connection,
     normalize_org_enabled_messages,
     org_event_catalog,
 )
@@ -26093,6 +26094,7 @@ def _isp_communications_page(request, *, variant):
                     "or this ISP’s own credentials to message clients."
                 ),
                 comms_fetch_url=reverse("core:settings_communications_fetch"),
+                comms_test_url=reverse("core:settings_communications_test"),
                 **context,
             ),
         )
@@ -26145,6 +26147,22 @@ def settings_communications_fetch(request):
     if not can_edit:
         return JsonResponse({"ok": False, "error": "Only the organization owner can fetch providers."}, status=403)
     result = fetch_provider_options(_comms_fetch_payload(request))
+    return JsonResponse(result, status=200 if result.get("ok") else 400)
+
+
+@client_workspace_required
+@require_POST
+def settings_communications_test(request):
+    org = resolve_organization(request.user, request)
+    employee = getattr(request.user, "employee_profile", None)
+    viewing_client = bool(employee and is_viewing_as_client(request, employee))
+    can_edit = bool(org and (org.owner_id == request.user.id or viewing_client))
+    if not can_edit:
+        return JsonResponse({"ok": False, "error": "Only the organization owner can test connections."}, status=403)
+    payload = _comms_fetch_payload(request)
+    if not isinstance(payload, dict):
+        payload = {}
+    result = test_provider_connection(payload, saved=CommunicationSettings.for_organization(org))
     return JsonResponse(result, status=200 if result.get("ok") else 400)
 
 

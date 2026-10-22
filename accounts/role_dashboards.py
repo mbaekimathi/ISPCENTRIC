@@ -18,6 +18,7 @@ from accounts.communications import (
     PLATFORM_TO_STAFF_EVENTS,
     RECIPIENT_OPTIONS,
     fetch_provider_options,
+    test_provider_connection,
     normalize_enabled_messages,
     notify_org_event,
     notify_platform_event,
@@ -3909,6 +3910,7 @@ def it_support_company_communications(request):
             "email_status": statuses["email"],
             "whatsapp_status": statuses["whatsapp"],
             "comms_fetch_url": reverse("roles:it_support_company_communications_fetch"),
+            "comms_test_url": reverse("roles:it_support_company_communications_test"),
             "events_url": reverse("roles:it_support_communications"),
         },
     )
@@ -3927,6 +3929,20 @@ def it_support_company_communications_fetch(request):
     else:
         payload = {key: request.POST.get(key, "") for key in request.POST}
     result = fetch_provider_options(payload)
+    return JsonResponse(result, status=200 if result.get("ok") else 400)
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+@require_POST
+def it_support_company_communications_test(request):
+    _prepare_it_support_view(request)
+    try:
+        payload = json.loads(request.body.decode() or "{}")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    result = test_provider_connection(payload, saved=PlatformCommunicationSettings.get_solo())
     return JsonResponse(result, status=200 if result.get("ok") else 400)
 
 

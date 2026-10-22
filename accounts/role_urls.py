@@ -330,6 +330,11 @@ urlpatterns = [
         name="it_support_company_communications_fetch",
     ),
     path(
+        "it-support/company-settings/communications/test/",
+        role_dashboards.it_support_company_communications_test,
+        name="it_support_company_communications_test",
+    ),
+    path(
         "it-support/commissions/",
         role_dashboards.it_support_commissions,
         name="it_support_commissions",

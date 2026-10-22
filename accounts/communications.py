@@ -2734,6 +2734,16 @@ def suggest_smtp(address: str) -> dict | None:
     return None
 
 
+def _guess_domain_smtp(address: str) -> dict | None:
+    text = (address or "").strip().lower()
+    if "@" not in text:
+        return None
+    domain = text.rsplit("@", 1)[-1].strip().strip(".")
+    if not domain or "." not in domain:
+        return None
+    return {"host": f"mail.{domain}", "label": domain}
+
+
 def _looks_like_phone(value: str) -> bool:
     digits = re.sub(r"\D", "", value or "")
     return len(digits) >= 8 and not re.search(r"[A-Za-z]", value or "")
@@ -3025,6 +3035,17 @@ def fetch_provider_options(payload: dict) -> dict:
             payload.get("email_host_user") or payload.get("email_from_email") or payload.get("email_host") or ""
         )
         if not suggestion:
+            guess = _guess_domain_smtp(payload.get("email_host_user") or payload.get("email_from_email") or "")
+            if guess:
+                return {
+                    "ok": True,
+                    "channel": "email",
+                    "smtp": guess,
+                    "message": (
+                        f"Own-domain mailbox: SMTP host guessed as {guess['host']} (common on cPanel hosting). "
+                        "Check it with your host, then press Test connection."
+                    ),
+                }
             return {
                 "ok": True,
                 "channel": "email",
@@ -3055,3 +3076,264 @@ def fetch_provider_options(payload: dict) -> dict:
     )
     result["channel"] = "sms"
     return result
+
+
+_TEST_SECRET_FIELDS = (
+    "sms_api_key",
+    "email_host_password",
+    "whatsapp_access_token",
+    "whatsapp_api_key",
+)
+
+_TEST_TEXT_FIELDS = (
+    "sms_provider",
+    "sms_username",
+    "sms_sender_id",
+    "sms_from_number",
+    "sms_base_url",
+    "email_host",
+    "email_host_user",
+    "email_from_email",
+    "email_from_name",
+    "whatsapp_provider",
+    "whatsapp_phone_number_id",
+    "whatsapp_username",
+    "whatsapp_from_number",
+)
+
+
+def _credentials_from_payload(payload: dict, saved=None) -> PlatformCommunicationSettings:
+    """Unsaved credential object built from the form, falling back to saved secrets."""
+    creds = PlatformCommunicationSettings()
+    for name in _TEST_TEXT_FIELDS + _TEST_SECRET_FIELDS:
+        value = str(payload.get(name) or "").strip()
+        if not value and name in _TEST_SECRET_FIELDS and saved is not None:
+            value = (getattr(saved, name, "") or "").strip()
+        setattr(creds, name, value)
+    try:
+        creds.email_port = int(str(payload.get("email_port") or "").strip() or 587)
+    except ValueError:
+        creds.email_port = 0
+    creds.email_use_tls = str(payload.get("email_use_tls") or "").strip().lower() in {"1", "true", "on", "yes"}
+    creds.sms_enabled = creds.email_enabled = creds.whatsapp_enabled = True
+    return creds
+
+
+def _open_smtp(host: str, port: int, use_tls: bool, *, timeout: int = 20):
+    context = ssl.create_default_context()
+    if port == 465:
+        smtp = smtplib.SMTP_SSL(host, port, timeout=timeout, context=context)
+    else:
+        smtp = smtplib.SMTP(host, port, timeout=timeout)
+        if use_tls:
+            try:
+                smtp.starttls(context=context)
+            except Exception:
+                smtp.close()
+                raise
+    return smtp
+
+
+def _smtp_error_message(exc: Exception, host: str, port: int) -> str:
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return (
+            "The mailbox rejected the username or password. Use the full email address "
+            "as the username, and an app password if the mailbox has two-step sign-in."
+        )
+    if isinstance(exc, smtplib.SMTPNotSupportedError):
+        if "AUTH" in str(exc).upper():
+            return f"{host}:{port} only accepts a password over a secure connection. Turn on Use TLS, or use port 465."
+        return f"{host}:{port} does not support TLS. Turn off Use TLS, or use port 465."
+    if isinstance(exc, ssl.SSLError):
+        if port == 465:
+            return f"{host}:465 did not answer with SSL. Try port 587 with Use TLS on."
+        return f"Secure connection to {host}:{port} failed ({exc}). Try port 465, or 587 with Use TLS on."
+    if isinstance(exc, smtplib.SMTPServerDisconnected):
+        return (
+            f"{host}:{port} closed the connection. Port 465 needs SSL; port 587 needs Use TLS on."
+        )
+    if isinstance(exc, (TimeoutError, OSError)) and not isinstance(exc, smtplib.SMTPException):
+        return f"Could not reach {host}:{port}. Check the SMTP host and port ({exc})."
+    return str(exc) or "SMTP check failed."
+
+
+def _check_smtp(creds) -> dict:
+    host = (creds.email_host or "").strip()
+    port = int(creds.email_port or 0)
+    username = (creds.email_host_user or "").strip()
+    password = (creds.email_host_password or "").strip()
+    if not host:
+        return {"ok": False, "error": "Enter the SMTP host."}
+    if not 1 <= port <= 65535:
+        return {"ok": False, "error": "Enter a valid SMTP port (587 or 465)."}
+    if not username or not password:
+        return {"ok": False, "error": "Enter the SMTP username and password."}
+    try:
+        with _open_smtp(host, port, bool(creds.email_use_tls) and port != 465) as smtp:
+            smtp.login(username, password)
+    except Exception as exc:
+        logger.info("SMTP connection test failed: %s", exc)
+        return {"ok": False, "error": _smtp_error_message(exc, host, port)}
+    return {"ok": True, "message": f"Signed in to {host}:{port} as {username}."}
+
+
+def _check_africastalking(username: str, api_key: str) -> dict:
+    username = (username or "").strip()
+    api_key = (api_key or "").strip()
+    if not username or not api_key:
+        return {"ok": False, "error": "Enter the Africa's Talking username and API key."}
+    api = _AFRICASTALKING_API_SANDBOX if username.lower() == "sandbox" else _AFRICASTALKING_API
+    result = _http_request(
+        f"{api}/version1/user",
+        method="GET",
+        headers={"apiKey": api_key},
+        data={"username": username},
+    )
+    if not result.get("ok"):
+        if result.get("status") in (401, 403):
+            return {
+                "ok": False,
+                "error": (
+                    "Africa's Talking rejected the username or API key. Use the app username "
+                    "(not your login email); use 'sandbox' only with a sandbox API key."
+                ),
+            }
+        return {"ok": False, "error": result.get("error") or "Could not reach Africa's Talking."}
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    balance = (data.get("UserData") or {}).get("balance") if isinstance(data.get("UserData"), dict) else ""
+    message = f"Africa's Talking account '{username}' connected."
+    if balance:
+        message += f" Balance: {balance}."
+    return {"ok": True, "message": message}
+
+
+def _check_twilio(sid: str, token: str) -> dict:
+    sid = (sid or "").strip()
+    token = (token or "").strip()
+    if not sid or not token:
+        return {"ok": False, "error": "Enter the Twilio Account SID and Auth Token."}
+    if not sid.startswith("AC"):
+        return {"ok": False, "error": "The Twilio Account SID starts with AC."}
+    result = _http_request(
+        _TWILIO_API.format(sid=urllib.parse.quote(sid)) + ".json",
+        method="GET",
+        auth=(sid, token),
+    )
+    if not result.get("ok"):
+        if result.get("status") in (401, 403, 404):
+            return {"ok": False, "error": "Twilio rejected the Account SID or Auth Token."}
+        return {"ok": False, "error": result.get("error") or "Could not reach Twilio."}
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    name = data.get("friendly_name") or sid
+    return {"ok": True, "message": f"Twilio account '{name}' connected."}
+
+
+def _check_meta_whatsapp(token: str, phone_number_id: str) -> dict:
+    token = (token or "").strip()
+    phone_number_id = (phone_number_id or "").strip()
+    if not token:
+        return {"ok": False, "error": "Enter the Meta access token."}
+    if not phone_number_id:
+        return {
+            "ok": False,
+            "error": "Enter the phone number ID (Meta → WhatsApp → API Setup), or press Fetch numbers.",
+        }
+    result = _http_request(
+        f"{_META_GRAPH}/{urllib.parse.quote(phone_number_id)}",
+        method="GET",
+        data={"fields": "id,display_phone_number,verified_name", "access_token": token},
+    )
+    if not result.get("ok"):
+        return {
+            "ok": False,
+            "error": "Meta rejected the access token or phone number ID: "
+            + (result.get("error") or "unknown error."),
+        }
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    display = data.get("display_phone_number") or phone_number_id
+    verified = data.get("verified_name") or ""
+    return {
+        "ok": True,
+        "message": f"WhatsApp Cloud API connected for {display}" + (f" ({verified})." if verified else "."),
+    }
+
+
+def _check_sms(creds) -> dict:
+    provider = (creds.sms_provider or "").strip()
+    if provider == CommunicationSettings.SmsProvider.AFRICASTALKING:
+        return _check_africastalking(creds.sms_username, creds.sms_api_key)
+    if provider == CommunicationSettings.SmsProvider.TWILIO:
+        result = _check_twilio(creds.sms_username, creds.sms_api_key)
+        if result.get("ok") and not ((creds.sms_sender_id or "").strip() or (creds.sms_from_number or "").strip()):
+            result["message"] += " Now pick or type the from number."
+        return result
+    if provider == CommunicationSettings.SmsProvider.CUSTOM:
+        url = (creds.sms_base_url or "").strip()
+        if not url:
+            return {"ok": False, "error": "Enter the custom SMS API URL."}
+        if not url.lower().startswith(("http://", "https://")):
+            return {"ok": False, "error": "The SMS API URL must start with https://."}
+        if not (creds.sms_api_key or "").strip():
+            return {"ok": False, "error": "Enter the API key for the custom SMS gateway."}
+        return {
+            "ok": True,
+            "message": "Custom SMS details look complete. Add a phone number to send a real test SMS.",
+        }
+    return {"ok": False, "error": "Choose an SMS provider."}
+
+
+def _check_whatsapp(creds) -> dict:
+    provider = (creds.whatsapp_provider or "").strip()
+    if provider == CommunicationSettings.WhatsAppProvider.META:
+        return _check_meta_whatsapp(creds.whatsapp_access_token, creds.whatsapp_phone_number_id)
+    if provider == CommunicationSettings.WhatsAppProvider.TWILIO:
+        result = _check_twilio(creds.whatsapp_username, creds.whatsapp_api_key)
+    elif provider == CommunicationSettings.WhatsAppProvider.AFRICASTALKING:
+        result = _check_africastalking(creds.whatsapp_username, creds.whatsapp_api_key)
+    else:
+        return {"ok": False, "error": "Choose a WhatsApp provider."}
+    if result.get("ok") and not (creds.whatsapp_from_number or "").strip():
+        return {"ok": False, "error": result["message"] + " Now enter the WhatsApp from number."}
+    return result
+
+
+def test_provider_connection(payload: dict, saved=None) -> dict:
+    """Check the credentials typed in the form (without saving) and optionally send a test."""
+    payload = payload or {}
+    channel = str(payload.get("channel") or "").strip().lower()
+    if channel not in {"sms", "email", "whatsapp"}:
+        return {"ok": False, "error": "Choose SMS, email, or WhatsApp."}
+    creds = _credentials_from_payload(payload, saved)
+    check = {"sms": _check_sms, "email": _check_smtp, "whatsapp": _check_whatsapp}[channel](creds)
+    check["channel"] = channel
+    if not check.get("ok"):
+        return check
+
+    test_to = str(payload.get("test_to") or "").strip()
+    if not test_to:
+        return check
+    label = {"sms": "SMS", "email": "email", "whatsapp": "WhatsApp message"}[channel]
+    text = "ISPCENTRIC test message: your communication settings are working."
+    if channel == "sms":
+        sent = send_sms(to=test_to, message=text, credentials=creds)
+    elif channel == "whatsapp":
+        sent = send_whatsapp(to=test_to, message=text, credentials=creds)
+    else:
+        sent = send_email(
+            to=test_to,
+            subject="ISPCENTRIC test email",
+            body=text,
+            credentials=creds,
+            title="Test email",
+        )
+    if not sent.get("ok"):
+        return {
+            "ok": False,
+            "channel": channel,
+            "error": f"{check['message']} But the test {label} failed: {sent.get('error') or 'unknown error'}",
+        }
+    return {
+        "ok": True,
+        "channel": channel,
+        "message": f"{check['message']} Test {label} sent to {test_to}.",
+    }
